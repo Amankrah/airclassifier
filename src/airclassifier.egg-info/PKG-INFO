@@ -1,0 +1,15 @@
+Metadata-Version: 2.1
+Name: airclassifier
+Version: 0.1.0
+Summary: GPU-accelerated cyclone air classifier simulation using NVIDIA Warp
+Home-page: UNKNOWN
+Author: Emmanuel Kwofie
+License: UNKNOWN
+Platform: UNKNOWN
+Requires-Python: >=3.10
+Provides-Extra: dev
+Provides-Extra: ml
+Provides-Extra: viz
+
+UNKNOWN
+

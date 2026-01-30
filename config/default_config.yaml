@@ -1,0 +1,99 @@
+# Cyclone Air Classifier - Default Configuration
+# ================================================
+
+simulation:
+  name: "default_cyclone"
+  device: "cuda:0"  # or "cpu"
+  dt: 1.0e-5        # Time step [s]
+  duration: 1.0     # Total simulation time [s]
+  output_interval: 0.01  # Output every N seconds
+
+geometry:
+  # Main cyclone body
+  body:
+    cylinder_diameter: 0.3    # [m]
+    cylinder_height: 0.6      # [m]
+    cone_height: 0.9          # [m]
+    cone_tip_diameter: 0.075  # [m]
+
+  # Inlet (tangential)
+  inlet:
+    width: 0.075    # [m]
+    height: 0.15    # [m]
+
+  # Vortex finder
+  vortex_finder:
+    diameter: 0.15   # [m]
+    length: 0.3      # [m] (insertion depth)
+
+  # Dust outlet
+  dust_outlet:
+    diameter: 0.075  # [m]
+    length: 0.1      # [m]
+
+fluid:
+  # Air properties at standard conditions
+  density: 1.225        # [kg/m³]
+  viscosity: 1.81e-5    # [Pa·s]
+
+  # Inlet conditions
+  inlet_velocity: 15.0  # [m/s]
+
+  # Turbulence model
+  turbulence:
+    model: "k-epsilon"  # or "laminar", "les"
+    intensity: 0.05     # Turbulent intensity at inlet
+
+particles:
+  # Material properties
+  material:
+    name: "ite"
+    density: 2650.0  # [kg/m³]
+
+  # Size distribution
+  size_distribution:
+    type: "rosin-rammler"  # or "log-normal", "mono-disperse"
+    d50: 50.0e-6           # Median diameter [m]
+    spread: 2.0            # Spread parameter
+    d_min: 1.0e-6          # Minimum diameter [m]
+    d_max: 200.0e-6        # Maximum diameter [m]
+
+  # Injection
+  injection:
+    rate: 0.001           # Mass flow rate [kg/s]
+    location: "inlet"     # Where particles enter
+
+  # Shape factor (1.0 = sphere)
+  sphericity: 1.0
+
+  # Number of computational particles
+  num_particles: 10000
+
+kinetics:
+  # Forces to include
+  forces:
+    drag: true
+    gravity: true
+    centrifugal: true
+    virtual_mass: false
+
+  # Drag model
+  drag_model: "schiller-naumann"  # or "stokes", "haider-levenspiel"
+
+  # Wall interaction
+  wall_collision:
+    restitution: 0.8      # Coefficient of restitution
+    friction: 0.3         # Friction coefficient
+
+output:
+  # Output directory
+  directory: "./results"
+
+  # What to save
+  save_particles: true
+  save_flow_field: true
+  save_statistics: true
+
+  # Formats
+  particle_format: "vtk"  # or "csv", "hdf5"
+  field_format: "vtk"
