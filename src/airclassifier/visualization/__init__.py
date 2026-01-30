@@ -21,6 +21,23 @@ from .renderer import (
     visualize_results_interactive,
 )
 
+from .flow_viz import (
+    plot_velocity_magnitude_slice,
+    plot_velocity_components_slice,
+    plot_velocity_vectors,
+    compute_streamlines,
+    plot_streamlines_2d,
+    plot_streamlines_3d,
+    plot_radial_velocity_profile,
+    plot_axial_velocity_profile,
+    plot_vortex_structure,
+    create_flow_animation,
+    plot_pressure_gradient_estimate,
+    plot_flow_summary,
+    generate_seed_points_ring,
+    generate_seed_points_grid,
+)
+
 __all__ = [
     # Plotters
     "plot_particle_positions_2d",
@@ -34,4 +51,19 @@ __all__ = [
     "SimpleRenderer",
     "PygletRenderer",
     "visualize_results_interactive",
+    # Flow Visualization
+    "plot_velocity_magnitude_slice",
+    "plot_velocity_components_slice",
+    "plot_velocity_vectors",
+    "compute_streamlines",
+    "plot_streamlines_2d",
+    "plot_streamlines_3d",
+    "plot_radial_velocity_profile",
+    "plot_axial_velocity_profile",
+    "plot_vortex_structure",
+    "create_flow_animation",
+    "plot_pressure_gradient_estimate",
+    "plot_flow_summary",
+    "generate_seed_points_ring",
+    "generate_seed_points_grid",
 ]
