@@ -1,0 +1,401 @@
+"""
+Air system assembly module.
+
+Provides complete air system assembly combining Phase 3 components:
+- Centrifugal Blower
+- Inlet Air Filter
+- Flow Dampers
+"""
+
+from dataclasses import dataclass
+from typing import Tuple, Dict, Any, List
+import numpy as np
+import warp as wp
+
+
+@dataclass
+class AirSystemParams:
+    """
+    Parameters for complete air system.
+
+    Combines all Phase 3 components into an air supply system.
+    """
+
+    # System air requirements
+    flow_rate_m3_h: float = 3000       # [m3/h] Design flow rate
+    pressure_rise_Pa: float = 5000      # [Pa] Total system pressure drop
+
+    # Blower parameters
+    blower_blade_type: str = "backward_curved"
+
+    # Inlet filter parameters
+    filter_type: str = "panel"          # "panel", "bag", "cartridge", "HEPA"
+    filter_efficiency_class: str = "G4"
+
+    # Damper parameters
+    num_control_dampers: int = 2        # Number of control dampers in system
+    damper_type: str = "butterfly"      # "butterfly", "louver", "iris"
+
+    # Layout parameters
+    component_spacing: float = 0.3      # [m] Spacing between components
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+class AirSystemAssembly:
+    """
+    Complete air supply system assembly.
+
+    Combines all Phase 3 components:
+    - Inlet Air Filter: Clean air supply
+    - Centrifugal Blower: Air motive force
+    - Flow Dampers: Flow control/isolation
+
+    Process flow:
+    Ambient Air -> Filter -> Blower -> Damper -> Classifier
+
+    Coordinate system:
+    - Origin at center of system
+    - X-axis: Main flow direction
+    - Y-axis: Vertical (up)
+    - Z-axis: Depth
+    """
+
+    def __init__(self, params: AirSystemParams = None, device: str = "cpu"):
+        """
+        Initialize air system assembly.
+
+        Args:
+            params: AirSystemParams (uses defaults if None)
+            device: Warp device for mesh operations
+        """
+        self.params = params or AirSystemParams()
+        self.device = device
+
+        # Create components
+        self._create_components()
+
+        # Mesh data
+        self._combined_vertices = None
+        self._combined_indices = None
+        self._mesh_built = False
+
+    def _create_components(self):
+        """Create all system components with proper positioning."""
+        # Lazy imports to avoid circular dependency
+        from ..components import (
+            create_standard_centrifugal_blower,
+            create_standard_inlet_filter,
+            create_standard_damper,
+        )
+
+        p = self.params
+        spacing = p.component_spacing
+
+        # Track X position along flow path
+        x_pos = p.center[0]
+
+        # 1. Inlet Air Filter (first, at ambient inlet)
+        self.inlet_filter = create_standard_inlet_filter(
+            flow_rate=p.flow_rate_m3_h,
+            filter_type=p.filter_type,
+            efficiency_class=p.filter_efficiency_class
+        )
+        filter_depth = self.inlet_filter.params.housing_depth
+        self._filter_position = (x_pos, p.center[1], p.center[2])
+        x_pos += filter_depth + spacing
+
+        # 2. Centrifugal Blower
+        self.blower = create_standard_centrifugal_blower(
+            flow_rate=p.flow_rate_m3_h,
+            pressure_rise=p.pressure_rise_Pa
+        )
+        blower_size = self.blower.params.impeller_diameter * 1.5
+        self._blower_position = (x_pos + blower_size / 2, p.center[1], p.center[2])
+        x_pos += blower_size + spacing
+
+        # 3. Flow Dampers (control dampers along flow path)
+        self.dampers: List = []
+        self._damper_positions: List = []
+
+        # Calculate duct diameter from flow rate and velocity
+        target_velocity = 15.0  # m/s typical for main duct
+        duct_area = p.flow_rate_m3_h / 3600 / target_velocity
+        duct_diameter = np.sqrt(4 * duct_area / np.pi)
+
+        for i in range(p.num_control_dampers):
+            damper = create_standard_damper(
+                diameter=duct_diameter,
+                damper_type=p.damper_type,
+                position=1.0  # Fully open
+            )
+            self.dampers.append(damper)
+
+            damper_pos = (x_pos, p.center[1], p.center[2])
+            self._damper_positions.append(damper_pos)
+            x_pos += damper.params.housing_length + spacing
+
+    def build_mesh(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Build combined mesh for all components.
+
+        Returns:
+            Tuple of (vertices, indices)
+        """
+        all_vertices = []
+        all_indices = []
+        vertex_offset = 0
+
+        # Helper to add component mesh with position offset
+        def add_component_mesh(component, position):
+            nonlocal vertex_offset
+            verts, idx, _ = component.generate_mesh()
+
+            # Apply position offset
+            offset = np.array(position)
+            verts_offset = verts + offset
+
+            all_vertices.append(verts_offset)
+            all_indices.append(idx + vertex_offset)
+            vertex_offset += len(verts)
+
+        # Add each component
+        add_component_mesh(self.inlet_filter, self._filter_position)
+        add_component_mesh(self.blower, self._blower_position)
+
+        for damper, pos in zip(self.dampers, self._damper_positions):
+            add_component_mesh(damper, pos)
+
+        self._combined_vertices = np.vstack(all_vertices).astype(np.float32)
+        self._combined_indices = np.concatenate(all_indices).astype(np.int32)
+        self._mesh_built = True
+
+        return self._combined_vertices, self._combined_indices
+
+    def get_bounds(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get axis-aligned bounding box of the entire system.
+
+        Returns:
+            Tuple of (min_corner, max_corner) as numpy arrays
+        """
+        if not self._mesh_built:
+            self.build_mesh()
+
+        min_corner = self._combined_vertices.min(axis=0)
+        max_corner = self._combined_vertices.max(axis=0)
+
+        return min_corner, max_corner
+
+    def get_system_extent(self) -> np.ndarray:
+        """
+        Get system extent (dimensions) in each axis.
+
+        Returns:
+            Array of [width, height, depth]
+        """
+        min_c, max_c = self.get_bounds()
+        return max_c - min_c
+
+    def get_component(self, name: str) -> Any:
+        """
+        Get a specific component by name.
+
+        Args:
+            name: Component name ('inlet_filter', 'blower', 'damper_0', 'damper_1', etc.)
+
+        Returns:
+            Component instance
+        """
+        components = {
+            'inlet_filter': self.inlet_filter,
+            'blower': self.blower,
+        }
+        for i, damper in enumerate(self.dampers):
+            components[f'damper_{i}'] = damper
+
+        if name not in components:
+            raise KeyError(f"Unknown component: {name}. Available: {list(components.keys())}")
+        return components[name]
+
+    def get_component_positions(self) -> Dict[str, Tuple[float, float, float]]:
+        """
+        Get positions of all components.
+
+        Returns:
+            Dictionary of component names to positions
+        """
+        positions = {
+            'inlet_filter': self._filter_position,
+            'blower': self._blower_position,
+        }
+        for i, pos in enumerate(self._damper_positions):
+            positions[f'damper_{i}'] = pos
+        return positions
+
+    def set_damper_position(self, damper_index: int, position: float):
+        """
+        Set a damper's position.
+
+        Args:
+            damper_index: Index of damper (0, 1, ...)
+            position: Position 0=closed, 1=fully open
+        """
+        if damper_index < 0 or damper_index >= len(self.dampers):
+            raise IndexError(f"Damper index {damper_index} out of range (0-{len(self.dampers)-1})")
+        self.dampers[damper_index].set_position(position)
+        # Invalidate mesh
+        self._mesh_built = False
+        self._combined_vertices = None
+        self._combined_indices = None
+
+    def get_total_pressure_drop(self, flow_rate: float = None) -> float:
+        """
+        Estimate total system pressure drop.
+
+        Args:
+            flow_rate: Flow rate [m3/h], uses design flow if None
+
+        Returns:
+            Estimated pressure drop [Pa]
+        """
+        Q = flow_rate if flow_rate else self.params.flow_rate_m3_h
+
+        # Filter pressure drop
+        dp_filter = self.inlet_filter.get_pressure_drop(Q, loading=0.5)
+
+        # Damper pressure drops
+        dp_dampers = sum(d.get_pressure_drop(Q) for d in self.dampers)
+
+        return dp_filter + dp_dampers
+
+    def get_performance_summary(self) -> Dict[str, Any]:
+        """
+        Get air system performance summary.
+
+        Returns:
+            Dictionary with performance metrics
+        """
+        p = self.params
+
+        blower_perf = self.blower.get_performance()
+        total_dp = self.get_total_pressure_drop()
+
+        return {
+            'design_flow_rate_m3_h': p.flow_rate_m3_h,
+            'blower_pressure_rise_Pa': p.pressure_rise_Pa,
+            'blower_power_kW': blower_perf['shaft_power_kW'],
+            'blower_efficiency': blower_perf['efficiency'],
+            'estimated_system_dp_Pa': total_dp,
+            'filter_type': p.filter_type,
+            'filter_class': p.filter_efficiency_class,
+            'num_dampers': len(self.dampers),
+        }
+
+    def to_warp_mesh(self) -> wp.Mesh:
+        """
+        Create a Warp mesh from the system geometry.
+
+        Returns:
+            wp.Mesh object
+        """
+        if not self._mesh_built:
+            self.build_mesh()
+
+        points = wp.array(self._combined_vertices, dtype=wp.vec3, device=self.device)
+        indices = wp.array(self._combined_indices, dtype=wp.int32, device=self.device)
+
+        return wp.Mesh(points=points, indices=indices)
+
+    def print_summary(self):
+        """Print summary of the air system."""
+        p = self.params
+        perf = self.get_performance_summary()
+
+        print("=" * 60)
+        print("Air System Assembly Summary")
+        print("=" * 60)
+
+        print("\n1. INLET AIR FILTER")
+        print(f"   Filter type:     {p.filter_type}")
+        print(f"   Efficiency class: {p.filter_efficiency_class}")
+        print(f"   Housing size:    {self.inlet_filter.params.housing_width*1000:.0f} x "
+              f"{self.inlet_filter.params.housing_height*1000:.0f} mm")
+
+        print("\n2. CENTRIFUGAL BLOWER")
+        print(f"   Impeller dia:    {self.blower.params.impeller_diameter*1000:.0f} mm")
+        print(f"   Design flow:     {p.flow_rate_m3_h:.0f} m3/h")
+        print(f"   Pressure rise:   {p.pressure_rise_Pa:.0f} Pa")
+        print(f"   Shaft power:     {perf['blower_power_kW']:.1f} kW")
+        print(f"   Efficiency:      {perf['blower_efficiency']*100:.0f}%")
+
+        print("\n3. FLOW DAMPERS")
+        print(f"   Number:          {len(self.dampers)}")
+        print(f"   Type:            {p.damper_type}")
+        if self.dampers:
+            print(f"   Diameter:        {self.dampers[0].params.diameter*1000:.0f} mm")
+
+        print("-" * 60)
+        extent = self.get_system_extent()
+        print(f"System extent: {extent[0]*1000:.0f} x {extent[1]*1000:.0f} x {extent[2]*1000:.0f} mm")
+        print(f"Total system dP: {perf['estimated_system_dp_Pa']:.0f} Pa")
+
+        if self._mesh_built:
+            n_verts = len(self._combined_vertices)
+            n_tris = len(self._combined_indices) // 3
+            print(f"Total mesh:    {n_verts} vertices, {n_tris} triangles")
+        print("=" * 60)
+
+    @property
+    def vertices(self) -> np.ndarray:
+        """Get combined mesh vertices."""
+        if not self._mesh_built:
+            self.build_mesh()
+        return self._combined_vertices
+
+    @property
+    def indices(self) -> np.ndarray:
+        """Get combined mesh indices."""
+        if not self._mesh_built:
+            self.build_mesh()
+        return self._combined_indices
+
+
+def create_standard_air_system(device: str = "cpu") -> AirSystemAssembly:
+    """
+    Create a standard air system with default parameters.
+
+    Args:
+        device: Warp device
+
+    Returns:
+        AirSystemAssembly instance
+    """
+    return AirSystemAssembly(device=device)
+
+
+def create_air_system_for_classifier(
+    flow_rate_m3_h: float = 3000,
+    system_pressure_drop_Pa: float = 5000,
+    device: str = "cpu"
+) -> AirSystemAssembly:
+    """
+    Create an air system sized for a specific classifier.
+
+    Args:
+        flow_rate_m3_h: Required flow rate [m3/h]
+        system_pressure_drop_Pa: Total system pressure drop to overcome [Pa]
+        device: Warp device
+
+    Returns:
+        AirSystemAssembly configured for given requirements
+    """
+    params = AirSystemParams(
+        flow_rate_m3_h=flow_rate_m3_h,
+        pressure_rise_Pa=system_pressure_drop_Pa * 1.2,  # 20% margin
+        filter_type="panel",
+        filter_efficiency_class="G4",
+        num_control_dampers=2,
+        damper_type="butterfly",
+    )
+
+    return AirSystemAssembly(params, device=device)

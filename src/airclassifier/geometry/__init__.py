@@ -25,6 +25,15 @@ from .components import (
     MultiCycloneSystem, MultiCycloneParams, CycloneStageParams,
     create_protein_separation_cyclones, create_two_stage_cyclones,
     BagFilter, BagFilterParams, create_standard_bag_filter,
+    # Phase 2 Components - Feed System
+    FeedHopper, FeedHopperParams, create_standard_feed_hopper,
+    RotaryAirlock, RotaryAirlockParams, create_standard_rotary_airlock,
+    ScrewFeeder, ScrewFeederParams, create_standard_screw_feeder,
+    Deagglomerator, DeagglomeratorParams, create_standard_deagglomerator,
+    # Phase 3 Components - Air System
+    CentrifugalBlower, CentrifugalBlowerParams, create_standard_centrifugal_blower,
+    InletAirFilter, InletAirFilterParams, create_standard_inlet_filter,
+    FlowDamper, DamperParams, create_standard_damper,
 )
 
 from .assembly import (
@@ -32,11 +41,21 @@ from .assembly import (
     CycloneAssembly,
     CycloneGeometryParams,
     create_standard_cyclone,
-    # Complete classification system (Phase 1)
+    # Classification System (Phase 1)
     ClassificationSystemAssembly,
     ClassificationSystemParams,
     create_standard_classification_system,
     create_protein_separation_system,
+    # Feed System (Phase 2)
+    FeedSystemAssembly,
+    FeedSystemParams,
+    create_standard_feed_system,
+    create_feed_system_for_throughput,
+    # Air System (Phase 3)
+    AirSystemAssembly,
+    AirSystemParams,
+    create_standard_air_system,
+    create_air_system_for_classifier,
 )
 
 from .sdf import (
@@ -74,15 +93,34 @@ __all__ = [
     "MultiCycloneSystem", "MultiCycloneParams", "CycloneStageParams",
     "create_protein_separation_cyclones", "create_two_stage_cyclones",
     "BagFilter", "BagFilterParams", "create_standard_bag_filter",
+    # Phase 2 Components - Feed System
+    "FeedHopper", "FeedHopperParams", "create_standard_feed_hopper",
+    "RotaryAirlock", "RotaryAirlockParams", "create_standard_rotary_airlock",
+    "ScrewFeeder", "ScrewFeederParams", "create_standard_screw_feeder",
+    "Deagglomerator", "DeagglomeratorParams", "create_standard_deagglomerator",
+    # Phase 3 Components - Air System
+    "CentrifugalBlower", "CentrifugalBlowerParams", "create_standard_centrifugal_blower",
+    "InletAirFilter", "InletAirFilterParams", "create_standard_inlet_filter",
+    "FlowDamper", "DamperParams", "create_standard_damper",
     # Single Cyclone Assembly
     "CycloneAssembly",
     "CycloneGeometryParams",
     "create_standard_cyclone",
-    # Complete System Assembly
+    # Classification System Assembly (Phase 1)
     "ClassificationSystemAssembly",
     "ClassificationSystemParams",
     "create_standard_classification_system",
     "create_protein_separation_system",
+    # Feed System Assembly (Phase 2)
+    "FeedSystemAssembly",
+    "FeedSystemParams",
+    "create_standard_feed_system",
+    "create_feed_system_for_throughput",
+    # Air System Assembly (Phase 3)
+    "AirSystemAssembly",
+    "AirSystemParams",
+    "create_standard_air_system",
+    "create_air_system_for_classifier",
     # SDF
     "CycloneSDF",
     "CycloneSDFParams",

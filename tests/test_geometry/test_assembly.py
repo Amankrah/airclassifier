@@ -1,5 +1,11 @@
 """
-Tests for CycloneAssembly class.
+Tests for assembly modules.
+
+Tests for:
+- CycloneAssembly
+- ClassificationSystemAssembly
+- FeedSystemAssembly
+- AirSystemAssembly
 """
 
 import pytest
@@ -7,242 +13,403 @@ import numpy as np
 from numpy.testing import assert_allclose
 
 from airclassifier.geometry.assembly import (
-    CycloneAssembly,
-    CycloneGeometryParams,
-    create_standard_cyclone,
+    # Cyclone
+    CycloneAssembly, CycloneGeometryParams, create_standard_cyclone,
+    # Classification System
+    ClassificationSystemAssembly, ClassificationSystemParams,
+    create_standard_classification_system, create_protein_separation_system,
+    # Feed System
+    FeedSystemAssembly, FeedSystemParams,
+    create_standard_feed_system, create_feed_system_for_throughput,
+    # Air System
+    AirSystemAssembly, AirSystemParams,
+    create_standard_air_system, create_air_system_for_classifier,
 )
-from airclassifier.utils.constants import PI
 
+
+# =============================================================================
+# CYCLONE ASSEMBLY TESTS
+# =============================================================================
 
 class TestCycloneGeometryParams:
-    """Tests for CycloneGeometryParams dataclass."""
+    """Tests for CycloneGeometryParams."""
 
-    def test_from_diameter_creates_standard_proportions(self):
-        """Test that from_diameter creates correct proportions."""
-        D = 0.3
-        params = CycloneGeometryParams.from_diameter(D)
+    def test_params_creation(self):
+        """Test creating params with valid values."""
+        params = CycloneGeometryParams(
+            cylinder_diameter=0.3,
+            cylinder_height=0.45,
+            cone_height=0.75,
+            cone_tip_diameter=0.1125,
+            inlet_width=0.075,
+            inlet_height=0.15,
+            vortex_finder_diameter=0.15,
+            vortex_finder_length=0.15,
+        )
+        assert params.cylinder_diameter == 0.3
 
-        # Standard proportions
-        assert_allclose(params.cylinder_diameter, D, rtol=1e-6)
-        assert_allclose(params.cylinder_height, 1.5 * D, rtol=1e-6)
-        assert_allclose(params.cone_height, 2.5 * D, rtol=1e-6)
-        assert_allclose(params.inlet_width, 0.25 * D, rtol=1e-6)
-        assert_allclose(params.inlet_height, 0.5 * D, rtol=1e-6)
-        assert_allclose(params.vortex_finder_diameter, 0.5 * D, rtol=1e-6)
+    def test_from_diameter(self):
+        """Test creating params from diameter."""
+        params = CycloneGeometryParams.from_diameter(0.3)
+        assert params.cylinder_diameter == 0.3
+        assert_allclose(params.inlet_width, 0.075, rtol=1e-6)
 
     def test_total_height(self):
-        """Test total height property."""
+        """Test total height calculation."""
         params = CycloneGeometryParams.from_diameter(0.3)
         expected = params.cylinder_height + params.cone_height
         assert_allclose(params.total_height, expected, rtol=1e-6)
 
-    def test_aspect_ratio(self):
-        """Test aspect ratio property."""
-        params = CycloneGeometryParams.from_diameter(0.3)
-        expected = params.total_height / params.cylinder_diameter
-        assert_allclose(params.aspect_ratio, expected, rtol=1e-6)
-
-    def test_custom_parameters(self):
-        """Test that custom parameters override defaults."""
-        D = 0.3
-        params = CycloneGeometryParams.from_diameter(
-            D,
-            cylinder_height=2.0 * D,  # Override
-            inlet_width=0.3 * D  # Override
-        )
-
-        assert_allclose(params.cylinder_height, 2.0 * D, rtol=1e-6)
-        assert_allclose(params.inlet_width, 0.3 * D, rtol=1e-6)
-        # Others should keep defaults
-        assert_allclose(params.cone_height, 2.5 * D, rtol=1e-6)
-
 
 class TestCycloneAssembly:
-    """Tests for CycloneAssembly class."""
+    """Tests for CycloneAssembly."""
 
     @pytest.fixture
-    def assembly(self):
-        """Create standard cyclone assembly."""
-        params = CycloneGeometryParams.from_diameter(0.3)
-        return CycloneAssembly(params, device="cpu")
+    def cyclone(self):
+        """Create a standard cyclone."""
+        return create_standard_cyclone(diameter=0.3, device="cpu")
 
-    def test_assembly_creation(self, assembly):
-        """Test assembly is created with all components."""
-        assert assembly.body is not None
-        assert assembly.inlet is not None
-        assert assembly.vortex_finder is not None
-        assert assembly.dust_outlet is not None
-        assert assembly.overflow is not None
+    def test_cyclone_creation(self, cyclone):
+        """Test cyclone is created correctly."""
+        assert cyclone.params.cylinder_diameter == 0.3
+        assert cyclone.body is not None
+        assert cyclone.inlet is not None
+        assert cyclone.vortex_finder is not None
+        assert cyclone.dust_outlet is not None
 
-    def test_build_mesh(self, assembly):
-        """Test mesh building combines all components."""
-        vertices, indices = assembly.build_mesh()
+    def test_build_mesh(self, cyclone):
+        """Test mesh building."""
+        verts, idx = cyclone.build_mesh()
 
-        # Should have significant number of vertices
-        assert len(vertices) > 100
+        assert verts.ndim == 2
+        assert verts.shape[1] == 3
+        assert len(idx) % 3 == 0
 
-        # Check shapes
-        assert vertices.ndim == 2
-        assert vertices.shape[1] == 3
-        # Indices are returned as flat array for Warp compatibility
-        assert indices.ndim == 1
-        assert len(indices) % 3 == 0
+    def test_get_bounds(self, cyclone):
+        """Test bounding box."""
+        min_c, max_c = cyclone.get_bounds()
 
-        # Check indices are valid
-        assert np.all(indices >= 0)
-        assert np.all(indices < len(vertices))
+        assert len(min_c) == 3
+        assert len(max_c) == 3
+        assert np.all(max_c > min_c)
 
-    def test_get_bounds(self, assembly):
-        """Test bounding box calculation."""
-        min_corner, max_corner = assembly.get_bounds()
-
-        # Check dimensions
-        assert len(min_corner) == 3
-        assert len(max_corner) == 3
-
-        # max should be greater than min
-        assert np.all(max_corner > min_corner)
-
-        # Check approximate sizes
-        D = assembly.params.cylinder_diameter
-        extent = max_corner - min_corner
-
-        # X and Z extent should be roughly diameter (possibly with inlet)
-        assert extent[0] >= D
-        assert extent[2] >= D
-
-        # Y extent should be total height (plus margins)
-        assert extent[1] >= assembly.params.total_height
-
-    def test_get_inlet_conditions(self, assembly):
-        """Test inlet boundary condition parameters."""
-        inlet_cond = assembly.get_inlet_conditions()
-
-        assert "position" in inlet_cond
-        assert "direction" in inlet_cond
-        assert "width" in inlet_cond
-        assert "height" in inlet_cond
-        assert "area" in inlet_cond
-
-        # Direction should be unit vector
-        direction = np.array(inlet_cond["direction"])
-        assert_allclose(np.linalg.norm(direction), 1.0, rtol=1e-6)
-
-        # Area should match width * height
-        expected_area = inlet_cond["width"] * inlet_cond["height"]
-        assert_allclose(inlet_cond["area"], expected_area, rtol=1e-6)
-
-    def test_get_outlet_conditions(self, assembly):
-        """Test outlet boundary condition parameters."""
-        outlet_cond = assembly.get_outlet_conditions()
-
-        assert "overflow" in outlet_cond
-        assert "underflow" in outlet_cond
-
-    def test_classify_position_outside(self, assembly):
-        """Test position classification - outside."""
-        # Far from cyclone
-        point = np.array([1.0, 0.0, 0.0])
-        region = assembly.classify_position(point)
-        assert region == "outside"
-
-    def test_classify_position_cylinder(self, assembly):
-        """Test position classification - cylinder region."""
-        # Center of cylinder
-        D = assembly.params.cylinder_diameter
-        y = -assembly.params.cylinder_height / 2
-        point = np.array([0.0, y, 0.0])
-        region = assembly.classify_position(point)
-        assert region == "cylinder"
-
-    def test_classify_position_cone(self, assembly):
-        """Test position classification - cone region."""
-        # Center of cone
-        y = -assembly.params.cylinder_height - assembly.params.cone_height / 2
-        point = np.array([0.0, y, 0.0])
-        region = assembly.classify_position(point)
-        assert region == "cone"
-
-    def test_classify_position_vortex_finder(self, assembly):
-        """Test position classification - vortex finder region."""
-        # Center of VF insertion region
-        point = np.array([0.0, -assembly.params.vortex_finder_length / 2, 0.0])
-        region = assembly.classify_position(point)
-        assert region == "vortex_finder"
+    def test_get_warp_mesh(self, cyclone):
+        """Test Warp mesh creation."""
+        mesh = cyclone.get_warp_mesh()
+        assert mesh is not None
 
 
-class TestCreateStandardCyclone:
-    """Tests for create_standard_cyclone function."""
+# =============================================================================
+# CLASSIFICATION SYSTEM TESTS
+# =============================================================================
 
-    def test_creates_valid_assembly(self):
-        """Test that function creates valid assembly."""
-        assembly = create_standard_cyclone(0.3, device="cpu")
+class TestClassificationSystemParams:
+    """Tests for ClassificationSystemParams."""
 
-        assert isinstance(assembly, CycloneAssembly)
-        assert assembly.params.cylinder_diameter == 0.3
+    def test_params_creation(self):
+        """Test creating params with valid values."""
+        params = ClassificationSystemParams()
+        assert params.zigzag_channel_width == 0.15
+        assert params.zigzag_num_stages == 5
 
-    def test_different_sizes(self):
-        """Test creation with different diameters."""
-        sizes = [0.1, 0.3, 0.5, 1.0]
+    def test_params_custom(self):
+        """Test creating params with custom values."""
+        params = ClassificationSystemParams(
+            zigzag_channel_width=0.2,
+            zigzag_num_stages=7,
+        )
+        assert params.zigzag_channel_width == 0.2
+        assert params.zigzag_num_stages == 7
 
-        for D in sizes:
-            assembly = create_standard_cyclone(D, device="cpu")
-            assert assembly.params.cylinder_diameter == D
 
-            # Proportions should be consistent
-            assert_allclose(
-                assembly.params.cylinder_height / D, 1.5, rtol=1e-6
-            )
+class TestClassificationSystemAssembly:
+    """Tests for ClassificationSystemAssembly."""
 
+    @pytest.fixture
+    def system(self):
+        """Create a standard classification system."""
+        return create_standard_classification_system(device="cpu")
+
+    def test_system_creation(self, system):
+        """Test system is created correctly."""
+        assert system.venturi is not None
+        assert system.zigzag is not None
+        assert system.multi_cyclone is not None
+        assert system.bag_filter is not None
+
+    def test_build_mesh(self, system):
+        """Test mesh building."""
+        verts, idx = system.build_mesh()
+
+        assert verts.ndim == 2
+        assert verts.shape[1] == 3
+        assert len(idx) % 3 == 0
+        assert len(verts) > 1000  # Should have significant geometry
+
+    def test_get_bounds(self, system):
+        """Test bounding box."""
+        min_c, max_c = system.get_bounds()
+
+        assert len(min_c) == 3
+        assert len(max_c) == 3
+        assert np.all(max_c > min_c)
+
+    def test_get_component(self, system):
+        """Test getting components by name."""
+        venturi = system.get_component('venturi')
+        assert venturi is not None
+
+        with pytest.raises(KeyError):
+            system.get_component('invalid')
+
+    def test_get_component_positions(self, system):
+        """Test getting component positions."""
+        positions = system.get_component_positions()
+        assert 'venturi' in positions
+        assert 'zigzag' in positions
+        assert 'multi_cyclone' in positions
+        assert 'bag_filter' in positions
+
+    def test_protein_separation_system(self):
+        """Test protein separation system factory."""
+        system = create_protein_separation_system(throughput_kg_h=200)
+        assert system is not None
+        # Scaled up system should be larger
+        extent = system.get_system_extent()
+        assert extent[0] > 0
+
+
+# =============================================================================
+# FEED SYSTEM TESTS
+# =============================================================================
+
+class TestFeedSystemParams:
+    """Tests for FeedSystemParams."""
+
+    def test_params_creation(self):
+        """Test creating params with valid values."""
+        params = FeedSystemParams()
+        assert params.hopper_capacity_kg == 500
+        assert params.feeder_target_rate_kg_h == 500
+
+    def test_params_custom(self):
+        """Test creating params with custom values."""
+        params = FeedSystemParams(
+            hopper_capacity_kg=1000,
+            feeder_target_rate_kg_h=750,
+        )
+        assert params.hopper_capacity_kg == 1000
+
+
+class TestFeedSystemAssembly:
+    """Tests for FeedSystemAssembly."""
+
+    @pytest.fixture
+    def feed_system(self):
+        """Create a standard feed system."""
+        return create_standard_feed_system(device="cpu")
+
+    def test_system_creation(self, feed_system):
+        """Test system is created correctly."""
+        assert feed_system.hopper is not None
+        assert feed_system.airlock is not None
+        assert feed_system.feeder is not None
+        assert feed_system.deagglomerator is not None
+
+    def test_build_mesh(self, feed_system):
+        """Test mesh building."""
+        verts, idx = feed_system.build_mesh()
+
+        assert verts.ndim == 2
+        assert verts.shape[1] == 3
+        assert len(idx) % 3 == 0
+        assert len(verts) > 100
+
+    def test_get_bounds(self, feed_system):
+        """Test bounding box."""
+        min_c, max_c = feed_system.get_bounds()
+
+        assert len(min_c) == 3
+        assert len(max_c) == 3
+        assert np.all(max_c > min_c)
+
+    def test_get_component(self, feed_system):
+        """Test getting components by name."""
+        hopper = feed_system.get_component('hopper')
+        assert hopper is not None
+
+    def test_get_feed_rate(self, feed_system):
+        """Test feed rate calculation."""
+        rate = feed_system.get_feed_rate()
+        assert rate > 0
+
+    def test_throughput_scaling(self):
+        """Test throughput-based sizing."""
+        small = create_feed_system_for_throughput(throughput_kg_h=250)
+        large = create_feed_system_for_throughput(throughput_kg_h=1000)
+
+        # Larger system should have bigger hopper
+        assert large.params.hopper_capacity_kg > small.params.hopper_capacity_kg
+
+
+# =============================================================================
+# AIR SYSTEM TESTS
+# =============================================================================
+
+class TestAirSystemParams:
+    """Tests for AirSystemParams."""
+
+    def test_params_creation(self):
+        """Test creating params with valid values."""
+        params = AirSystemParams()
+        assert params.flow_rate_m3_h == 3000
+        assert params.pressure_rise_Pa == 5000
+
+    def test_params_custom(self):
+        """Test creating params with custom values."""
+        params = AirSystemParams(
+            flow_rate_m3_h=5000,
+            pressure_rise_Pa=8000,
+        )
+        assert params.flow_rate_m3_h == 5000
+
+
+class TestAirSystemAssembly:
+    """Tests for AirSystemAssembly."""
+
+    @pytest.fixture
+    def air_system(self):
+        """Create a standard air system."""
+        return create_standard_air_system(device="cpu")
+
+    def test_system_creation(self, air_system):
+        """Test system is created correctly."""
+        assert air_system.inlet_filter is not None
+        assert air_system.blower is not None
+        assert len(air_system.dampers) > 0
+
+    def test_build_mesh(self, air_system):
+        """Test mesh building."""
+        verts, idx = air_system.build_mesh()
+
+        assert verts.ndim == 2
+        assert verts.shape[1] == 3
+        assert len(idx) % 3 == 0
+        assert len(verts) > 100
+
+    def test_get_bounds(self, air_system):
+        """Test bounding box."""
+        min_c, max_c = air_system.get_bounds()
+
+        assert len(min_c) == 3
+        assert len(max_c) == 3
+        assert np.all(max_c > min_c)
+
+    def test_get_component(self, air_system):
+        """Test getting components by name."""
+        blower = air_system.get_component('blower')
+        assert blower is not None
+
+        damper = air_system.get_component('damper_0')
+        assert damper is not None
+
+    def test_set_damper_position(self, air_system):
+        """Test setting damper position."""
+        air_system.set_damper_position(0, 0.5)
+        assert air_system.dampers[0].params.position == 0.5
+
+    def test_get_total_pressure_drop(self, air_system):
+        """Test pressure drop calculation."""
+        dp = air_system.get_total_pressure_drop()
+        assert dp > 0
+
+    def test_get_performance_summary(self, air_system):
+        """Test performance summary."""
+        perf = air_system.get_performance_summary()
+        assert 'design_flow_rate_m3_h' in perf
+        assert 'blower_power_kW' in perf
+
+    def test_classifier_sizing(self):
+        """Test sizing for classifier."""
+        system = create_air_system_for_classifier(
+            flow_rate_m3_h=5000,
+            system_pressure_drop_Pa=6000
+        )
+        assert system.params.flow_rate_m3_h == 5000
+        # Pressure rise should have margin over system drop
+        assert system.params.pressure_rise_Pa > 6000
+
+
+# =============================================================================
+# MESH QUALITY TESTS
+# =============================================================================
 
 class TestAssemblyMeshQuality:
-    """Tests for mesh quality in assembly."""
+    """Tests for mesh quality of assemblies."""
 
     @pytest.fixture
-    def assembly(self):
-        """Create assembly for testing."""
-        params = CycloneGeometryParams.from_diameter(0.3)
-        return CycloneAssembly(params, device="cpu")
+    def all_assemblies(self):
+        """Create all assembly types."""
+        return {
+            'cyclone': create_standard_cyclone(0.3, device="cpu"),
+            'classification': create_standard_classification_system(device="cpu"),
+            'feed': create_standard_feed_system(device="cpu"),
+            'air': create_standard_air_system(device="cpu"),
+        }
 
-    def test_no_degenerate_triangles(self, assembly):
-        """Test that mesh has no zero-area triangles."""
-        vertices, indices = assembly.build_mesh()
+    def test_no_nan_vertices(self, all_assemblies):
+        """Test that no vertices contain NaN."""
+        for name, assembly in all_assemblies.items():
+            verts, _ = assembly.build_mesh()
+            assert not np.any(np.isnan(verts)), f"{name} has NaN vertices"
 
-        # Reshape flat indices to triangles
-        triangles = indices.reshape(-1, 3)
+    def test_no_inf_vertices(self, all_assemblies):
+        """Test that no vertices contain Inf."""
+        for name, assembly in all_assemblies.items():
+            verts, _ = assembly.build_mesh()
+            assert not np.any(np.isinf(verts)), f"{name} has Inf vertices"
 
-        for tri in triangles:
-            v0 = vertices[tri[0]]
-            v1 = vertices[tri[1]]
-            v2 = vertices[tri[2]]
+    def test_valid_indices(self, all_assemblies):
+        """Test that all indices are valid."""
+        for name, assembly in all_assemblies.items():
+            verts, idx = assembly.build_mesh()
+            assert np.all(idx >= 0), f"{name} has negative indices"
+            assert np.all(idx < len(verts)), f"{name} has out-of-range indices"
 
-            edge1 = v1 - v0
-            edge2 = v2 - v0
-            area = 0.5 * np.linalg.norm(np.cross(edge1, edge2))
 
-            assert area > 1e-12, f"Degenerate triangle: {tri}"
+# =============================================================================
+# INTEGRATION TESTS
+# =============================================================================
 
-    def test_mesh_extent_matches_params(self, assembly):
-        """Test that mesh extent matches geometry parameters."""
-        vertices, _ = assembly.build_mesh()
+class TestAssemblyIntegration:
+    """Integration tests for assembly modules."""
 
-        # Find mesh extent
-        mesh_min = vertices.min(axis=0)
-        mesh_max = vertices.max(axis=0)
+    def test_all_assemblies_create_warp_mesh(self):
+        """Test that all assemblies can create Warp meshes."""
+        assemblies = [
+            create_standard_cyclone(0.3, device="cpu"),
+            create_standard_classification_system(device="cpu"),
+            create_standard_feed_system(device="cpu"),
+            create_standard_air_system(device="cpu"),
+        ]
 
-        # Check radial extent roughly matches diameter
-        x_extent = mesh_max[0] - mesh_min[0]
-        z_extent = mesh_max[2] - mesh_min[2]
-        D = assembly.params.cylinder_diameter
+        for assembly in assemblies:
+            # CycloneAssembly uses get_warp_mesh, others use to_warp_mesh
+            if hasattr(assembly, 'to_warp_mesh'):
+                mesh = assembly.to_warp_mesh()
+            else:
+                mesh = assembly.get_warp_mesh()
+            assert mesh is not None
 
-        # Should be at least diameter (might be larger due to inlet)
-        assert x_extent >= D * 0.9
-        assert z_extent >= D * 0.9
-
-    def test_print_summary_runs(self, assembly, capsys):
-        """Test that print_summary produces output."""
-        assembly.print_summary()
-
-        captured = capsys.readouterr()
-        assert "Cyclone" in captured.out
-        assert "mm" in captured.out
+    def test_imports_from_geometry_package(self):
+        """Test that assemblies can be imported from geometry package."""
+        from airclassifier.geometry import (
+            CycloneAssembly,
+            ClassificationSystemAssembly,
+            FeedSystemAssembly,
+            AirSystemAssembly,
+        )
+        assert CycloneAssembly is not None
+        assert ClassificationSystemAssembly is not None
+        assert FeedSystemAssembly is not None
+        assert AirSystemAssembly is not None

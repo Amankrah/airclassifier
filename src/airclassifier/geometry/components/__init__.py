@@ -21,6 +21,11 @@ Phase 2 - Feed System:
 - RotaryAirlock: Pressure sealing valve
 - ScrewFeeder: Controlled powder dosing
 - Deagglomerator: Lump breaking
+
+Phase 3 - Air System:
+- CentrifugalBlower: Air supply fan
+- InletAirFilter: Clean air filtration
+- FlowDamper: Flow control valve
 """
 
 from .cyclone_body import CycloneBody, CycloneBodyParams, cyclone_body_sdf
@@ -73,6 +78,23 @@ from .deagglomerator import (
     Deagglomerator,
     DeagglomeratorParams,
     create_standard_deagglomerator,
+)
+
+# Phase 3 Components - Air System
+from .centrifugal_blower import (
+    CentrifugalBlower,
+    CentrifugalBlowerParams,
+    create_standard_centrifugal_blower,
+)
+from .air_filter import (
+    InletAirFilter,
+    InletAirFilterParams,
+    create_standard_inlet_filter,
+)
+from .damper import (
+    FlowDamper,
+    DamperParams,
+    create_standard_damper,
 )
 
 __all__ = [
@@ -130,4 +152,16 @@ __all__ = [
     "Deagglomerator",
     "DeagglomeratorParams",
     "create_standard_deagglomerator",
+    # Centrifugal Blower
+    "CentrifugalBlower",
+    "CentrifugalBlowerParams",
+    "create_standard_centrifugal_blower",
+    # Inlet Air Filter
+    "InletAirFilter",
+    "InletAirFilterParams",
+    "create_standard_inlet_filter",
+    # Flow Damper
+    "FlowDamper",
+    "DamperParams",
+    "create_standard_damper",
 ]

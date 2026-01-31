@@ -173,7 +173,7 @@ class DeagglomeratorParams:
 ## 2. Air Supply System
 
 ### 2.1 Centrifugal Blower / Fan
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/centrifugal_blower.py`
 
 ```python
@@ -227,7 +227,7 @@ class AirHeaterParams:
 ---
 
 ### 2.3 Inlet Air Filter
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/air_filter.py`
 
 ```python
@@ -246,7 +246,7 @@ class InletAirFilterParams:
 ---
 
 ### 2.4 Flow Control Damper
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/damper.py`
 
 ```python
@@ -828,9 +828,9 @@ class StructuralFrameParams:
 8. ✅ De-agglomerator - `geometry/components/deagglomerator.py`
 
 ### Phase 3: Air System
-9. ❌ Centrifugal Blower
-10. ❌ Inlet Filter
-11. ❌ Flow Dampers
+9. ✅ Centrifugal Blower - `geometry/components/centrifugal_blower.py`
+10. ✅ Inlet Filter - `geometry/components/air_filter.py`
+11. ✅ Flow Dampers - `geometry/components/damper.py`
 
 ### Phase 4: Ductwork
 12. ❌ Round Ducts
