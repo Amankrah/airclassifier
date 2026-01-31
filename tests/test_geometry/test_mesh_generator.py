@@ -216,7 +216,9 @@ class TestGenerateCycloneMesh:
 
         # Check shapes
         assert vertices.shape[1] == 3
-        assert triangles.shape[1] == 3
+        # Indices are returned as flat array for Warp compatibility
+        assert triangles.ndim == 1
+        assert len(triangles) % 3 == 0
 
         # Check indices valid
         assert np.all(triangles >= 0)

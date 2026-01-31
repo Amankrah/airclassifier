@@ -283,6 +283,21 @@ class Cone:
             self.generate_mesh()
         return self._normals
 
+    @property
+    def volume(self) -> float:
+        """Volume of the frustum/cone (proxy to params.volume)."""
+        return self.params.volume
+
+    @property
+    def slant_height(self) -> float:
+        """Slant height of the cone (proxy to params.slant_height)."""
+        return self.params.slant_height
+
+    @property
+    def half_angle(self) -> float:
+        """Half-angle of the cone in radians (proxy to params.half_angle)."""
+        return self.params.half_angle
+
 
 # =============================================================================
 # WARP SDF FUNCTIONS FOR CONE/FRUSTUM

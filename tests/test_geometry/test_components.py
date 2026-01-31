@@ -86,8 +86,9 @@ class TestCycloneBody:
         # Check shapes
         assert vertices.ndim == 2
         assert vertices.shape[1] == 3
-        assert indices.ndim == 2
-        assert indices.shape[1] == 3
+        # Indices are returned as flat array for Warp compatibility
+        assert indices.ndim == 1
+        assert len(indices) % 3 == 0
         assert normals.shape == vertices.shape
 
         # Should have significant number of vertices
@@ -158,7 +159,9 @@ class TestVortexFinder:
         vertices, indices, normals = vortex_finder.generate_mesh()
 
         assert vertices.shape[1] == 3
-        assert indices.shape[1] == 3
+        # Indices are returned as flat array for Warp compatibility
+        assert indices.ndim == 1
+        assert len(indices) % 3 == 0
         assert len(vertices) > 10
 
     def test_is_inside_tube_center(self, vortex_finder):
@@ -314,6 +317,7 @@ class TestComponentIntegration:
             height=D * 0.5,
             length=D * 0.3,
             cyclone_diameter=D,
+            inlet_top_offset=0.05,
         ))
 
         outlet = DustOutlet(DustOutletParams(

@@ -58,36 +58,44 @@ class TestCylinder:
         # Check shapes
         assert vertices.ndim == 2
         assert vertices.shape[1] == 3
-        assert indices.ndim == 2
-        assert indices.shape[1] == 3
+        # Indices are returned as flat array for Warp compatibility
+        assert indices.ndim == 1
+        assert len(indices) % 3 == 0
         assert normals.shape == vertices.shape
+
+        # Reshape for validation
+        triangles = indices.reshape(-1, 3)
 
         # Check normals are unit vectors
         norms = np.linalg.norm(normals, axis=1)
         assert_allclose(norms, 1.0, rtol=1e-5)
 
         # Check indices are valid
-        assert np.all(indices >= 0)
-        assert np.all(indices < len(vertices))
+        assert np.all(triangles >= 0)
+        assert np.all(triangles < len(vertices))
 
     def test_cylinder_mesh_vertices_on_surface(self, cylinder):
-        """Test that mesh vertices lie on cylinder surface."""
+        """Test that mesh vertices on lateral surface lie at correct radius."""
         vertices, _, _ = cylinder.generate_mesh()
 
         # For Y-axis cylinder, radial distance should equal radius
         r = np.sqrt(vertices[:, 0]**2 + vertices[:, 2]**2)
-        assert_allclose(r, cylinder.params.radius, rtol=1e-5)
+        
+        # Exclude cap center vertices (which are at r=0)
+        lateral_mask = r > 1e-6
+        assert_allclose(r[lateral_mask], cylinder.params.radius, rtol=1e-5)
 
     def test_cylinder_normals_point_outward(self, cylinder):
-        """Test that normals point outward from cylinder."""
+        """Test that normals point outward from cylinder lateral surface."""
         vertices, _, normals = cylinder.generate_mesh()
 
         # For Y-axis cylinder, radial component of normal should be positive
-        # (pointing away from axis)
+        # (pointing away from axis) for lateral surface vertices
         for i, (v, n) in enumerate(zip(vertices, normals)):
             r_vec = np.array([v[0], 0, v[2]])
             r_mag = np.linalg.norm(r_vec)
-            if r_mag > 1e-6:
+            # Skip cap center vertices and cap rim vertices (which have axial normals)
+            if r_mag > 1e-6 and abs(n[1]) < 0.5:
                 r_unit = r_vec / r_mag
                 # Normal should have positive component in radial direction
                 dot = np.dot(n, r_unit)
@@ -148,8 +156,9 @@ class TestCone:
         # Check shapes
         assert vertices.ndim == 2
         assert vertices.shape[1] == 3
-        assert indices.ndim == 2
-        assert indices.shape[1] == 3
+        # Indices are returned as flat array for Warp compatibility
+        assert indices.ndim == 1
+        assert len(indices) % 3 == 0
         assert normals.shape == vertices.shape
 
         # Check normals are unit vectors
@@ -157,7 +166,7 @@ class TestCone:
         assert_allclose(norms, 1.0, rtol=1e-5)
 
     def test_cone_radius_interpolation(self, cone):
-        """Test radius varies linearly along height."""
+        """Test radius varies linearly along height for lateral surface vertices."""
         vertices, _, _ = cone.generate_mesh()
 
         # Get unique y values
@@ -170,12 +179,17 @@ class TestCone:
             # Calculate radial distances
             r = np.sqrt(verts_at_y[:, 0]**2 + verts_at_y[:, 2]**2)
 
+            # Exclude cap center vertices (which are at r=0)
+            lateral_mask = r > 1e-6
+            if not np.any(lateral_mask):
+                continue  # Skip if only cap center vertex at this height
+
             # Expected radius at this height
             # Assuming y=0 is top, y=-height is bottom
             t = -y / cone.params.height  # Normalized position
             expected_r = cone.params.top_radius * (1 - t) + cone.params.bottom_radius * t
 
-            assert_allclose(r, expected_r, rtol=1e-4)
+            assert_allclose(r[lateral_mask], expected_r, rtol=1e-4)
 
 
 class TestTube:
@@ -187,7 +201,7 @@ class TestTube:
         return TubeParams(
             inner_radius=0.03,
             outer_radius=0.05,
-            height=0.2,
+            length=0.2,
             center=(0.0, 0.0, 0.0),
             axis="y",
             resolution_radial=24,
@@ -203,17 +217,17 @@ class TestTube:
         """Test tube is created with correct parameters."""
         assert tube.params.inner_radius == 0.03
         assert tube.params.outer_radius == 0.05
-        assert tube.params.height == 0.2
+        assert tube.params.length == 0.2
 
     def test_tube_wall_thickness(self, tube):
         """Test wall thickness calculation."""
         expected_thickness = 0.05 - 0.03
-        assert_allclose(tube.wall_thickness, expected_thickness, rtol=1e-6)
+        assert_allclose(tube.params.wall_thickness, expected_thickness, rtol=1e-6)
 
     def test_tube_volume(self, tube):
         """Test tube volume (material volume)."""
         expected_volume = PI * (0.05**2 - 0.03**2) * 0.2
-        assert_allclose(tube.volume, expected_volume, rtol=1e-6)
+        assert_allclose(tube.params.wall_area * tube.params.length, expected_volume, rtol=1e-6)
 
     def test_tube_mesh_has_inner_and_outer_surfaces(self, tube):
         """Test tube mesh includes both inner and outer surfaces."""
@@ -244,7 +258,7 @@ class TestMeshQuality:
             resolution_radial=24, resolution_axial=16
         ))
         tube = Tube(TubeParams(
-            inner_radius=0.03, outer_radius=0.05, height=0.2,
+            inner_radius=0.03, outer_radius=0.05, length=0.2,
             resolution_radial=24, resolution_axial=8
         ))
         return [cylinder, cone, tube]
@@ -254,10 +268,13 @@ class TestMeshQuality:
         for primitive in primitives:
             vertices, indices, _ = primitive.generate_mesh()
 
+            # Reshape flat indices to triangles
+            triangles = indices.reshape(-1, 3)
+
             # Count edge usage (each edge should appear exactly 2 times
             # in a watertight mesh)
             edge_count = {}
-            for tri in indices:
+            for tri in triangles:
                 edges = [
                     tuple(sorted([tri[0], tri[1]])),
                     tuple(sorted([tri[1], tri[2]])),
@@ -276,7 +293,10 @@ class TestMeshQuality:
         for primitive in primitives:
             vertices, indices, _ = primitive.generate_mesh()
 
-            for tri in indices:
+            # Reshape flat indices to triangles
+            triangles = indices.reshape(-1, 3)
+
+            for tri in triangles:
                 v0, v1, v2 = vertices[tri[0]], vertices[tri[1]], vertices[tri[2]]
                 edge1 = v1 - v0
                 edge2 = v2 - v0

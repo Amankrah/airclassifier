@@ -248,6 +248,16 @@ class Cylinder:
             self.generate_mesh()
         return self._normals
 
+    @property
+    def volume(self) -> float:
+        """Cylinder volume (proxy to params.volume)."""
+        return self.params.volume
+
+    @property
+    def lateral_surface_area(self) -> float:
+        """Lateral (curved) surface area (proxy to params.lateral_surface_area)."""
+        return self.params.lateral_surface_area
+
 
 # =============================================================================
 # WARP SDF FUNCTIONS FOR CYLINDER

@@ -51,6 +51,11 @@ class InletParams:
         """Aspect ratio (height/width)."""
         return self.height / self.width
 
+    @property
+    def area(self) -> float:
+        """Inlet area (alias for cross_sectional_area)."""
+        return self.cross_sectional_area
+
 
 class TangentialInlet:
     """
