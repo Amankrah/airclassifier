@@ -22,6 +22,10 @@ Air System (Phase 3):
 Ductwork System (Phase 4):
 - DuctworkSystemAssembly: Ducts + Transitions + Elbows + Diverters
 - DuctworkSystemParams: Ductwork system parameters
+
+Safety & Instrumentation System (Phase 5):
+- SafetyInstrumentationAssembly: Explosion vents + Grounding + Instrumentation
+- SafetyInstrumentationParams: Safety/instrumentation system parameters
 """
 
 from .cyclone import (
@@ -59,6 +63,14 @@ from .ductwork import (
     create_simple_duct_run,
 )
 
+from .safety_instrumentation import (
+    SafetyInstrumentationAssembly,
+    SafetyInstrumentationParams,
+    create_standard_safety_instrumentation,
+    create_minimal_instrumentation,
+    create_full_instrumentation,
+)
+
 __all__ = [
     # Cyclone Assembly
     "CycloneAssembly",
@@ -85,4 +97,10 @@ __all__ = [
     "create_standard_ductwork",
     "create_ductwork_for_classifier",
     "create_simple_duct_run",
+    # Safety & Instrumentation System (Phase 5)
+    "SafetyInstrumentationAssembly",
+    "SafetyInstrumentationParams",
+    "create_standard_safety_instrumentation",
+    "create_minimal_instrumentation",
+    "create_full_instrumentation",
 ]

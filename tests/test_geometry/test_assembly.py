@@ -7,6 +7,7 @@ Tests for:
 - FeedSystemAssembly
 - AirSystemAssembly
 - DuctworkSystemAssembly
+- SafetyInstrumentationAssembly
 """
 
 import pytest
@@ -28,6 +29,9 @@ from airclassifier.geometry.assembly import (
     # Ductwork System
     DuctworkSystemAssembly, DuctworkSystemParams,
     create_standard_ductwork, create_ductwork_for_classifier, create_simple_duct_run,
+    # Safety & Instrumentation System
+    SafetyInstrumentationAssembly, SafetyInstrumentationParams,
+    create_standard_safety_instrumentation, create_minimal_instrumentation, create_full_instrumentation,
 )
 
 
@@ -486,6 +490,7 @@ class TestAssemblyMeshQuality:
             'feed': create_standard_feed_system(device="cpu"),
             'air': create_standard_air_system(device="cpu"),
             'ductwork': create_standard_ductwork(main_diameter=0.2, total_length=3.0),
+            'safety_instrumentation': create_standard_safety_instrumentation(vessel_volume=1.0),
         }
 
     def test_no_nan_vertices(self, all_assemblies):
@@ -523,6 +528,7 @@ class TestAssemblyIntegration:
             create_standard_feed_system(device="cpu"),
             create_standard_air_system(device="cpu"),
             create_standard_ductwork(main_diameter=0.2, total_length=3.0),
+            create_standard_safety_instrumentation(vessel_volume=1.0),
         ]
 
         for assembly in assemblies:
@@ -541,9 +547,11 @@ class TestAssemblyIntegration:
             FeedSystemAssembly,
             AirSystemAssembly,
             DuctworkSystemAssembly,
+            SafetyInstrumentationAssembly,
         )
         assert CycloneAssembly is not None
         assert ClassificationSystemAssembly is not None
         assert FeedSystemAssembly is not None
         assert AirSystemAssembly is not None
         assert DuctworkSystemAssembly is not None
+        assert SafetyInstrumentationAssembly is not None

@@ -33,6 +33,14 @@ Phase 4 - Ductwork:
 - Transition: Duct transitions (round-to-round, round-to-rect, etc.)
 - Elbow: Duct bends and elbows
 - DiverterValve: Y-type flow diverters
+
+Phase 5 - Safety & Instrumentation:
+- ExplosionVent: Rupture panels, hinged doors, recoil vents
+- GroundingPoint: Static grounding/bonding studs
+- PressurePort: Pressure transmitter connections
+- TemperaturePort: Thermowells for temperature measurement
+- SamplePort: Sample extraction ports
+- SightGlass: Visual inspection windows
 """
 
 from .cyclone_body import CycloneBody, CycloneBodyParams, cyclone_body_sdf
@@ -138,6 +146,43 @@ from .diverter import (
     create_diverter_for_classifier,
 )
 
+# Phase 5 Components - Safety
+from .safety import (
+    ExplosionVent,
+    ExplosionVentParams,
+    create_rupture_panel,
+    create_hinged_explosion_door,
+    create_recoil_vent,
+    calculate_vent_area,
+    GroundingPoint,
+    GroundingPointParams,
+    create_weld_stud_ground,
+    create_threaded_ground,
+    create_grounding_system,
+)
+
+# Phase 5 Components - Instrumentation
+from .instrumentation import (
+    PressurePort,
+    PressurePortParams,
+    create_flush_pressure_port,
+    create_extended_pressure_port,
+    create_averaging_pressure_port,
+    TemperaturePort,
+    TemperaturePortParams,
+    create_threaded_thermowell,
+    create_flanged_thermowell,
+    create_weld_thermowell,
+    SamplePort,
+    SamplePortParams,
+    create_ball_valve_sample_port,
+    create_isokinetic_sample_port,
+    SightGlass,
+    SightGlassParams,
+    create_standard_sight_glass,
+    create_illuminated_sight_glass,
+)
+
 __all__ = [
     # Cyclone Body
     "CycloneBody",
@@ -234,4 +279,39 @@ __all__ = [
     "create_rotating_diverter",
     "create_plug_diverter",
     "create_diverter_for_classifier",
+    # Explosion Vent
+    "ExplosionVent",
+    "ExplosionVentParams",
+    "create_rupture_panel",
+    "create_hinged_explosion_door",
+    "create_recoil_vent",
+    "calculate_vent_area",
+    # Grounding Point
+    "GroundingPoint",
+    "GroundingPointParams",
+    "create_weld_stud_ground",
+    "create_threaded_ground",
+    "create_grounding_system",
+    # Pressure Port
+    "PressurePort",
+    "PressurePortParams",
+    "create_flush_pressure_port",
+    "create_extended_pressure_port",
+    "create_averaging_pressure_port",
+    # Temperature Port
+    "TemperaturePort",
+    "TemperaturePortParams",
+    "create_threaded_thermowell",
+    "create_flanged_thermowell",
+    "create_weld_thermowell",
+    # Sample Port
+    "SamplePort",
+    "SamplePortParams",
+    "create_ball_valve_sample_port",
+    "create_isokinetic_sample_port",
+    # Sight Glass
+    "SightGlass",
+    "SightGlassParams",
+    "create_standard_sight_glass",
+    "create_illuminated_sight_glass",
 ]

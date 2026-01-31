@@ -651,7 +651,7 @@ class ExhaustStackParams:
 ## 7. Safety and Ancillary Systems
 
 ### 7.1 Explosion Vent
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/safety/explosion_vent.py`
 
 ```python
@@ -691,7 +691,7 @@ class ExplosionIsolationParams:
 ---
 
 ### 7.3 Grounding / Bonding Points
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/safety/grounding.py`
 
 ```python
@@ -709,7 +709,7 @@ class GroundingPointParams:
 ## 8. Process Instrumentation
 
 ### 8.1 Pressure Transmitter Port
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/instrumentation/pressure_port.py`
 
 ```python
@@ -725,7 +725,7 @@ class PressurePortParams:
 ---
 
 ### 8.2 Temperature Port
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/instrumentation/temp_port.py`
 
 ```python
@@ -741,7 +741,7 @@ class TemperaturePortParams:
 ---
 
 ### 8.3 Sample Port
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/instrumentation/sample_port.py`
 
 ```python
@@ -757,8 +757,8 @@ class SamplePortParams:
 ---
 
 ### 8.4 Sight Glass / Inspection Port
-**Status:** ❌ Not Started  
-**Module:** `geometry/components/inspection_port.py`
+**Status:** ✅ Implemented  
+**Module:** `geometry/components/instrumentation/sight_glass.py`
 
 ```python
 @dataclass
@@ -839,10 +839,10 @@ class StructuralFrameParams:
 15. ✅ Diverters - `geometry/components/diverter.py`
 
 ### Phase 5: Safety & Instrumentation
-16. ❌ Explosion Vents
-17. ❌ Grounding Points
-18. ❌ Pressure/Temp Ports
-19. ❌ Sample Ports
+16. ✅ Explosion Vents - `geometry/components/safety/explosion_vent.py`
+17. ✅ Grounding Points - `geometry/components/safety/grounding.py`
+18. ✅ Pressure/Temp Ports - `geometry/components/instrumentation/`
+19. ✅ Sample Ports - `geometry/components/instrumentation/sample_port.py`
 
 ### Phase 6: Support & Exhaust
 20. ❌ Support Structures
@@ -865,6 +865,51 @@ class StructuralFrameParams:
 | Starch purity | 60-75% | In starch fraction |
 | Number of passes | 2-3 | For higher purity |
 | Total system pressure drop | 3000-8000 Pa | Feed to exhaust |
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        COMPLETE AIR CLASSIFIER SYSTEM                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   FEED SYSTEM (Phase 2)          ┌──────────────────────────────────────┐   │
+│   ┌──────────────┐               │  CLASSIFICATION (Phase 1)            │   │
+│   │  Feed Hopper │◄──Sight Glass │                                      │   │
+│   │              │◄──Sample Port │  ┌─────────┐    ┌─────────────────┐  │   │
+│   │              │◄──Level Sensor│  │ Zigzag  │───►│ Cyclone System  │  │   │
+│   └──────┬───────┘◄──Grounding   │  │Classifier│   │                 │  │   │
+│          │                       │  │         │   │ ◄──Explosion Vent│  │   │
+│   ┌──────▼───────┐               │  │◄──Press │   │ ◄──Sight Glass   │  │   │
+│   │Rotary Airlock│◄──Grounding   │  │   Port  │   │ ◄──Grounding     │  │   │
+│   └──────┬───────┘               │  └────┬────┘   └────────┬─────────┘  │   │
+│          │                       │       │                  │            │   │
+│   ┌──────▼───────┐               └───────┼──────────────────┼────────────┘   │
+│   │ Screw Feeder │◄──Grounding           │                  │               │
+│   └──────┬───────┘                       ▼                  ▼               │
+│          │                        ┌──────────────┐   ┌─────────────┐        │
+│   ┌──────▼───────┐                │  Bag Filter  │   │ Dust Bin    │        │
+│   │De-agglomerator│◄──Grounding   │              │   │             │        │
+│   └──────────────┘                │◄──Explosion  │   │◄──Sample    │        │
+│                                   │   Vent       │   │   Port      │        │
+│                                   │◄──∆P Ports   │   │◄──Level     │        │
+│   AIR SYSTEM (Phase 3)            └──────────────┘   └─────────────┘        │
+│   ┌──────────────┐                                                          │
+│   │ Inlet Filter │◄──∆P Ports (clean/dirty side pressure drop)              │
+│   └──────┬───────┘                                                          │
+│          │                                                                   │
+│   ┌──────▼───────┐     DUCTWORK (Phase 4)                                   │
+│   │   Blower     │────────┬──────────────────────────────────►              │
+│   │              │        │  ◄──Pressure Ports along duct                   │
+│   │◄──Temp Port  │        │  ◄──Temperature Ports                           │
+│   │◄──Grounding  │        │  ◄──Sample Ports at key locations               │
+│   └──────────────┘        │                                                  │
+│          ▲                ▼                                                  │
+│   ┌──────┴───────┐   ┌──────────┐                                           │
+│   │ Flow Damper  │   │  Elbows  │                                           │
+│   │◄──Position   │   │Transitions│                                           │
+│   │   Indicator  │   │ Diverters │                                           │
+│   └──────────────┘   └──────────┘                                           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 
 ---
 

@@ -44,6 +44,18 @@ from .components import (
     create_mitered_elbow, create_elbow_with_vanes,
     DiverterValve, DiverterValveParams, create_flap_diverter,
     create_rotating_diverter, create_plug_diverter, create_diverter_for_classifier,
+    # Phase 5 Components - Safety
+    ExplosionVent, ExplosionVentParams, create_rupture_panel,
+    create_hinged_explosion_door, create_recoil_vent, calculate_vent_area,
+    GroundingPoint, GroundingPointParams, create_weld_stud_ground,
+    create_threaded_ground, create_grounding_system,
+    # Phase 5 Components - Instrumentation
+    PressurePort, PressurePortParams, create_flush_pressure_port,
+    create_extended_pressure_port, create_averaging_pressure_port,
+    TemperaturePort, TemperaturePortParams, create_threaded_thermowell,
+    create_flanged_thermowell, create_weld_thermowell,
+    SamplePort, SamplePortParams, create_ball_valve_sample_port, create_isokinetic_sample_port,
+    SightGlass, SightGlassParams, create_standard_sight_glass, create_illuminated_sight_glass,
 )
 
 from .assembly import (
@@ -72,6 +84,12 @@ from .assembly import (
     create_standard_ductwork,
     create_ductwork_for_classifier,
     create_simple_duct_run,
+    # Safety & Instrumentation System (Phase 5)
+    SafetyInstrumentationAssembly,
+    SafetyInstrumentationParams,
+    create_standard_safety_instrumentation,
+    create_minimal_instrumentation,
+    create_full_instrumentation,
 )
 
 from .sdf import (
@@ -153,6 +171,24 @@ __all__ = [
     "create_standard_ductwork",
     "create_ductwork_for_classifier",
     "create_simple_duct_run",
+    # Phase 5 Components - Safety
+    "ExplosionVent", "ExplosionVentParams", "create_rupture_panel",
+    "create_hinged_explosion_door", "create_recoil_vent", "calculate_vent_area",
+    "GroundingPoint", "GroundingPointParams", "create_weld_stud_ground",
+    "create_threaded_ground", "create_grounding_system",
+    # Phase 5 Components - Instrumentation
+    "PressurePort", "PressurePortParams", "create_flush_pressure_port",
+    "create_extended_pressure_port", "create_averaging_pressure_port",
+    "TemperaturePort", "TemperaturePortParams", "create_threaded_thermowell",
+    "create_flanged_thermowell", "create_weld_thermowell",
+    "SamplePort", "SamplePortParams", "create_ball_valve_sample_port", "create_isokinetic_sample_port",
+    "SightGlass", "SightGlassParams", "create_standard_sight_glass", "create_illuminated_sight_glass",
+    # Safety & Instrumentation System Assembly (Phase 5)
+    "SafetyInstrumentationAssembly",
+    "SafetyInstrumentationParams",
+    "create_standard_safety_instrumentation",
+    "create_minimal_instrumentation",
+    "create_full_instrumentation",
     # SDF
     "CycloneSDF",
     "CycloneSDFParams",
