@@ -30,6 +30,10 @@ Safety & Instrumentation System (Phase 5):
 Support & Exhaust System (Phase 6):
 - SupportExhaustAssembly: Frame + Legs + Silencer + Exhaust Stack
 - SupportExhaustParams: Support/exhaust system parameters
+
+Complete System (Integration):
+- CompleteClassifierAssembly: All phases integrated into unified system
+- CompleteSystemParams: Complete system configuration parameters
 """
 
 from .cyclone import (
@@ -83,6 +87,15 @@ from .support_exhaust import (
     create_industrial_support,
 )
 
+from .complete_system import (
+    CompleteClassifierAssembly,
+    CompleteSystemParams,
+    create_complete_classifier_system,
+    create_pilot_scale_system,
+    create_production_scale_system,
+    create_minimal_classifier_system,
+)
+
 __all__ = [
     # Cyclone Assembly
     "CycloneAssembly",
@@ -121,4 +134,11 @@ __all__ = [
     "create_standard_support_exhaust",
     "create_compact_support",
     "create_industrial_support",
+    # Complete System (Integration)
+    "CompleteClassifierAssembly",
+    "CompleteSystemParams",
+    "create_complete_classifier_system",
+    "create_pilot_scale_system",
+    "create_production_scale_system",
+    "create_minimal_classifier_system",
 ]

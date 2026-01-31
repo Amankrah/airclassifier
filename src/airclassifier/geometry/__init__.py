@@ -102,6 +102,13 @@ from .assembly import (
     create_standard_support_exhaust,
     create_compact_support,
     create_industrial_support,
+    # Complete System (Integration)
+    CompleteClassifierAssembly,
+    CompleteSystemParams,
+    create_complete_classifier_system,
+    create_pilot_scale_system,
+    create_production_scale_system,
+    create_minimal_classifier_system,
 )
 
 from .sdf import (
@@ -213,6 +220,13 @@ __all__ = [
     "create_standard_support_exhaust",
     "create_compact_support",
     "create_industrial_support",
+    # Complete System (Integration)
+    "CompleteClassifierAssembly",
+    "CompleteSystemParams",
+    "create_complete_classifier_system",
+    "create_pilot_scale_system",
+    "create_production_scale_system",
+    "create_minimal_classifier_system",
     # SDF
     "CycloneSDF",
     "CycloneSDFParams",
