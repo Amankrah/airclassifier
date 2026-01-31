@@ -39,10 +39,20 @@ from .flow_viz import (
 )
 
 from .geometry_viz import (
-    plot_cyclone_mesh_3d,
-    plot_cyclone_cross_section,
-    plot_cyclone_top_view,
-    render_cyclone_assembly,
+    # Main visualization classes
+    GeometryVisualizer,
+    VisualizationRequest,
+    VisualizationType,
+    RenderBackend,
+    WarpMeshProcessor,
+    PyVistaRenderer,
+    MatplotlibRenderer,
+    # Convenience functions
+    visualize_geometry,
+    quick_render,
+    # Availability flags
+    PYVISTA_AVAILABLE,
+    WARP_AVAILABLE,
 )
 
 __all__ = [
@@ -74,8 +84,15 @@ __all__ = [
     "generate_seed_points_ring",
     "generate_seed_points_grid",
     # Geometry Visualization
-    "plot_cyclone_mesh_3d",
-    "plot_cyclone_cross_section",
-    "plot_cyclone_top_view",
-    "render_cyclone_assembly",
+    "GeometryVisualizer",
+    "VisualizationRequest",
+    "VisualizationType",
+    "RenderBackend",
+    "WarpMeshProcessor",
+    "PyVistaRenderer",
+    "MatplotlibRenderer",
+    "visualize_geometry",
+    "quick_render",
+    "PYVISTA_AVAILABLE",
+    "WARP_AVAILABLE",
 ]
