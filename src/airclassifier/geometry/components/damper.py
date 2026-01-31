@@ -578,6 +578,64 @@ class FlowDamper:
             self.generate_mesh()
         return self._normals
 
+    @property
+    def ports(self) -> dict:
+        """
+        Get connection ports for the damper.
+        
+        Flow direction depends on axis parameter:
+        - axis='x': flow along X (-X inlet, +X outlet)
+        - axis='y': flow along Y
+        - axis='z': flow along Z
+        
+        Ports:
+        - 'inlet': Upstream connection
+        - 'outlet': Downstream connection
+        
+        Returns:
+            Dictionary of port name to ConnectionPort
+        """
+        from ..connection_ports import ConnectionPort, PortType
+        
+        p = self.params
+        half_length = p.housing_length / 2
+        
+        # Direction vectors based on axis
+        if p.axis == "x":
+            inlet_dir = (-1.0, 0.0, 0.0)
+            outlet_dir = (1.0, 0.0, 0.0)
+            inlet_pos = (p.center[0] - half_length, p.center[1], p.center[2])
+            outlet_pos = (p.center[0] + half_length, p.center[1], p.center[2])
+        elif p.axis == "y":
+            inlet_dir = (0.0, -1.0, 0.0)
+            outlet_dir = (0.0, 1.0, 0.0)
+            inlet_pos = (p.center[0], p.center[1] - half_length, p.center[2])
+            outlet_pos = (p.center[0], p.center[1] + half_length, p.center[2])
+        else:  # z
+            inlet_dir = (0.0, 0.0, -1.0)
+            outlet_dir = (0.0, 0.0, 1.0)
+            inlet_pos = (p.center[0], p.center[1], p.center[2] - half_length)
+            outlet_pos = (p.center[0], p.center[1], p.center[2] + half_length)
+        
+        return {
+            'inlet': ConnectionPort(
+                position=inlet_pos,
+                direction=inlet_dir,
+                diameter=p.diameter,
+                port_type=PortType.FLANGED,
+                name="damper_inlet",
+                compatible_types=[PortType.CIRCULAR, PortType.FLANGED],
+            ),
+            'outlet': ConnectionPort(
+                position=outlet_pos,
+                direction=outlet_dir,
+                diameter=p.diameter,
+                port_type=PortType.FLANGED,
+                name="damper_outlet",
+                compatible_types=[PortType.CIRCULAR, PortType.FLANGED],
+            ),
+        }
+
 
 def create_standard_damper(
     diameter: float = 0.30,

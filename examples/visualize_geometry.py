@@ -511,6 +511,11 @@ Examples:
         help="Visualize feed system assembly"
     )
     parser.add_argument(
+        "--air",
+        action="store_true",
+        help="Visualize air system assembly"
+    )
+    parser.add_argument(
         "--complete", "-s",
         action="store_true",
         help="Visualize complete classifier system"
@@ -544,7 +549,7 @@ Examples:
     args = parser.parse_args()
     
     # If no specific option, run interactive menu
-    if not any([args.component, args.assembly, args.complete, 
+    if not any([args.component, args.assembly, args.air, args.complete, 
                 args.all, args.export, args.pilot, args.production]):
         interactive_menu()
         return
@@ -556,6 +561,9 @@ Examples:
     
     if args.assembly:
         visualize_feed_system_assembly()
+    
+    if args.air:
+        visualize_air_system_assembly()
     
     if args.complete:
         visualize_complete_system()

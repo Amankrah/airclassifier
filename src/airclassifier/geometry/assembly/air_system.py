@@ -1,16 +1,63 @@
 """
-Air system assembly module.
+Air System Assembly Module
+==========================
 
-Provides complete air system assembly combining Phase 3 components:
-- Centrifugal Blower
-- Inlet Air Filter
-- Flow Dampers
+This module provides the complete air supply system assembly for air classification.
+It combines all Phase 3 components into an integrated air handling train.
+
+SYSTEM OVERVIEW
+===============
+
+The air system provides clean, pressurized air to the classification process:
+1. Inlet Air Filter - Removes ambient particulates
+2. Centrifugal Blower - Provides motive force (pressure/flow)
+3. Flow Dampers - Control air flow rate and isolation
+
+MATERIAL FLOW PATH
+==================
+
+    AMBIENT AIR
+         │
+         ▼
+    ┌─────────────┐
+    │ INLET FILTER │  ← Removes dust/particles from ambient air
+    │   (Panel)    │     G4 class: 80% efficiency on 5µm particles
+    └──────┬──────┘
+           │
+    ┌──────┴──────┐
+    │ DUCT SECTION │  ← Transition: Filter outlet → Blower inlet
+    └──────┬──────┘
+           │
+           ▼
+    ┌─────────────┐
+    │ CENTRIFUGAL │  ← Air enters axially, exits radially
+    │   BLOWER    │     Provides pressure rise (5000 Pa typical)
+    │  (Scroll)   │
+    └──────┬──────┘
+           │
+    ┌──────┴──────┐
+    │ DUCT SECTION │  ← Transition: Blower outlet → Damper inlet
+    └──────┬──────┘
+           │
+           ▼
+    ┌─────────────┐
+    │   DAMPER    │  ← Flow control (butterfly valve)
+    │  (Control)  │     Throttling for flow adjustment
+    └──────┬──────┘
+           │
+           ▼
+    TO CLASSIFIER
 """
 
 from dataclasses import dataclass
 from typing import Tuple, Dict, Any, List
 import numpy as np
 import warp as wp
+
+from ..connection_ports import (
+    ConnectionPort, PortType, calculate_alignment,
+    validate_assembly_connections, print_connection_report
+)
 
 
 @dataclass
@@ -80,8 +127,16 @@ class AirSystemAssembly:
         self._mesh_built = False
 
     def _create_components(self):
-        """Create all system components with proper positioning."""
-        # Lazy imports to avoid circular dependency
+        """
+        Create all system components with proper port-to-port positioning.
+        
+        Layout: Linear arrangement along X axis for clear visualization.
+        
+        Flow path:
+        Filter → Duct → Blower → Transition → Duct → Damper1 → Duct → Damper2
+        
+        All components centered at Y=0, Z=0 for simplicity.
+        """
         from ..components import (
             create_standard_centrifugal_blower,
             create_standard_inlet_filter,
@@ -89,54 +144,330 @@ class AirSystemAssembly:
         )
 
         p = self.params
-        spacing = p.component_spacing
+        gap = 0.005  # 5mm gap between flanged connections (tight gasket space)
 
-        # Track X position along flow path
-        x_pos = p.center[0]
+        # Calculate duct diameter from flow rate and velocity
+        target_velocity = 15.0  # m/s typical for main duct
+        duct_area = p.flow_rate_m3_h / 3600 / target_velocity
+        self._duct_diameter = np.sqrt(4 * duct_area / np.pi)
 
-        # 1. Inlet Air Filter (first, at ambient inlet)
+        # ============================================================
+        # 1. INLET AIR FILTER
+        # ============================================================
         self.inlet_filter = create_standard_inlet_filter(
             flow_rate=p.flow_rate_m3_h,
             filter_type=p.filter_type,
             efficiency_class=p.filter_efficiency_class
         )
-        filter_depth = self.inlet_filter.params.housing_depth
-        self._filter_position = (x_pos, p.center[1], p.center[2])
-        x_pos += filter_depth + spacing
+        # Position filter at system origin
+        self._filter_position = (p.center[0], p.center[1], p.center[2])
+        
+        filter_outlet = self.inlet_filter.ports['outlet']
+        filter_outlet_world = (
+            self._filter_position[0] + filter_outlet.position[0],
+            self._filter_position[1] + filter_outlet.position[1],
+            self._filter_position[2] + filter_outlet.position[2],
+        )
 
-        # 2. Centrifugal Blower
+        # ============================================================
+        # 2. CENTRIFUGAL BLOWER
+        # ============================================================
+        # Blower inlet is AXIAL (faces -Z), outlet is RADIAL (faces +X)
+        # We need to position blower so inlet can receive air from +Z direction
+        # Flow path: Filter(+X) → Duct(+X) → Elbow(turn to +Z) → Duct(+Z) → Blower inlet
+        
         self.blower = create_standard_centrifugal_blower(
             flow_rate=p.flow_rate_m3_h,
             pressure_rise=p.pressure_rise_Pa
         )
-        blower_size = self.blower.params.impeller_diameter * 1.5
-        self._blower_position = (x_pos + blower_size / 2, p.center[1], p.center[2])
-        x_pos += blower_size + spacing
+        
+        blower_inlet = self.blower.ports['inlet']
+        blower_outlet = self.blower.ports['outlet']
+        
+        # Elbow parameters
+        elbow_diameter = filter_outlet.diameter
+        elbow_bend_radius = elbow_diameter * 0.7  # Bend radius for smooth flow
+        
+        # The filter has a built-in outlet duct extension of length = outlet_diameter
+        filter_outlet_extension = self.inlet_filter.params.outlet_diameter
+        
+        # Add a connector duct between filter outlet extension and elbow
+        connector_duct_length = 0.08  # 80mm connector duct
+        
+        # Elbow position: after filter extension + connector duct
+        elbow_inlet_x = filter_outlet_world[0] + filter_outlet_extension + connector_duct_length
+        
+        # Store connector length for duct creation
+        duct_horiz_length = connector_duct_length  # Length of the actual connector piece
+        elbow_inlet_z = filter_outlet_world[2]  # Same Z as filter (Z=0)
+        
+        # After 90° elbow turning +X to +Z:
+        # Elbow outlet is at: (elbow_inlet_x + R, Y, elbow_inlet_z + R)
+        elbow_outlet_x = elbow_inlet_x + elbow_bend_radius
+        elbow_outlet_z = elbow_inlet_z + elbow_bend_radius
+        
+        # NO vertical duct - blower inlet connects directly to elbow outlet
+        duct_vert_length = 0.0
+        
+        # Blower inlet connects directly to elbow outlet
+        blower_inlet_local_z = blower_inlet.position[2]  # Negative value (~-0.0726)
+        
+        # Blower inlet world Z = elbow outlet Z (direct connection)
+        blower_inlet_target_z = elbow_outlet_z
+        
+        # Therefore blower center Z = inlet_target_z - inlet_local_z
+        blower_center_z = blower_inlet_target_z - blower_inlet_local_z
+        
+        # Blower center X: inlet is at center X, so blower X = elbow outlet X
+        blower_center_x = elbow_outlet_x
+        
+        self._blower_position = (
+            blower_center_x,
+            self._filter_position[1],  # Same Y as filter
+            blower_center_z
+        )
+        
+        # Store elbow parameters for duct creation
+        self._elbow_params = {
+            'diameter': elbow_diameter,
+            'bend_radius': elbow_bend_radius,
+            'inlet_pos': (elbow_inlet_x, filter_outlet_world[1], elbow_inlet_z),
+            'duct_horiz_length': duct_horiz_length,
+            'duct_vert_length': duct_vert_length,
+        }
+        
+        blower_inlet_world = (
+            self._blower_position[0] + blower_inlet.position[0],
+            self._blower_position[1] + blower_inlet.position[1],
+            self._blower_position[2] + blower_inlet.position[2],
+        )
+        
+        blower_outlet_world = (
+            self._blower_position[0] + blower_outlet.position[0],
+            self._blower_position[1] + blower_outlet.position[1],
+            self._blower_position[2] + blower_outlet.position[2],
+        )
 
-        # 3. Flow Dampers (control dampers along flow path)
+        # ============================================================
+        # 3. FLOW DAMPERS
+        # ============================================================
         self.dampers: List = []
         self._damper_positions: List = []
-
-        # Calculate duct diameter from flow rate and velocity
-        target_velocity = 15.0  # m/s typical for main duct
-        duct_area = p.flow_rate_m3_h / 3600 / target_velocity
-        duct_diameter = np.sqrt(4 * duct_area / np.pi)
+        
+        # Position dampers after blower outlet along +X
+        transition_length = 0.15  # 150mm transition piece
+        duct_after_transition = 0.05  # 50mm duct
+        
+        prev_outlet_x = blower_outlet_world[0] + transition_length + duct_after_transition
+        prev_outlet_y = blower_outlet_world[1]
+        prev_outlet_z = blower_outlet_world[2]
 
         for i in range(p.num_control_dampers):
             damper = create_standard_damper(
-                diameter=duct_diameter,
+                diameter=self._duct_diameter,
                 damper_type=p.damper_type,
                 position=1.0  # Fully open
             )
             self.dampers.append(damper)
 
-            damper_pos = (x_pos, p.center[1], p.center[2])
+            damper_inlet = damper.ports['inlet']
+            damper_outlet = damper.ports['outlet']
+            
+            # Position damper: its inlet at previous outlet position
+            damper_center_x = prev_outlet_x + abs(damper_inlet.position[0]) + gap
+            
+            damper_pos = (damper_center_x, prev_outlet_y, prev_outlet_z)
             self._damper_positions.append(damper_pos)
-            x_pos += damper.params.housing_length + spacing
+            
+            # Update for next component: add small duct section between dampers
+            duct_between_dampers = 0.05  # 50mm duct
+            prev_outlet_x = damper_pos[0] + damper_outlet.position[0] + duct_between_dampers
+        
+        # ============================================================
+        # 4. CREATE CONNECTING DUCTWORK
+        # ============================================================
+        self._create_duct_sections(gap, filter_outlet_world, blower_outlet_world,
+                                   transition_length, duct_after_transition)
+
+    def _create_duct_sections(self, gap: float, filter_outlet_world: tuple,
+                               blower_outlet_world: tuple, transition_length: float,
+                               duct_after_transition: float):
+        """
+        Create duct sections connecting components.
+        
+        Flow path:
+        1. Filter outlet → Horizontal duct (+X) → 90° Elbow → Vertical duct (+Z) → Blower inlet
+        2. Blower outlet → Rect-to-Round Transition → Straight duct → Damper 1
+        3. Damper 1 → Straight duct → Damper 2
+        """
+        from ..components.ductwork import (
+            RoundDuct, RoundDuctParams,
+            DuctElbow, DuctElbowParams,
+            RectToRoundTransition, RectToRoundTransitionParams,
+        )
+        
+        self._duct_sections = []
+        x_direction = (1.0, 0.0, 0.0)
+        z_direction = (0.0, 0.0, 1.0)
+        
+        filter_outlet = self.inlet_filter.ports['outlet']
+        blower_inlet = self.blower.ports['inlet']
+        blower_outlet = self.blower.ports['outlet']
+        
+        # Get elbow parameters
+        elbow = self._elbow_params
+        
+        # ============================================================
+        # 1. FILTER TO BLOWER CONNECTION  
+        # ============================================================
+        # The filter mesh includes a built-in outlet duct extension of length = outlet_diameter
+        # We add a connector duct AFTER this extension, then the elbow
+        
+        # 1a. Connector duct from filter outlet extension end to elbow inlet
+        filter_outlet_extension = self.inlet_filter.params.outlet_diameter
+        filter_outlet_world = (
+            self._filter_position[0] + filter_outlet.position[0],
+            self._filter_position[1] + filter_outlet.position[1],
+            self._filter_position[2] + filter_outlet.position[2],
+        )
+        
+        # Connector starts at END of filter's built-in outlet extension
+        connector_start = (
+            filter_outlet_world[0] + filter_outlet_extension,
+            filter_outlet_world[1],
+            filter_outlet_world[2],
+        )
+        
+        if elbow['duct_horiz_length'] > 0.01:  # Create connector if length > 10mm
+            connector_duct = RoundDuct(RoundDuctParams(
+                diameter=elbow['diameter'],
+                length=elbow['duct_horiz_length'],
+                wall_thickness=0.002,
+                direction=x_direction,
+                center=(0, 0, 0),
+                flanged=True,
+            ))
+            self._duct_sections.append((connector_duct, connector_start))
+        
+        # 1b. 90° Elbow turning from +X to +Z
+        # Elbow inlet receives air from +X, outlet sends air in +Z
+        # With inlet_dir=(1,0,0) and rotation_axis=(0,1,0):
+        #   perp2 = cross(inlet_dir, rot_axis) = (0,0,1) → bend goes toward +Z
+        elbow_component = DuctElbow(DuctElbowParams(
+            diameter=elbow['diameter'],
+            bend_radius=elbow['bend_radius'],
+            angle=90.0,
+            wall_thickness=0.002,
+            flanged=True,
+            center=(0, 0, 0),
+            inlet_direction=(1.0, 0.0, 0.0),   # Air comes from +X
+            rotation_axis=(0.0, 1.0, 0.0),     # Rotate around +Y to turn toward +Z
+        ))
+        self._duct_sections.append((elbow_component, elbow['inlet_pos']))
+        
+        # 1c. Vertical duct from elbow outlet to blower inlet
+        # Elbow outlet position
+        elbow_outlet_pos = (
+            elbow['inlet_pos'][0] + elbow['bend_radius'],
+            elbow['inlet_pos'][1],
+            elbow['inlet_pos'][2] + elbow['bend_radius'],
+        )
+        
+        duct_vert = RoundDuct(RoundDuctParams(
+            diameter=elbow['diameter'],
+            length=elbow['duct_vert_length'],
+            wall_thickness=0.002,
+            direction=z_direction,
+            center=(0, 0, 0),
+            flanged=True,
+        ))
+        self._duct_sections.append((duct_vert, elbow_outlet_pos))
+        
+        # ============================================================
+        # 2. BLOWER TO DAMPER CONNECTION
+        # ============================================================
+        # Blower outlet is rectangular, faces +X
+        # Damper inlet is circular, faces -X
+        # Connection: Blower → Rect-to-Round Transition → Straight duct → Damper
+        
+        if self.dampers:
+            damper_inlet = self.dampers[0].ports['inlet']
+            damper_inlet_world = (
+                self._damper_positions[0][0] + damper_inlet.position[0],
+                self._damper_positions[0][1] + damper_inlet.position[1],
+                self._damper_positions[0][2] + damper_inlet.position[2],
+            )
+            
+            # Rect-to-round transition starts at blower outlet
+            transition = RectToRoundTransition(RectToRoundTransitionParams(
+                rect_width=blower_outlet.width,
+                rect_height=blower_outlet.height,
+                round_diameter=self._duct_diameter,
+                length=transition_length,
+                wall_thickness=0.002,
+                center=(0, 0, 0),
+                direction=x_direction,
+            ))
+            # Position is START of transition (at blower outlet)
+            transition_start = blower_outlet_world
+            self._duct_sections.append((transition, transition_start))
+            
+            # Straight duct from transition end to damper inlet
+            duct2_start_x = blower_outlet_world[0] + transition_length
+            duct2_end_x = damper_inlet_world[0]
+            duct2_length = duct2_end_x - duct2_start_x
+            
+            if duct2_length > 0.01:
+                # Position is START of duct
+                duct2_start = (duct2_start_x, blower_outlet_world[1], blower_outlet_world[2])
+                
+                duct2 = RoundDuct(RoundDuctParams(
+                    diameter=self._duct_diameter,
+                    length=duct2_length,
+                    wall_thickness=0.002,
+                    direction=x_direction,
+                    center=(0, 0, 0),
+                    flanged=True,
+                ))
+                self._duct_sections.append((duct2, duct2_start))
+        
+        # ============================================================
+        # 3. BETWEEN DAMPERS
+        # ============================================================
+        for i in range(len(self.dampers) - 1):
+            damper_outlet = self.dampers[i].ports['outlet']
+            damper_outlet_world = (
+                self._damper_positions[i][0] + damper_outlet.position[0],
+                self._damper_positions[i][1] + damper_outlet.position[1],
+                self._damper_positions[i][2] + damper_outlet.position[2],
+            )
+            
+            next_damper_inlet = self.dampers[i+1].ports['inlet']
+            next_damper_inlet_world = (
+                self._damper_positions[i+1][0] + next_damper_inlet.position[0],
+                self._damper_positions[i+1][1] + next_damper_inlet.position[1],
+                self._damper_positions[i+1][2] + next_damper_inlet.position[2],
+            )
+            
+            duct_length = next_damper_inlet_world[0] - damper_outlet_world[0]
+            
+            if duct_length > 0.01:
+                # Position is START of duct (at previous damper outlet)
+                duct_start = damper_outlet_world
+                
+                duct = RoundDuct(RoundDuctParams(
+                    diameter=self.dampers[i].params.diameter,
+                    length=duct_length,
+                    wall_thickness=0.002,
+                    direction=x_direction,
+                    center=(0, 0, 0),
+                    flanged=True,
+                ))
+                self._duct_sections.append((duct, duct_start))
 
     def build_mesh(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Build combined mesh for all components.
+        Build combined mesh for all components including duct sections.
 
         Returns:
             Tuple of (vertices, indices)
@@ -158,12 +489,16 @@ class AirSystemAssembly:
             all_indices.append(idx + vertex_offset)
             vertex_offset += len(verts)
 
-        # Add each component
+        # Add main components
         add_component_mesh(self.inlet_filter, self._filter_position)
         add_component_mesh(self.blower, self._blower_position)
 
         for damper, pos in zip(self.dampers, self._damper_positions):
             add_component_mesh(damper, pos)
+        
+        # Add duct sections
+        for duct, pos in self._duct_sections:
+            add_component_mesh(duct, pos)
 
         self._combined_vertices = np.vstack(all_vertices).astype(np.float32)
         self._combined_indices = np.concatenate(all_indices).astype(np.int32)

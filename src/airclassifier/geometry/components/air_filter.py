@@ -409,6 +409,50 @@ class InletAirFilter:
             self.generate_mesh()
         return self._normals
 
+    @property
+    def ports(self) -> dict:
+        """
+        Get connection ports for the filter.
+        
+        Air flow direction: -X (inlet) → +X (outlet)
+        
+        Ports:
+        - 'inlet': Inlet side of filter housing (air enters)
+        - 'outlet': Outlet side of filter housing (clean air exits)
+        
+        Returns:
+            Dictionary of port name to ConnectionPort
+        """
+        from ..connection_ports import ConnectionPort, PortType
+        
+        p = self.params
+        half_depth = p.housing_depth / 2
+        
+        # Inlet port: at -X face of housing
+        inlet_pos = (p.center[0] - half_depth, p.center[1], p.center[2])
+        
+        # Outlet port: at +X face of housing
+        outlet_pos = (p.center[0] + half_depth, p.center[1], p.center[2])
+        
+        return {
+            'inlet': ConnectionPort(
+                position=inlet_pos,
+                direction=(-1.0, 0.0, 0.0),  # Air enters from -X
+                diameter=p.inlet_diameter,
+                port_type=PortType.CIRCULAR,
+                name="filter_inlet",
+                compatible_types=[PortType.CIRCULAR, PortType.FLANGED],
+            ),
+            'outlet': ConnectionPort(
+                position=outlet_pos,
+                direction=(1.0, 0.0, 0.0),  # Clean air exits toward +X
+                diameter=p.outlet_diameter,
+                port_type=PortType.CIRCULAR,
+                name="filter_outlet",
+                compatible_types=[PortType.CIRCULAR, PortType.FLANGED],
+            ),
+        }
+
 
 def create_standard_inlet_filter(
     flow_rate: float = 3000,
