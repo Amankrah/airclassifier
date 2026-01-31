@@ -388,7 +388,7 @@ class AirSystemAssembly:
         # ============================================================
         # Blower outlet is rectangular, faces +X
         # Damper inlet is circular, faces -X
-        # Connection: Blower → Rect-to-Round Transition → Straight duct → Damper
+        # Connection: Blower → Rect Connector → Rect-to-Round Transition → Duct → Damper
         
         if self.dampers:
             damper_inlet = self.dampers[0].ports['inlet']
@@ -398,7 +398,27 @@ class AirSystemAssembly:
                 self._damper_positions[0][2] + damper_inlet.position[2],
             )
             
-            # Rect-to-round transition starts at blower outlet
+            # 2a. Rectangular connector duct from blower outlet
+            connector_length = 0.05  # 50mm rectangular connector
+            from ..components.ductwork import RectangularDuct, RectangularDuctParams
+            
+            try:
+                rect_connector = RectangularDuct(RectangularDuctParams(
+                    width=blower_outlet.width,
+                    height=blower_outlet.height,
+                    length=connector_length,
+                    wall_thickness=0.002,
+                    center=(0, 0, 0),
+                    direction=x_direction,
+                ))
+                self._duct_sections.append((rect_connector, blower_outlet_world))
+                connector_end_x = blower_outlet_world[0] + connector_length
+            except (ImportError, AttributeError):
+                # If RectangularDuct not available, skip connector
+                connector_end_x = blower_outlet_world[0]
+                connector_length = 0
+            
+            # 2b. Rect-to-round transition after connector
             transition = RectToRoundTransition(RectToRoundTransitionParams(
                 rect_width=blower_outlet.width,
                 rect_height=blower_outlet.height,
@@ -408,18 +428,17 @@ class AirSystemAssembly:
                 center=(0, 0, 0),
                 direction=x_direction,
             ))
-            # Position is START of transition (at blower outlet)
-            transition_start = blower_outlet_world
+            transition_start = (connector_end_x, blower_outlet_world[1], blower_outlet_world[2])
             self._duct_sections.append((transition, transition_start))
             
             # Straight duct from transition end to damper inlet
-            duct2_start_x = blower_outlet_world[0] + transition_length
+            duct2_start_x = connector_end_x + transition_length
             duct2_end_x = damper_inlet_world[0]
             duct2_length = duct2_end_x - duct2_start_x
             
             if duct2_length > 0.01:
-                # Position is START of duct
-                duct2_start = (duct2_start_x, blower_outlet_world[1], blower_outlet_world[2])
+                # Position is START of duct (after connector + transition)
+                duct2_start = (duct2_start_x, transition_start[1], transition_start[2])
                 
                 duct2 = RoundDuct(RoundDuctParams(
                     diameter=self._duct_diameter,
