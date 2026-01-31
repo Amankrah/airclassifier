@@ -432,116 +432,42 @@ class CentrifugalBlower:
                 indices.extend([v0, v2, v3])
 
     def _generate_outlet(self, vertices: List, indices: List, normals: List):
-        """Generate rectangular outlet with scroll-to-outlet transition.
-        
-        Creates an integrated design where the circular scroll opening
-        transitions smoothly into a rectangular outlet duct.
-        
-        Outlet orientation (facing +X direction):
-        - Width (Z dimension): outlet_width
-        - Height (Y dimension): outlet_height
-        """
+        """Generate rectangular outlet duct."""
         p = self.params
 
-        # Outlet dimensions
-        half_width = p.outlet_width / 2   # Z dimension
-        half_height = p.outlet_height / 2  # Y dimension
-        
-        # Scroll opening dimensions (roughly circular, at scroll max radius)
-        r_outlet = p.scroll_inner_radius * p.scroll_expansion
-        scroll_half_width = p.impeller_width / 2 * 1.2  # Z dimension of scroll
-        scroll_half_height = r_outlet * 0.3  # Y dimension of opening (arc segment)
-        
-        # Transition length (scroll opening to rectangular)
-        transition_length = p.outlet_height * 0.8
-        # Rectangular duct length after transition
-        duct_length = p.outlet_height * 0.8
-        
-        x_scroll = p.center[0] + r_outlet  # Scroll edge
-        x_trans_end = x_scroll + transition_length  # End of transition
-        x_outlet_end = x_trans_end + duct_length  # End of outlet duct
-        
-        # =====================================================
-        # 1. SCROLL-TO-OUTLET TRANSITION (circular to rectangular)
-        # =====================================================
-        n_segments = 8  # Number of segments along transition
-        n_perimeter = 16  # Points around the perimeter
-        
-        transition_start = len(vertices)
-        
-        for i in range(n_segments + 1):
-            t = i / n_segments  # 0 at scroll, 1 at transition end
-            x = x_scroll + t * transition_length
-            
-            # Interpolate from scroll opening shape to rectangular
-            for j in range(n_perimeter):
-                angle = (j / n_perimeter) * TWO_PI
-                
-                # Scroll opening (elliptical, wider in Z)
-                scroll_y = scroll_half_height * np.sin(angle)
-                scroll_z = scroll_half_width * np.cos(angle)
-                
-                # Rectangular target (superellipse approximation)
-                n_power = 4  # Makes it more rectangular
-                if abs(np.cos(angle)) > 0.001 and abs(np.sin(angle)) > 0.001:
-                    scale = (abs(np.cos(angle)/half_width)**n_power + 
-                            abs(np.sin(angle)/half_height)**n_power) ** (-1/n_power)
-                    rect_z = scale * np.cos(angle)
-                    rect_y = scale * np.sin(angle)
-                else:
-                    rect_z = half_width * np.sign(np.cos(angle)) if abs(np.cos(angle)) > 0.5 else 0
-                    rect_y = half_height * np.sign(np.sin(angle)) if abs(np.sin(angle)) > 0.5 else 0
-                
-                # Interpolate between scroll and rectangular shapes
-                y = p.center[1] + (1 - t) * scroll_y + t * rect_y
-                z = p.center[2] + (1 - t) * scroll_z + t * rect_z
-                
-                vertices.append([x, y, z])
-                # Normal pointing outward
-                norm = np.array([0, y - p.center[1], z - p.center[2]])
-                norm_len = np.linalg.norm(norm)
-                if norm_len > 0:
-                    norm = norm / norm_len
-                else:
-                    norm = np.array([1, 0, 0])
-                normals.append(norm.tolist())
-        
-        # Generate triangles for transition
-        for i in range(n_segments):
-            for j in range(n_perimeter):
-                j_next = (j + 1) % n_perimeter
-                v0 = transition_start + i * n_perimeter + j
-                v1 = transition_start + i * n_perimeter + j_next
-                v2 = transition_start + (i + 1) * n_perimeter + j_next
-                v3 = transition_start + (i + 1) * n_perimeter + j
-                
-                indices.extend([v0, v1, v2])
-                indices.extend([v0, v2, v3])
-        
-        # =====================================================
-        # 2. RECTANGULAR OUTLET DUCT
-        # =====================================================
         outlet_start = len(vertices)
-        
-        # 8 corners of the rectangular outlet duct
+
+        # Outlet position (tangent to scroll at largest radius)
+        r_outlet = p.scroll_inner_radius * p.scroll_expansion
+        outlet_length = p.outlet_height * 1.5
+
+        hw = p.outlet_width / 2
+        hh = p.outlet_height / 2
+        half_depth = p.impeller_width / 2 * 1.2
+
+        # Outlet starts at the edge of the scroll and extends outward (+X direction)
+        x_start = p.center[0] + r_outlet
+        x_end = x_start + outlet_length
+
+        # 8 corners of the outlet duct (box)
         corners = [
-            # Start face (at transition end)
-            [x_trans_end, p.center[1] - half_height, p.center[2] - half_width],
-            [x_trans_end, p.center[1] + half_height, p.center[2] - half_width],
-            [x_trans_end, p.center[1] + half_height, p.center[2] + half_width],
-            [x_trans_end, p.center[1] - half_height, p.center[2] + half_width],
+            # Start face
+            [x_start, p.center[1] - hh, p.center[2] - half_depth],
+            [x_start, p.center[1] + hh, p.center[2] - half_depth],
+            [x_start, p.center[1] + hh, p.center[2] + half_depth],
+            [x_start, p.center[1] - hh, p.center[2] + half_depth],
             # End face
-            [x_outlet_end, p.center[1] - half_height, p.center[2] - half_width],
-            [x_outlet_end, p.center[1] + half_height, p.center[2] - half_width],
-            [x_outlet_end, p.center[1] + half_height, p.center[2] + half_width],
-            [x_outlet_end, p.center[1] - half_height, p.center[2] + half_width],
+            [x_end, p.center[1] - hh, p.center[2] - half_depth],
+            [x_end, p.center[1] + hh, p.center[2] - half_depth],
+            [x_end, p.center[1] + hh, p.center[2] + half_depth],
+            [x_end, p.center[1] - hh, p.center[2] + half_depth],
         ]
 
         for corner in corners:
             vertices.append(corner)
-            normals.append([1.0, 0.0, 0.0])
+            normals.append([0.0, 0.0, 1.0])  # Simplified normal
 
-        # Faces of rectangular duct (skip start face - connects to transition)
+        # Faces (skip start face as it connects to scroll)
         # Bottom
         indices.extend([outlet_start + 0, outlet_start + 4, outlet_start + 7])
         indices.extend([outlet_start + 0, outlet_start + 7, outlet_start + 3])
@@ -554,9 +480,6 @@ class CentrifugalBlower:
         # Back (near Z)
         indices.extend([outlet_start + 0, outlet_start + 1, outlet_start + 5])
         indices.extend([outlet_start + 0, outlet_start + 5, outlet_start + 4])
-        # End face (outlet opening)
-        indices.extend([outlet_start + 4, outlet_start + 5, outlet_start + 6])
-        indices.extend([outlet_start + 4, outlet_start + 6, outlet_start + 7])
 
     def get_performance(self, flow_rate: float = None) -> dict:
         """
@@ -631,13 +554,10 @@ class CentrifugalBlower:
         # Position at center of inlet eye
         inlet_pos = (p.center[0], p.center[1], p.center[2] - p.impeller_width / 2)
         
-        # Outlet port: at END of blower's built-in outlet (transition + duct)
-        # Geometry: scroll edge → transition (0.8*h) → rectangular duct (0.8*h)
+        # Outlet port: at scroll outlet, facing +X (standard scroll orientation)
+        # Position at center of outlet
         scroll_r = p.scroll_inner_radius * p.scroll_expansion
-        transition_length = p.outlet_height * 0.8
-        duct_length = p.outlet_height * 0.8
-        outlet_extension = transition_length + duct_length  # Total extension from scroll
-        outlet_pos = (p.center[0] + scroll_r + outlet_extension, p.center[1], p.center[2])
+        outlet_pos = (p.center[0] + scroll_r, p.center[1], p.center[2])
         
         return {
             'inlet': ConnectionPort(

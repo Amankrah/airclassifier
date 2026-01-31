@@ -1044,13 +1044,8 @@ class RectToRoundTransition:
             # x^n + y^n = 1, where n=2 for circle, n->inf for square
             # We'll use intermediate shapes
             
-            # Convention for +X facing opening:
-            # - rect_width maps to Z span (horizontal) via perp2 (local_y)
-            # - rect_height maps to Y span (vertical) via perp1 (local_x)
-            # local_x -> perp1 -> Y direction (use height)
-            # local_y -> perp2 -> Z direction (use width)
-            half_x = p.rect_height / 2  # Y span (vertical) - maps to local_x/perp1
-            half_y = p.rect_width / 2   # Z span (horizontal) - maps to local_y/perp2
+            half_w = p.rect_width / 2
+            half_h = p.rect_height / 2
             radius = p.round_radius
             
             for i in range(num_segments):
@@ -1062,19 +1057,19 @@ class RectToRoundTransition:
                 
                 # Rectangle point (corners smoothed)
                 # Use signed distance to get point on rectangle boundary
-                rect_x = half_x * np.sign(np.cos(theta)) * min(1, abs(np.cos(theta)) * 1.5)
-                rect_y = half_y * np.sign(np.sin(theta)) * min(1, abs(np.sin(theta)) * 1.5)
+                rect_x = half_w * np.sign(np.cos(theta)) * min(1, abs(np.cos(theta)) * 1.5)
+                rect_y = half_h * np.sign(np.sin(theta)) * min(1, abs(np.sin(theta)) * 1.5)
                 
                 # Better rectangle approximation using superellipse
                 n = 4  # Power for rectangle-like shape
                 if abs(np.cos(theta)) > 0.001 and abs(np.sin(theta)) > 0.001:
                     # Find point on superellipse
-                    scale = (abs(np.cos(theta)/half_x)**n + abs(np.sin(theta)/half_y)**n) ** (-1/n)
+                    scale = (abs(np.cos(theta)/half_w)**n + abs(np.sin(theta)/half_h)**n) ** (-1/n)
                     rect_x = scale * np.cos(theta)
                     rect_y = scale * np.sin(theta)
                 else:
-                    rect_x = half_x * np.cos(theta) / max(abs(np.cos(theta)), 0.001)
-                    rect_y = half_y * np.sin(theta) / max(abs(np.sin(theta)), 0.001)
+                    rect_x = half_w * np.cos(theta) / max(abs(np.cos(theta)), 0.001)
+                    rect_y = half_h * np.sin(theta) / max(abs(np.sin(theta)), 0.001)
                 
                 # Interpolate
                 x = (1 - t) * rect_x + t * circle_x
