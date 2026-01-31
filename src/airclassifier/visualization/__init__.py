@@ -38,6 +38,13 @@ from .flow_viz import (
     generate_seed_points_grid,
 )
 
+from .geometry_viz import (
+    plot_cyclone_mesh_3d,
+    plot_cyclone_cross_section,
+    plot_cyclone_top_view,
+    render_cyclone_assembly,
+)
+
 __all__ = [
     # Plotters
     "plot_particle_positions_2d",
@@ -66,4 +73,9 @@ __all__ = [
     "plot_flow_summary",
     "generate_seed_points_ring",
     "generate_seed_points_grid",
+    # Geometry Visualization
+    "plot_cyclone_mesh_3d",
+    "plot_cyclone_cross_section",
+    "plot_cyclone_top_view",
+    "render_cyclone_assembly",
 ]
