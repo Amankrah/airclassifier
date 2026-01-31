@@ -458,46 +458,298 @@ class FlowDamper:
             indices.extend([start_idx + 1, start_idx + 5, start_idx + 4])
 
     def _generate_actuator(self, vertices: List, indices: List, normals: List):
-        """Generate actuator housing."""
+        """
+        Generate actuator assembly with proper mounting.
+
+        Components:
+        1. Mounting bracket - bolts to damper housing flange
+        2. Drive stem - cylindrical connection from bracket to actuator
+        3. Actuator body - main housing (box for electric, cylinder for pneumatic)
+        4. Connected to blade shaft via internal gearing
+
+        Layout (side view):
+                    ┌─────────┐
+                    │ ACTUATOR│ ← Main body
+                    │  BODY   │
+                    └────┬────┘
+                         │     ← Drive stem
+                    ┌────┴────┐
+                    │ BRACKET │ ← Mounting bracket
+            ════════╧═════════╧════════
+                 DAMPER HOUSING
+        """
         p = self.params
 
+        if p.axis != "x":
+            # Simplified for non-X axis (fallback)
+            self._generate_actuator_simple(vertices, indices, normals)
+            return
+
+        # Actuator sizing based on damper diameter
+        # Larger dampers need larger actuators for torque
+        actuator_width = p.actuator_size
+        actuator_depth = p.actuator_size * 0.8
+        actuator_height = p.actuator_size * 0.6
+
+        # Mounting bracket dimensions
+        bracket_width = p.diameter * 0.4  # 40% of damper diameter
+        bracket_depth = 0.025  # 25mm thick
+        bracket_height = 0.015  # 15mm tall
+
+        # Drive stem dimensions
+        stem_diameter = 0.025  # 25mm diameter
+        stem_height = 0.03  # 30mm tall
+
+        # Positions
+        x_center = p.center[0]
+        z_center = p.center[2]
+        housing_top_y = p.center[1] + p.radius + 0.005  # Top of housing
+
+        # ============================================================
+        # 1. MOUNTING BRACKET (sits on top of housing)
+        # ============================================================
+        self._generate_mounting_bracket(
+            vertices, indices, normals,
+            x_center, housing_top_y, z_center,
+            bracket_width, bracket_depth, bracket_height
+        )
+
+        # ============================================================
+        # 2. DRIVE STEM (cylindrical connection)
+        # ============================================================
+        stem_base_y = housing_top_y + bracket_height
+        self._generate_drive_stem(
+            vertices, indices, normals,
+            x_center, stem_base_y, z_center,
+            stem_diameter, stem_height
+        )
+
+        # ============================================================
+        # 3. ACTUATOR BODY (main housing)
+        # ============================================================
+        body_base_y = stem_base_y + stem_height
+
+        if p.actuator_type == "pneumatic":
+            # Cylindrical body for pneumatic actuator
+            self._generate_actuator_cylinder(
+                vertices, indices, normals,
+                x_center, body_base_y, z_center,
+                actuator_width * 0.4, actuator_height
+            )
+        else:
+            # Box body for electric/manual actuator
+            self._generate_actuator_box(
+                vertices, indices, normals,
+                x_center, body_base_y, z_center,
+                actuator_width, actuator_depth, actuator_height
+            )
+
+    def _generate_mounting_bracket(self, vertices: List, indices: List, normals: List,
+                                    cx: float, cy: float, cz: float,
+                                    width: float, depth: float, height: float):
+        """Generate mounting bracket that sits on damper housing."""
         start_idx = len(vertices)
 
-        # Actuator as a box on side of damper
+        hw = width / 2
+        hd = depth / 2
+
+        # Bracket is a rectangular plate with curved sides to match housing
+        # Simplified as a box for now
+        corners = [
+            # Bottom face (sits on housing)
+            [cx - hw, cy, cz - hd],
+            [cx + hw, cy, cz - hd],
+            [cx + hw, cy, cz + hd],
+            [cx - hw, cy, cz + hd],
+            # Top face
+            [cx - hw, cy + height, cz - hd],
+            [cx + hw, cy + height, cz - hd],
+            [cx + hw, cy + height, cz + hd],
+            [cx - hw, cy + height, cz + hd],
+        ]
+
+        # Add vertices with proper normals
+        face_normals = [
+            [0, -1, 0], [0, -1, 0], [0, -1, 0], [0, -1, 0],  # Bottom
+            [0, 1, 0], [0, 1, 0], [0, 1, 0], [0, 1, 0],      # Top
+        ]
+
+        for i, corner in enumerate(corners):
+            vertices.append(corner)
+            normals.append(face_normals[i])
+
+        # Faces
+        # Bottom
+        indices.extend([start_idx + 0, start_idx + 2, start_idx + 1])
+        indices.extend([start_idx + 0, start_idx + 3, start_idx + 2])
+        # Top
+        indices.extend([start_idx + 4, start_idx + 5, start_idx + 6])
+        indices.extend([start_idx + 4, start_idx + 6, start_idx + 7])
+        # Sides
+        indices.extend([start_idx + 0, start_idx + 1, start_idx + 5])
+        indices.extend([start_idx + 0, start_idx + 5, start_idx + 4])
+        indices.extend([start_idx + 2, start_idx + 3, start_idx + 7])
+        indices.extend([start_idx + 2, start_idx + 7, start_idx + 6])
+        indices.extend([start_idx + 1, start_idx + 2, start_idx + 6])
+        indices.extend([start_idx + 1, start_idx + 6, start_idx + 5])
+        indices.extend([start_idx + 0, start_idx + 4, start_idx + 7])
+        indices.extend([start_idx + 0, start_idx + 7, start_idx + 3])
+
+    def _generate_drive_stem(self, vertices: List, indices: List, normals: List,
+                              cx: float, cy: float, cz: float,
+                              diameter: float, height: float):
+        """Generate cylindrical drive stem connecting bracket to actuator body."""
+        start_idx = len(vertices)
+
+        n_segments = 12
+        radius = diameter / 2
+
+        # Generate cylinder vertices
+        for i in range(2):  # Bottom and top rings
+            y = cy + i * height
+            for j in range(n_segments):
+                theta = (j / n_segments) * TWO_PI
+                x = cx + radius * np.cos(theta)
+                z = cz + radius * np.sin(theta)
+                vertices.append([x, y, z])
+                normals.append([np.cos(theta), 0, np.sin(theta)])
+
+        # Side triangles
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_segments + j_next
+            v3 = start_idx + n_segments + j
+
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+
+    def _generate_actuator_box(self, vertices: List, indices: List, normals: List,
+                                cx: float, cy: float, cz: float,
+                                width: float, depth: float, height: float):
+        """Generate box-shaped actuator body (for electric/manual actuators)."""
+        start_idx = len(vertices)
+
+        hw = width / 2
+        hd = depth / 2
+
+        corners = [
+            # Bottom face
+            [cx - hw, cy, cz - hd],
+            [cx + hw, cy, cz - hd],
+            [cx + hw, cy, cz + hd],
+            [cx - hw, cy, cz + hd],
+            # Top face
+            [cx - hw, cy + height, cz - hd],
+            [cx + hw, cy + height, cz - hd],
+            [cx + hw, cy + height, cz + hd],
+            [cx - hw, cy + height, cz + hd],
+        ]
+
+        for corner in corners:
+            vertices.append(corner)
+            normals.append([0, 1, 0])  # Simplified normals
+
+        # All 6 faces
+        # Bottom
+        indices.extend([start_idx + 0, start_idx + 2, start_idx + 1])
+        indices.extend([start_idx + 0, start_idx + 3, start_idx + 2])
+        # Top
+        indices.extend([start_idx + 4, start_idx + 5, start_idx + 6])
+        indices.extend([start_idx + 4, start_idx + 6, start_idx + 7])
+        # Front (-Z)
+        indices.extend([start_idx + 0, start_idx + 1, start_idx + 5])
+        indices.extend([start_idx + 0, start_idx + 5, start_idx + 4])
+        # Back (+Z)
+        indices.extend([start_idx + 2, start_idx + 3, start_idx + 7])
+        indices.extend([start_idx + 2, start_idx + 7, start_idx + 6])
+        # Right (+X)
+        indices.extend([start_idx + 1, start_idx + 2, start_idx + 6])
+        indices.extend([start_idx + 1, start_idx + 6, start_idx + 5])
+        # Left (-X)
+        indices.extend([start_idx + 0, start_idx + 4, start_idx + 7])
+        indices.extend([start_idx + 0, start_idx + 7, start_idx + 3])
+
+    def _generate_actuator_cylinder(self, vertices: List, indices: List, normals: List,
+                                     cx: float, cy: float, cz: float,
+                                     radius: float, height: float):
+        """Generate cylindrical actuator body (for pneumatic actuators)."""
+        start_idx = len(vertices)
+
+        n_segments = 16
+
+        # Generate cylinder vertices
+        for i in range(2):  # Bottom and top rings
+            y = cy + i * height
+            for j in range(n_segments):
+                theta = (j / n_segments) * TWO_PI
+                x = cx + radius * np.cos(theta)
+                z = cz + radius * np.sin(theta)
+                vertices.append([x, y, z])
+                normals.append([np.cos(theta), 0, np.sin(theta)])
+
+        # Add center points for caps
+        vertices.append([cx, cy, cz])  # Bottom center
+        normals.append([0, -1, 0])
+        vertices.append([cx, cy + height, cz])  # Top center
+        normals.append([0, 1, 0])
+
+        bottom_center = start_idx + 2 * n_segments
+        top_center = start_idx + 2 * n_segments + 1
+
+        # Side triangles
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_segments + j_next
+            v3 = start_idx + n_segments + j
+
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+
+        # Bottom cap
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            indices.extend([bottom_center, start_idx + j_next, start_idx + j])
+
+        # Top cap
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            indices.extend([top_center, start_idx + n_segments + j, start_idx + n_segments + j_next])
+
+    def _generate_actuator_simple(self, vertices: List, indices: List, normals: List):
+        """Fallback simple actuator for non-X axis orientations."""
+        p = self.params
+        start_idx = len(vertices)
+
         size = p.actuator_size
         hs = size / 2
 
-        # Position actuator on +Y side (perpendicular to blade pivot)
-        if p.axis == "x":
-            y_base = p.center[1] + p.radius + 0.02
-            x_center = p.center[0]
-            z_center = p.center[2]
+        # Simple box above center
+        y_base = p.center[1] + p.radius + 0.02
 
-            corners = [
-                [x_center - hs, y_base, z_center - hs],
-                [x_center + hs, y_base, z_center - hs],
-                [x_center + hs, y_base, z_center + hs],
-                [x_center - hs, y_base, z_center + hs],
-                [x_center - hs, y_base + size, z_center - hs],
-                [x_center + hs, y_base + size, z_center - hs],
-                [x_center + hs, y_base + size, z_center + hs],
-                [x_center - hs, y_base + size, z_center + hs],
-            ]
-        else:
-            corners = [[p.center[0], p.center[1], p.center[2]] for _ in range(8)]
+        corners = [
+            [p.center[0] - hs, y_base, p.center[2] - hs],
+            [p.center[0] + hs, y_base, p.center[2] - hs],
+            [p.center[0] + hs, y_base, p.center[2] + hs],
+            [p.center[0] - hs, y_base, p.center[2] + hs],
+            [p.center[0] - hs, y_base + size, p.center[2] - hs],
+            [p.center[0] + hs, y_base + size, p.center[2] - hs],
+            [p.center[0] + hs, y_base + size, p.center[2] + hs],
+            [p.center[0] - hs, y_base + size, p.center[2] + hs],
+        ]
 
         for corner in corners:
             vertices.append(corner)
             normals.append([0, 1, 0])
 
         # Faces
-        # Bottom
         indices.extend([start_idx + 0, start_idx + 1, start_idx + 2])
         indices.extend([start_idx + 0, start_idx + 2, start_idx + 3])
-        # Top
         indices.extend([start_idx + 4, start_idx + 7, start_idx + 6])
         indices.extend([start_idx + 4, start_idx + 6, start_idx + 5])
-        # Sides
         indices.extend([start_idx + 0, start_idx + 4, start_idx + 5])
         indices.extend([start_idx + 0, start_idx + 5, start_idx + 1])
         indices.extend([start_idx + 2, start_idx + 6, start_idx + 7])

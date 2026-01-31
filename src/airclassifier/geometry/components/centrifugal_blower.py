@@ -432,8 +432,15 @@ class CentrifugalBlower:
                 indices.extend([v0, v2, v3])
 
     def _generate_outlet(self, vertices: List, indices: List, normals: List):
-        """Generate rectangular outlet duct."""
+        """
+        Generate rectangular outlet duct with curled scroll-side edge.
+
+        The scroll-side edge is curved to match the scroll body's cylindrical
+        surface for proper welded connection in real-world fabrication.
+        The flange-side is flat rectangular for standard connector attachment.
+        """
         p = self.params
+        n_curl_segments = 8  # Segments for the curved scroll-side edge
 
         outlet_start = len(vertices)
 
@@ -441,45 +448,130 @@ class CentrifugalBlower:
         r_outlet = p.scroll_inner_radius * p.scroll_expansion
         outlet_length = p.outlet_height * 1.5
 
-        hw = p.outlet_width / 2
-        hh = p.outlet_height / 2
-        half_depth = p.impeller_width / 2 * 1.2
+        hw = p.outlet_width / 2  # Half width (Z direction)
+        hh = p.outlet_height / 2  # Half height (Y direction)
+        scroll_half_width = p.impeller_width / 2 * 1.2  # Scroll axial half-width
 
-        # Outlet starts at the edge of the scroll and extends outward (+X direction)
-        x_start = p.center[0] + r_outlet
-        x_end = x_start + outlet_length
+        # X positions
+        x_start = p.center[0] + r_outlet  # At scroll outer edge
+        x_end = x_start + outlet_length  # At flange
 
-        # 8 corners of the outlet duct (box)
-        corners = [
-            # Start face
-            [x_start, p.center[1] - hh, p.center[2] - half_depth],
-            [x_start, p.center[1] + hh, p.center[2] - half_depth],
-            [x_start, p.center[1] + hh, p.center[2] + half_depth],
-            [x_start, p.center[1] - hh, p.center[2] + half_depth],
-            # End face
-            [x_end, p.center[1] - hh, p.center[2] - half_depth],
-            [x_end, p.center[1] + hh, p.center[2] - half_depth],
-            [x_end, p.center[1] + hh, p.center[2] + half_depth],
-            [x_end, p.center[1] - hh, p.center[2] + half_depth],
+        # Generate curled scroll-side edge vertices
+        # The edge curves inward to match the scroll's cylindrical surface
+        curl_bottom = []  # Bottom edge vertices (Y = center - hh)
+        curl_top = []     # Top edge vertices (Y = center + hh)
+
+        for i in range(n_curl_segments + 1):
+            t = i / n_curl_segments
+            # Z position along the scroll width
+            z = p.center[2] - scroll_half_width + t * 2 * scroll_half_width
+
+            # Curl follows scroll surface: deeper curl at center, less at edges
+            z_normalized = (z - p.center[2]) / scroll_half_width  # -1 to +1
+            curl_depth = 0.015 * (1 - z_normalized ** 2)  # Parabolic curl, max 15mm
+
+            x_curled = x_start - curl_depth
+
+            curl_bottom.append([x_curled, p.center[1] - hh, z])
+            curl_top.append([x_curled, p.center[1] + hh, z])
+
+        # Add curl vertices to mesh
+        curl_bottom_start = len(vertices)
+        for v in curl_bottom:
+            vertices.append(v)
+            normals.append([-1.0, 0.0, 0.0])
+
+        curl_top_start = len(vertices)
+        for v in curl_top:
+            vertices.append(v)
+            normals.append([-1.0, 0.0, 0.0])
+
+        # Flange-side vertices (flat rectangular)
+        flange_start = len(vertices)
+        flange_corners = [
+            [x_end, p.center[1] - hh, p.center[2] - hw],  # 0: Bottom-back
+            [x_end, p.center[1] + hh, p.center[2] - hw],  # 1: Top-back
+            [x_end, p.center[1] + hh, p.center[2] + hw],  # 2: Top-front
+            [x_end, p.center[1] - hh, p.center[2] + hw],  # 3: Bottom-front
         ]
-
-        for corner in corners:
+        for corner in flange_corners:
             vertices.append(corner)
-            normals.append([0.0, 0.0, 1.0])  # Simplified normal
+            normals.append([1.0, 0.0, 0.0])
 
-        # Faces (skip start face as it connects to scroll)
-        # Bottom
-        indices.extend([outlet_start + 0, outlet_start + 4, outlet_start + 7])
-        indices.extend([outlet_start + 0, outlet_start + 7, outlet_start + 3])
-        # Top
-        indices.extend([outlet_start + 1, outlet_start + 2, outlet_start + 6])
-        indices.extend([outlet_start + 1, outlet_start + 6, outlet_start + 5])
-        # Front (far Z)
-        indices.extend([outlet_start + 2, outlet_start + 3, outlet_start + 7])
-        indices.extend([outlet_start + 2, outlet_start + 7, outlet_start + 6])
-        # Back (near Z)
-        indices.extend([outlet_start + 0, outlet_start + 1, outlet_start + 5])
-        indices.extend([outlet_start + 0, outlet_start + 5, outlet_start + 4])
+        # Connect curled scroll-side to flat flange-side with walls
+
+        # Bottom wall (Y = center - hh)
+        for i in range(n_curl_segments):
+            v0 = curl_bottom_start + i
+            v1 = curl_bottom_start + i + 1
+
+            # Interpolate flange Z positions
+            t0 = i / n_curl_segments
+            t1 = (i + 1) / n_curl_segments
+            fz0 = p.center[2] - hw + t0 * 2 * hw
+            fz1 = p.center[2] - hw + t1 * 2 * hw
+
+            f0_idx = len(vertices)
+            vertices.append([x_end, p.center[1] - hh, fz0])
+            normals.append([0.0, -1.0, 0.0])
+            f1_idx = len(vertices)
+            vertices.append([x_end, p.center[1] - hh, fz1])
+            normals.append([0.0, -1.0, 0.0])
+
+            indices.extend([v0, f0_idx, f1_idx])
+            indices.extend([v0, f1_idx, v1])
+
+        # Top wall (Y = center + hh)
+        for i in range(n_curl_segments):
+            v0 = curl_top_start + i
+            v1 = curl_top_start + i + 1
+
+            t0 = i / n_curl_segments
+            t1 = (i + 1) / n_curl_segments
+            fz0 = p.center[2] - hw + t0 * 2 * hw
+            fz1 = p.center[2] - hw + t1 * 2 * hw
+
+            f0_idx = len(vertices)
+            vertices.append([x_end, p.center[1] + hh, fz0])
+            normals.append([0.0, 1.0, 0.0])
+            f1_idx = len(vertices)
+            vertices.append([x_end, p.center[1] + hh, fz1])
+            normals.append([0.0, 1.0, 0.0])
+
+            indices.extend([v0, f1_idx, f0_idx])
+            indices.extend([v0, v1, f1_idx])
+
+        # Back wall (-Z side)
+        back_start = len(vertices)
+        vertices.extend([
+            curl_bottom[0],  # Curl bottom-back
+            curl_top[0],     # Curl top-back
+            [x_end, p.center[1] + hh, p.center[2] - hw],  # Flange top-back
+            [x_end, p.center[1] - hh, p.center[2] - hw],  # Flange bottom-back
+        ])
+        for _ in range(4):
+            normals.append([0.0, 0.0, -1.0])
+
+        indices.extend([back_start, back_start + 1, back_start + 2])
+        indices.extend([back_start, back_start + 2, back_start + 3])
+
+        # Front wall (+Z side)
+        front_start = len(vertices)
+        vertices.extend([
+            curl_bottom[-1],  # Curl bottom-front
+            curl_top[-1],     # Curl top-front
+            [x_end, p.center[1] + hh, p.center[2] + hw],  # Flange top-front
+            [x_end, p.center[1] - hh, p.center[2] + hw],  # Flange bottom-front
+        ])
+        for _ in range(4):
+            normals.append([0.0, 0.0, 1.0])
+
+        indices.extend([front_start, front_start + 2, front_start + 1])
+        indices.extend([front_start, front_start + 3, front_start + 2])
+
+        # Flange end cap (rectangular face for connector)
+        indices.extend([flange_start, flange_start + 1, flange_start + 2])
+        indices.extend([flange_start, flange_start + 2, flange_start + 3])
 
     def get_performance(self, flow_rate: float = None) -> dict:
         """
@@ -538,27 +630,27 @@ class CentrifugalBlower:
     def ports(self) -> dict:
         """
         Get connection ports for the blower.
-        
+
         Ports:
         - 'inlet': Axial inlet (inlet eye) - air enters here
         - 'outlet': Scroll outlet (rectangular) - air exits here
-        
+
         Returns:
             Dictionary of port name to ConnectionPort
         """
         from ..connection_ports import ConnectionPort, PortType
-        
+
         p = self.params
-        
+
         # Inlet port: at the inlet eye, facing -Z (air comes from -Z direction)
         # Position at center of inlet eye
         inlet_pos = (p.center[0], p.center[1], p.center[2] - p.impeller_width / 2)
-        
+
         # Outlet port: at scroll outlet, facing +X (standard scroll orientation)
         # Position at center of outlet
         scroll_r = p.scroll_inner_radius * p.scroll_expansion
         outlet_pos = (p.center[0] + scroll_r, p.center[1], p.center[2])
-        
+
         return {
             'inlet': ConnectionPort(
                 position=inlet_pos,

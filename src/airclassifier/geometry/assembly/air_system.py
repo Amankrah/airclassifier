@@ -128,14 +128,19 @@ class AirSystemAssembly:
 
     def _create_components(self):
         """
-        Create all system components with proper port-to-port positioning.
-        
+        Create all system components with proper geometry-based positioning.
+
         Layout: Linear arrangement along X axis for clear visualization.
-        
+
         Flow path:
-        Filter → Duct → Blower → Transition → Duct → Damper1 → Duct → Damper2
-        
+        Filter → Duct → Elbow → Duct → Blower inlet bell → Blower → Transition → Dampers
+
         All components centered at Y=0, Z=0 for simplicity.
+
+        Connections:
+        - Filter outlet port at end of outlet stub (faces +X)
+        - Blower inlet bell geometry at +Z side (center + impeller_width/2 * 1.2)
+        - Duct connects to actual inlet bell opening, not port position
         """
         from ..components import (
             create_standard_centrifugal_blower,
@@ -161,7 +166,8 @@ class AirSystemAssembly:
         )
         # Position filter at system origin
         self._filter_position = (p.center[0], p.center[1], p.center[2])
-        
+
+        # Filter outlet port is at the end of the outlet stub (connection flange)
         filter_outlet = self.inlet_filter.ports['outlet']
         filter_outlet_world = (
             self._filter_position[0] + filter_outlet.position[0],
@@ -172,57 +178,64 @@ class AirSystemAssembly:
         # ============================================================
         # 2. CENTRIFUGAL BLOWER
         # ============================================================
-        # Blower inlet is AXIAL (faces -Z), outlet is RADIAL (faces +X)
-        # We need to position blower so inlet can receive air from +Z direction
-        # Flow path: Filter(+X) → Duct(+X) → Elbow(turn to +Z) → Duct(+Z) → Blower inlet
-        
+        # Blower geometry: inlet bell is on +Z side (at center + width/2*1.2)
+        # Blower outlet is on +X side (scroll tangent)
+        # Flow path: Filter(+X) → Duct(+X) → Elbow(turn to +Z) → Duct(+Z) → Blower inlet bell
+
         self.blower = create_standard_centrifugal_blower(
             flow_rate=p.flow_rate_m3_h,
             pressure_rise=p.pressure_rise_Pa
         )
-        
+
         blower_inlet = self.blower.ports['inlet']
         blower_outlet = self.blower.ports['outlet']
-        
-        # Elbow parameters
+
+        # Elbow parameters - use filter outlet diameter for smooth transition
         elbow_diameter = filter_outlet.diameter
-        elbow_bend_radius = elbow_diameter * 0.6  # Tight bend for compact layout
-        
-        # Horizontal duct from filter before elbow
-        duct_horiz_length = 0.12  # 120mm horizontal duct
-        
-        # Elbow position: after horizontal duct
-        elbow_inlet_x = filter_outlet_world[0] + duct_horiz_length
+        elbow_bend_radius = elbow_diameter * 0.7  # Tight bend for compact layout
+
+        # Horizontal duct from filter outlet to elbow inlet
+        duct_horiz_length = 0.08  # 80mm horizontal duct
+
+        # Elbow inlet position: after horizontal duct from filter outlet
+        elbow_inlet_x = filter_outlet_world[0] + duct_horiz_length + gap
         elbow_inlet_z = filter_outlet_world[2]  # Same Z as filter (Z=0)
-        
+
         # After 90° elbow turning +X to +Z:
         # Elbow outlet is at: (elbow_inlet_x + R, Y, elbow_inlet_z + R)
         elbow_outlet_x = elbow_inlet_x + elbow_bend_radius
         elbow_outlet_z = elbow_inlet_z + elbow_bend_radius
-        
-        # Vertical duct from elbow going +Z to blower inlet
-        # Make it longer to visually reach the blower scroll body
-        duct_vert_length = 0.18  # 180mm vertical duct (extends into blower area)
-        
-        # Blower inlet should be at top of vertical duct
-        # Blower inlet local offset is (0, 0, -inlet_offset) from blower center
-        blower_inlet_local_z = blower_inlet.position[2]  # Negative value
-        
-        # Blower inlet world Z = elbow_outlet_z + duct_vert_length
-        blower_inlet_target_z = elbow_outlet_z + duct_vert_length
-        
-        # Therefore blower center Z = inlet_target_z - inlet_local_z
-        blower_center_z = blower_inlet_target_z - blower_inlet_local_z
-        
-        # Blower center X: inlet is at center X, so blower X = elbow outlet X
+
+        # The blower scroll body extends from center-half_width to center+half_width
+        # where half_width = impeller_width/2 * 1.2
+        # The inlet bell starts at center + half_width (at scroll +Z edge)
+        # The duct must be long enough to:
+        #   1. Start OUTSIDE the scroll body (with clearance)
+        #   2. End at the inlet bell opening
+        impeller_width = self.blower.params.impeller_width
+        scroll_half_width = impeller_width / 2 * 1.2  # Half depth of scroll body
+        scroll_clearance = 0.05  # 50mm clearance before scroll body
+
+        # Duct length = clearance + full scroll depth to reach inlet bell
+        # duct starts at elbow_outlet_z, must clear scroll body, then reach inlet bell
+        duct_vert_length = scroll_clearance + 2 * scroll_half_width  # clearance + scroll depth
+
+        # Position blower so:
+        #   - Duct starts at elbow_outlet_z (with clearance before scroll)
+        #   - Duct ends at inlet bell opening (scroll +Z edge)
+        duct_end_z = elbow_outlet_z + duct_vert_length
+        inlet_bell_offset = scroll_half_width  # Inlet bell starts at center + half_width
+        blower_center_z = duct_end_z - inlet_bell_offset
+
+        # Blower center X: inlet bell is at center X, so blower X = elbow outlet X
         blower_center_x = elbow_outlet_x
-        
+
         self._blower_position = (
             blower_center_x,
             self._filter_position[1],  # Same Y as filter
             blower_center_z
         )
-        
+
         # Store elbow parameters for duct creation
         self._elbow_params = {
             'diameter': elbow_diameter,
@@ -231,15 +244,19 @@ class AirSystemAssembly:
             'duct_horiz_length': duct_horiz_length,
             'duct_vert_length': duct_vert_length,
         }
-        
+
         blower_inlet_world = (
             self._blower_position[0] + blower_inlet.position[0],
             self._blower_position[1] + blower_inlet.position[1],
             self._blower_position[2] + blower_inlet.position[2],
         )
-        
-        blower_outlet_world = (
-            self._blower_position[0] + blower_outlet.position[0],
+
+        # Blower outlet port is at scroll edge, but outlet duct extends further
+        # The actual outlet flange is at: port_position + outlet_duct_length
+        # outlet_duct_length = outlet_height * 1.5 (from _generate_outlet)
+        blower_outlet_duct_length = self.blower.params.outlet_height * 1.5
+        blower_outlet_flange_world = (
+            self._blower_position[0] + blower_outlet.position[0] + blower_outlet_duct_length,
             self._blower_position[1] + blower_outlet.position[1],
             self._blower_position[2] + blower_outlet.position[2],
         )
@@ -249,14 +266,17 @@ class AirSystemAssembly:
         # ============================================================
         self.dampers: List = []
         self._damper_positions: List = []
-        
+
         # Position dampers after blower outlet along +X
-        transition_length = 0.15  # 150mm transition piece
-        duct_after_transition = 0.05  # 50mm duct
-        
-        prev_outlet_x = blower_outlet_world[0] + transition_length + duct_after_transition
-        prev_outlet_y = blower_outlet_world[1]
-        prev_outlet_z = blower_outlet_world[2]
+        # Direct connection: blower outlet flange → transition (with flange rings) → duct → damper
+        transition_length = 0.15  # 150mm rect-to-round transition piece
+        duct_after_transition = 0.05  # 50mm round duct
+
+        # Start from actual outlet flange position (end of blower's outlet duct)
+        # Path: blower flange → transition → duct → damper
+        prev_outlet_x = blower_outlet_flange_world[0] + transition_length + duct_after_transition
+        prev_outlet_y = blower_outlet_flange_world[1]
+        prev_outlet_z = blower_outlet_flange_world[2]
 
         for i in range(p.num_control_dampers):
             damper = create_standard_damper(
@@ -282,41 +302,47 @@ class AirSystemAssembly:
         # ============================================================
         # 4. CREATE CONNECTING DUCTWORK
         # ============================================================
-        self._create_duct_sections(gap, filter_outlet_world, blower_outlet_world,
+        self._create_duct_sections(gap, filter_outlet_world, blower_outlet_flange_world,
                                    transition_length, duct_after_transition)
 
     def _create_duct_sections(self, gap: float, filter_outlet_world: tuple,
-                               blower_outlet_world: tuple, transition_length: float,
-                               duct_after_transition: float):
+                               blower_outlet_world: tuple,
+                               transition_length: float, duct_after_transition: float):
         """
         Create duct sections connecting components.
-        
+
         Flow path:
-        1. Filter outlet → Horizontal duct (+X) → 90° Elbow → Vertical duct (+Z) → Blower inlet
-        2. Blower outlet → Rect-to-Round Transition → Straight duct → Damper 1
+        1. Filter outlet (at stub flange) → Horizontal duct (+X) → 90° Elbow → Vertical duct (+Z) → Blower inlet
+        2. Blower outlet (at outlet duct flange) → Rect-to-Round Transition (with flange rings) → Straight duct → Damper 1
         3. Damper 1 → Straight duct → Damper 2
+
+        Note: Port positions are at the actual connection flanges (end of stubs),
+        so ducts connect directly to these positions without overlap.
+        The transition piece has square flange rings at both ends for bolted connections.
         """
         from ..components.ductwork import (
             RoundDuct, RoundDuctParams,
+            RectangularDuct, RectangularDuctParams,
             DuctElbow, DuctElbowParams,
             RectToRoundTransition, RectToRoundTransitionParams,
         )
-        
+
         self._duct_sections = []
         x_direction = (1.0, 0.0, 0.0)
         z_direction = (0.0, 0.0, 1.0)
-        
+
         filter_outlet = self.inlet_filter.ports['outlet']
         blower_inlet = self.blower.ports['inlet']
         blower_outlet = self.blower.ports['outlet']
-        
+
         # Get elbow parameters
         elbow = self._elbow_params
-        
+
         # ============================================================
-        # 1. FILTER TO BLOWER CONNECTION  
+        # 1. FILTER TO BLOWER CONNECTION
         # ============================================================
-        # 1a. Horizontal duct from filter outlet to elbow inlet
+        # 1a. Horizontal duct from filter outlet flange to elbow inlet
+        # Filter outlet port is already at the end of the filter's outlet stub
         duct_horiz_start = filter_outlet_world
         duct_horiz = RoundDuct(RoundDuctParams(
             diameter=elbow['diameter'],
@@ -327,11 +353,11 @@ class AirSystemAssembly:
             flanged=True,
         ))
         self._duct_sections.append((duct_horiz, duct_horiz_start))
-        
+
         # 1b. 90° Elbow turning from +X to +Z
-        # Elbow inlet receives air from +X, outlet sends air in +Z
+        # Elbow inlet receives air from +X direction, outlet sends air in +Z direction
         # With inlet_dir=(1,0,0) and rotation_axis=(0,1,0):
-        #   perp2 = cross(inlet_dir, rot_axis) = (0,0,1) → bend goes toward +Z
+        #   perp2 = cross(inlet_dir, rot_axis) = (0,0,1) → bend turns toward +Z
         elbow_component = DuctElbow(DuctElbowParams(
             diameter=elbow['diameter'],
             bend_radius=elbow['bend_radius'],
@@ -339,19 +365,20 @@ class AirSystemAssembly:
             wall_thickness=0.002,
             flanged=True,
             center=(0, 0, 0),
-            inlet_direction=(1.0, 0.0, 0.0),   # Air comes from +X
+            inlet_direction=(1.0, 0.0, 0.0),   # Air comes from +X direction
             rotation_axis=(0.0, 1.0, 0.0),     # Rotate around +Y to turn toward +Z
         ))
         self._duct_sections.append((elbow_component, elbow['inlet_pos']))
-        
+
         # 1c. Vertical duct from elbow outlet to blower inlet
-        # Elbow outlet position
+        # Elbow outlet position (after 90° bend)
         elbow_outlet_pos = (
             elbow['inlet_pos'][0] + elbow['bend_radius'],
             elbow['inlet_pos'][1],
             elbow['inlet_pos'][2] + elbow['bend_radius'],
         )
-        
+
+        # Vertical duct connects elbow outlet to blower inlet (on +Z side of blower)
         duct_vert = RoundDuct(RoundDuctParams(
             diameter=elbow['diameter'],
             length=elbow['duct_vert_length'],
@@ -367,8 +394,8 @@ class AirSystemAssembly:
         # ============================================================
         # Blower outlet is rectangular, faces +X
         # Damper inlet is circular, faces -X
-        # Connection: Blower → Rect-to-Round Transition → Straight duct → Damper
-        
+        # Connection: Blower outlet flange → Rect-to-Round Transition (with flange rings) → Straight duct → Damper
+
         if self.dampers:
             damper_inlet = self.dampers[0].ports['inlet']
             damper_inlet_world = (
@@ -376,8 +403,11 @@ class AirSystemAssembly:
                 self._damper_positions[0][1] + damper_inlet.position[1],
                 self._damper_positions[0][2] + damper_inlet.position[2],
             )
-            
-            # Rect-to-round transition starts at blower outlet
+
+            # 2a. Rect-to-round transition connects directly to blower outlet flange
+            # Transition has square flange rings at both ends for fitting
+            transition_start = blower_outlet_world
+
             transition = RectToRoundTransition(RectToRoundTransitionParams(
                 rect_width=blower_outlet.width,
                 rect_height=blower_outlet.height,
@@ -386,20 +416,19 @@ class AirSystemAssembly:
                 wall_thickness=0.002,
                 center=(0, 0, 0),
                 direction=x_direction,
+                flanged=True,  # Add flange rings at both ends
             ))
-            # Position is START of transition (at blower outlet)
-            transition_start = blower_outlet_world
             self._duct_sections.append((transition, transition_start))
-            
-            # Straight duct from transition end to damper inlet
+
+            # 2b. Straight duct from transition end to damper inlet
             duct2_start_x = blower_outlet_world[0] + transition_length
             duct2_end_x = damper_inlet_world[0]
             duct2_length = duct2_end_x - duct2_start_x
-            
+
             if duct2_length > 0.01:
                 # Position is START of duct
                 duct2_start = (duct2_start_x, blower_outlet_world[1], blower_outlet_world[2])
-                
+
                 duct2 = RoundDuct(RoundDuctParams(
                     diameter=self._duct_diameter,
                     length=duct2_length,

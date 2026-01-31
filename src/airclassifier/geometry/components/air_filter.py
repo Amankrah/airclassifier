@@ -413,27 +413,34 @@ class InletAirFilter:
     def ports(self) -> dict:
         """
         Get connection ports for the filter.
-        
+
         Air flow direction: -X (inlet) → +X (outlet)
-        
+
+        The filter has inlet and outlet duct stubs that extend from the housing.
+        Port positions are at the flanged ends of these stubs (connection points).
+
         Ports:
-        - 'inlet': Inlet side of filter housing (air enters)
-        - 'outlet': Outlet side of filter housing (clean air exits)
-        
+        - 'inlet': At end of inlet duct stub (air enters from -X)
+        - 'outlet': At end of outlet duct stub (clean air exits toward +X)
+
         Returns:
             Dictionary of port name to ConnectionPort
         """
         from ..connection_ports import ConnectionPort, PortType
-        
+
         p = self.params
         half_depth = p.housing_depth / 2
-        
-        # Inlet port: at -X face of housing
-        inlet_pos = (p.center[0] - half_depth, p.center[1], p.center[2])
-        
-        # Outlet port: at +X face of housing
-        outlet_pos = (p.center[0] + half_depth, p.center[1], p.center[2])
-        
+
+        # Inlet stub extends from housing face (-X) further in -X direction
+        # Stub length = inlet_diameter (from _generate_inlet: duct_length = p.inlet_diameter)
+        inlet_stub_length = p.inlet_diameter
+        inlet_pos = (p.center[0] - half_depth - inlet_stub_length, p.center[1], p.center[2])
+
+        # Outlet stub extends from housing face (+X) further in +X direction
+        # Stub length = outlet_diameter (from _generate_outlet: duct_length = p.outlet_diameter)
+        outlet_stub_length = p.outlet_diameter
+        outlet_pos = (p.center[0] + half_depth + outlet_stub_length, p.center[1], p.center[2])
+
         return {
             'inlet': ConnectionPort(
                 position=inlet_pos,
