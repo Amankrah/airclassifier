@@ -1,3 +1,0 @@
-[console_scripts]
-airclassifier = airclassifier.simulation.simulator:main
-
