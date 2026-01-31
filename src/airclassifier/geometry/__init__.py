@@ -34,6 +34,16 @@ from .components import (
     CentrifugalBlower, CentrifugalBlowerParams, create_standard_centrifugal_blower,
     InletAirFilter, InletAirFilterParams, create_standard_inlet_filter,
     FlowDamper, DamperParams, create_standard_damper,
+    # Phase 4 Components - Ductwork
+    RoundDuct, RoundDuctParams, create_standard_round_duct,
+    RectangularDuct as RectDuct, RectangularDuctParams as RectDuctParams, 
+    create_standard_rectangular_duct, create_duct_for_flow,
+    Transition, TransitionParams, create_round_reducer,
+    create_round_to_rect_transition, create_rect_to_round_transition,
+    Elbow, ElbowParams, create_90_degree_elbow, create_45_degree_elbow,
+    create_mitered_elbow, create_elbow_with_vanes,
+    DiverterValve, DiverterValveParams, create_flap_diverter,
+    create_rotating_diverter, create_plug_diverter, create_diverter_for_classifier,
 )
 
 from .assembly import (
@@ -56,6 +66,12 @@ from .assembly import (
     AirSystemParams,
     create_standard_air_system,
     create_air_system_for_classifier,
+    # Ductwork System (Phase 4)
+    DuctworkSystemAssembly,
+    DuctworkSystemParams,
+    create_standard_ductwork,
+    create_ductwork_for_classifier,
+    create_simple_duct_run,
 )
 
 from .sdf import (
@@ -121,6 +137,22 @@ __all__ = [
     "AirSystemParams",
     "create_standard_air_system",
     "create_air_system_for_classifier",
+    # Phase 4 Components - Ductwork
+    "RoundDuct", "RoundDuctParams", "create_standard_round_duct",
+    "RectDuct", "RectDuctParams", 
+    "create_standard_rectangular_duct", "create_duct_for_flow",
+    "Transition", "TransitionParams", "create_round_reducer",
+    "create_round_to_rect_transition", "create_rect_to_round_transition",
+    "Elbow", "ElbowParams", "create_90_degree_elbow", "create_45_degree_elbow",
+    "create_mitered_elbow", "create_elbow_with_vanes",
+    "DiverterValve", "DiverterValveParams", "create_flap_diverter",
+    "create_rotating_diverter", "create_plug_diverter", "create_diverter_for_classifier",
+    # Ductwork System Assembly (Phase 4)
+    "DuctworkSystemAssembly",
+    "DuctworkSystemParams",
+    "create_standard_ductwork",
+    "create_ductwork_for_classifier",
+    "create_simple_duct_run",
     # SDF
     "CycloneSDF",
     "CycloneSDFParams",

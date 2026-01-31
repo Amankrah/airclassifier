@@ -18,6 +18,10 @@ Feed System (Phase 2):
 Air System (Phase 3):
 - AirSystemAssembly: Blower + Filter + Dampers
 - AirSystemParams: Air system parameters
+
+Ductwork System (Phase 4):
+- DuctworkSystemAssembly: Ducts + Transitions + Elbows + Diverters
+- DuctworkSystemParams: Ductwork system parameters
 """
 
 from .cyclone import (
@@ -47,6 +51,14 @@ from .air_system import (
     create_air_system_for_classifier,
 )
 
+from .ductwork import (
+    DuctworkSystemAssembly,
+    DuctworkSystemParams,
+    create_standard_ductwork,
+    create_ductwork_for_classifier,
+    create_simple_duct_run,
+)
+
 __all__ = [
     # Cyclone Assembly
     "CycloneAssembly",
@@ -67,4 +79,10 @@ __all__ = [
     "AirSystemParams",
     "create_standard_air_system",
     "create_air_system_for_classifier",
+    # Ductwork System (Phase 4)
+    "DuctworkSystemAssembly",
+    "DuctworkSystemParams",
+    "create_standard_ductwork",
+    "create_ductwork_for_classifier",
+    "create_simple_duct_run",
 ]

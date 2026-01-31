@@ -26,6 +26,13 @@ Phase 3 - Air System:
 - CentrifugalBlower: Air supply fan
 - InletAirFilter: Clean air filtration
 - FlowDamper: Flow control valve
+
+Phase 4 - Ductwork:
+- RoundDuct: Circular duct sections
+- RectangularDuct: Rectangular duct sections
+- Transition: Duct transitions (round-to-round, round-to-rect, etc.)
+- Elbow: Duct bends and elbows
+- DiverterValve: Y-type flow diverters
 """
 
 from .cyclone_body import CycloneBody, CycloneBodyParams, cyclone_body_sdf
@@ -97,6 +104,40 @@ from .damper import (
     create_standard_damper,
 )
 
+# Phase 4 Components - Ductwork
+from .ductwork import (
+    RoundDuct,
+    RoundDuctParams,
+    RectangularDuct,
+    RectangularDuctParams,
+    create_standard_round_duct,
+    create_standard_rectangular_duct,
+    create_duct_for_flow,
+)
+from .transitions import (
+    Transition,
+    TransitionParams,
+    create_round_reducer,
+    create_round_to_rect_transition,
+    create_rect_to_round_transition,
+)
+from .elbows import (
+    Elbow,
+    ElbowParams,
+    create_90_degree_elbow,
+    create_45_degree_elbow,
+    create_mitered_elbow,
+    create_elbow_with_vanes,
+)
+from .diverter import (
+    DiverterValve,
+    DiverterValveParams,
+    create_flap_diverter,
+    create_rotating_diverter,
+    create_plug_diverter,
+    create_diverter_for_classifier,
+)
+
 __all__ = [
     # Cyclone Body
     "CycloneBody",
@@ -164,4 +205,33 @@ __all__ = [
     "FlowDamper",
     "DamperParams",
     "create_standard_damper",
+    # Round Duct
+    "RoundDuct",
+    "RoundDuctParams",
+    "create_standard_round_duct",
+    # Rectangular Duct
+    "RectangularDuct",
+    "RectangularDuctParams",
+    "create_standard_rectangular_duct",
+    "create_duct_for_flow",
+    # Transition
+    "Transition",
+    "TransitionParams",
+    "create_round_reducer",
+    "create_round_to_rect_transition",
+    "create_rect_to_round_transition",
+    # Elbow
+    "Elbow",
+    "ElbowParams",
+    "create_90_degree_elbow",
+    "create_45_degree_elbow",
+    "create_mitered_elbow",
+    "create_elbow_with_vanes",
+    # Diverter Valve
+    "DiverterValve",
+    "DiverterValveParams",
+    "create_flap_diverter",
+    "create_rotating_diverter",
+    "create_plug_diverter",
+    "create_diverter_for_classifier",
 ]

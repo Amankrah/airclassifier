@@ -6,6 +6,7 @@ Tests for:
 - ClassificationSystemAssembly
 - FeedSystemAssembly
 - AirSystemAssembly
+- DuctworkSystemAssembly
 """
 
 import pytest
@@ -24,6 +25,9 @@ from airclassifier.geometry.assembly import (
     # Air System
     AirSystemAssembly, AirSystemParams,
     create_standard_air_system, create_air_system_for_classifier,
+    # Ductwork System
+    DuctworkSystemAssembly, DuctworkSystemParams,
+    create_standard_ductwork, create_ductwork_for_classifier, create_simple_duct_run,
 )
 
 
@@ -341,6 +345,132 @@ class TestAirSystemAssembly:
 
 
 # =============================================================================
+# DUCTWORK SYSTEM TESTS
+# =============================================================================
+
+class TestDuctworkSystemParams:
+    """Tests for DuctworkSystemParams."""
+
+    def test_params_creation(self):
+        """Test creating params with valid values."""
+        params = DuctworkSystemParams()
+        assert params.main_duct_diameter == 0.2
+        assert params.total_length == 5.0
+
+    def test_params_custom(self):
+        """Test creating params with custom values."""
+        params = DuctworkSystemParams(
+            main_duct_diameter=0.25,
+            total_length=10.0,
+            num_elbows=3,
+        )
+        assert params.main_duct_diameter == 0.25
+        assert params.num_elbows == 3
+
+    def test_equivalent_length(self):
+        """Test equivalent length calculation."""
+        params = DuctworkSystemParams(
+            main_duct_diameter=0.2,
+            total_length=5.0,
+            num_elbows=2,
+            num_45_elbows=1,
+        )
+        L_eq = params.total_equivalent_length
+        # Should be greater than total_length due to fittings
+        assert L_eq > params.total_length
+
+
+class TestDuctworkSystemAssembly:
+    """Tests for DuctworkSystemAssembly."""
+
+    @pytest.fixture
+    def ductwork(self):
+        """Create a standard ductwork system."""
+        return create_standard_ductwork(
+            main_diameter=0.2,
+            total_length=5.0,
+            num_elbows=2
+        )
+
+    def test_system_creation(self, ductwork):
+        """Test system is created correctly."""
+        assert len(ductwork._components) > 0
+        assert ductwork.params.main_duct_diameter == 0.2
+
+    def test_build_mesh(self, ductwork):
+        """Test mesh building."""
+        verts, idx = ductwork.build_mesh()
+
+        assert verts.ndim == 2
+        assert verts.shape[1] == 3
+        assert len(idx) % 3 == 0
+        assert len(verts) > 100
+
+    def test_get_bounds(self, ductwork):
+        """Test bounding box."""
+        min_c, max_c = ductwork.get_bounds()
+
+        assert len(min_c) == 3
+        assert len(max_c) == 3
+        assert np.all(max_c >= min_c)
+
+    def test_get_component(self, ductwork):
+        """Test getting components by name."""
+        duct = ductwork.get_component('duct_0')
+        assert duct is not None
+
+    def test_get_component_names(self, ductwork):
+        """Test getting component names."""
+        names = ductwork.get_component_names()
+        assert len(names) > 0
+        assert 'duct_0' in names
+
+    def test_get_total_pressure_drop(self, ductwork):
+        """Test pressure drop calculation."""
+        flow_rate = 0.1  # m³/s
+        dp = ductwork.get_total_pressure_drop(flow_rate)
+        assert dp > 0
+
+    def test_get_system_summary(self, ductwork):
+        """Test system summary."""
+        summary = ductwork.get_system_summary()
+        assert 'main_diameter_m' in summary
+        assert 'total_length_m' in summary
+        assert 'num_components' in summary
+
+    def test_ductwork_for_classifier(self):
+        """Test ductwork sized for classifier."""
+        ductwork = create_ductwork_for_classifier(
+            flow_rate_m3_h=3000,
+            target_velocity=15.0,
+            run_length=8.0,
+            num_turns=3,
+            include_diverter=True
+        )
+        assert ductwork.params.has_diverter
+        assert ductwork.params.num_elbows == 3
+
+    def test_simple_duct_run(self):
+        """Test simple straight duct run."""
+        ductwork = create_simple_duct_run(
+            diameter=0.2,
+            length=2.0
+        )
+        assert ductwork.params.num_elbows == 0
+        assert ductwork.params.has_diverter == False
+
+    def test_ductwork_with_diverter(self):
+        """Test ductwork with diverter."""
+        ductwork = create_standard_ductwork(
+            main_diameter=0.2,
+            total_length=5.0,
+            has_diverter=True
+        )
+        assert ductwork.params.has_diverter
+        assert 'diverter' in ductwork.get_component_names()
+
+
+# =============================================================================
 # MESH QUALITY TESTS
 # =============================================================================
 
@@ -355,6 +485,7 @@ class TestAssemblyMeshQuality:
             'classification': create_standard_classification_system(device="cpu"),
             'feed': create_standard_feed_system(device="cpu"),
             'air': create_standard_air_system(device="cpu"),
+            'ductwork': create_standard_ductwork(main_diameter=0.2, total_length=3.0),
         }
 
     def test_no_nan_vertices(self, all_assemblies):
@@ -391,6 +522,7 @@ class TestAssemblyIntegration:
             create_standard_classification_system(device="cpu"),
             create_standard_feed_system(device="cpu"),
             create_standard_air_system(device="cpu"),
+            create_standard_ductwork(main_diameter=0.2, total_length=3.0),
         ]
 
         for assembly in assemblies:
@@ -408,8 +540,10 @@ class TestAssemblyIntegration:
             ClassificationSystemAssembly,
             FeedSystemAssembly,
             AirSystemAssembly,
+            DuctworkSystemAssembly,
         )
         assert CycloneAssembly is not None
         assert ClassificationSystemAssembly is not None
         assert FeedSystemAssembly is not None
         assert AirSystemAssembly is not None
+        assert DuctworkSystemAssembly is not None

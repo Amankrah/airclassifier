@@ -472,7 +472,7 @@ class CollectionBinParams:
 ## 5. Ductwork and Transitions
 
 ### 5.1 Round Duct
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/ductwork.py`
 
 ```python
@@ -490,7 +490,7 @@ class RoundDuctParams:
 ---
 
 ### 5.2 Rectangular Duct
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/ductwork.py`
 
 ```python
@@ -507,7 +507,7 @@ class RectangularDuctParams:
 ---
 
 ### 5.3 Duct Transitions
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/transitions.py`
 
 ```python
@@ -531,7 +531,7 @@ class TransitionParams:
 ---
 
 ### 5.4 Elbows and Bends
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/elbows.py`
 
 ```python
@@ -556,8 +556,8 @@ class ElbowParams:
 ---
 
 ### 5.5 Y-Branch / Wye
-**Status:** ❌ Not Started  
-**Module:** `geometry/components/branches.py`
+**Status:** ✅ Implemented  
+**Module:** `geometry/components/diverter.py` (as DiverterValve)
 
 ```python
 @dataclass
@@ -573,7 +573,7 @@ class WyeBranchParams:
 ---
 
 ### 5.6 Diverter Valve
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/diverter.py`
 
 ```python
@@ -833,10 +833,10 @@ class StructuralFrameParams:
 11. ✅ Flow Dampers - `geometry/components/damper.py`
 
 ### Phase 4: Ductwork
-12. ❌ Round Ducts
-13. ❌ Transitions
-14. ❌ Elbows
-15. ❌ Diverters
+12. ✅ Round Ducts - `geometry/components/ductwork.py`
+13. ✅ Transitions - `geometry/components/transitions.py`
+14. ✅ Elbows - `geometry/components/elbows.py`
+15. ✅ Diverters - `geometry/components/diverter.py`
 
 ### Phase 5: Safety & Instrumentation
 16. ❌ Explosion Vents
