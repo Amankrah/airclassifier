@@ -15,6 +15,12 @@ Phase 1 - Core Classification:
 - VenturiEducator: Particle entrainment into airstream
 - MultiCycloneSystem: Staged cyclone collection
 - BagFilter: Fine particle collection
+
+Phase 2 - Feed System:
+- FeedHopper: Powder storage and discharge
+- RotaryAirlock: Pressure sealing valve
+- ScrewFeeder: Controlled powder dosing
+- Deagglomerator: Lump breaking
 """
 
 from .cyclone_body import CycloneBody, CycloneBodyParams, cyclone_body_sdf
@@ -45,6 +51,28 @@ from .bag_filter import (
     BagFilter,
     BagFilterParams,
     create_standard_bag_filter,
+)
+
+# Phase 2 Components - Feed System
+from .feed_hopper import (
+    FeedHopper,
+    FeedHopperParams,
+    create_standard_feed_hopper,
+)
+from .rotary_airlock import (
+    RotaryAirlock,
+    RotaryAirlockParams,
+    create_standard_rotary_airlock,
+)
+from .screw_feeder import (
+    ScrewFeeder,
+    ScrewFeederParams,
+    create_standard_screw_feeder,
+)
+from .deagglomerator import (
+    Deagglomerator,
+    DeagglomeratorParams,
+    create_standard_deagglomerator,
 )
 
 __all__ = [
@@ -86,4 +114,20 @@ __all__ = [
     "BagFilter",
     "BagFilterParams",
     "create_standard_bag_filter",
+    # Feed Hopper
+    "FeedHopper",
+    "FeedHopperParams",
+    "create_standard_feed_hopper",
+    # Rotary Airlock
+    "RotaryAirlock",
+    "RotaryAirlockParams",
+    "create_standard_rotary_airlock",
+    # Screw Feeder
+    "ScrewFeeder",
+    "ScrewFeederParams",
+    "create_standard_screw_feeder",
+    # Deagglomerator
+    "Deagglomerator",
+    "DeagglomeratorParams",
+    "create_standard_deagglomerator",
 ]
