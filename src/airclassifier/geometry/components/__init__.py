@@ -41,6 +41,12 @@ Phase 5 - Safety & Instrumentation:
 - TemperaturePort: Thermowells for temperature measurement
 - SamplePort: Sample extraction ports
 - SightGlass: Visual inspection windows
+
+Phase 6 - Support & Exhaust:
+- EquipmentLegs: Tubular, channel, and adjustable legs
+- StructuralFrame: Bolted/welded support frames with platforms
+- Silencer: Acoustic silencers/mufflers
+- ExhaustStack: Exhaust stacks with rain caps
 """
 
 from .cyclone_body import CycloneBody, CycloneBodyParams, cyclone_body_sdf
@@ -183,6 +189,36 @@ from .instrumentation import (
     create_illuminated_sight_glass,
 )
 
+# Phase 6 Components - Support Structures
+from .supports import (
+    EquipmentLegs,
+    EquipmentLegParams,
+    create_tubular_legs,
+    create_adjustable_legs,
+    create_channel_legs,
+    StructuralFrame,
+    StructuralFrameParams,
+    create_standard_frame,
+    create_equipment_skid,
+    create_mezzanine_frame,
+)
+
+# Phase 6 Components - Exhaust
+from .silencer import (
+    Silencer,
+    SilencerParams,
+    create_absorptive_silencer,
+    create_splitter_silencer,
+    create_reactive_silencer,
+)
+from .exhaust_stack import (
+    ExhaustStack,
+    ExhaustStackParams,
+    create_standard_exhaust_stack,
+    create_tall_stack,
+    create_short_vent_stack,
+)
+
 __all__ = [
     # Cyclone Body
     "CycloneBody",
@@ -314,4 +350,28 @@ __all__ = [
     "SightGlassParams",
     "create_standard_sight_glass",
     "create_illuminated_sight_glass",
+    # Equipment Legs
+    "EquipmentLegs",
+    "EquipmentLegParams",
+    "create_tubular_legs",
+    "create_adjustable_legs",
+    "create_channel_legs",
+    # Structural Frame
+    "StructuralFrame",
+    "StructuralFrameParams",
+    "create_standard_frame",
+    "create_equipment_skid",
+    "create_mezzanine_frame",
+    # Silencer
+    "Silencer",
+    "SilencerParams",
+    "create_absorptive_silencer",
+    "create_splitter_silencer",
+    "create_reactive_silencer",
+    # Exhaust Stack
+    "ExhaustStack",
+    "ExhaustStackParams",
+    "create_standard_exhaust_stack",
+    "create_tall_stack",
+    "create_short_vent_stack",
 ]

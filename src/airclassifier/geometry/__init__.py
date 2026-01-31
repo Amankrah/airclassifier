@@ -56,6 +56,12 @@ from .components import (
     create_flanged_thermowell, create_weld_thermowell,
     SamplePort, SamplePortParams, create_ball_valve_sample_port, create_isokinetic_sample_port,
     SightGlass, SightGlassParams, create_standard_sight_glass, create_illuminated_sight_glass,
+    # Phase 6 Components - Support Structures
+    EquipmentLegs, EquipmentLegParams, create_tubular_legs, create_adjustable_legs, create_channel_legs,
+    StructuralFrame, StructuralFrameParams, create_standard_frame, create_equipment_skid, create_mezzanine_frame,
+    # Phase 6 Components - Exhaust
+    Silencer, SilencerParams, create_absorptive_silencer, create_splitter_silencer, create_reactive_silencer,
+    ExhaustStack, ExhaustStackParams, create_standard_exhaust_stack, create_tall_stack, create_short_vent_stack,
 )
 
 from .assembly import (
@@ -90,6 +96,12 @@ from .assembly import (
     create_standard_safety_instrumentation,
     create_minimal_instrumentation,
     create_full_instrumentation,
+    # Support & Exhaust System (Phase 6)
+    SupportExhaustAssembly,
+    SupportExhaustParams,
+    create_standard_support_exhaust,
+    create_compact_support,
+    create_industrial_support,
 )
 
 from .sdf import (
@@ -189,6 +201,18 @@ __all__ = [
     "create_standard_safety_instrumentation",
     "create_minimal_instrumentation",
     "create_full_instrumentation",
+    # Phase 6 Components - Support Structures
+    "EquipmentLegs", "EquipmentLegParams", "create_tubular_legs", "create_adjustable_legs", "create_channel_legs",
+    "StructuralFrame", "StructuralFrameParams", "create_standard_frame", "create_equipment_skid", "create_mezzanine_frame",
+    # Phase 6 Components - Exhaust
+    "Silencer", "SilencerParams", "create_absorptive_silencer", "create_splitter_silencer", "create_reactive_silencer",
+    "ExhaustStack", "ExhaustStackParams", "create_standard_exhaust_stack", "create_tall_stack", "create_short_vent_stack",
+    # Support & Exhaust System Assembly (Phase 6)
+    "SupportExhaustAssembly",
+    "SupportExhaustParams",
+    "create_standard_support_exhaust",
+    "create_compact_support",
+    "create_industrial_support",
     # SDF
     "CycloneSDF",
     "CycloneSDFParams",

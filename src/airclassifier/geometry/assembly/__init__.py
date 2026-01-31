@@ -26,6 +26,10 @@ Ductwork System (Phase 4):
 Safety & Instrumentation System (Phase 5):
 - SafetyInstrumentationAssembly: Explosion vents + Grounding + Instrumentation
 - SafetyInstrumentationParams: Safety/instrumentation system parameters
+
+Support & Exhaust System (Phase 6):
+- SupportExhaustAssembly: Frame + Legs + Silencer + Exhaust Stack
+- SupportExhaustParams: Support/exhaust system parameters
 """
 
 from .cyclone import (
@@ -71,6 +75,14 @@ from .safety_instrumentation import (
     create_full_instrumentation,
 )
 
+from .support_exhaust import (
+    SupportExhaustAssembly,
+    SupportExhaustParams,
+    create_standard_support_exhaust,
+    create_compact_support,
+    create_industrial_support,
+)
+
 __all__ = [
     # Cyclone Assembly
     "CycloneAssembly",
@@ -103,4 +115,10 @@ __all__ = [
     "create_standard_safety_instrumentation",
     "create_minimal_instrumentation",
     "create_full_instrumentation",
+    # Support & Exhaust System (Phase 6)
+    "SupportExhaustAssembly",
+    "SupportExhaustParams",
+    "create_standard_support_exhaust",
+    "create_compact_support",
+    "create_industrial_support",
 ]

@@ -612,7 +612,7 @@ class ExhaustFanParams:
 ---
 
 ### 6.2 Silencer / Muffler
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/silencer.py`
 
 ```python
@@ -631,7 +631,7 @@ class SilencerParams:
 ---
 
 ### 6.3 Exhaust Stack
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/exhaust_stack.py`
 
 ```python
@@ -776,7 +776,7 @@ class SightGlassParams:
 ## 9. Support Structures
 
 ### 9.1 Equipment Legs / Supports
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/supports/legs.py`
 
 ```python
@@ -794,7 +794,7 @@ class EquipmentLegParams:
 ---
 
 ### 9.2 Structural Frame
-**Status:** ❌ Not Started  
+**Status:** ✅ Implemented  
 **Module:** `geometry/components/supports/frame.py`
 
 ```python
@@ -845,9 +845,12 @@ class StructuralFrameParams:
 19. ✅ Sample Ports - `geometry/components/instrumentation/sample_port.py`
 
 ### Phase 6: Support & Exhaust
-20. ❌ Support Structures
-21. ❌ Silencer
-22. ❌ Exhaust Stack
+20. ✅ Support Structures - `geometry/components/supports/`
+21. ✅ Silencer - `geometry/components/silencer.py`
+22. ✅ Exhaust Stack - `geometry/components/exhaust_stack.py`
+
+### Phase 7: System Integration 
+23.creating a CompleteClassifierAssembly that combines all phases together with proper instrumentation placement
 
 ---
 
@@ -911,6 +914,28 @@ class StructuralFrameParams:
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 
+
+## Component Status Analysis
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Venturi Eductor | ✅ Implemented | The doc has inconsistent status - it's in venturi_eductor.py |
+| Air Heater | ❌ Not Started | Optional for humidity/temperature control |
+| Turbo/Rotor Classifier | ❌ Not Started | Alternative to zigzag (finer cuts) |
+| Counterflow Classifier | ❌ Not Started | Alternative classifier type |
+| Elutriator Column | ❌ Not Started | Alternative classifier type |
+| Collection Bins/Hoppers | ❌ Not Started | Product collection vessels |
+| Exhaust Fan | ❌ Not Started | Could reuse CentrifugalBlower |
+| Explosion Isolation Valve | ❌ Not Started | Extends rotary airlock concept |
+
+These are secondary/optional components that weren't included in the main 6-phase implementation plan. They provide:
+Alternative classifiers (Turbo, Counterflow, Elutriator) - for different separation needs
+Auxiliary equipment (Air Heater, Collection Bins) - for complete plant
+Safety redundancy (Explosion Isolation) - enhanced protection
+Would you like me to implement these remaining components? I can organize them as:
+Phase 7A: Alternative Classifiers (Turbo, Counterflow, Elutriator)
+Phase 7B: Auxiliary Equipment (Air Heater, Collection Bins, Exhaust Fan, Explosion Isolation)
+Or we could proceed directly to the System Integration phase that combines all existing components. Which would you prefer?
 ---
 
 ## References
