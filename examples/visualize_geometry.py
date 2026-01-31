@@ -8,12 +8,36 @@ This script demonstrates how to visualize and inspect air classifier geometries:
 - Complete classifier system
 
 Run modes:
-    python visualize_geometry.py                    # Interactive menu
-    python visualize_geometry.py --component        # Single component
-    python visualize_geometry.py --assembly         # Assembled system
-    python visualize_geometry.py --complete         # Complete system
-    python visualize_geometry.py --all              # All visualizations
-    python visualize_geometry.py --export           # Export all to files
+    python examples/visualize_geometry.py                    # Interactive menu
+    python examples/visualize_geometry.py --component        # Single component
+    python examples/visualize_geometry.py --assembly         # Assembled system
+    python examples/visualize_geometry.py --complete         # Complete system
+    python examples/visualize_geometry.py --all              # All visualizations
+    python examples/visualize_geometry.py --export           # Export all to files
+
+    # Single component
+    python examples/visualize_geometry.py --component
+
+    # Feed system assembly
+    python examples/visualize_geometry.py --assembly
+
+    # Complete classifier system
+    python examples/visualize_geometry.py --complete
+
+    # Pilot-scale system  
+    python examples/visualize_geometry.py --pilot
+
+    # Production-scale system
+    python examples/visualize_geometry.py --production
+
+    # Export all geometries to STL files
+    python examples/visualize_geometry.py --export
+
+    # Export to custom directory
+    python examples/visualize_geometry.py --export -o ./my_exports
+
+    # Run all visualizations sequentially
+    python examples/visualize_geometry.py --all
 
 Requirements:
     pip install pyvista  # For high-quality 3D (recommended)

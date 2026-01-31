@@ -12,11 +12,12 @@ Principle:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 import numpy as np
 import warp as wp
 
 from ...utils.constants import PI, TWO_PI
+from ..connection_ports import ConnectionPort, PortType
 
 
 @dataclass
@@ -369,36 +370,53 @@ class Deagglomerator:
                     indices.extend([v0, v2, v3])
 
     def _generate_inlet(self, vertices: List, indices: List, normals: List):
-        """Generate inlet chute."""
+        """Generate circular inlet neck with flange."""
         p = self.params
-        n_radial = p.resolution_radial // 2
+        n_radial = max(16, p.resolution_radial // 2)
 
         start_idx = len(vertices)
         r = p.inlet_diameter / 2
-        inlet_length = p.inlet_diameter
+        inlet_length = p.inlet_diameter * 0.6  # Neck length
+        flange_radius = r * 1.3
 
         # Inlet on top of housing
         if p.axis == "x":
-            # Inlet at center, pointing up (+Y)
             x_center = p.center[0]
             y_base = p.center[1] + p.housing_radius
+            y_top = y_base + inlet_length
             z_center = p.center[2]
 
-            for i in range(2):
-                y = y_base + i * inlet_length
-                for j in range(n_radial):
-                    theta = (j / n_radial) * TWO_PI
-                    x = x_center + r * np.cos(theta)
-                    z = z_center + r * np.sin(theta)
-                    vertices.append([x, y, z])
-                    normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            # Bottom ring (at housing)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + r * np.cos(theta)
+                z = z_center + r * np.sin(theta)
+                vertices.append([x, y_base, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Top ring (neck end)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + r * np.cos(theta)
+                z = z_center + r * np.sin(theta)
+                vertices.append([x, y_top, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Flange ring at top
+            flange_start = len(vertices)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + flange_radius * np.cos(theta)
+                z = z_center + flange_radius * np.sin(theta)
+                vertices.append([x, y_top, z])
+                normals.append([0.0, 1.0, 0.0])
         else:
-            # Simplified for other axes
-            for _ in range(n_radial * 2):
+            for _ in range(n_radial * 3):
                 vertices.append([p.center[0], p.center[1], p.center[2]])
                 normals.append([0.0, 1.0, 0.0])
+            flange_start = start_idx + n_radial * 2
 
-        # Triangles
+        # Neck cylinder triangles
         for j in range(n_radial):
             j_next = (j + 1) % n_radial
             v0 = start_idx + j
@@ -408,36 +426,66 @@ class Deagglomerator:
 
             indices.extend([v0, v1, v2])
             indices.extend([v0, v2, v3])
+        
+        # Flange face
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            v0 = start_idx + n_radial + j
+            v1 = start_idx + n_radial + j_next
+            v2 = flange_start + j_next
+            v3 = flange_start + j
+
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
 
     def _generate_outlet(self, vertices: List, indices: List, normals: List):
-        """Generate outlet."""
+        """Generate circular outlet neck with flange."""
         p = self.params
-        n_radial = p.resolution_radial // 2
+        n_radial = max(16, p.resolution_radial // 2)
 
         start_idx = len(vertices)
         r = p.outlet_diameter / 2
-        outlet_length = p.outlet_diameter
+        outlet_length = p.outlet_diameter * 0.6  # Neck length
+        flange_radius = r * 1.3
 
         # Outlet at bottom of housing
         if p.axis == "x":
             x_center = p.center[0]
             y_base = p.center[1] - p.housing_radius
+            y_bottom = y_base - outlet_length
             z_center = p.center[2]
 
-            for i in range(2):
-                y = y_base - i * outlet_length
-                for j in range(n_radial):
-                    theta = (j / n_radial) * TWO_PI
-                    x = x_center + r * np.cos(theta)
-                    z = z_center + r * np.sin(theta)
-                    vertices.append([x, y, z])
-                    normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            # Top ring (at housing)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + r * np.cos(theta)
+                z = z_center + r * np.sin(theta)
+                vertices.append([x, y_base, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Bottom ring (outlet end)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + r * np.cos(theta)
+                z = z_center + r * np.sin(theta)
+                vertices.append([x, y_bottom, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Flange ring at bottom
+            flange_start = len(vertices)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + flange_radius * np.cos(theta)
+                z = z_center + flange_radius * np.sin(theta)
+                vertices.append([x, y_bottom, z])
+                normals.append([0.0, -1.0, 0.0])
         else:
-            for _ in range(n_radial * 2):
+            for _ in range(n_radial * 3):
                 vertices.append([p.center[0], p.center[1], p.center[2]])
                 normals.append([0.0, -1.0, 0.0])
+            flange_start = start_idx + n_radial * 2
 
-        # Triangles
+        # Neck cylinder triangles
         for j in range(n_radial):
             j_next = (j + 1) % n_radial
             v0 = start_idx + j
@@ -446,6 +494,18 @@ class Deagglomerator:
             v3 = start_idx + n_radial + j
 
             indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+        
+        # Flange face
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            v0 = start_idx + n_radial + j
+            v1 = start_idx + n_radial + j_next
+            v2 = flange_start + j_next
+            v3 = flange_start + j
+
+            indices.extend([v0, v2, v1])  # Reversed for facing down
+            indices.extend([v0, v3, v2])
             indices.extend([v0, v2, v3])
 
     def _generate_end_plates(self, vertices: List, indices: List, normals: List):
@@ -536,6 +596,65 @@ class Deagglomerator:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    @property
+    def ports(self) -> Dict[str, ConnectionPort]:
+        """
+        Get connection ports for this component.
+        
+        The port positions represent the ACTUAL CONNECTION SURFACES where
+        components physically meet (at flange faces).
+        
+        Returns:
+            Dictionary of port name to ConnectionPort:
+            - 'inlet': Top inlet for material from feeder (circular with flange)
+            - 'outlet': Bottom outlet to classifier/conveyor (circular with flange)
+        """
+        p = self.params
+        
+        # Neck lengths (must match _generate_inlet and _generate_outlet)
+        inlet_neck_length = p.inlet_diameter * 0.6
+        outlet_neck_length = p.outlet_diameter * 0.6
+        
+        if p.axis == "x":
+            # Housing along X, inlet/outlet on Y axis
+            inlet_pos = (0.0, p.housing_radius + inlet_neck_length, 0.0)
+            inlet_dir = (0.0, 1.0, 0.0)  # Points up
+            outlet_pos = (0.0, -(p.housing_radius + outlet_neck_length), 0.0)
+            outlet_dir = (0.0, -1.0, 0.0)  # Points down
+        elif p.axis == "y":
+            # Housing along Y, inlet/outlet on Z axis
+            inlet_pos = (0.0, 0.0, p.housing_radius + inlet_neck_length)
+            inlet_dir = (0.0, 0.0, 1.0)
+            outlet_pos = (0.0, 0.0, -(p.housing_radius + outlet_neck_length))
+            outlet_dir = (0.0, 0.0, -1.0)
+        else:  # z-axis
+            # Housing along Z, inlet/outlet on Y axis
+            inlet_pos = (0.0, p.housing_radius + inlet_neck_length, 0.0)
+            inlet_dir = (0.0, 1.0, 0.0)
+            outlet_pos = (0.0, -(p.housing_radius + outlet_neck_length), 0.0)
+            outlet_dir = (0.0, -1.0, 0.0)
+        
+        return {
+            'inlet': ConnectionPort(
+                position=inlet_pos,
+                direction=inlet_dir,
+                diameter=p.inlet_diameter,
+                port_type=PortType.FLANGED,
+                name="deagglomerator_inlet",
+                flange_diameter=p.inlet_diameter * 1.3,
+                compatible_types=[PortType.CIRCULAR, PortType.GRAVITY, PortType.FLANGED],
+            ),
+            'outlet': ConnectionPort(
+                position=outlet_pos,
+                direction=outlet_dir,
+                diameter=p.outlet_diameter,
+                port_type=PortType.FLANGED,
+                name="deagglomerator_outlet",
+                flange_diameter=p.outlet_diameter * 1.3,
+                compatible_types=[PortType.CIRCULAR, PortType.GRAVITY, PortType.FLANGED],
+            ),
+        }
 
 
 def create_standard_deagglomerator(

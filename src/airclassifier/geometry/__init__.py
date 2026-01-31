@@ -5,6 +5,17 @@ This module provides all geometric primitives, components, and assembly
 functionality for building cyclone geometries and complete classification systems.
 """
 
+from .connection_ports import (
+    ConnectionPort,
+    PortType,
+    PortAlignment,
+    calculate_alignment,
+    connect_in_series,
+    get_connection_point,
+    validate_assembly_connections,
+    print_connection_report,
+)
+
 from .primitives import (
     Cylinder, CylinderParams,
     Cone, ConeParams,
@@ -240,4 +251,13 @@ __all__ = [
     "export_mesh_vtk",
     "export_mesh_stl",
     "create_sampling_points",
+    # Connection Ports
+    "ConnectionPort",
+    "PortType",
+    "PortAlignment",
+    "calculate_alignment",
+    "connect_in_series",
+    "get_connection_point",
+    "validate_assembly_connections",
+    "print_connection_report",
 ]

@@ -12,11 +12,12 @@ Principle:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 import numpy as np
 import warp as wp
 
 from ...utils.constants import PI, TWO_PI
+from ..connection_ports import ConnectionPort, PortType
 
 
 @dataclass
@@ -368,84 +369,58 @@ class ScrewFeeder:
             indices.extend([v0, v2, v3])
 
     def _generate_inlet(self, vertices: List, indices: List, normals: List):
-        """Generate inlet hopper connection."""
+        """Generate circular inlet neck for material from airlock."""
         p = self.params
+        n_radial = max(16, p.resolution_radial // 2)
 
         start_idx = len(vertices)
-        inlet_height = p.inlet_width * 0.5
-
-        # Rectangular inlet opening
-        hw = p.inlet_width / 2
-        hl = p.inlet_length / 2
+        
+        # Circular inlet diameter sized to match airlock outlet
+        inlet_diameter = min(p.inlet_width, p.inlet_length) * 0.8
+        r = inlet_diameter / 2
+        neck_height = inlet_diameter * 0.5  # Height of inlet neck
+        flange_radius = r * 1.3  # Flange is larger than neck
 
         if p.axis == "x":
-            # Inlet at start, pointing up (+Y)
-            x_center = p.center[0] + hl
+            # Inlet at start of trough, pointing up (+Y)
+            x_center = p.center[0] + p.inlet_length / 2
             y_base = p.center[1] + p.trough_radius
+            y_top = y_base + neck_height
             z_center = p.center[2]
 
-            corners = [
-                [x_center - hl, y_base, z_center - hw],
-                [x_center + hl, y_base, z_center - hw],
-                [x_center + hl, y_base, z_center + hw],
-                [x_center - hl, y_base, z_center + hw],
-                [x_center - hl, y_base + inlet_height, z_center - hw],
-                [x_center + hl, y_base + inlet_height, z_center - hw],
-                [x_center + hl, y_base + inlet_height, z_center + hw],
-                [x_center - hl, y_base + inlet_height, z_center + hw],
-            ]
+            # Bottom ring (at trough)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + r * np.cos(theta)
+                z = z_center + r * np.sin(theta)
+                vertices.append([x, y_base, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Top ring (connection point)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + r * np.cos(theta)
+                z = z_center + r * np.sin(theta)
+                vertices.append([x, y_top, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Flange ring at top
+            flange_start = len(vertices)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + flange_radius * np.cos(theta)
+                z = z_center + flange_radius * np.sin(theta)
+                vertices.append([x, y_top, z])
+                normals.append([0.0, 1.0, 0.0])
+                
         else:
             # Simplified for other axes
-            corners = [[p.center[0], p.center[1], p.center[2]] for _ in range(8)]
-
-        for corner in corners:
-            vertices.append(corner)
-            normals.append([0.0, 1.0, 0.0])
-
-        # Side faces of inlet
-        # Front
-        indices.extend([start_idx, start_idx + 4, start_idx + 5])
-        indices.extend([start_idx, start_idx + 5, start_idx + 1])
-        # Back
-        indices.extend([start_idx + 2, start_idx + 6, start_idx + 7])
-        indices.extend([start_idx + 2, start_idx + 7, start_idx + 3])
-        # Left
-        indices.extend([start_idx + 3, start_idx + 7, start_idx + 4])
-        indices.extend([start_idx + 3, start_idx + 4, start_idx])
-        # Right
-        indices.extend([start_idx + 1, start_idx + 5, start_idx + 6])
-        indices.extend([start_idx + 1, start_idx + 6, start_idx + 2])
-
-    def _generate_outlet(self, vertices: List, indices: List, normals: List):
-        """Generate outlet discharge."""
-        p = self.params
-        n_radial = p.resolution_radial // 2
-
-        start_idx = len(vertices)
-        r = p.outlet_diameter / 2
-        outlet_length = p.outlet_diameter
-
-        # Outlet at end of trough, pointing down
-        if p.axis == "x":
-            x_center = p.center[0] + p.trough_length - p.outlet_diameter
-            y_center = p.center[1] - p.trough_radius
-            z_center = p.center[2]
-
-            for i in range(2):
-                y = y_center - i * outlet_length
-                for j in range(n_radial):
-                    theta = (j / n_radial) * TWO_PI
-                    x = x_center + r * np.cos(theta)
-                    z = z_center + r * np.sin(theta)
-                    vertices.append([x, y, z])
-                    normals.append([np.cos(theta), 0.0, np.sin(theta)])
-        else:
-            # Simplified
-            for _ in range(n_radial * 2):
+            for _ in range(n_radial * 3):
                 vertices.append([p.center[0], p.center[1], p.center[2]])
-                normals.append([0.0, -1.0, 0.0])
+                normals.append([0.0, 1.0, 0.0])
+            flange_start = start_idx + n_radial * 2
 
-        # Triangles
+        # Neck cylinder triangles
         for j in range(n_radial):
             j_next = (j + 1) % n_radial
             v0 = start_idx + j
@@ -455,6 +430,88 @@ class ScrewFeeder:
 
             indices.extend([v0, v1, v2])
             indices.extend([v0, v2, v3])
+        
+        # Flange face (annular ring from neck to flange)
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            v0 = start_idx + n_radial + j
+            v1 = start_idx + n_radial + j_next
+            v2 = flange_start + j_next
+            v3 = flange_start + j
+
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+
+    def _generate_outlet(self, vertices: List, indices: List, normals: List):
+        """Generate circular outlet neck for discharge to deagglomerator."""
+        p = self.params
+        n_radial = max(16, p.resolution_radial // 2)
+
+        start_idx = len(vertices)
+        r = p.outlet_diameter / 2
+        outlet_length = p.outlet_diameter * 0.6  # Neck length
+        flange_radius = r * 1.3  # Flange larger than neck
+
+        # Outlet at end of trough, pointing down (-Y)
+        if p.axis == "x":
+            x_center = p.center[0] + p.trough_length
+            y_base = p.center[1] - p.trough_radius
+            y_bottom = y_base - outlet_length
+            z_center = p.center[2]
+
+            # Top ring (at trough bottom)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + r * np.cos(theta)
+                z = z_center + r * np.sin(theta)
+                vertices.append([x, y_base, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Bottom ring (outlet end)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + r * np.cos(theta)
+                z = z_center + r * np.sin(theta)
+                vertices.append([x, y_bottom, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Flange ring at bottom
+            flange_start = len(vertices)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + flange_radius * np.cos(theta)
+                z = z_center + flange_radius * np.sin(theta)
+                vertices.append([x, y_bottom, z])
+                normals.append([0.0, -1.0, 0.0])
+                
+        else:
+            # Simplified for other axes
+            for _ in range(n_radial * 3):
+                vertices.append([p.center[0], p.center[1], p.center[2]])
+                normals.append([0.0, -1.0, 0.0])
+            flange_start = start_idx + n_radial * 2
+
+        # Neck cylinder triangles
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_radial + j_next
+            v3 = start_idx + n_radial + j
+
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+        
+        # Flange face (annular ring)
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            v0 = start_idx + n_radial + j
+            v1 = start_idx + n_radial + j_next
+            v2 = flange_start + j_next
+            v3 = flange_start + j
+
+            indices.extend([v0, v2, v1])  # Reversed for facing down
+            indices.extend([v0, v3, v2])
 
     def get_feed_rate(self, rpm: float = None, bulk_density: float = 500.0) -> float:
         """
@@ -507,6 +564,73 @@ class ScrewFeeder:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    @property
+    def ports(self) -> Dict[str, ConnectionPort]:
+        """
+        Get connection ports for this component.
+        
+        The port positions represent the ACTUAL CONNECTION SURFACES where
+        components physically meet (at flange faces).
+        
+        Returns:
+            Dictionary of port name to ConnectionPort:
+            - 'inlet': Top inlet for material from airlock (circular)
+            - 'outlet': Discharge outlet at end of trough (circular)
+        """
+        p = self.params
+        
+        # Circular inlet diameter (must match _generate_inlet)
+        inlet_diameter = min(p.inlet_width, p.inlet_length) * 0.8
+        inlet_neck_height = inlet_diameter * 0.5
+        
+        # Inlet is at start of trough, pointing up
+        inlet_top_y = p.trough_radius + inlet_neck_height
+        
+        # Outlet at end of trough (must match _generate_outlet)
+        outlet_neck_length = p.outlet_diameter * 0.6
+        outlet_bottom_y = -p.trough_radius - outlet_neck_length
+        
+        if p.axis == "x":
+            # Inlet centered at start of trough
+            inlet_x = p.inlet_length / 2
+            inlet_pos = (inlet_x, inlet_top_y, 0.0)
+            inlet_dir = (0.0, 1.0, 0.0)  # Points up
+            
+            # Outlet at end of trough
+            outlet_pos = (p.trough_length, outlet_bottom_y, 0.0)
+            outlet_dir = (0.0, -1.0, 0.0)  # Points down
+        elif p.axis == "y":
+            inlet_pos = (inlet_top_y, p.inlet_length / 2, 0.0)
+            inlet_dir = (1.0, 0.0, 0.0)
+            outlet_pos = (outlet_bottom_y, p.trough_length, 0.0)
+            outlet_dir = (-1.0, 0.0, 0.0)
+        else:  # z-axis
+            inlet_pos = (0.0, inlet_top_y, p.inlet_length / 2)
+            inlet_dir = (0.0, 1.0, 0.0)
+            outlet_pos = (0.0, outlet_bottom_y, p.trough_length)
+            outlet_dir = (0.0, -1.0, 0.0)
+        
+        return {
+            'inlet': ConnectionPort(
+                position=inlet_pos,
+                direction=inlet_dir,
+                diameter=inlet_diameter,
+                port_type=PortType.FLANGED,
+                name="feeder_inlet",
+                flange_diameter=inlet_diameter * 1.3,
+                compatible_types=[PortType.CIRCULAR, PortType.GRAVITY, PortType.FLANGED],
+            ),
+            'outlet': ConnectionPort(
+                position=outlet_pos,
+                direction=outlet_dir,
+                diameter=p.outlet_diameter,
+                port_type=PortType.FLANGED,
+                name="feeder_outlet",
+                flange_diameter=p.outlet_diameter * 1.3,
+                compatible_types=[PortType.CIRCULAR, PortType.GRAVITY, PortType.FLANGED],
+            ),
+        }
 
 
 def create_standard_screw_feeder(

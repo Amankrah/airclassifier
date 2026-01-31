@@ -100,6 +100,11 @@ from .deagglomerator import (
     DeagglomeratorParams,
     create_standard_deagglomerator,
 )
+from .transition_connector import (
+    TransitionConnector,
+    TransitionConnectorParams,
+    create_transition_connector,
+)
 
 # Phase 3 Components - Air System
 from .centrifugal_blower import (
@@ -274,6 +279,10 @@ __all__ = [
     "Deagglomerator",
     "DeagglomeratorParams",
     "create_standard_deagglomerator",
+    # Transition Connector
+    "TransitionConnector",
+    "TransitionConnectorParams",
+    "create_transition_connector",
     # Centrifugal Blower
     "CentrifugalBlower",
     "CentrifugalBlowerParams",

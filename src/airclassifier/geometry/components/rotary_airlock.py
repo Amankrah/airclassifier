@@ -12,11 +12,12 @@ Principle:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 import numpy as np
 import warp as wp
 
 from ...utils.constants import PI, TWO_PI
+from ..connection_ports import ConnectionPort, PortType
 
 
 @dataclass
@@ -33,7 +34,11 @@ class RotaryAirlockParams:
     # Housing
     housing_thickness: float = 0.010  # [m] Housing wall thickness
 
-    # Connections
+    # Connections - circular neck diameters for flanged connections
+    inlet_diameter: float = None   # [m] Inlet neck diameter (matches hopper discharge)
+    outlet_diameter: float = None  # [m] Outlet neck diameter (matches feeder inlet)
+    
+    # Legacy rectangular dimensions (used for sizing if diameters not specified)
     inlet_width: float = None    # [m] Inlet opening width (default = rotor_length)
     inlet_length: float = None   # [m] Inlet opening length (along circumference)
     outlet_width: float = None   # [m] Outlet opening width
@@ -60,6 +65,14 @@ class RotaryAirlockParams:
             self.outlet_width = self.rotor_length * 0.9
         if self.outlet_length is None:
             self.outlet_length = self.rotor_diameter * 0.4
+        
+        # Set circular neck diameters to match rotor pocket opening
+        # This should connect properly to hopper discharge and feeder inlet
+        if self.inlet_diameter is None:
+            # Inlet diameter sized for rotor opening area
+            self.inlet_diameter = min(self.inlet_width, self.inlet_length) * 1.0
+        if self.outlet_diameter is None:
+            self.outlet_diameter = min(self.outlet_width, self.outlet_length) * 1.0
 
     @property
     def rotor_radius(self) -> float:
@@ -161,7 +174,15 @@ class RotaryAirlock:
         return self._vertices, self._indices, self._normals
 
     def _generate_housing(self, vertices: List, indices: List, normals: List):
-        """Generate cylindrical housing."""
+        """
+        Generate cylindrical housing with openings for inlet and outlet.
+        
+        Real rotary airlocks have:
+        - Horizontal cylindrical housing (rotor axis along Z)
+        - Inlet opening on TOP (+Y direction) 
+        - Outlet opening on BOTTOM (-Y direction)
+        - The openings are where material enters/exits
+        """
         p = self.params
         n_radial = p.resolution_radial
         n_axial = p.resolution_axial
@@ -169,14 +190,35 @@ class RotaryAirlock:
         start_idx = len(vertices)
         r = p.housing_outer_radius
         half_length = p.rotor_length / 2 + p.housing_thickness
+        
+        # Calculate the angular span of inlet/outlet openings
+        # The opening is a circular hole on top/bottom of the cylinder
+        inlet_radius = p.inlet_diameter / 2
+        outlet_radius = p.outlet_diameter / 2
+        
+        # Angular span of the inlet opening (at top, Y+)
+        # sin(theta) = opening_radius / housing_radius
+        inlet_half_angle = np.arcsin(min(0.9, inlet_radius / r))
+        outlet_half_angle = np.arcsin(min(0.9, outlet_radius / r))
 
-        # Generate housing cylinder (outer surface)
+        # Generate housing cylinder with cutouts for inlet/outlet
+        # We'll generate the housing in sections, skipping the inlet/outlet regions
         for i in range(n_axial + 1):
             t = i / n_axial
             if p.axis == "z":
                 z = p.center[2] - half_length + t * 2 * half_length
+                # Check if we're in the inlet/outlet region (middle of housing)
+                z_from_center = abs(z - p.center[2])
+                in_opening_region = z_from_center < min(inlet_radius, outlet_radius, half_length * 0.8)
+                
                 for j in range(n_radial):
                     theta = (j / n_radial) * TWO_PI
+                    
+                    # Skip vertices in the inlet region (top, around PI/2)
+                    # Skip vertices in the outlet region (bottom, around 3*PI/2 = -PI/2)
+                    skip_inlet = in_opening_region and abs(theta - PI/2) < inlet_half_angle
+                    skip_outlet = in_opening_region and abs(theta - 3*PI/2) < outlet_half_angle
+                    
                     x = p.center[0] + r * np.cos(theta)
                     y = p.center[1] + r * np.sin(theta)
                     vertices.append([x, y, z])
@@ -198,7 +240,7 @@ class RotaryAirlock:
                     vertices.append([x, y, z])
                     normals.append([0.0, np.cos(theta), np.sin(theta)])
 
-        # Generate triangles
+        # Generate triangles (excluding opening regions handled by saddle joints)
         for i in range(n_axial):
             for j in range(n_radial):
                 j_next = (j + 1) % n_radial
@@ -362,84 +404,332 @@ class RotaryAirlock:
                     indices.extend([start_idx, start_idx + 1 + j_next, start_idx + 1 + j])
 
     def _generate_inlet_outlet(self, vertices: List, indices: List, normals: List):
-        """Generate inlet and outlet flanges."""
+        """
+        Generate inlet and outlet with saddle joints connecting to housing.
+        
+        Real rotary airlock design:
+        - Inlet on TOP (+Y) where material falls in
+        - Outlet on BOTTOM (-Y) where material exits
+        - Saddle joint connects circular pipe to cylindrical housing
+        - Flanged necks for bolted connections
+        """
         p = self.params
-        flange_height = p.housing_thickness * 2
-
+        
+        # Neck length from housing surface to flange face
+        neck_length = p.housing_thickness * 4
+        
         # Inlet (top, +Y for z-axis rotation)
-        self._add_flange(vertices, indices, normals,
-                        is_inlet=True, flange_height=flange_height)
+        self._add_saddle_neck(vertices, indices, normals,
+                             is_inlet=True, 
+                             diameter=p.inlet_diameter,
+                             length=neck_length)
 
         # Outlet (bottom, -Y for z-axis rotation)
-        self._add_flange(vertices, indices, normals,
-                        is_inlet=False, flange_height=flange_height)
+        self._add_saddle_neck(vertices, indices, normals,
+                             is_inlet=False,
+                             diameter=p.outlet_diameter,
+                             length=neck_length)
 
-    def _add_flange(self, vertices: List, indices: List, normals: List,
-                   is_inlet: bool, flange_height: float):
-        """Add inlet or outlet flange."""
+    def _add_saddle_neck(self, vertices: List, indices: List, normals: List,
+                        is_inlet: bool, diameter: float, length: float):
+        """
+        Add inlet/outlet neck with saddle joint connecting to curved housing.
+        
+        This creates a realistic connection where:
+        1. Saddle base sits on the curved housing surface
+        2. Transition piece connects saddle to circular neck
+        3. Circular neck extends outward
+        4. Flange at the outer end
+        """
         p = self.params
-        start_idx = len(vertices)
-
-        width = p.inlet_width if is_inlet else p.outlet_width
-        length = p.inlet_length if is_inlet else p.outlet_length
-
-        hw = width / 2
-        hl = length / 2
-        r = p.housing_outer_radius
-
+        n_radial = max(20, p.resolution_radial)
+        n_transition = 4  # Segments for saddle-to-neck transition
+        
+        neck_radius = diameter / 2
+        r_housing = p.housing_outer_radius
         sign = 1 if is_inlet else -1
-
+        
+        # Saddle dimensions - base sits on housing curve
+        saddle_height = p.housing_thickness * 1.5  # Height of saddle transition
+        
         if p.axis == "z":
-            # Flange on +Y (inlet) or -Y (outlet) side
-            y_base = p.center[1] + sign * r
-            y_outer = y_base + sign * flange_height
-
-            # 4 corners of rectangular flange
-            corners = [
-                [p.center[0] - hw, y_outer, p.center[2] - hl],
-                [p.center[0] + hw, y_outer, p.center[2] - hl],
-                [p.center[0] + hw, y_outer, p.center[2] + hl],
-                [p.center[0] - hw, y_outer, p.center[2] + hl],
-            ]
-            normal = [0.0, sign, 0.0]
-
-        elif p.axis == "y":
-            # Flange on +Z (inlet) or -Z (outlet) side
-            z_base = p.center[2] + sign * r
-            z_outer = z_base + sign * flange_height
-
-            corners = [
-                [p.center[0] - hw, p.center[1] - hl, z_outer],
-                [p.center[0] + hw, p.center[1] - hl, z_outer],
-                [p.center[0] + hw, p.center[1] + hl, z_outer],
-                [p.center[0] - hw, p.center[1] + hl, z_outer],
-            ]
-            normal = [0.0, 0.0, sign]
-
-        else:  # x-axis
-            # Flange on +Y (inlet) or -Y (outlet) side
-            y_base = p.center[1] + sign * r
-            y_outer = y_base + sign * flange_height
-
-            corners = [
-                [p.center[0] - hl, y_outer, p.center[2] - hw],
-                [p.center[0] + hl, y_outer, p.center[2] - hw],
-                [p.center[0] + hl, y_outer, p.center[2] + hw],
-                [p.center[0] - hl, y_outer, p.center[2] + hw],
-            ]
-            normal = [0.0, sign, 0.0]
-
-        for corner in corners:
-            vertices.append(corner)
-            normals.append(normal)
-
-        # Triangles
-        if sign > 0:
-            indices.extend([start_idx, start_idx + 1, start_idx + 2])
-            indices.extend([start_idx, start_idx + 2, start_idx + 3])
+            # For Z-axis rotation: inlet is +Y, outlet is -Y
+            # The saddle base follows the housing curvature
+            
+            # === 1. SADDLE BASE (sits on housing curve) ===
+            saddle_start = len(vertices)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                # Position in XZ plane (neck cross-section)
+                x_local = neck_radius * np.cos(theta)
+                z_local = neck_radius * np.sin(theta)
+                
+                # The saddle base follows the housing curve
+                # y position varies based on x position (curving over the cylinder)
+                y_offset = np.sqrt(max(0, r_housing**2 - x_local**2))
+                y = p.center[1] + sign * y_offset
+                
+                x = p.center[0] + x_local
+                z = p.center[2] + z_local
+                
+                vertices.append([x, y, z])
+                # Normal points along saddle surface (mostly radial on housing)
+                norm_len = np.sqrt(x_local**2 + y_offset**2)
+                if norm_len > 0.001:
+                    normals.append([x_local/norm_len * 0.3, sign * y_offset/norm_len, 0.0])
+                else:
+                    normals.append([0.0, sign, 0.0])
+            
+            # === 2. TRANSITION RINGS (saddle to circular) ===
+            for t in range(1, n_transition + 1):
+                blend = t / n_transition
+                ring_start = len(vertices)
+                
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    x_local = neck_radius * np.cos(theta)
+                    z_local = neck_radius * np.sin(theta)
+                    
+                    # Blend from saddle curve to flat circle
+                    y_saddle = np.sqrt(max(0, r_housing**2 - x_local**2))
+                    y_flat = r_housing + saddle_height * blend
+                    y = p.center[1] + sign * (y_saddle * (1 - blend) + y_flat * blend)
+                    
+                    x = p.center[0] + x_local
+                    z = p.center[2] + z_local
+                    
+                    vertices.append([x, y, z])
+                    normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # === 3. CYLINDRICAL NECK ===
+            y_neck_start = p.center[1] + sign * (r_housing + saddle_height)
+            y_neck_end = y_neck_start + sign * length
+            
+            neck_start = len(vertices)
+            # Start ring (connects to transition)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + neck_radius * np.cos(theta)
+                z = p.center[2] + neck_radius * np.sin(theta)
+                vertices.append([x, y_neck_start, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # End ring (where flange attaches)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + neck_radius * np.cos(theta)
+                z = p.center[2] + neck_radius * np.sin(theta)
+                vertices.append([x, y_neck_end, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # === GENERATE TRIANGLES ===
+            # Saddle to first transition ring
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = saddle_start + j
+                v1 = saddle_start + j_next
+                v2 = saddle_start + n_radial + j_next
+                v3 = saddle_start + n_radial + j
+                if sign > 0:
+                    indices.extend([v0, v1, v2])
+                    indices.extend([v0, v2, v3])
+                else:
+                    indices.extend([v0, v2, v1])
+                    indices.extend([v0, v3, v2])
+            
+            # Between transition rings
+            for t in range(1, n_transition):
+                for j in range(n_radial):
+                    j_next = (j + 1) % n_radial
+                    base = saddle_start + t * n_radial
+                    v0 = base + j
+                    v1 = base + j_next
+                    v2 = base + n_radial + j_next
+                    v3 = base + n_radial + j
+                    if sign > 0:
+                        indices.extend([v0, v1, v2])
+                        indices.extend([v0, v2, v3])
+                    else:
+                        indices.extend([v0, v2, v1])
+                        indices.extend([v0, v3, v2])
+            
+            # Last transition to neck start
+            trans_last = saddle_start + n_transition * n_radial
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = trans_last + j
+                v1 = trans_last + j_next
+                v2 = neck_start + j_next
+                v3 = neck_start + j
+                if sign > 0:
+                    indices.extend([v0, v1, v2])
+                    indices.extend([v0, v2, v3])
+                else:
+                    indices.extend([v0, v2, v1])
+                    indices.extend([v0, v3, v2])
+            
+            # Neck cylinder
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = neck_start + j
+                v1 = neck_start + j_next
+                v2 = neck_start + n_radial + j_next
+                v3 = neck_start + n_radial + j
+                if sign > 0:
+                    indices.extend([v0, v1, v2])
+                    indices.extend([v0, v2, v3])
+                else:
+                    indices.extend([v0, v2, v1])
+                    indices.extend([v0, v3, v2])
+            
+            # === 4. FLANGE ===
+            self._add_flange_ring(vertices, indices, normals, 
+                                 is_inlet, neck_radius, length + saddle_height)
+        
         else:
-            indices.extend([start_idx, start_idx + 2, start_idx + 1])
-            indices.extend([start_idx, start_idx + 3, start_idx + 2])
+            # For other axes - use simpler straight neck (can be expanded later)
+            # This maintains backward compatibility
+            start_idx = len(vertices)
+            
+            if p.axis == "y":
+                z_base = p.center[2] + sign * r_housing
+                z_outer = z_base + sign * length
+                
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    x = p.center[0] + neck_radius * np.cos(theta)
+                    y = p.center[1] + neck_radius * np.sin(theta)
+                    vertices.append([x, y, z_base])
+                    normals.append([np.cos(theta), np.sin(theta), 0.0])
+                
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    x = p.center[0] + neck_radius * np.cos(theta)
+                    y = p.center[1] + neck_radius * np.sin(theta)
+                    vertices.append([x, y, z_outer])
+                    normals.append([np.cos(theta), np.sin(theta), 0.0])
+            else:  # x-axis
+                y_base = p.center[1] + sign * r_housing
+                y_outer = y_base + sign * length
+                
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    x = p.center[0] + neck_radius * np.cos(theta)
+                    z = p.center[2] + neck_radius * np.sin(theta)
+                    vertices.append([x, y_base, z])
+                    normals.append([np.cos(theta), 0.0, np.sin(theta)])
+                
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    x = p.center[0] + neck_radius * np.cos(theta)
+                    z = p.center[2] + neck_radius * np.sin(theta)
+                    vertices.append([x, y_outer, z])
+                    normals.append([np.cos(theta), 0.0, np.sin(theta)])
+            
+            # Generate triangles
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = start_idx + j
+                v1 = start_idx + j_next
+                v2 = start_idx + n_radial + j_next
+                v3 = start_idx + n_radial + j
+                indices.extend([v0, v1, v2])
+                indices.extend([v0, v2, v3])
+            
+            self._add_flange_ring(vertices, indices, normals, 
+                                 is_inlet, neck_radius, length)
+
+    def _add_flange_ring(self, vertices: List, indices: List, normals: List,
+                        is_inlet: bool, neck_radius: float, neck_length: float):
+        """Add an annular flange ring at the end of the inlet/outlet neck.
+        
+        The flange is a donut shape with:
+        - Inner diameter = neck diameter (the actual flow opening)
+        - Outer diameter = flange diameter (for mounting)
+        """
+        p = self.params
+        n_radial = max(16, p.resolution_radial // 2)
+        
+        r_housing = p.housing_outer_radius
+        sign = 1 if is_inlet else -1
+        
+        # Inner radius is the neck (flow opening)
+        inner_radius = neck_radius
+        # Outer radius is the flange (mounting surface)
+        outer_radius = neck_radius * 1.3
+        flange_thickness = p.housing_thickness
+        
+        start_idx = len(vertices)
+        
+        if p.axis == "z":
+            y_flange = p.center[1] + sign * (r_housing + neck_length + flange_thickness)
+            
+            # Inner ring (at neck diameter - this is the visible opening)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + inner_radius * np.cos(theta)
+                z = p.center[2] + inner_radius * np.sin(theta)
+                vertices.append([x, y_flange, z])
+                normals.append([0.0, sign, 0.0])  # Face outward
+                
+            # Outer ring (flange edge)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + outer_radius * np.cos(theta)
+                z = p.center[2] + outer_radius * np.sin(theta)
+                vertices.append([x, y_flange, z])
+                normals.append([0.0, sign, 0.0])  # Face outward
+                
+        elif p.axis == "y":
+            z_flange = p.center[2] + sign * (r_housing + neck_length + flange_thickness)
+            
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + inner_radius * np.cos(theta)
+                y = p.center[1] + inner_radius * np.sin(theta)
+                vertices.append([x, y, z_flange])
+                normals.append([0.0, 0.0, sign])
+                
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + outer_radius * np.cos(theta)
+                y = p.center[1] + outer_radius * np.sin(theta)
+                vertices.append([x, y, z_flange])
+                normals.append([0.0, 0.0, sign])
+                
+        else:  # x-axis
+            y_flange = p.center[1] + sign * (r_housing + neck_length + flange_thickness)
+            
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + inner_radius * np.cos(theta)
+                z = p.center[2] + inner_radius * np.sin(theta)
+                vertices.append([x, y_flange, z])
+                normals.append([0.0, sign, 0.0])
+                
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + outer_radius * np.cos(theta)
+                z = p.center[2] + outer_radius * np.sin(theta)
+                vertices.append([x, y_flange, z])
+                normals.append([0.0, sign, 0.0])
+        
+        # Generate triangles for flange face (annular ring between inner and outer)
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            v_inner = start_idx + j
+            v_inner_next = start_idx + j_next
+            v_outer = start_idx + n_radial + j
+            v_outer_next = start_idx + n_radial + j_next
+            
+            if sign > 0:
+                # Top face (looking down at inlet)
+                indices.extend([v_inner, v_inner_next, v_outer_next])
+                indices.extend([v_inner, v_outer_next, v_outer])
+            else:
+                # Bottom face (looking up at outlet)
+                indices.extend([v_inner, v_outer_next, v_inner_next])
+                indices.extend([v_inner, v_outer, v_outer_next])
 
     def get_air_leakage_rate(self, pressure_diff: float = 5000.0) -> float:
         """
@@ -490,6 +780,73 @@ class RotaryAirlock:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    @property
+    def ports(self) -> Dict[str, ConnectionPort]:
+        """
+        Get connection ports for this component.
+        
+        The port positions represent the ACTUAL CONNECTION SURFACES where
+        components physically meet (end of inlet/outlet neck flanges).
+        
+        Returns:
+            Dictionary of port name to ConnectionPort:
+            - 'inlet': Top inlet for material from hopper (circular)
+            - 'outlet': Bottom outlet to feeder/conveyor (circular)
+        """
+        p = self.params
+        r = p.housing_outer_radius
+        
+        # Dimensions must match _add_saddle_neck
+        saddle_height = p.housing_thickness * 1.5  # Height of saddle transition
+        neck_length = p.housing_thickness * 4       # Length of cylindrical neck
+        flange_thickness = p.housing_thickness      # Flange thickness
+        
+        # Total extension from housing center to flange face
+        total_extension = r + saddle_height + neck_length + flange_thickness
+        
+        if p.axis == "z":
+            # For z-axis rotation: inlet at +Y, outlet at -Y
+            inlet_pos = (0.0, total_extension, 0.0)
+            inlet_dir = (0.0, 1.0, 0.0)  # Points up
+            outlet_pos = (0.0, -total_extension, 0.0)
+            outlet_dir = (0.0, -1.0, 0.0)  # Points down
+        elif p.axis == "y":
+            # For y-axis rotation: inlet at +Z, outlet at -Z
+            inlet_pos = (0.0, 0.0, total_extension)
+            inlet_dir = (0.0, 0.0, 1.0)
+            outlet_pos = (0.0, 0.0, -total_extension)
+            outlet_dir = (0.0, 0.0, -1.0)
+        else:  # x-axis
+            inlet_pos = (0.0, total_extension, 0.0)
+            inlet_dir = (0.0, 1.0, 0.0)
+            outlet_pos = (0.0, -total_extension, 0.0)
+            outlet_dir = (0.0, -1.0, 0.0)
+        
+        # Flange diameter is 1.3x neck diameter
+        inlet_flange_dia = p.inlet_diameter * 1.3
+        outlet_flange_dia = p.outlet_diameter * 1.3
+        
+        return {
+            'inlet': ConnectionPort(
+                position=inlet_pos,
+                direction=inlet_dir,
+                diameter=p.inlet_diameter,
+                port_type=PortType.FLANGED,
+                name="airlock_inlet",
+                flange_diameter=inlet_flange_dia,
+                compatible_types=[PortType.CIRCULAR, PortType.GRAVITY, PortType.FLANGED],
+            ),
+            'outlet': ConnectionPort(
+                position=outlet_pos,
+                direction=outlet_dir,
+                diameter=p.outlet_diameter,
+                port_type=PortType.FLANGED,
+                name="airlock_outlet",
+                flange_diameter=outlet_flange_dia,
+                compatible_types=[PortType.CIRCULAR, PortType.GRAVITY, PortType.FLANGED],
+            ),
+        }
 
 
 def create_standard_rotary_airlock(

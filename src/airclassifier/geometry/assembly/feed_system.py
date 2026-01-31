@@ -1,67 +1,506 @@
 """
-Feed system assembly module.
+Feed System Assembly Module
+===========================
 
-Provides complete feed system assembly combining Phase 2 components:
-- Feed Hopper
-- Rotary Airlock
-- Screw Feeder
-- De-agglomerator
+This module provides the complete feed system assembly for powder/flour handling
+in air classification systems. It combines all Phase 2 components into an integrated
+material handling train that prepares powder for the classification process.
+
+SYSTEM OVERVIEW
+===============
+
+The feed system is the starting point of the air classification process. Its purpose
+is to:
+1. Store bulk powder material (Feed Hopper)
+2. Meter and seal the material flow (Rotary Airlock)
+3. Provide controlled, consistent feed rate (Screw Feeder)
+4. Break up agglomerates/lumps before classification (Deagglomerator)
+
+MATERIAL FLOW PATH
+==================
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                         FEED HOPPER                                 │
+    │  ┌─────────────────────────────────────────────────────────────┐   │
+    │  │                                                             │   │
+    │  │   ╔═══════════════════════════════════════════════════╗    │   │
+    │  │   ║              BULK POWDER STORAGE                  ║    │   │
+    │  │   ║          (Cylindrical + Conical Sections)         ║    │   │
+    │  │   ║                                                   ║    │   │
+    │  │   ║   - Capacity: 500 kg (configurable)              ║    │   │
+    │  │   ║   - Mass flow design (cone angle > angle of      ║    │   │
+    │  │   ║     repose + 10-15°)                             ║    │   │
+    │  │   ║   - Hinged lid with T-bar handle                 ║    │   │
+    │  │   ║   - Inner skirt for dust-tight seal              ║    │   │
+    │  │   ╚═══════════════════════════════════════════════════╝    │   │
+    │  │                         │                                   │   │
+    │  │                         ▼ (Gravity)                         │   │
+    │  │              ┌──────────────────────┐                       │   │
+    │  │              │   DISCHARGE RING     │                       │   │
+    │  │              │   (150mm diameter)   │                       │   │
+    │  └──────────────┴──────────┬───────────┴───────────────────────┘   │
+    │                            │                                        │
+    │                 ┌──────────┴──────────┐                             │
+    │                 │ TRANSITION CONNECTOR │  ← Dust-tight seal         │
+    │                 │   (flanged pipe)     │                            │
+    │                 └──────────┬──────────┘                             │
+    └────────────────────────────┼────────────────────────────────────────┘
+                                 │
+                                 ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                       ROTARY AIRLOCK                                │
+    │  ┌─────────────────────────────────────────────────────────────┐   │
+    │  │              ┌───────────────────┐                          │   │
+    │  │              │    INLET NECK     │  ← Saddle joint on       │   │
+    │  │              │   with flange     │    cylindrical housing   │   │
+    │  │              └─────────┬─────────┘                          │   │
+    │  │                        │                                    │   │
+    │  │   ╔════════════════════╧════════════════════╗              │   │
+    │  │   ║          CYLINDRICAL HOUSING            ║              │   │
+    │  │   ║    ┌─────────────────────────────┐     ║              │   │
+    │  │   ║    │   ╱ ╲     ROTOR     ╱ ╲     │     ║              │   │
+    │  │   ║    │  ╱   ╲   (8 vanes) ╱   ╲    │     ║   ROTATION   │   │
+    │  │   ║    │ ╱     ╲    ●     ╱     ╲   │     ║   AXIS: Z    │   │
+    │  │   ║    │╱       ╲  HUB   ╱       ╲  │     ║              │   │
+    │  │   ║    │╲       ╱       ╲       ╱  │     ║              │   │
+    │  │   ║    │ ╲     ╱         ╲     ╱   │     ║              │   │
+    │  │   ║    │  ╲   ╱           ╲   ╱    │     ║              │   │
+    │  │   ║    │   ╲ ╱             ╲ ╱     │     ║              │   │
+    │  │   ║    └─────────────────────────────┘     ║              │   │
+    │  │   ╚════════════════════╤════════════════════╝              │   │
+    │  │                        │                                    │   │
+    │  │              ┌─────────┴─────────┐                          │   │
+    │  │              │   OUTLET NECK     │  ← Saddle joint          │   │
+    │  │              │   with flange     │                          │   │
+    │  │              └───────────────────┘                          │   │
+    │  │                                                             │   │
+    │  │   Function: Pressure seal + volumetric metering             │   │
+    │  │   - Vane tip clearance: 0.3mm (prevents jamming)           │   │
+    │  │   - RPM: 20 (adjustable for feed rate control)             │   │
+    │  │   - Prevents air backflow into hopper                       │   │
+    │  └─────────────────────────────────────────────────────────────┘   │
+    │                            │                                        │
+    │                 ┌──────────┴──────────┐                             │
+    │                 │ TRANSITION CONNECTOR │                            │
+    │                 └──────────┬──────────┘                             │
+    └────────────────────────────┼────────────────────────────────────────┘
+                                 │
+                                 ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                        SCREW FEEDER                                 │
+    │  ┌─────────────────────────────────────────────────────────────┐   │
+    │  │                                                             │   │
+    │  │    INLET (from airlock)                                     │   │
+    │  │         │                                                   │   │
+    │  │         ▼                                                   │   │
+    │  │   ╔═══════════════════════════════════════════════════╗    │   │
+    │  │   ║                   U-TROUGH                        ║    │   │
+    │  │   ║   ┌─────────────────────────────────────────┐    ║    │   │
+    │  │   ║   │  ╭──╮   ╭──╮   ╭──╮   ╭──╮   ╭──╮     │ ══►║    │   │
+    │  │   ║   │  │  │   │  │   │  │   │  │   │  │     │    ║    │   │
+    │  │   ║   │  ╰──╯   ╰──╯   ╰──╯   ╰──╯   ╰──╯     │    ║    │   │
+    │  │   ║   │        HELICAL SCREW FLIGHTS           │    ║    │   │
+    │  │   ║   │     (pushed by rotation → → →)        │    ║    │   │
+    │  │   ║   └─────────────────────────────────────────┘    ║    │   │
+    │  │   ╚══════════════════════════════════════════════╤══╝    │   │
+    │  │                                                   │       │   │
+    │  │   Function: Controlled volumetric feed rate      ▼       │   │
+    │  │   - Screw diameter: 100mm                    OUTLET      │   │
+    │  │   - Pitch: 80mm (0.8 × diameter)         (to deagg)      │   │
+    │  │   - Target rate: 500 kg/h                                │   │
+    │  └─────────────────────────────────────────────────────────────┘   │
+    │                            │                                        │
+    │                 ┌──────────┴──────────┐                             │
+    │                 │ TRANSITION CONNECTOR │                            │
+    │                 └──────────┬──────────┘                             │
+    └────────────────────────────┼────────────────────────────────────────┘
+                                 │
+                                 ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                      DEAGGLOMERATOR                                 │
+    │  ┌─────────────────────────────────────────────────────────────┐   │
+    │  │                                                             │   │
+    │  │    INLET (from feeder)                                      │   │
+    │  │         │                                                   │   │
+    │  │         ▼                                                   │   │
+    │  │   ╔═══════════════════════════════════════════════════╗    │   │
+    │  │   ║              CYLINDRICAL HOUSING                  ║    │   │
+    │  │   ║   ┌─────────────────────────────────────────┐    ║    │   │
+    │  │   ║   │         ┌─────────────────┐             │    ║    │   │
+    │  │   ║   │    ▪    │    PIN ROTOR    │    ▪        │    ║    │   │
+    │  │   ║   │   ▪     │   ═══●═══       │     ▪       │    ║    │   │
+    │  │   ║   │    ▪    │   (high speed)  │    ▪        │    ║    │   │
+    │  │   ║   │         └─────────────────┘             │    ║    │   │
+    │  │   ║   │    ▪  ▪  ▪  IMPACT PINS  ▪  ▪  ▪       │    ║    │   │
+    │  │   ║   │         (break up lumps/agglomerates)   │    ║    │   │
+    │  │   ║   └─────────────────────────────────────────┘    ║    │   │
+    │  │   ║                      │                           ║    │   │
+    │  │   ║             ╔════════╧════════╗                  ║    │   │
+    │  │   ║             ║   SCREEN        ║  ← Only particles║    │   │
+    │  │   ║             ║   (2mm mesh)    ║    < aperture    ║    │   │
+    │  │   ║             ║                 ║    pass through  ║    │   │
+    │  │   ║             ╚════════╤════════╝                  ║    │   │
+    │  │   ╚══════════════════════╪═══════════════════════════╝    │   │
+    │  │                          │                                │   │
+    │  │                          ▼                                │   │
+    │  │                    ┌───────────┐                          │   │
+    │  │                    │  OUTLET   │                          │   │
+    │  │                    └─────┬─────┘                          │   │
+    │  │                          │                                │   │
+    │  │   Function: Break agglomerates for uniform classification │   │
+    │  │   - Rotor diameter: 200mm                                 │   │
+    │  │   - 3 rows × 6 pins = 18 impact pins                     │   │
+    │  │   - Screen aperture: 2mm (configurable)                  │   │
+    │  │   - 40% open area for material passage                   │   │
+    │  └─────────────────────────────────────────────────────────────┘   │
+    │                            │                                        │
+    └────────────────────────────┼────────────────────────────────────────┘
+                                 │
+                                 ▼
+                    ════════════════════════
+                      TO AIR CLASSIFIER
+                    ════════════════════════
+
+
+COMPONENT CONNECTIONS
+=====================
+
+All connections use a standardized port system for precise alignment:
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    CONNECTION PORT SYSTEM                   │
+    │                                                             │
+    │   Each component has defined ports with:                    │
+    │   - Position (x, y, z) relative to component origin        │
+    │   - Direction vector (normal to port face)                 │
+    │   - Diameter (for circular ports)                          │
+    │   - Port type (FLANGED, CIRCULAR, GRAVITY)                 │
+    │                                                             │
+    │   Assembly uses calculate_alignment() to:                   │
+    │   1. Match source port to target port                      │
+    │   2. Align port directions (opposing)                      │
+    │   3. Apply configurable gap (default 5mm)                  │
+    │                                                             │
+    │   Connection validation checks:                             │
+    │   - Distance between mating surfaces                       │
+    │   - Direction alignment (should be opposing)               │
+    │   - Diameter compatibility                                 │
+    └─────────────────────────────────────────────────────────────┘
+
+
+TRANSITION CONNECTORS
+=====================
+
+Between each component, sealed transition connectors prevent particle escape:
+
+    ┌─────────────┐
+    │   FLANGE    │  ← Bolts to upstream component
+    ├─────────────┤
+    │             │
+    │    PIPE     │  ← Cylindrical (or conical if diameters differ)
+    │   SECTION   │
+    │             │
+    ├─────────────┤
+    │   FLANGE    │  ← Bolts to downstream component
+    └─────────────┘
+
+Features:
+- Match inlet/outlet diameters to adjacent components
+- Flanged ends for bolted connections
+- Optional bellows section for vibration isolation
+- Dust-tight sealing
+
+
+COORDINATE SYSTEM
+=================
+
+    Y (up)
+    │
+    │    Feed Hopper (top)
+    │         │
+    │         ▼
+    │    Rotary Airlock
+    │         │
+    │         ▼
+    │    Screw Feeder ──────► X (horizontal feed direction)
+    │         │
+    │         ▼
+    │    Deagglomerator (bottom)
+    │
+    └────────────────────► Z
+
+- Origin: Center of system (at hopper discharge level)
+- Y-axis: Vertical (gravity direction is -Y)
+- X-axis: Horizontal feed direction (screw feeder axis)
+- Z-axis: Lateral (perpendicular to flow)
+
+
+DESIGN PARAMETERS
+=================
+
+Default Configuration (500 kg/h flour processing):
+
+    Component           Parameter                   Value
+    ─────────────────────────────────────────────────────────
+    Feed Hopper         Capacity                    500 kg
+                        Discharge diameter          150 mm
+                        Bulk density               500 kg/m³
+
+    Rotary Airlock      Rotor diameter              200 mm
+                        Rotor length                120 mm
+                        Number of vanes             8
+                        Vane tip clearance          0.3 mm
+                        Inlet diameter              150 mm
+                        Outlet diameter             135 mm
+
+    Screw Feeder        Screw diameter              100 mm
+                        Screw pitch                 80 mm
+                        Trough length               240 mm
+                        Target feed rate            500 kg/h
+
+    Deagglomerator      Rotor diameter              200 mm
+                        Housing diameter            260 mm
+                        Pin rows × pins/row         3 × 6
+                        Screen aperture             2 mm
+                        Screen open area            40%
+
+    Assembly            Component spacing           5 mm
+
+
+USAGE
+=====
+
+    from airclassifier.geometry.assembly import (
+        FeedSystemAssembly,
+        FeedSystemParams,
+        create_standard_feed_system
+    )
+
+    # Create with default parameters
+    feed_system = create_standard_feed_system()
+
+    # Or customize parameters
+    params = FeedSystemParams(
+        hopper_capacity_kg=1000,
+        hopper_discharge_diameter=0.20,
+        feeder_target_rate_kg_h=800,
+    )
+    feed_system = FeedSystemAssembly(params)
+
+    # Build mesh for visualization/export
+    vertices, indices = feed_system.build_mesh()
+
+    # Access individual components
+    hopper = feed_system.hopper
+    airlock = feed_system.airlock
+    feeder = feed_system.feeder
+    deagglomerator = feed_system.deagglomerator
+
+    # Validate connections
+    report = feed_system.validate_connections()
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 import numpy as np
 import warp as wp
+
+from ..connection_ports import (
+    ConnectionPort, PortType, calculate_alignment, 
+    validate_assembly_connections, print_connection_report
+)
 
 
 @dataclass
 class FeedSystemParams:
     """
-    Parameters for complete feed system.
+    Parameters for complete feed system assembly.
 
-    Combines all Phase 2 components into a feed preparation system.
+    This dataclass defines all configurable parameters for the feed system,
+    organized by component. The parameters control sizing, capacity, and
+    layout of the entire material handling train.
+
+    Attributes
+    ----------
+    hopper_capacity_kg : float
+        Target storage capacity of the feed hopper in kilograms.
+        This determines the hopper volume based on bulk_density.
+        Default: 500 kg (typical for pilot-scale operations)
+
+    hopper_discharge_diameter : float
+        Diameter of the hopper discharge opening in meters.
+        This sets the flow rate potential and must match the airlock inlet.
+        Default: 0.15 m (150 mm)
+
+    airlock_rotor_diameter : float
+        Diameter of the rotary airlock rotor in meters.
+        Larger rotors = higher volumetric capacity.
+        Default: 0.20 m (200 mm)
+
+    feeder_screw_diameter : float
+        Diameter of the screw feeder helical screw in meters.
+        Determines the volumetric feed rate per revolution.
+        Default: 0.10 m (100 mm)
+
+    feeder_target_rate_kg_h : float
+        Target feed rate in kilograms per hour.
+        Used for screw speed calculations (not geometry).
+        Default: 500 kg/h
+
+    deagg_rotor_diameter : float
+        Diameter of the deagglomerator rotor in meters.
+        Larger = more throughput capacity.
+        Default: 0.20 m (200 mm)
+
+    deagg_screen_aperture : float
+        Screen mesh opening size in meters.
+        Controls maximum particle size to classifier.
+        Default: 0.002 m (2 mm)
+
+    component_spacing : float
+        Gap between mating flanges in meters.
+        Represents gasket/seal space in real systems.
+        Default: 0.005 m (5 mm)
+
+    center : Tuple[float, float, float]
+        World coordinates of system center (hopper discharge level).
+        Default: (0.0, 0.0, 0.0)
+
+    bulk_density : float
+        Material bulk density in kg/m³.
+        Used for hopper sizing calculations.
+        Default: 500.0 kg/m³ (typical for flour)
+
+    Example
+    -------
+    >>> params = FeedSystemParams(
+    ...     hopper_capacity_kg=1000,
+    ...     feeder_target_rate_kg_h=800,
+    ...     deagg_screen_aperture=0.003,  # 3mm screen
+    ... )
+    >>> system = FeedSystemAssembly(params)
     """
 
     # Feed hopper parameters
-    hopper_capacity_kg: float = 500       # [kg]
-    hopper_discharge_diameter: float = 0.15  # [m]
+    hopper_capacity_kg: float = 500       # [kg] Storage capacity
+    hopper_discharge_diameter: float = 0.15  # [m] Discharge opening diameter
 
-    # Rotary airlock parameters
-    airlock_rotor_diameter: float = 0.20  # [m]
+    # Rotary airlock parameters  
+    airlock_rotor_diameter: float = 0.20  # [m] Rotor diameter
 
     # Screw feeder parameters
-    feeder_screw_diameter: float = 0.10   # [m]
-    feeder_target_rate_kg_h: float = 500  # [kg/h]
+    feeder_screw_diameter: float = 0.10   # [m] Screw diameter
+    feeder_target_rate_kg_h: float = 500  # [kg/h] Target mass flow rate
 
     # De-agglomerator parameters
-    deagg_rotor_diameter: float = 0.20    # [m]
-    deagg_screen_aperture: float = 0.002  # [m] (2mm)
+    deagg_rotor_diameter: float = 0.20    # [m] Rotor diameter
+    deagg_screen_aperture: float = 0.002  # [m] Screen mesh size (2mm)
 
     # Layout parameters
-    component_spacing: float = 0.1        # [m] Spacing between components
-    center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    component_spacing: float = 0.005      # [m] Gap between flanges (5mm)
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # System origin
 
-    # Material properties for sizing
-    bulk_density: float = 500.0           # [kg/m3]
+    # Material properties
+    bulk_density: float = 500.0           # [kg/m³] Material bulk density
 
 
 class FeedSystemAssembly:
     """
-    Complete feed system assembly.
+    Complete feed system assembly for air classification.
 
-    Combines all Phase 2 components:
-    - Feed Hopper: Powder storage
-    - Rotary Airlock: Pressure seal
-    - Screw Feeder: Controlled dosing
-    - De-agglomerator: Lump breaking
+    This class creates and manages an integrated material handling system
+    consisting of four primary components connected in series. The assembly
+    handles component instantiation, spatial positioning, port alignment,
+    and mesh generation for visualization/simulation.
 
-    Process flow:
-    Hopper -> Airlock -> Feeder -> De-agglomerator -> Classifier
+    Components (in flow order)
+    --------------------------
+    1. Feed Hopper (FeedHopper)
+       - Bulk powder storage with mass flow design
+       - Cylindrical body + conical discharge section
+       - Hinged lid with T-bar handle for filling
+       - Inner skirt seal to prevent dust escape
 
-    Coordinate system:
-    - Origin at center of system
-    - Y-axis: Vertical (up, gravity direction)
-    - Flow direction: primarily gravity-fed (downward)
+    2. Rotary Airlock (RotaryAirlock)
+       - Pressure seal between hopper and downstream equipment
+       - 8-vane rotor for volumetric metering
+       - Saddle-joint inlet/outlet connections
+       - Prevents air backflow into hopper
+
+    3. Screw Feeder (ScrewFeeder)
+       - Controlled volumetric dosing
+       - Helical screw in U-trough design
+       - Consistent feed rate independent of hopper level
+       - Variable speed for rate adjustment
+
+    4. Deagglomerator (Deagglomerator)
+       - Breaks up lumps and agglomerates
+       - High-speed pin rotor (3 rows × 6 pins)
+       - Screen at outlet controls max particle size
+       - Ensures uniform particle distribution
+
+    Connection System
+    -----------------
+    Components are connected via a standardized port system:
+    - Each component defines inlet/outlet ConnectionPorts
+    - Ports have position, direction, and diameter
+    - calculate_alignment() positions components for proper mating
+    - Transition connectors seal gaps between components
+
+    Process Flow
+    ------------
+        HOPPER → AIRLOCK → FEEDER → DEAGGLOMERATOR → (to classifier)
+           ↓        ↓         ↓            ↓
+        Gravity  Pressure   Controlled   Lump
+        feed     seal       metering     breaking
+
+    Coordinate System
+    -----------------
+    - Origin: At hopper discharge center (Y=0)
+    - Y-axis: Vertical (positive up, gravity is -Y)
+    - X-axis: Horizontal (screw feeder direction)
+    - Z-axis: Lateral (hopper axis for z-rotation airlock)
+
+    Attributes
+    ----------
+    params : FeedSystemParams
+        Configuration parameters for the assembly
+    hopper : FeedHopper
+        Feed hopper component instance
+    airlock : RotaryAirlock
+        Rotary airlock component instance
+    feeder : ScrewFeeder
+        Screw feeder component instance
+    deagglomerator : Deagglomerator
+        Deagglomerator component instance
+
+    Methods
+    -------
+    build_mesh()
+        Generate combined mesh for all components
+    validate_connections()
+        Check all port alignments and report issues
+    get_component(name)
+        Access individual component by name
+    get_bounds()
+        Get bounding box of entire assembly
+
+    Example
+    -------
+    >>> from airclassifier.geometry.assembly import create_standard_feed_system
+    >>> 
+    >>> # Create with defaults
+    >>> feed_system = create_standard_feed_system()
+    >>> 
+    >>> # Build mesh for visualization
+    >>> vertices, indices = feed_system.build_mesh()
+    >>> 
+    >>> # Validate connections
+    >>> report = feed_system.validate_connections()
+    >>> 
+    >>> # Access components
+    >>> hopper_volume = feed_system.hopper.params.total_volume
+    >>> airlock_capacity = feed_system.airlock.params.volumetric_capacity
     """
 
     def __init__(self, params: FeedSystemParams = None, device: str = "cpu"):
@@ -84,7 +523,7 @@ class FeedSystemAssembly:
         self._mesh_built = False
 
     def _create_components(self):
-        """Create all system components with proper positioning."""
+        """Create all system components with proper port-to-port positioning."""
         # Lazy imports to avoid circular dependency
         from ..components import (
             create_standard_feed_hopper,
@@ -94,52 +533,219 @@ class FeedSystemAssembly:
         )
 
         p = self.params
-        spacing = p.component_spacing
+        gap = p.component_spacing  # Small gap for flanged connections (default 5mm)
 
-        # Track Y position (vertical, top to bottom)
-        y_pos = p.center[1]
-
-        # 1. Feed Hopper (top of system)
+        # 1. Feed Hopper (top of system) - positioned first as reference
+        # The hopper's local coordinate system has:
+        #   - Origin at center of discharge opening (Y=0)
+        #   - Mesh extends from Y=0 (discharge) to Y=total_height (top)
         self.hopper = create_standard_feed_hopper(
             capacity_kg=p.hopper_capacity_kg,
             bulk_density=p.bulk_density,
             discharge_diameter=p.hopper_discharge_diameter
         )
-        # Position hopper with discharge at current y_pos
-        hopper_height = self.hopper.params.total_height
-        self._hopper_position = (p.center[0], y_pos + hopper_height, p.center[2])
-        y_pos -= spacing
-
-        # 2. Rotary Airlock (under hopper)
-        self.airlock = create_standard_rotary_airlock(
-            rotor_diameter=p.airlock_rotor_diameter
+        
+        # Position hopper at system center
+        # The hopper's discharge ring extends below Y=0 by (bottom_diameter * 0.2)
+        # We position so the TOP of the system is at a reasonable height
+        self._hopper_position = (
+            p.center[0], 
+            p.center[1],  # Hopper origin (discharge center) at system center
+            p.center[2]
         )
-        airlock_height = self.airlock.params.housing_outer_radius * 2
-        self._airlock_position = (p.center[0], y_pos, p.center[2])
-        y_pos -= airlock_height + spacing
 
-        # 3. Screw Feeder (horizontal, after airlock)
-        self.feeder = create_standard_screw_feeder(
+        # 2. Rotary Airlock - connect DIRECTLY to hopper discharge
+        # Size the airlock inlet to match hopper discharge
+        from ..components import RotaryAirlockParams, RotaryAirlock
+        
+        airlock_params = RotaryAirlockParams(
+            rotor_diameter=p.airlock_rotor_diameter,
+            rotor_length=p.airlock_rotor_diameter * 0.6,
+            num_vanes=8,
+            vane_thickness=0.005,
+            vane_tip_clearance=0.0003,
+            # Match inlet to hopper discharge diameter
+            inlet_diameter=p.hopper_discharge_diameter,
+            # Match outlet to feeder inlet (slightly smaller)
+            outlet_diameter=p.hopper_discharge_diameter * 0.9,
+        )
+        self.airlock = RotaryAirlock(airlock_params)
+        
+        # Calculate alignment: hopper discharge port -> airlock inlet port
+        # The ports represent the actual mating surfaces
+        alignment = calculate_alignment(
+            source_port=self.hopper.ports['discharge'],
+            target_port=self.airlock.ports['inlet'],
+            source_position=self._hopper_position,
+            gap=gap,
+            align_directions=True
+        )
+        self._airlock_position = tuple(alignment.position_offset)
+
+        # 3. Screw Feeder - connect DIRECTLY to airlock outlet
+        # Size inlet to match airlock outlet
+        from ..components import ScrewFeederParams, ScrewFeeder
+        
+        # Airlock outlet diameter determines feeder inlet size
+        airlock_outlet_dia = airlock_params.outlet_diameter
+        # Feeder outlet should match deagglomerator inlet
+        feeder_outlet_dia = p.deagg_rotor_diameter * 0.4  # Typical deagg inlet size
+        
+        screw_pitch = p.feeder_screw_diameter * 0.8
+        feeder_params = ScrewFeederParams(
             screw_diameter=p.feeder_screw_diameter,
-            feed_rate_kg_h=p.feeder_target_rate_kg_h,
-            bulk_density=p.bulk_density
+            shaft_diameter=p.feeder_screw_diameter * 0.3,
+            screw_pitch=screw_pitch,
+            flight_thickness=0.003,
+            trough_length=screw_pitch * 3,
+            trough_clearance=0.003,
+            # Size inlet to match airlock outlet
+            inlet_length=airlock_outlet_dia * 1.2,
+            inlet_width=airlock_outlet_dia * 1.0,
+            # Size outlet to match deagglomerator inlet
+            outlet_diameter=feeder_outlet_dia,
         )
-        self._feeder_position = (p.center[0], y_pos, p.center[2])
-        # Feeder extends along X axis
-        feeder_length = self.feeder.params.trough_length
-        x_end = p.center[0] + feeder_length
+        self.feeder = ScrewFeeder(feeder_params)
+        
+        # Calculate alignment: airlock outlet -> feeder inlet
+        alignment = calculate_alignment(
+            source_port=self.airlock.ports['outlet'],
+            target_port=self.feeder.ports['inlet'],
+            source_position=self._airlock_position,
+            gap=gap,
+            align_directions=True
+        )
+        self._feeder_position = tuple(alignment.position_offset)
 
-        # 4. De-agglomerator (at end of feeder)
-        self.deagglomerator = create_standard_deagglomerator(
+        # 4. De-agglomerator - connect DIRECTLY to feeder outlet
+        from ..components import DeagglomeratorParams, Deagglomerator
+        
+        deagg_params = DeagglomeratorParams(
             rotor_diameter=p.deagg_rotor_diameter,
-            screen_aperture=p.deagg_screen_aperture
+            rotor_length=p.deagg_rotor_diameter * 0.6,
+            shaft_diameter=p.deagg_rotor_diameter * 0.2,
+            num_pin_rows=3,
+            pins_per_row=6,
+            pin_diameter=p.deagg_rotor_diameter * 0.05,
+            pin_length=p.deagg_rotor_diameter * 0.35,
+            housing_diameter=p.deagg_rotor_diameter * 1.3,
+            housing_length=p.deagg_rotor_diameter * 0.8,
+            screen_diameter=p.deagg_rotor_diameter * 1.1,
+            screen_aperture=p.deagg_screen_aperture,
+            screen_open_area=0.40,
+            # Size inlet to match feeder outlet
+            inlet_diameter=feeder_outlet_dia,
+            # Outlet can be slightly larger
+            outlet_diameter=feeder_outlet_dia * 1.2,
         )
-        deagg_height = self.deagglomerator.params.housing_radius * 2
-        self._deagglomerator_position = (x_end + spacing, y_pos - deagg_height / 2, p.center[2])
+        self.deagglomerator = Deagglomerator(deagg_params)
+        
+        # Calculate alignment: feeder outlet -> deagglomerator inlet
+        alignment = calculate_alignment(
+            source_port=self.feeder.ports['outlet'],
+            target_port=self.deagglomerator.ports['inlet'],
+            source_position=self._feeder_position,
+            gap=gap,
+            align_directions=True
+        )
+        self._deagglomerator_position = tuple(alignment.position_offset)
+        
+        # 5. Create transition connectors for dust-tight sealing
+        # These bridge the gaps between components to prevent particle escape
+        self._create_transition_connectors(gap)
+
+    def _create_transition_connectors(self, gap: float):
+        """
+        Create transition connectors between all component connections.
+        
+        In real industrial systems, these sealed pipe sections prevent
+        particle escape during material transfer between equipment.
+        """
+        from ..components.transition_connector import (
+            TransitionConnector, TransitionConnectorParams
+        )
+        
+        self._transition_connectors = []
+        
+        # 1. Hopper -> Airlock connector
+        hopper_outlet = self.hopper.ports['discharge']
+        airlock_inlet = self.airlock.ports['inlet']
+        
+        # Position at midpoint between the two ports
+        hopper_outlet_world = tuple(
+            self._hopper_position[i] + hopper_outlet.position[i] for i in range(3)
+        )
+        airlock_inlet_world = tuple(
+            self._airlock_position[i] + airlock_inlet.position[i] for i in range(3)
+        )
+        
+        connector1_center = tuple(
+            (hopper_outlet_world[i] + airlock_inlet_world[i]) / 2 for i in range(3)
+        )
+        connector1_length = abs(hopper_outlet_world[1] - airlock_inlet_world[1])
+        
+        if connector1_length > 0.001:  # Only create if there's a gap
+            connector1 = TransitionConnector(TransitionConnectorParams(
+                inlet_diameter=hopper_outlet.diameter,
+                outlet_diameter=airlock_inlet.diameter,
+                length=connector1_length,
+                center=(0, 0, 0),  # Will be offset when adding to mesh
+            ))
+            self._transition_connectors.append((connector1, connector1_center))
+        
+        # 2. Airlock -> Feeder connector
+        airlock_outlet = self.airlock.ports['outlet']
+        feeder_inlet = self.feeder.ports['inlet']
+        
+        airlock_outlet_world = tuple(
+            self._airlock_position[i] + airlock_outlet.position[i] for i in range(3)
+        )
+        feeder_inlet_world = tuple(
+            self._feeder_position[i] + feeder_inlet.position[i] for i in range(3)
+        )
+        
+        connector2_center = tuple(
+            (airlock_outlet_world[i] + feeder_inlet_world[i]) / 2 for i in range(3)
+        )
+        connector2_length = abs(airlock_outlet_world[1] - feeder_inlet_world[1])
+        
+        if connector2_length > 0.001:
+            connector2 = TransitionConnector(TransitionConnectorParams(
+                inlet_diameter=airlock_outlet.diameter,
+                outlet_diameter=feeder_inlet.diameter,
+                length=connector2_length,
+                center=(0, 0, 0),
+            ))
+            self._transition_connectors.append((connector2, connector2_center))
+        
+        # 3. Feeder -> Deagglomerator connector
+        feeder_outlet = self.feeder.ports['outlet']
+        deagg_inlet = self.deagglomerator.ports['inlet']
+        
+        feeder_outlet_world = tuple(
+            self._feeder_position[i] + feeder_outlet.position[i] for i in range(3)
+        )
+        deagg_inlet_world = tuple(
+            self._deagglomerator_position[i] + deagg_inlet.position[i] for i in range(3)
+        )
+        
+        connector3_center = tuple(
+            (feeder_outlet_world[i] + deagg_inlet_world[i]) / 2 for i in range(3)
+        )
+        connector3_length = abs(feeder_outlet_world[1] - deagg_inlet_world[1])
+        
+        if connector3_length > 0.001:
+            connector3 = TransitionConnector(TransitionConnectorParams(
+                inlet_diameter=feeder_outlet.diameter,
+                outlet_diameter=deagg_inlet.diameter,
+                length=connector3_length,
+                center=(0, 0, 0),
+            ))
+            self._transition_connectors.append((connector3, connector3_center))
 
     def build_mesh(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Build combined mesh for all components.
+        Build combined mesh for all components including transition connectors.
 
         Returns:
             Tuple of (vertices, indices)
@@ -161,11 +767,15 @@ class FeedSystemAssembly:
             all_indices.append(idx + vertex_offset)
             vertex_offset += len(verts)
 
-        # Add each component
+        # Add main components
         add_component_mesh(self.hopper, self._hopper_position)
         add_component_mesh(self.airlock, self._airlock_position)
         add_component_mesh(self.feeder, self._feeder_position)
         add_component_mesh(self.deagglomerator, self._deagglomerator_position)
+        
+        # Add transition connectors for dust-tight sealing
+        for connector, position in self._transition_connectors:
+            add_component_mesh(connector, position)
 
         self._combined_vertices = np.vstack(all_vertices).astype(np.float32)
         self._combined_indices = np.concatenate(all_indices).astype(np.int32)
@@ -258,6 +868,57 @@ class FeedSystemAssembly:
         indices = wp.array(self._combined_indices, dtype=wp.int32, device=self.device)
 
         return wp.Mesh(points=points, indices=indices)
+
+    def validate_connections(self, tolerance: float = None) -> List[Dict[str, Any]]:
+        """
+        Validate that all component connections are properly aligned.
+        
+        Args:
+            tolerance: Position tolerance [m] (defaults to component_spacing + 0.01)
+            
+        Returns:
+            List of validation results for each connection
+        """
+        if tolerance is None:
+            # Allow for the configured component spacing plus small margin
+            tolerance = self.params.component_spacing + 0.01
+        
+        components = [self.hopper, self.airlock, self.feeder, self.deagglomerator]
+        positions = {
+            0: self._hopper_position,
+            1: self._airlock_position,
+            2: self._feeder_position,
+            3: self._deagglomerator_position,
+        }
+        
+        # Define expected connections: (comp_a_idx, port_a, comp_b_idx, port_b)
+        connections = [
+            (0, 'discharge', 1, 'inlet'),    # Hopper -> Airlock
+            (1, 'outlet', 2, 'inlet'),       # Airlock -> Feeder
+            (2, 'outlet', 3, 'inlet'),       # Feeder -> Deagglomerator
+        ]
+        
+        return validate_assembly_connections(components, positions, connections, tolerance)
+    
+    def print_connection_report(self):
+        """Print detailed connection validation report."""
+        results = self.validate_connections()
+        print_connection_report(results)
+    
+    def get_system_outlet(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get the final outlet position and direction of the feed system.
+        
+        This is where material exits the feed system (deagglomerator outlet)
+        to connect to the classifier.
+        
+        Returns:
+            Tuple of (position, direction) as numpy arrays
+        """
+        port = self.deagglomerator.ports['outlet']
+        position = port.get_world_position(self._deagglomerator_position)
+        direction = port.direction_array
+        return position, direction
 
     def print_summary(self):
         """Print summary of the feed system."""
