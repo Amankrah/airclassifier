@@ -449,6 +449,11 @@ class ClassificationSystemAssembly:
         self._duct_sections.append((duct2, duct2_start))
 
         # STEP 4: Round-to-rect transition to cyclone inlet
+        # Note: For horizontal +X direction, the transition's coordinate system maps:
+        #   outlet_dimensions[0] → perp1 = -Y (vertical)
+        #   outlet_dimensions[1] → perp2 = +Z (horizontal depth)
+        # Cyclone inlet has: height=vertical (Y), width=tangent (Z)
+        # So we pass (height, width) to match the cyclone inlet orientation
         trans2b_length = 0.10  # 100mm transition
         trans2b_start = (
             duct2_start[0] + duct2_length + gap,
@@ -458,7 +463,7 @@ class ClassificationSystemAssembly:
         trans2b = Transition(TransitionParams(
             transition_type="round_to_rect",
             inlet_dimensions=(duct2_diameter,),
-            outlet_dimensions=(cyclone_inlet_w, cyclone_inlet_h),
+            outlet_dimensions=(cyclone_inlet_h, cyclone_inlet_w),  # (height, width) to match inlet
             length=trans2b_length,
             concentric=True,
             wall_thickness=0.002,

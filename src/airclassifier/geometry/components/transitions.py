@@ -33,6 +33,9 @@ class TransitionParams:
         max_angle: Maximum expansion/contraction angle [rad]
         center: Center position of transition inlet (x, y, z) [m]
         direction: Direction vector (dx, dy, dz)
+        flanged: Whether to add flanges at both ends
+        flange_width: Width of flange beyond pipe [m]
+        flange_thickness: Thickness of flange [m]
     """
     transition_type: str
     inlet_dimensions: Tuple[float, ...]
@@ -44,6 +47,9 @@ class TransitionParams:
     max_angle: float = 0.2618  # 15 degrees
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     direction: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+    flanged: bool = True
+    flange_width: float = 0.02  # 20mm flange width
+    flange_thickness: float = 0.008  # 8mm flange thickness
     
     @property
     def is_expansion(self) -> bool:
@@ -237,6 +243,111 @@ class Transition:
         z = cz + local_x * perp1[2] + local_y * perp2[2] + z_offset * direction[2]
         return [x, y, z]
     
+    def _generate_flange_ring(self, vertices: list, indices: list, normals: list,
+                               inner_radius: float, z_offset: float, is_inlet: bool,
+                               direction: np.ndarray, perp1: np.ndarray, perp2: np.ndarray,
+                               num_segments: int = 32):
+        """
+        Generate a flange ring at the specified position.
+        
+        Args:
+            vertices: List to append vertices to
+            indices: List to append indices to
+            normals: List to append normals to
+            inner_radius: Inner radius of the flange (pipe outer radius)
+            z_offset: Position along the direction axis
+            is_inlet: True for inlet flange, False for outlet
+            direction: Direction unit vector
+            perp1, perp2: Perpendicular basis vectors
+            num_segments: Number of circumferential segments
+        """
+        p = self.params
+        if not p.flanged:
+            return
+        
+        flange_r = inner_radius + p.flange_width
+        ft = p.flange_thickness
+        
+        # Flange position: before inlet or after outlet
+        if is_inlet:
+            z_back = z_offset - ft
+            z_front = z_offset
+            back_normal = [-d for d in direction]
+            front_normal = list(direction)
+        else:
+            z_back = z_offset
+            z_front = z_offset + ft
+            back_normal = [-d for d in direction]
+            front_normal = list(direction)
+        
+        base_idx = len(vertices)
+        
+        # Generate flange outer cylinder
+        for i in range(num_segments):
+            theta = 2 * np.pi * i / num_segments
+            local_x = flange_r * np.cos(theta)
+            local_y = flange_r * np.sin(theta)
+            
+            # Back face vertex
+            pt_back = self._transform_point(local_x, local_y, z_back, direction, perp1, perp2)
+            vertices.append(pt_back)
+            normals.append([np.cos(theta) * perp1[0] + np.sin(theta) * perp2[0],
+                           np.cos(theta) * perp1[1] + np.sin(theta) * perp2[1],
+                           np.cos(theta) * perp1[2] + np.sin(theta) * perp2[2]])
+            
+            # Front face vertex
+            pt_front = self._transform_point(local_x, local_y, z_front, direction, perp1, perp2)
+            vertices.append(pt_front)
+            normals.append([np.cos(theta) * perp1[0] + np.sin(theta) * perp2[0],
+                           np.cos(theta) * perp1[1] + np.sin(theta) * perp2[1],
+                           np.cos(theta) * perp1[2] + np.sin(theta) * perp2[2]])
+        
+        # Generate triangles for outer cylinder
+        for i in range(num_segments):
+            i0 = base_idx + i * 2
+            i1 = base_idx + i * 2 + 1
+            i2 = base_idx + ((i + 1) % num_segments) * 2
+            i3 = base_idx + ((i + 1) % num_segments) * 2 + 1
+            
+            indices.extend([i0, i2, i1])
+            indices.extend([i1, i2, i3])
+        
+        # Generate annular faces (back and front)
+        for face_z, face_normal in [(z_back, back_normal), (z_front, front_normal)]:
+            face_base = len(vertices)
+            
+            # Inner ring
+            for i in range(num_segments):
+                theta = 2 * np.pi * i / num_segments
+                local_x = inner_radius * np.cos(theta)
+                local_y = inner_radius * np.sin(theta)
+                pt = self._transform_point(local_x, local_y, face_z, direction, perp1, perp2)
+                vertices.append(pt)
+                normals.append(face_normal)
+            
+            # Outer ring
+            for i in range(num_segments):
+                theta = 2 * np.pi * i / num_segments
+                local_x = flange_r * np.cos(theta)
+                local_y = flange_r * np.sin(theta)
+                pt = self._transform_point(local_x, local_y, face_z, direction, perp1, perp2)
+                vertices.append(pt)
+                normals.append(face_normal)
+            
+            # Generate triangles for annular face
+            for i in range(num_segments):
+                i0 = face_base + i
+                i1 = face_base + (i + 1) % num_segments
+                i2 = face_base + num_segments + i
+                i3 = face_base + num_segments + (i + 1) % num_segments
+                
+                if face_z == z_front:
+                    indices.extend([i0, i1, i2])
+                    indices.extend([i1, i3, i2])
+                else:
+                    indices.extend([i0, i2, i1])
+                    indices.extend([i1, i2, i3])
+    
     def _generate_round_to_round(self, num_segments: int, 
                                   num_divisions: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Generate mesh for round-to-round transition (cone frustum)."""
@@ -359,6 +470,27 @@ class Transition:
         # Outlet cap
         add_annular_cap(r_out, r_out + t, p.length, (offset_x, offset_y), True)
         
+        # Add flanges if enabled
+        if p.flanged:
+            # Inlet flange
+            self._generate_flange_ring(
+                all_vertices, all_indices, all_normals,
+                inner_radius=r_in + t,
+                z_offset=0.0,
+                is_inlet=True,
+                direction=direction, perp1=perp1, perp2=perp2,
+                num_segments=num_segments
+            )
+            # Outlet flange
+            self._generate_flange_ring(
+                all_vertices, all_indices, all_normals,
+                inner_radius=r_out + t,
+                z_offset=p.length,
+                is_inlet=False,
+                direction=direction, perp1=perp1, perp2=perp2,
+                num_segments=num_segments
+            )
+        
         self._vertices = np.array(all_vertices, dtype=np.float32)
         self._indices = np.array(all_indices, dtype=np.int32)
         self._normals = np.array(all_normals, dtype=np.float32)
@@ -471,6 +603,28 @@ class Transition:
                     
                     all_indices.extend([i0, i1, i2])
                     all_indices.extend([i1, i3, i2])
+        
+        # Add flanges if enabled
+        if p.flanged:
+            # Inlet flange (round)
+            self._generate_flange_ring(
+                all_vertices, all_indices, all_normals,
+                inner_radius=r_in + t,
+                z_offset=0.0,
+                is_inlet=True,
+                direction=direction, perp1=perp1, perp2=perp2,
+                num_segments=num_segments
+            )
+            # Outlet flange (approximate as circle using max dimension)
+            outlet_max_r = max(w_out, h_out) + t
+            self._generate_flange_ring(
+                all_vertices, all_indices, all_normals,
+                inner_radius=outlet_max_r,
+                z_offset=p.length,
+                is_inlet=False,
+                direction=direction, perp1=perp1, perp2=perp2,
+                num_segments=num_segments
+            )
         
         self._vertices = np.array(all_vertices, dtype=np.float32)
         self._indices = np.array(all_indices, dtype=np.int32)
@@ -585,6 +739,28 @@ class Transition:
                     
                     all_indices.extend([i0, i1, i2])
                     all_indices.extend([i1, i3, i2])
+        
+        # Add flanges if enabled
+        if p.flanged:
+            # Inlet flange (approximate rect as circle using max dimension)
+            inlet_max_r = max(w_in, h_in) + t
+            self._generate_flange_ring(
+                all_vertices, all_indices, all_normals,
+                inner_radius=inlet_max_r,
+                z_offset=0.0,
+                is_inlet=True,
+                direction=direction, perp1=perp1, perp2=perp2,
+                num_segments=num_segments
+            )
+            # Outlet flange (round)
+            self._generate_flange_ring(
+                all_vertices, all_indices, all_normals,
+                inner_radius=r_out + t,
+                z_offset=p.length,
+                is_inlet=False,
+                direction=direction, perp1=perp1, perp2=perp2,
+                num_segments=num_segments
+            )
         
         self._vertices = np.array(all_vertices, dtype=np.float32)
         self._indices = np.array(all_indices, dtype=np.int32)

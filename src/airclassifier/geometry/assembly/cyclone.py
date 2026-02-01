@@ -57,6 +57,10 @@ class CycloneGeometryParams:
     # Position
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
+    # Inlet angular position (0 = +X side, π = -X side)
+    # For series arrangement, downstream cyclones should have inlet facing upstream
+    inlet_angular_position: float = 0.0  # [radians]
+
     # Mesh resolution
     resolution: int = 48
 
@@ -73,7 +77,7 @@ class CycloneGeometryParams:
 
         Args:
             D: Cylinder diameter [m]
-            **kwargs: Override any default parameters
+            **kwargs: Override any default parameters (including inlet_angular_position)
 
         Returns:
             CycloneGeometryParams instance
@@ -90,6 +94,7 @@ class CycloneGeometryParams:
             "vortex_finder_length": 0.5 * D,
             "dust_outlet_diameter": 0.375 * D,
             "dust_outlet_length": 0.2 * D,
+            "inlet_angular_position": 0.0,  # Default: +X side
         }
         defaults.update(kwargs)
         return cls(**defaults)
@@ -166,7 +171,7 @@ class CycloneAssembly:
             cyclone_diameter=p.cylinder_diameter,
             inlet_top_offset=0.05,  # Slight offset from top
             cyclone_center=p.center,
-            angular_position=0.0  # On +X side
+            angular_position=p.inlet_angular_position  # Configurable: 0=+X, π=-X
         ))
 
         # Vortex finder

@@ -28,6 +28,11 @@ class VortexFinderParams:
     cyclone_center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     protrusion_above: float = 0.1  # [m] How far tube extends above cyclone top
 
+    # Flange options
+    flanged: bool = True
+    flange_width: float = 0.02      # [m] Width beyond pipe diameter
+    flange_thickness: float = 0.008  # [m] Thickness of flange
+
     # Mesh resolution
     resolution_radial: int = 32
     resolution_axial: int = 12
@@ -105,8 +110,117 @@ class VortexFinder:
         Returns:
             Tuple of (vertices, indices, normals)
         """
-        self._vertices, self._indices, self._normals = self._tube.generate_mesh()
+        verts, idx, norms = self._tube.generate_mesh()
+        
+        # Add flange at outlet (top) end if enabled
+        p = self.params
+        if p.flanged:
+            flange_verts, flange_idx, flange_norms = self._generate_outlet_flange()
+            # Offset indices
+            flange_idx = flange_idx + len(verts)
+            # Combine
+            verts = np.vstack([verts, flange_verts])
+            idx = np.concatenate([idx, flange_idx])
+            norms = np.vstack([norms, flange_norms])
+        
+        self._vertices = verts.astype(np.float32)
+        self._indices = idx.astype(np.int32)
+        self._normals = norms.astype(np.float32)
         return self._vertices, self._indices, self._normals
+    
+    def _generate_outlet_flange(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate flange ring at the outlet (top) end."""
+        p = self.params
+        n_seg = p.resolution_radial
+        
+        # Flange position: at outlet end (top of tube)
+        outlet_y = p.cyclone_center[1] + p.protrusion_above
+        cx, cz = p.cyclone_center[0], p.cyclone_center[2]
+        
+        inner_r = p.outer_radius  # Inner edge of flange = outer edge of pipe
+        outer_r = inner_r + p.flange_width
+        ft = p.flange_thickness
+        
+        vertices = []
+        indices = []
+        normals = []
+        
+        # Flange extends above the outlet
+        y_bottom = outlet_y
+        y_top = outlet_y + ft
+        
+        # Outer cylinder of flange
+        base_idx = 0
+        for i in range(n_seg):
+            theta = 2 * PI * i / n_seg
+            x = cx + outer_r * np.cos(theta)
+            z = cz + outer_r * np.sin(theta)
+            
+            # Bottom vertex
+            vertices.append([x, y_bottom, z])
+            normals.append([np.cos(theta), 0, np.sin(theta)])
+            # Top vertex
+            vertices.append([x, y_top, z])
+            normals.append([np.cos(theta), 0, np.sin(theta)])
+        
+        # Triangles for outer cylinder
+        for i in range(n_seg):
+            i0 = base_idx + i * 2
+            i1 = base_idx + i * 2 + 1
+            i2 = base_idx + ((i + 1) % n_seg) * 2
+            i3 = base_idx + ((i + 1) % n_seg) * 2 + 1
+            indices.extend([i0, i2, i1])
+            indices.extend([i1, i2, i3])
+        
+        # Bottom annular face (facing down)
+        bot_base = len(vertices)
+        for i in range(n_seg):
+            theta = 2 * PI * i / n_seg
+            # Inner ring
+            x_in = cx + inner_r * np.cos(theta)
+            z_in = cz + inner_r * np.sin(theta)
+            vertices.append([x_in, y_bottom, z_in])
+            normals.append([0, -1, 0])
+        for i in range(n_seg):
+            theta = 2 * PI * i / n_seg
+            # Outer ring
+            x_out = cx + outer_r * np.cos(theta)
+            z_out = cz + outer_r * np.sin(theta)
+            vertices.append([x_out, y_bottom, z_out])
+            normals.append([0, -1, 0])
+        
+        for i in range(n_seg):
+            i0 = bot_base + i
+            i1 = bot_base + (i + 1) % n_seg
+            i2 = bot_base + n_seg + i
+            i3 = bot_base + n_seg + (i + 1) % n_seg
+            indices.extend([i0, i1, i2])
+            indices.extend([i1, i3, i2])
+        
+        # Top annular face (facing up)
+        top_base = len(vertices)
+        for i in range(n_seg):
+            theta = 2 * PI * i / n_seg
+            x_in = cx + inner_r * np.cos(theta)
+            z_in = cz + inner_r * np.sin(theta)
+            vertices.append([x_in, y_top, z_in])
+            normals.append([0, 1, 0])
+        for i in range(n_seg):
+            theta = 2 * PI * i / n_seg
+            x_out = cx + outer_r * np.cos(theta)
+            z_out = cz + outer_r * np.sin(theta)
+            vertices.append([x_out, y_top, z_out])
+            normals.append([0, 1, 0])
+        
+        for i in range(n_seg):
+            i0 = top_base + i
+            i1 = top_base + (i + 1) % n_seg
+            i2 = top_base + n_seg + i
+            i3 = top_base + n_seg + (i + 1) % n_seg
+            indices.extend([i0, i2, i1])
+            indices.extend([i1, i2, i3])
+        
+        return np.array(vertices), np.array(indices), np.array(normals)
 
     def to_warp_mesh(self, device: str = "cuda") -> wp.Mesh:
         """Create a Warp mesh from the vortex finder geometry."""

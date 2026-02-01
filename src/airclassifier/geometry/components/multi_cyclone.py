@@ -124,6 +124,18 @@ class MultiCycloneSystem:
             # Create cyclone geometry params using CycloneGeometryParams
             D = stage.diameter
             
+            # Determine inlet angular position based on arrangement
+            # For series: ALL inlets on -X side (π) to receive flow traveling +X direction
+            #   - Primary: receives from zigzag/external feed (traveling +X)
+            #   - Downstream: receives from upstream VF via ductwork (traveling +X)
+            # For parallel: all inlets on +X (0) for common header
+            if p.arrangement == "series":
+                # All cyclones in series: inlet on -X side (receives +X flow)
+                inlet_angle = PI  # 180 degrees = -X side
+            else:
+                # Parallel arrangement: inlet on +X side
+                inlet_angle = 0.0
+            
             # Use the CycloneGeometryParams which properly constructs the cyclone
             geo_params = CycloneGeometryParams(
                 cylinder_diameter=D,
@@ -138,6 +150,7 @@ class MultiCycloneSystem:
                 dust_outlet_diameter=D * stage.dust_outlet_ratio,
                 dust_outlet_length=D * 0.2,
                 center=positions[i],
+                inlet_angular_position=inlet_angle,
                 resolution=p.resolution
             )
 
@@ -210,26 +223,28 @@ class MultiCycloneSystem:
         """
         Create connecting ductwork between cyclones in series arrangement.
         
-        For protein separation, flow goes:
-        - Primary VF (overflow/fines) -> Secondary tangential inlet
-        - Secondary VF -> Tertiary tangential inlet
+        For series arrangement, cyclones are positioned along +X axis.
+        Each downstream cyclone's inlet is on its -X side (facing the upstream cyclone).
         
-        CycloneAssembly creates tangential inlets on the +X side (angular_position=0).
-        The inlet outer end is at: center_x + radius + inlet_length
-        Flow direction into inlet is -X (toward cyclone center).
+        Flow path from current cyclone VF to next cyclone inlet:
+        - Current VF at (current_pos[0], vf_top_y) - direction +Y
+        - Next inlet surface at (next_pos[0] - R_next, inlet_y) - on -X side
+        - Required travel: positive dX, negative dY
         
-        Since cyclones are arranged along +X axis, and inlets are on +X side,
-        we need ductwork that goes from VF (at current_pos) to PAST the next
-        cyclone's center to reach the inlet on its far side.
-        
-        Path: VF(up) -> elbow(+X) -> horiz -> down to inlet level -> into inlet (-X)
+        Duct path:
+        1. Elbow1: VF (+Y) -> turn to +X horizontal
+        2. Horizontal duct: travel +X toward next cyclone
+        3. Elbow2: +X -> turn down to -Y
+        4. Vertical duct: travel down toward inlet height
+        5. Elbow3: -Y -> turn to +X (toward inlet)
+        6. Transition: round to rectangular (going +X into inlet)
         """
         from .ductwork import RoundDuct, RoundDuctParams, DuctElbow, DuctElbowParams, RectangularDuct, RectangularDuctParams
         from .transitions import Transition, TransitionParams
         
         p = self.params
         positions = self._calculate_positions()
-        gap = 0.005  # 5mm
+        gap = 0.005  # 5mm gap between components
         
         for i in range(len(p.stages) - 1):
             current_stage = p.stages[i]
@@ -239,114 +254,89 @@ class MultiCycloneSystem:
             
             # Get current cyclone's vortex finder parameters
             current_cyclone = self._cyclones[current_stage.name]
-            D_curr = current_stage.diameter
             vf_d = current_cyclone.params.vortex_finder_diameter
             vf_top_y = current_pos[1] + 0.05  # protrusion_above from CycloneAssembly
             
-            # Get next cyclone's inlet parameters from CycloneAssembly
+            # Get next cyclone's inlet parameters
             next_cyclone = self._cyclones[next_stage.name]
             D_next = next_stage.diameter
+            R_next = D_next / 2
             inlet_w = next_cyclone.params.inlet_width
             inlet_h = next_cyclone.params.inlet_height
-            inlet_len = next_cyclone.params.inlet_length
+            inlet_length = next_cyclone.params.inlet_length
             
-            # CycloneAssembly creates inlet on +X side (angular_position=0):
-            # - Surface point X = center_x + radius
-            # - Inlet direction = -X (toward center)
-            # - Outer end X = surface_x + inlet_length = center_x + radius + inlet_length
-            # The inlet Y center is at: cyclone_center_y - inlet_top_offset - height/2
-            # With inlet_top_offset=0.05: inlet_y = center_y - 0.05 - height/2
-            inlet_outer_x = next_pos[0] + D_next / 2 + inlet_len
+            # Inlet is on the -X side of the next cyclone (facing upstream)
+            # Inlet surface X = next_pos[0] - R_next
+            # Inlet outer end X = next_pos[0] - R_next - inlet_length
+            # Inlet Y center = next_pos[1] - 0.05 - inlet_h/2 (with top offset)
+            inlet_surface_x = next_pos[0] - R_next
+            inlet_outer_x = inlet_surface_x - inlet_length
             inlet_y = next_pos[1] - 0.05 - inlet_h / 2
             
-            # Duct diameter - use vortex finder diameter
+            # Duct diameter = vortex finder diameter
             duct_d = vf_d
             R = duct_d * 1.0  # bend radius R/D = 1.0
             
-            # Since inlet is on +X side and flow is -X, we approach from +X side
-            # Path: VF(up) -> elbow(+X) -> horiz(+X) -> elbow(down) -> vert -> elbow(-X) -> transition -> rect
+            # ============================================================
+            # Calculate path geometry working backwards from inlet
+            # ============================================================
             
-            # Final components entering cyclone in -X direction
-            rect_len = inlet_w
-            trans_len = 0.04
+            # Transition connects to inlet outer end, going +X
+            trans_len = 0.06  # 60mm transition
+            trans_end_x = inlet_outer_x - gap  # End of transition (connects to inlet)
+            trans_start_x = trans_end_x - trans_len  # Start of transition
+            trans_y = inlet_y  # Same Y level as inlet center
             
-            # Calculate path:
-            # Start at VF: X = current_pos[0]
-            # Elbow1 (up->+X): outlet X = current_pos[0] + R
-            # Horiz duct (+X): outlet X = current_pos[0] + R + L
-            # Elbow2 (+X->down): outlet X = current_pos[0] + R + L + R
-            # Vert duct: no X change
-            # Elbow3 (down->-X): outlet X = current_pos[0] + R + L + R - R = current_pos[0] + R + L
-            # Wait, this doesn't work - elbow down to -X adds no X, but outlet is displaced
+            # Elbow3: -Y -> +X, positioned before transition
+            # Elbow3 outlet connects to transition start
+            # For -Y to +X elbow: inlet at (x, y+R), outlet at (x+R, y)
+            e3_outlet_x = trans_start_x - gap
+            e3_outlet_y = trans_y
+            e3_inlet_x = e3_outlet_x - R
+            e3_inlet_y = e3_outlet_y + R
             
-            # Let me reconsider: approach inlet from the +X side (beyond inlet_outer_x)
-            # Final path enters going -X direction
-            # 
-            # Working backwards from inlet:
-            # - Rect duct ends at inlet_outer_x, travels -X, starts at inlet_outer_x + rect_len
-            # - Transition ends where rect starts, starts at inlet_outer_x + rect_len + trans_len
-            # - Elbow3 (down->-X): inlet at higher X, outlet direction is -X
-            #   For elbow with inlet -Y and turning to -X:
-            #   outlet position relative to inlet: X decreases by R, Y decreases by R
-            #   So elbow3 inlet at X = inlet_outer_x + rect_len + trans_len + R
-            # - Vert duct starts higher
-            # - Elbow2 (+X->down): outlet direction -Y
-            #   outlet at elbow3 inlet X, inlet at X - R
-            # - Horiz duct ends at elbow2 inlet
-            # - Elbow1 ends at horiz duct start
+            # Vertical duct ends at elbow3 inlet
+            v_end_y = e3_inlet_y + gap
             
-            # Target X for end of elbow3 (where transition starts):
-            target_x_after_elbow3 = inlet_outer_x + rect_len + trans_len + 2*gap
+            # ============================================================
+            # Calculate path geometry working forward from VF
+            # ============================================================
             
-            # Elbow3: down (-Y) -> left (-X)
-            # Outlet direction -X means: if inlet direction is -Y and we turn left,
-            # rotation axis should be -Z (looking from +Z, inlet -Y turns CCW to -X)
-            # Outlet position: X - R, Y - R relative to inlet
-            elbow3_inlet_x = target_x_after_elbow3 + R
+            # Elbow1: VF (+Y) -> +X horizontal
+            e1_inlet_x = current_pos[0]
+            e1_inlet_y = vf_top_y + gap
+            e1_outlet_x = e1_inlet_x + R
+            e1_outlet_y = e1_inlet_y + R
+            horiz_y = e1_outlet_y  # Y level of horizontal duct
             
-            # Vert duct ends at elbow3 inlet
-            # Calculate required vertical travel
-            horiz_y = vf_top_y + R + gap  # Y level of horizontal duct (after first elbow)
+            # Elbow2: +X -> -Y (down)
+            # Elbow2 outlet X should align with elbow3 inlet X
+            e2_outlet_x = e3_inlet_x
+            e2_inlet_x = e2_outlet_x - R  # For +X to -Y elbow: outlet_x = inlet_x + R
+            e2_inlet_y = horiz_y
+            e2_outlet_y = e2_inlet_y - R
             
-            # Y calculations:
-            # After elbow1: Y = vf_top_y + gap + R
-            # Horiz duct: Y unchanged
-            # After elbow2: Y = horiz_y - R
-            # Vert duct: Y decreases by vert_len, ends at horiz_y - R - vert_len - gap
-            # After elbow3: Y -= R
-            # Transition + rect: Y unchanged
-            # Final Y should be inlet_y
-            # inlet_y = horiz_y - R - gap - vert_len - gap - R
-            # vert_len = horiz_y - 2*R - 2*gap - inlet_y
+            # Horizontal duct from elbow1 outlet to elbow2 inlet
+            h_start_x = e1_outlet_x + gap
+            h_end_x = e2_inlet_x - gap
+            h_len = h_end_x - h_start_x
             
-            vert_len = horiz_y - 2*R - 2*gap - inlet_y
+            if h_len < 0.03:
+                # Not enough room - use minimum length
+                h_len = 0.03
+            
+            # Vertical duct from elbow2 outlet down to elbow3 inlet
+            v_start_y = e2_outlet_y - gap
+            vert_len = v_start_y - v_end_y
+            
             if vert_len < 0.02:
                 vert_len = 0.02
-            
-            # Elbow2: +X -> down (-Y)
-            # Inlet at X = elbow3_inlet_x - vert_len change? No, vert duct doesn't change X
-            # Elbow2 inlet X: elbow3_inlet_x
-            # Elbow2 (+X -> -Y): outlet X += R, outlet Y -= R relative to inlet
-            # So elbow2 inlet X = elbow3_inlet_x - R... wait, vert duct doesn't change X
-            # Vert duct starts at elbow2 outlet X which equals elbow3 inlet X
-            # So elbow2 outlet X = elbow3_inlet_x
-            # For elbow from +X to -Y: outlet X = inlet X + R
-            # So elbow2 inlet X = elbow3_inlet_x - R
-            elbow2_inlet_x = elbow3_inlet_x - R
-            
-            # Horiz duct ends at elbow2 inlet, starts at elbow1 outlet
-            # Elbow1: up (+Y) -> +X
-            # outlet X = inlet X + R
-            elbow1_outlet_x = current_pos[0] + R
-            
-            L = elbow2_inlet_x - elbow1_outlet_x - 2*gap
-            if L < 0.03:
-                L = 0.03
+                v_end_y = v_start_y - vert_len
             
             # ============================================================
             # 1. Elbow1: UP (+Y) -> horizontal (+X)
             # ============================================================
-            e1_pos = (current_pos[0], vf_top_y + gap, current_pos[2])
+            e1_pos = (e1_inlet_x, e1_inlet_y, current_pos[2])
             elbow1 = DuctElbow(DuctElbowParams(
                 diameter=duct_d,
                 bend_radius=R,
@@ -358,28 +348,25 @@ class MultiCycloneSystem:
                 rotation_axis=(0.0, 0.0, 1.0),
             ))
             self._connecting_ducts.append((elbow1, e1_pos))
-            e1_out_x = e1_pos[0] + R
-            e1_out_y = e1_pos[1] + R
             
             # ============================================================
             # 2. Horizontal duct (+X)
             # ============================================================
-            h_pos = (e1_out_x + gap, e1_out_y, current_pos[2])
+            h_pos = (h_start_x, horiz_y, current_pos[2])
             horiz = RoundDuct(RoundDuctParams(
                 diameter=duct_d,
-                length=L,
+                length=h_len,
                 wall_thickness=0.002,
                 direction=(1.0, 0.0, 0.0),
                 center=(0, 0, 0),
                 flanged=True
             ))
             self._connecting_ducts.append((horiz, h_pos))
-            h_end_x = h_pos[0] + L
             
             # ============================================================
             # 3. Elbow2: horizontal (+X) -> down (-Y)
             # ============================================================
-            e2_pos = (h_end_x + gap, h_pos[1], current_pos[2])
+            e2_pos = (e2_inlet_x, e2_inlet_y, current_pos[2])
             elbow2 = DuctElbow(DuctElbowParams(
                 diameter=duct_d,
                 bend_radius=R,
@@ -391,13 +378,11 @@ class MultiCycloneSystem:
                 rotation_axis=(0.0, 0.0, 1.0),
             ))
             self._connecting_ducts.append((elbow2, e2_pos))
-            e2_out_x = e2_pos[0] + R
-            e2_out_y = e2_pos[1] - R
             
             # ============================================================
             # 4. Vertical duct down (-Y)
             # ============================================================
-            v_pos = (e2_out_x, e2_out_y - gap, current_pos[2])
+            v_pos = (e2_outlet_x, v_start_y, current_pos[2])
             vert = RoundDuct(RoundDuctParams(
                 diameter=duct_d,
                 length=vert_len,
@@ -407,12 +392,11 @@ class MultiCycloneSystem:
                 flanged=True
             ))
             self._connecting_ducts.append((vert, v_pos))
-            v_end_y = v_pos[1] - vert_len
             
             # ============================================================
-            # 5. Elbow3: down (-Y) -> horizontal (-X) into inlet
+            # 5. Elbow3: down (-Y) -> horizontal (+X) toward inlet
             # ============================================================
-            e3_pos = (v_pos[0], v_end_y - gap, current_pos[2])
+            e3_pos = (e3_inlet_x, e3_inlet_y, current_pos[2])
             elbow3 = DuctElbow(DuctElbowParams(
                 diameter=duct_d,
                 bend_radius=R,
@@ -420,46 +404,31 @@ class MultiCycloneSystem:
                 wall_thickness=0.002,
                 flanged=True,
                 center=(0, 0, 0),
-                inlet_direction=(0.0, -1.0, 0.0),
-                rotation_axis=(0.0, 0.0, -1.0),  # Turn to -X
+                inlet_direction=(0.0, -1.0, 0.0),  # Coming from above (-Y direction)
+                rotation_axis=(0.0, 0.0, -1.0),    # Rotate to turn toward +X
             ))
             self._connecting_ducts.append((elbow3, e3_pos))
-            # For -Y inlet, -Z rotation axis: turns to -X
-            # Outlet: X -= R, Y -= R
-            e3_out_x = e3_pos[0] - R
-            e3_out_y = e3_pos[1] - R
             
             # ============================================================
-            # 6. Transition: round to rect (-X direction into cyclone)
+            # 6. Transition: round to rect (+X direction into inlet)
             # ============================================================
-            t_pos = (e3_out_x - gap, e3_out_y, current_pos[2])
+            # Note: For horizontal +X direction, the transition's coordinate system maps:
+            #   outlet_dimensions[0] → perp1 = -Y (vertical)
+            #   outlet_dimensions[1] → perp2 = +Z (horizontal depth)
+            # Cyclone inlet has: height=vertical (Y), width=tangent (Z)
+            # So we pass (height, width) to match the cyclone inlet orientation
+            t_pos = (trans_start_x, trans_y, current_pos[2])
             transition = Transition(TransitionParams(
                 transition_type="round_to_rect",
                 inlet_dimensions=(duct_d,),
-                outlet_dimensions=(inlet_w, inlet_h),
+                outlet_dimensions=(inlet_h, inlet_w),  # (height, width) to match inlet orientation
                 length=trans_len,
                 concentric=True,
                 wall_thickness=0.002,
-                direction=(-1.0, 0.0, 0.0),  # -X into cyclone
+                direction=(1.0, 0.0, 0.0),  # +X into cyclone inlet
                 center=(0, 0, 0)
             ))
             self._connecting_ducts.append((transition, t_pos))
-            t_end_x = t_pos[0] - trans_len
-            
-            # ============================================================
-            # 7. Rectangular inlet duct (-X into cyclone)
-            # ============================================================
-            r_pos = (t_end_x - gap, t_pos[1], current_pos[2])
-            rect_inlet = RectangularDuct(RectangularDuctParams(
-                width=inlet_w,
-                height=inlet_h,
-                length=rect_len,
-                wall_thickness=0.002,
-                direction=(-1.0, 0.0, 0.0),  # -X into cyclone
-                center=(0, 0, 0),
-                flanged=False
-            ))
-            self._connecting_ducts.append((rect_inlet, r_pos))
 
     def generate_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -621,7 +590,11 @@ class MultiCycloneSystem:
         Coordinate System:
         - Cyclone center is at the TOP of the cylindrical section
         - Y-axis is vertical (cyclone axis)
-        - Tangential inlet is positioned at the top of the cylinder
+        - For series arrangement:
+          - ALL cyclones have inlet on -X side (angular_position=π)
+          - This allows flow traveling +X to enter tangentially
+        - For parallel arrangement:
+          - All inlets on +X side for common header connection
         - Inlet duct extends radially outward from the cyclone surface
         """
         p = self.params
@@ -632,34 +605,37 @@ class MultiCycloneSystem:
         first_cyclone = self._cyclones[first_stage.name]
         first_pos = self._cyclone_positions[first_stage.name]
         
-        # Get inlet information from the first cyclone's TangentialInlet component
-        # CycloneAssembly creates the inlet with angular_position=0 (+X side)
+        # Get inlet information from the first cyclone
         inlet_params = first_cyclone.params
         D = inlet_params.cylinder_diameter
         r = D / 2
         inlet_width = inlet_params.inlet_width
         inlet_height = inlet_params.inlet_height
         inlet_length = inlet_params.inlet_length
+        inlet_angle = inlet_params.inlet_angular_position
         
-        # TangentialInlet geometry (from inlet.py):
-        # - angular_position = 0 means inlet on +X side
-        # - surface_point.x = center_x + r*cos(0) = center_x + r
-        # - surface_point.y = center_y - inlet_top_offset - height/2
-        #                   = center_y - 0.05 - height/2 (inlet_top_offset=0.05 in CycloneAssembly)
-        # - inlet_direction = -radial = (-1, 0, 0) pointing inward (-X toward cyclone center)
-        # - inlet_start (outer end) = surface_point - inlet_direction * length
-        #                           = (center_x + r + length, center_y - 0.05 - height/2, center_z)
+        # Calculate inlet position based on angular position
+        # For angular_position=0 (primary): inlet is on +X side
+        # For angular_position=π (downstream): inlet is on -X side
+        import math
+        inlet_surface_x = first_pos[0] + r * math.cos(inlet_angle)
+        inlet_surface_z = first_pos[2] + r * math.sin(inlet_angle)
         
-        # Inlet port at the OUTER END of the inlet duct
-        inlet_x = first_pos[0] + r + inlet_length
-        inlet_y = first_pos[1] - 0.05 - inlet_height / 2  # Centered on inlet opening
-        inlet_z = first_pos[2]
+        # Inlet extends outward from surface in the radial direction
+        # Radial direction = [cos(angle), 0, sin(angle)]
+        radial_x = math.cos(inlet_angle)
+        radial_z = math.sin(inlet_angle)
+        
+        # Inlet outer end (where external duct connects)
+        inlet_x = inlet_surface_x + radial_x * inlet_length
+        inlet_y = first_pos[1] - 0.05 - inlet_height / 2
+        inlet_z = inlet_surface_z + radial_z * inlet_length
 
-        # Port direction faces +X (the opening faces toward +X, receives flow from -X direction)
-        # Flow enters traveling -X (toward cyclone center)
+        # Port direction faces outward (radial direction)
+        # Flow enters in the opposite direction (toward cyclone center)
         ports['inlet'] = ConnectionPort(
             position=(inlet_x, inlet_y, inlet_z),
-            direction=(1.0, 0.0, 0.0),  # Port opening faces +X
+            direction=(radial_x, 0.0, radial_z),  # Port opening faces radially outward
             width=inlet_width,
             height=inlet_height,
             port_type=PortType.RECTANGULAR,

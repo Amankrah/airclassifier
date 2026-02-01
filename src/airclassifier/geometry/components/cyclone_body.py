@@ -94,16 +94,26 @@ class CycloneBody:
         self.params = params
 
         # Create cylinder component
+        # The Cylinder primitive extends UPWARD from its center (base),
+        # but we want the cylinder TOP at params.center (top of cyclone).
+        # So the cylinder base must be at center[1] - cylinder_height.
+        cylinder_base_center = (
+            params.center[0],
+            params.center[1] - params.cylinder_height,
+            params.center[2]
+        )
         self._cylinder = Cylinder(CylinderParams(
             radius=params.cylinder_radius,
             height=params.cylinder_height,
-            center=params.center,
+            center=cylinder_base_center,
             axis="y",
             resolution_radial=params.resolution_radial,
             resolution_axial=params.resolution_axial_cylinder
         ))
 
         # Create cone component (positioned below cylinder)
+        # The Cone primitive has its TOP at center and extends downward.
+        # Cone top connects to cylinder bottom at center[1] - cylinder_height.
         cone_center = (
             params.center[0],
             params.center[1] - params.cylinder_height,
