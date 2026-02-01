@@ -341,7 +341,130 @@ class Transition:
                 i2 = face_base + num_segments + i
                 i3 = face_base + num_segments + (i + 1) % num_segments
                 
-                if face_z == z_front:
+                if np.allclose(face_z, z_front):
+                    indices.extend([i0, i1, i2])
+                    indices.extend([i1, i3, i2])
+                else:
+                    indices.extend([i0, i2, i1])
+                    indices.extend([i1, i2, i3])
+    
+    def _generate_rectangular_flange(self, vertices: list, indices: list, normals: list,
+                                      inner_width: float, inner_height: float,
+                                      z_offset: float, is_inlet: bool,
+                                      direction: np.ndarray, perp1: np.ndarray, perp2: np.ndarray):
+        """
+        Generate a rectangular flange at the specified position.
+        
+        Args:
+            vertices: List to append vertices to
+            indices: List to append indices to
+            normals: List to append normals to
+            inner_width: Inner half-width of the flange (X direction)
+            inner_height: Inner half-height of the flange (Z direction)
+            z_offset: Position along the direction axis
+            is_inlet: True for inlet flange, False for outlet
+            direction: Direction unit vector
+            perp1, perp2: Perpendicular basis vectors
+        """
+        p = self.params
+        if not p.flanged:
+            return
+        
+        fw = p.flange_width
+        ft = p.flange_thickness
+        
+        # Outer flange dimensions
+        outer_w = inner_width + fw
+        outer_h = inner_height + fw
+        
+        # Flange position: before inlet or after outlet
+        if is_inlet:
+            z_back = z_offset - ft
+            z_front = z_offset
+            back_normal = [-d for d in direction]
+            front_normal = list(direction)
+        else:
+            z_back = z_offset
+            z_front = z_offset + ft
+            back_normal = [-d for d in direction]
+            front_normal = list(direction)
+        
+        # Define corner points for inner and outer rectangles
+        # Inner rectangle corners (counter-clockwise from +X,+Z)
+        inner_corners = [
+            (inner_width, inner_height),
+            (-inner_width, inner_height),
+            (-inner_width, -inner_height),
+            (inner_width, -inner_height),
+        ]
+        
+        # Outer rectangle corners
+        outer_corners = [
+            (outer_w, outer_h),
+            (-outer_w, outer_h),
+            (-outer_w, -outer_h),
+            (outer_w, -outer_h),
+        ]
+        
+        # Edge normals for the 4 sides (outward from flange edge)
+        edge_normals = [
+            (1, 0),   # Right edge (+X)
+            (0, 1),   # Top edge (+Z or perp2)
+            (-1, 0),  # Left edge (-X)
+            (0, -1),  # Bottom edge (-Z)
+        ]
+        
+        base_idx = len(vertices)
+        
+        # Generate outer edge faces (4 sides of rectangular flange)
+        for i in range(4):
+            c1 = outer_corners[i]
+            c2 = outer_corners[(i + 1) % 4]
+            enx, eny = edge_normals[i]
+            
+            # Convert edge normal to world coordinates
+            norm = [enx * perp1[0] + eny * perp2[0],
+                    enx * perp1[1] + eny * perp2[1],
+                    enx * perp1[2] + eny * perp2[2]]
+            
+            # 4 vertices for this edge face
+            side_base = len(vertices)
+            pt1 = self._transform_point(c1[0], c1[1], z_back, direction, perp1, perp2)
+            pt2 = self._transform_point(c2[0], c2[1], z_back, direction, perp1, perp2)
+            pt3 = self._transform_point(c1[0], c1[1], z_front, direction, perp1, perp2)
+            pt4 = self._transform_point(c2[0], c2[1], z_front, direction, perp1, perp2)
+            
+            vertices.extend([pt1, pt2, pt3, pt4])
+            normals.extend([norm, norm, norm, norm])
+            
+            # Two triangles for this face
+            indices.extend([side_base, side_base + 1, side_base + 2])
+            indices.extend([side_base + 1, side_base + 3, side_base + 2])
+        
+        # Generate annular faces (back and front)
+        for face_z, face_normal in [(z_back, back_normal), (z_front, front_normal)]:
+            face_base = len(vertices)
+            
+            # Add inner rectangle vertices
+            for c in inner_corners:
+                pt = self._transform_point(c[0], c[1], face_z, direction, perp1, perp2)
+                vertices.append(pt)
+                normals.append(face_normal)
+            
+            # Add outer rectangle vertices
+            for c in outer_corners:
+                pt = self._transform_point(c[0], c[1], face_z, direction, perp1, perp2)
+                vertices.append(pt)
+                normals.append(face_normal)
+            
+            # Generate triangles to fill the annular region (4 quads)
+            for i in range(4):
+                i0 = face_base + i
+                i1 = face_base + (i + 1) % 4
+                i2 = face_base + 4 + i
+                i3 = face_base + 4 + (i + 1) % 4
+                
+                if np.allclose(face_z, z_front):
                     indices.extend([i0, i1, i2])
                     indices.extend([i1, i3, i2])
                 else:
@@ -527,7 +650,8 @@ class Transition:
                 cy = r_in * np.sin(theta)
                 
                 # Rectangle point (superellipse for smooth corners)
-                n = 2 + 6 * t_param  # Goes from circle (n=2) toward rectangle
+                # n=2 is circle, higher n approaches rectangle (n=20+ is nearly rectangular)
+                n = 2 + 18 * t_param  # Goes from circle (n=2) toward rectangle (n=20)
                 rx = w_out * np.sign(np.cos(theta)) * abs(np.cos(theta)) ** (2/n)
                 ry = h_out * np.sign(np.sin(theta)) * abs(np.sin(theta)) ** (2/n)
                 
@@ -577,7 +701,7 @@ class Transition:
                 cx = r_in * np.cos(theta)
                 cy = r_in * np.sin(theta)
                 
-                n = 2 + 6 * t_param
+                n = 2 + 18 * t_param  # Match outer surface exponent
                 rx = w_out * np.sign(np.cos(theta)) * abs(np.cos(theta)) ** (2/n)
                 ry = h_out * np.sign(np.sin(theta)) * abs(np.sin(theta)) ** (2/n)
                 
@@ -615,15 +739,14 @@ class Transition:
                 direction=direction, perp1=perp1, perp2=perp2,
                 num_segments=num_segments
             )
-            # Outlet flange (approximate as circle using max dimension)
-            outlet_max_r = max(w_out, h_out) + t
-            self._generate_flange_ring(
+            # Outlet flange (rectangular)
+            self._generate_rectangular_flange(
                 all_vertices, all_indices, all_normals,
-                inner_radius=outlet_max_r,
+                inner_width=w_out + t,
+                inner_height=h_out + t,
                 z_offset=p.length,
                 is_inlet=False,
-                direction=direction, perp1=perp1, perp2=perp2,
-                num_segments=num_segments
+                direction=direction, perp1=perp1, perp2=perp2
             )
         
         self._vertices = np.array(all_vertices, dtype=np.float32)
@@ -658,7 +781,8 @@ class Transition:
                 theta = 2 * np.pi * i / num_segments
                 
                 # Rectangle point
-                n = 8 - 6 * t_param  # Goes from rectangle toward circle
+                # n=20 is nearly rectangular, n=2 is circle
+                n = 20 - 18 * t_param  # Goes from rectangle toward circle
                 n = max(n, 2.0)
                 rx = w_in * np.sign(np.cos(theta)) * abs(np.cos(theta)) ** (2/n)
                 ry = h_in * np.sign(np.sin(theta)) * abs(np.sin(theta)) ** (2/n)
@@ -709,7 +833,7 @@ class Transition:
             for i in range(num_segments):
                 theta = 2 * np.pi * i / num_segments
                 
-                n = 8 - 6 * t_param
+                n = 20 - 18 * t_param  # Match outer surface exponent
                 n = max(n, 2.0)
                 rx = w_in * np.sign(np.cos(theta)) * abs(np.cos(theta)) ** (2/n)
                 ry = h_in * np.sign(np.sin(theta)) * abs(np.sin(theta)) ** (2/n)
@@ -742,15 +866,14 @@ class Transition:
         
         # Add flanges if enabled
         if p.flanged:
-            # Inlet flange (approximate rect as circle using max dimension)
-            inlet_max_r = max(w_in, h_in) + t
-            self._generate_flange_ring(
+            # Inlet flange (rectangular)
+            self._generate_rectangular_flange(
                 all_vertices, all_indices, all_normals,
-                inner_radius=inlet_max_r,
+                inner_width=w_in + t,
+                inner_height=h_in + t,
                 z_offset=0.0,
                 is_inlet=True,
-                direction=direction, perp1=perp1, perp2=perp2,
-                num_segments=num_segments
+                direction=direction, perp1=perp1, perp2=perp2
             )
             # Outlet flange (round)
             self._generate_flange_ring(

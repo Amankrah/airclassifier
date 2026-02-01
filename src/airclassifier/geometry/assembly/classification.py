@@ -268,12 +268,26 @@ class ClassificationSystemAssembly:
         # Get zigzag air_inlet port (in local coords relative to zigzag center)
         zigzag_inlet = self.zigzag.ports['air_inlet']
 
-        # Duct length between venturi and zigzag
-        duct1_length = p.duct_spacing
+        # Get dimensions for the connection
+        venturi_d = self.venturi.params.outlet_diameter
+        zigzag_inlet_w = zigzag_inlet.width   # X dimension (air_inlet_width)
+        zigzag_inlet_h = zigzag_inlet.height  # Z dimension (channel_depth)
+        
+        # Calculate proper transition length based on size change
+        # Use gradual expansion angle (max 15 degrees) for smooth flow
+        max_expansion_angle = np.radians(12)
+        max_dim = max(zigzag_inlet_w, zigzag_inlet_h)
+        min_transition_length = (max_dim - venturi_d) / (2 * np.tan(max_expansion_angle))
+        min_transition_length = max(min_transition_length, 0.1)  # At least 100mm
+        
+        # Round duct length - proportional to venturi diameter
+        duct1a_length = venturi_d * 0.5  # 50% of diameter
+        
+        # Total connection length
+        trans1_length = min_transition_length
+        total_duct1_length = gap + duct1a_length + gap + trans1_length + gap
 
         # Position zigzag so its air_inlet aligns with venturi outlet + duct + transition
-        # Total distance = gap + duct1a_length + gap + trans1_length + gap
-        total_duct1_length = gap + (duct1_length * 0.3) + gap + (duct1_length * 0.7) + gap
         zigzag_y = venturi_outlet_world[1] + total_duct1_length - zigzag_inlet.position[1]
         self._component_positions['zigzag'] = np.array([
             venturi_outlet_world[0] - zigzag_inlet.position[0],  # Align X
@@ -282,13 +296,7 @@ class ClassificationSystemAssembly:
         ])
 
         # Create duct + transition: venturi outlet (round) to zigzag inlet (rect)
-        # Split the duct length: short round duct + round-to-rect transition
-        venturi_d = self.venturi.params.outlet_diameter
-        zigzag_inlet_w = zigzag_inlet.width
-        zigzag_inlet_h = zigzag_inlet.height
-
-        # Short round duct from venturi
-        duct1a_length = duct1_length * 0.3
+        # Round duct from venturi outlet
         duct1a_start = (
             venturi_outlet_world[0],
             venturi_outlet_world[1] + gap,
@@ -305,8 +313,10 @@ class ClassificationSystemAssembly:
         self._duct_sections.append((duct1a, duct1a_start))
 
         # Round-to-rect transition from venturi diameter to zigzag inlet
+        # For vertical +Y direction: perp1=+X, perp2=-Z
+        # outlet_dimensions[0] maps to X direction (zigzag width)
+        # outlet_dimensions[1] maps to Z direction (zigzag depth)
         from ..components.transitions import Transition, TransitionParams
-        trans1_length = duct1_length * 0.7
         trans1_start = (
             duct1a_start[0],
             duct1a_start[1] + duct1a_length + gap,
@@ -321,6 +331,7 @@ class ClassificationSystemAssembly:
             wall_thickness=0.002,
             direction=(0.0, 1.0, 0.0),  # Vertical +Y
             center=(0, 0, 0),
+            flanged=True,
         ))
         self._duct_sections.append((trans1, trans1_start))
 
