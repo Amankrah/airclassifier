@@ -272,10 +272,20 @@ class FlowDamper:
                     indices.extend([v0, v3, v2])
 
     def _generate_butterfly_blade(self, vertices: List, indices: List, normals: List):
-        """Generate butterfly damper blade."""
-        p = self.params
+        """
+        Generate butterfly damper blade as a solid disc.
 
-        start_idx = len(vertices)
+        Real butterfly valve blade:
+        - Single solid circular disc (3-6mm thick)
+        - Mounted on central shaft
+        - Rotates 0° (closed) to 90° (open)
+
+        Geometry includes:
+        - Front face (fan triangles)
+        - Back face (fan triangles)
+        - Edge rim (connecting front/back) - makes it look solid
+        """
+        p = self.params
 
         # Blade is a circular disk that rotates
         # At position 0 (closed), blade is perpendicular to flow
@@ -287,41 +297,151 @@ class FlowDamper:
 
         n_radial = p.resolution // 2
 
-        # Generate blade as a disk
-        # Rotation is around the Y axis (perpendicular to flow X and blade Z)
+        if p.axis != "x":
+            # Simplified for non-X axes
+            self._generate_blade_simple(vertices, indices, normals)
+            return
+
+        cx, cy, cz = p.center[0], p.center[1], p.center[2]
+
+        # Pre-calculate rotation matrix components
+        cos_a = np.cos(blade_angle)
+        sin_a = np.sin(blade_angle)
+
+        # Store edge vertex indices for rim generation
+        front_edge_start = len(vertices)
+
+        # ============================================================
+        # 1. FRONT FACE (side = +1)
+        # ============================================================
+        front_center = len(vertices)
+
+        # Center vertex (front)
+        vertices.append([
+            cx + half_thick * cos_a,
+            cy,
+            cz + half_thick * sin_a
+        ])
+        normals.append([cos_a, 0, sin_a])
+
+        # Edge vertices (front)
+        for j in range(n_radial):
+            theta = (j / n_radial) * TWO_PI
+            y = cy + r * np.sin(theta)
+            z_local = r * np.cos(theta)
+
+            # Apply rotation and thickness offset
+            x = cx + z_local * sin_a + half_thick * cos_a
+            z = cz + z_local * cos_a + half_thick * sin_a
+
+            vertices.append([x, y, z])
+            normals.append([cos_a, 0, sin_a])
+
+        # Front face triangles (fan from center)
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            indices.extend([front_center, front_center + 1 + j, front_center + 1 + j_next])
+
+        # ============================================================
+        # 2. BACK FACE (side = -1)
+        # ============================================================
+        back_center = len(vertices)
+
+        # Center vertex (back)
+        vertices.append([
+            cx - half_thick * cos_a,
+            cy,
+            cz - half_thick * sin_a
+        ])
+        normals.append([-cos_a, 0, -sin_a])
+
+        # Edge vertices (back)
+        back_edge_start = len(vertices)
+        for j in range(n_radial):
+            theta = (j / n_radial) * TWO_PI
+            y = cy + r * np.sin(theta)
+            z_local = r * np.cos(theta)
+
+            # Apply rotation and thickness offset (negative for back)
+            x = cx + z_local * sin_a - half_thick * cos_a
+            z = cz + z_local * cos_a - half_thick * sin_a
+
+            vertices.append([x, y, z])
+            normals.append([-cos_a, 0, -sin_a])
+
+        # Back face triangles (fan from center, reversed winding)
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            indices.extend([back_center, back_center + 1 + j_next, back_center + 1 + j])
+
+        # ============================================================
+        # 3. EDGE RIM (connects front and back faces)
+        # ============================================================
+        # This makes the blade look like a solid disc, not two floating circles
+        front_edge_start = front_center + 1  # First edge vertex of front face
+
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+
+            # Four vertices of this edge quad
+            f0 = front_edge_start + j       # Front edge vertex j
+            f1 = front_edge_start + j_next  # Front edge vertex j+1
+            b0 = back_edge_start + j        # Back edge vertex j
+            b1 = back_edge_start + j_next   # Back edge vertex j+1
+
+            # Edge normal points radially outward
+            theta = ((j + 0.5) / n_radial) * TWO_PI
+            edge_ny = np.sin(theta)
+            edge_nz_local = np.cos(theta)
+            # Rotate edge normal by blade angle
+            edge_nx = edge_nz_local * sin_a
+            edge_nz = edge_nz_local * cos_a
+
+            # Add edge quad vertices with radial normals
+            rim_start = len(vertices)
+
+            # Get positions from existing vertices
+            vf0 = vertices[f0]
+            vf1 = vertices[f1]
+            vb0 = vertices[b0]
+            vb1 = vertices[b1]
+
+            vertices.append(vf0[:])
+            normals.append([edge_nx, edge_ny, edge_nz])
+            vertices.append(vf1[:])
+            normals.append([edge_nx, edge_ny, edge_nz])
+            vertices.append(vb1[:])
+            normals.append([edge_nx, edge_ny, edge_nz])
+            vertices.append(vb0[:])
+            normals.append([edge_nx, edge_ny, edge_nz])
+
+            # Two triangles for this edge quad
+            indices.extend([rim_start, rim_start + 1, rim_start + 2])
+            indices.extend([rim_start, rim_start + 2, rim_start + 3])
+
+        # Blade shaft (pivot rod)
+        self._add_blade_shaft(vertices, indices, normals)
+
+    def _generate_blade_simple(self, vertices: List, indices: List, normals: List):
+        """Simplified blade for non-X axis orientations."""
+        p = self.params
+        r = p.radius - 0.002
+        n_radial = p.resolution // 2
 
         for side in [-1, 1]:
             blade_side_start = len(vertices)
+            vertices.append([p.center[0], p.center[1], p.center[2]])
+            normals.append([0, 0, side])
 
-            # Center vertex
-            if p.axis == "x":
-                cx, cy, cz = p.center[0], p.center[1], p.center[2]
-                vertices.append([cx + side * half_thick * np.cos(blade_angle),
-                               cy, cz + side * half_thick * np.sin(blade_angle)])
-                normals.append([np.cos(blade_angle) * side, 0, np.sin(blade_angle) * side])
-
-                # Edge vertices
-                for j in range(n_radial):
-                    theta = (j / n_radial) * TWO_PI
-                    # Disk in Y-Z plane, rotated by blade_angle around Y
-                    y = cy + r * np.sin(theta)
-                    z_local = r * np.cos(theta)
-                    x_offset = z_local * np.sin(blade_angle) + side * half_thick * np.cos(blade_angle)
-                    z_offset = z_local * np.cos(blade_angle) + side * half_thick * np.sin(blade_angle)
-
-                    vertices.append([cx + x_offset, y, cz + z_offset])
-                    normals.append([np.cos(blade_angle) * side, 0, np.sin(blade_angle) * side])
-            else:
-                # Simplified for other axes
-                vertices.append([p.center[0], p.center[1], p.center[2]])
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                vertices.append([
+                    p.center[0] + r * np.cos(theta),
+                    p.center[1] + r * np.sin(theta),
+                    p.center[2]
+                ])
                 normals.append([0, 0, side])
-                for j in range(n_radial):
-                    theta = (j / n_radial) * TWO_PI
-                    vertices.append([p.center[0] + r * np.cos(theta),
-                                   p.center[1] + r * np.sin(theta), p.center[2]])
-                    normals.append([0, 0, side])
 
-            # Triangles for this side of blade
             for j in range(n_radial):
                 j_next = (j + 1) % n_radial
                 if side > 0:
@@ -330,9 +450,6 @@ class FlowDamper:
                 else:
                     indices.extend([blade_side_start, blade_side_start + 1 + j_next,
                                   blade_side_start + 1 + j])
-
-        # Blade shaft (pivot rod)
-        self._add_blade_shaft(vertices, indices, normals)
 
     def _add_blade_shaft(self, vertices: List, indices: List, normals: List):
         """Add blade pivot shaft."""
@@ -530,15 +647,22 @@ class FlowDamper:
         body_base_y = stem_base_y + stem_height
 
         if p.actuator_type == "pneumatic":
-            # Cylindrical body for pneumatic actuator
-            self._generate_actuator_cylinder(
+            # Cylindrical body for pneumatic actuator (scotch yoke type)
+            self._generate_pneumatic_actuator(
                 vertices, indices, normals,
                 x_center, body_base_y, z_center,
-                actuator_width * 0.4, actuator_height
+                actuator_width * 0.5, actuator_height
+            )
+        elif p.actuator_type == "electric":
+            # Electric actuator with motor housing
+            self._generate_electric_actuator(
+                vertices, indices, normals,
+                x_center, body_base_y, z_center,
+                actuator_width, actuator_depth, actuator_height
             )
         else:
-            # Box body for electric/manual actuator
-            self._generate_actuator_box(
+            # Manual actuator with handwheel
+            self._generate_manual_actuator(
                 vertices, indices, normals,
                 x_center, body_base_y, z_center,
                 actuator_width, actuator_depth, actuator_height
@@ -758,6 +882,500 @@ class FlowDamper:
         indices.extend([start_idx + 1, start_idx + 6, start_idx + 2])
         indices.extend([start_idx + 0, start_idx + 3, start_idx + 7])
         indices.extend([start_idx + 0, start_idx + 7, start_idx + 4])
+
+    def _generate_electric_actuator(self, vertices: List, indices: List, normals: List,
+                                     cx: float, cy: float, cz: float,
+                                     width: float, depth: float, height: float):
+        """
+        Generate electric actuator with motor housing.
+
+        Layout (side view):
+                ┌───┐
+                │MOT│  ← Motor cylinder
+                │OR │
+            ┌───┴───┴───┐
+            │  GEARBOX  │  ← Main housing with internal gearing
+            └───────────┘
+
+        Components:
+        1. Main gearbox housing (rectangular)
+        2. Motor cylinder on top
+        3. Position indicator on front
+        """
+        # 1. Gearbox housing (main box)
+        self._generate_actuator_box(
+            vertices, indices, normals,
+            cx, cy, cz,
+            width, depth, height
+        )
+
+        # 2. Motor cylinder on top of gearbox
+        motor_radius = width * 0.25  # Motor diameter = 50% of box width
+        motor_height = height * 0.8  # Motor height
+        motor_cy = cy + height  # Motor sits on top of gearbox
+
+        self._generate_motor_cylinder(
+            vertices, indices, normals,
+            cx, motor_cy, cz,
+            motor_radius, motor_height
+        )
+
+        # 3. Position indicator plate on front (-Z face)
+        indicator_width = width * 0.4
+        indicator_height = height * 0.3
+        indicator_depth = 0.005  # 5mm thick plate
+        indicator_cy = cy + height * 0.6  # Centered vertically on front face
+        indicator_cz = cz - depth / 2 - indicator_depth / 2
+
+        self._generate_indicator_plate(
+            vertices, indices, normals,
+            cx, indicator_cy, indicator_cz,
+            indicator_width, indicator_height, indicator_depth
+        )
+
+    def _generate_motor_cylinder(self, vertices: List, indices: List, normals: List,
+                                  cx: float, cy: float, cz: float,
+                                  radius: float, height: float):
+        """Generate motor cylinder for electric actuator."""
+        start_idx = len(vertices)
+        n_segments = 16
+
+        # Cylinder body
+        for i in range(2):
+            y = cy + i * height
+            for j in range(n_segments):
+                theta = (j / n_segments) * TWO_PI
+                x = cx + radius * np.cos(theta)
+                z = cz + radius * np.sin(theta)
+                vertices.append([x, y, z])
+                normals.append([np.cos(theta), 0, np.sin(theta)])
+
+        # Center points for caps
+        vertices.append([cx, cy, cz])  # Bottom center
+        normals.append([0, -1, 0])
+        vertices.append([cx, cy + height, cz])  # Top center
+        normals.append([0, 1, 0])
+
+        bottom_center = start_idx + 2 * n_segments
+        top_center = start_idx + 2 * n_segments + 1
+
+        # Side triangles
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_segments + j_next
+            v3 = start_idx + n_segments + j
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+
+        # Bottom cap
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            indices.extend([bottom_center, start_idx + j_next, start_idx + j])
+
+        # Top cap
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            indices.extend([top_center, start_idx + n_segments + j, start_idx + n_segments + j_next])
+
+    def _generate_indicator_plate(self, vertices: List, indices: List, normals: List,
+                                   cx: float, cy: float, cz: float,
+                                   width: float, height: float, depth: float):
+        """Generate position indicator plate on front of actuator."""
+        start_idx = len(vertices)
+        hw = width / 2
+        hh = height / 2
+        hd = depth / 2
+
+        # Simple box for indicator
+        corners = [
+            [cx - hw, cy - hh, cz - hd],
+            [cx + hw, cy - hh, cz - hd],
+            [cx + hw, cy + hh, cz - hd],
+            [cx - hw, cy + hh, cz - hd],
+            [cx - hw, cy - hh, cz + hd],
+            [cx + hw, cy - hh, cz + hd],
+            [cx + hw, cy + hh, cz + hd],
+            [cx - hw, cy + hh, cz + hd],
+        ]
+
+        for corner in corners:
+            vertices.append(corner)
+            normals.append([0, 0, -1])  # Front-facing
+
+        # Front face (-Z)
+        indices.extend([start_idx + 0, start_idx + 3, start_idx + 2])
+        indices.extend([start_idx + 0, start_idx + 2, start_idx + 1])
+        # Back face (+Z)
+        indices.extend([start_idx + 4, start_idx + 5, start_idx + 6])
+        indices.extend([start_idx + 4, start_idx + 6, start_idx + 7])
+        # Top, bottom, sides
+        indices.extend([start_idx + 2, start_idx + 3, start_idx + 7])
+        indices.extend([start_idx + 2, start_idx + 7, start_idx + 6])
+        indices.extend([start_idx + 0, start_idx + 1, start_idx + 5])
+        indices.extend([start_idx + 0, start_idx + 5, start_idx + 4])
+        indices.extend([start_idx + 1, start_idx + 2, start_idx + 6])
+        indices.extend([start_idx + 1, start_idx + 6, start_idx + 5])
+        indices.extend([start_idx + 0, start_idx + 4, start_idx + 7])
+        indices.extend([start_idx + 0, start_idx + 7, start_idx + 3])
+
+    def _generate_pneumatic_actuator(self, vertices: List, indices: List, normals: List,
+                                      cx: float, cy: float, cz: float,
+                                      radius: float, height: float):
+        """
+        Generate pneumatic actuator with scotch yoke design.
+
+        Layout (top view):
+            ┌───┬─────────────┬───┐
+            │AIR│  CYLINDER   │AIR│
+            │   │   BARREL    │   │
+            └───┴─────────────┴───┘
+                     ↑
+                 Drive stem
+
+        Components:
+        1. Main cylinder barrel (horizontal, along X axis)
+        2. End caps with air ports
+        3. Yoke housing underneath connecting to stem
+        """
+        # Cylinder is horizontal along X axis (perpendicular to blade shaft)
+        barrel_length = radius * 3  # Full stroke length
+        barrel_radius = radius * 0.8
+
+        # 1. Main cylinder barrel (horizontal along X)
+        self._generate_horizontal_cylinder(
+            vertices, indices, normals,
+            cx, cy + height * 0.5, cz,  # Raised above base
+            barrel_length, barrel_radius
+        )
+
+        # 2. End caps (larger diameter discs at each end)
+        cap_radius = barrel_radius * 1.2
+        cap_thickness = 0.015
+
+        # Left end cap
+        self._generate_end_cap(
+            vertices, indices, normals,
+            cx - barrel_length / 2 - cap_thickness / 2, cy + height * 0.5, cz,
+            cap_radius, cap_thickness
+        )
+
+        # Right end cap
+        self._generate_end_cap(
+            vertices, indices, normals,
+            cx + barrel_length / 2 + cap_thickness / 2, cy + height * 0.5, cz,
+            cap_radius, cap_thickness
+        )
+
+        # 3. Yoke housing (box underneath connecting barrel to stem)
+        yoke_width = barrel_length * 0.4
+        yoke_depth = barrel_radius * 1.5
+        yoke_height = height * 0.4
+
+        self._generate_actuator_box(
+            vertices, indices, normals,
+            cx, cy, cz,
+            yoke_width, yoke_depth, yoke_height
+        )
+
+    def _generate_horizontal_cylinder(self, vertices: List, indices: List, normals: List,
+                                        cx: float, cy: float, cz: float,
+                                        length: float, radius: float):
+        """Generate horizontal cylinder (axis along X)."""
+        start_idx = len(vertices)
+        n_segments = 16
+
+        # Cylinder along X axis
+        for i in range(2):
+            x = cx - length / 2 + i * length
+            for j in range(n_segments):
+                theta = (j / n_segments) * TWO_PI
+                y = cy + radius * np.cos(theta)
+                z = cz + radius * np.sin(theta)
+                vertices.append([x, y, z])
+                normals.append([0, np.cos(theta), np.sin(theta)])
+
+        # Side triangles
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_segments + j_next
+            v3 = start_idx + n_segments + j
+            indices.extend([v0, v2, v1])  # Reversed for correct winding
+            indices.extend([v0, v3, v2])
+
+    def _generate_end_cap(self, vertices: List, indices: List, normals: List,
+                           cx: float, cy: float, cz: float,
+                           radius: float, thickness: float):
+        """Generate end cap disc for pneumatic cylinder."""
+        start_idx = len(vertices)
+        n_segments = 12
+
+        # Two rings for disc thickness
+        for i in range(2):
+            x = cx - thickness / 2 + i * thickness
+            nx = -1 if i == 0 else 1
+            for j in range(n_segments):
+                theta = (j / n_segments) * TWO_PI
+                y = cy + radius * np.cos(theta)
+                z = cz + radius * np.sin(theta)
+                vertices.append([x, y, z])
+                normals.append([nx, 0, 0])
+
+        # Center points
+        vertices.append([cx - thickness / 2, cy, cz])  # Left center
+        normals.append([-1, 0, 0])
+        vertices.append([cx + thickness / 2, cy, cz])  # Right center
+        normals.append([1, 0, 0])
+
+        left_center = start_idx + 2 * n_segments
+        right_center = start_idx + 2 * n_segments + 1
+
+        # Left face (fan triangles)
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            indices.extend([left_center, start_idx + j, start_idx + j_next])
+
+        # Right face (fan triangles)
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            indices.extend([right_center, start_idx + n_segments + j_next, start_idx + n_segments + j])
+
+        # Edge (connecting the two rings)
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_segments + j_next
+            v3 = start_idx + n_segments + j
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+
+    def _generate_manual_actuator(self, vertices: List, indices: List, normals: List,
+                                   cx: float, cy: float, cz: float,
+                                   width: float, depth: float, height: float):
+        """
+        Generate manual actuator with handwheel.
+
+        Layout (side view):
+                  ╭───╮
+                 ╱     ╲    ← Handwheel
+                ╱   ●   ╲       (spoked wheel)
+               ╲       ╱
+                ╲     ╱
+                 ╰───╯
+                   │      ← Stem
+            ┌──────┴──────┐
+            │   GEARBOX   │  ← Small gear housing
+            └─────────────┘
+
+        Components:
+        1. Small gear housing box
+        2. Handwheel stem
+        3. Handwheel (spoked disc)
+        """
+        # 1. Small gearbox housing
+        gear_height = height * 0.6
+        self._generate_actuator_box(
+            vertices, indices, normals,
+            cx, cy, cz,
+            width * 0.8, depth * 0.8, gear_height
+        )
+
+        # 2. Handwheel stem
+        stem_radius = 0.008  # 8mm radius
+        stem_height = height * 0.5
+        stem_cy = cy + gear_height
+
+        self._generate_drive_stem(
+            vertices, indices, normals,
+            cx, stem_cy, cz,
+            stem_radius * 2, stem_height
+        )
+
+        # 3. Handwheel (spoked wheel)
+        wheel_radius = width * 0.6
+        wheel_cy = stem_cy + stem_height
+
+        self._generate_handwheel(
+            vertices, indices, normals,
+            cx, wheel_cy, cz,
+            wheel_radius
+        )
+
+    def _generate_handwheel(self, vertices: List, indices: List, normals: List,
+                             cx: float, cy: float, cz: float,
+                             radius: float):
+        """Generate handwheel with rim and spokes."""
+        n_spokes = 5
+        rim_thickness = 0.012  # 12mm thick rim
+        rim_width = 0.015  # 15mm rim width (radial)
+        spoke_radius = 0.006  # 6mm spoke radius
+        hub_radius = 0.02  # 20mm hub
+
+        # 1. Outer rim (torus-like, simplified as ring of boxes)
+        self._generate_wheel_rim(
+            vertices, indices, normals,
+            cx, cy, cz,
+            radius, rim_width, rim_thickness
+        )
+
+        # 2. Hub (small cylinder at center)
+        hub_height = rim_thickness * 1.5
+        hub_start = len(vertices)
+        n_hub = 8
+
+        for i in range(2):
+            y = cy - hub_height / 2 + i * hub_height
+            for j in range(n_hub):
+                theta = (j / n_hub) * TWO_PI
+                x = cx + hub_radius * np.cos(theta)
+                z = cz + hub_radius * np.sin(theta)
+                vertices.append([x, y, z])
+                normals.append([np.cos(theta), 0, np.sin(theta)])
+
+        # Hub side triangles
+        for j in range(n_hub):
+            j_next = (j + 1) % n_hub
+            v0 = hub_start + j
+            v1 = hub_start + j_next
+            v2 = hub_start + n_hub + j_next
+            v3 = hub_start + n_hub + j
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+
+        # 3. Spokes (connecting hub to rim)
+        for spoke_idx in range(n_spokes):
+            spoke_angle = (spoke_idx / n_spokes) * TWO_PI
+            self._generate_spoke(
+                vertices, indices, normals,
+                cx, cy, cz,
+                spoke_angle, hub_radius, radius - rim_width, spoke_radius
+            )
+
+    def _generate_wheel_rim(self, vertices: List, indices: List, normals: List,
+                             cx: float, cy: float, cz: float,
+                             radius: float, width: float, thickness: float):
+        """Generate wheel rim as a segmented ring."""
+        n_segments = 24
+        inner_r = radius - width
+        outer_r = radius
+
+        start_idx = len(vertices)
+
+        # Four rings: inner-bottom, inner-top, outer-bottom, outer-top
+        for is_outer in [False, True]:
+            r = outer_r if is_outer else inner_r
+            for is_top in [False, True]:
+                y = cy - thickness / 2 + (thickness if is_top else 0)
+                for j in range(n_segments):
+                    theta = (j / n_segments) * TWO_PI
+                    x = cx + r * np.cos(theta)
+                    z = cz + r * np.sin(theta)
+                    vertices.append([x, y, z])
+                    # Normal points outward for outer, inward for inner
+                    if is_outer:
+                        normals.append([np.cos(theta), 0, np.sin(theta)])
+                    else:
+                        normals.append([-np.cos(theta), 0, -np.sin(theta)])
+
+        # Indices for each ring
+        inner_bottom = start_idx
+        inner_top = start_idx + n_segments
+        outer_bottom = start_idx + 2 * n_segments
+        outer_top = start_idx + 3 * n_segments
+
+        # Outer surface
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = outer_bottom + j
+            v1 = outer_bottom + j_next
+            v2 = outer_top + j_next
+            v3 = outer_top + j
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+
+        # Inner surface (reversed winding)
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = inner_bottom + j
+            v1 = inner_bottom + j_next
+            v2 = inner_top + j_next
+            v3 = inner_top + j
+            indices.extend([v0, v2, v1])
+            indices.extend([v0, v3, v2])
+
+        # Top face (annular ring)
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = inner_top + j
+            v1 = inner_top + j_next
+            v2 = outer_top + j_next
+            v3 = outer_top + j
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+
+        # Bottom face (annular ring, reversed)
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = inner_bottom + j
+            v1 = inner_bottom + j_next
+            v2 = outer_bottom + j_next
+            v3 = outer_bottom + j
+            indices.extend([v0, v2, v1])
+            indices.extend([v0, v3, v2])
+
+    def _generate_spoke(self, vertices: List, indices: List, normals: List,
+                         cx: float, cy: float, cz: float,
+                         angle: float, inner_r: float, outer_r: float, spoke_r: float):
+        """Generate a single spoke of the handwheel."""
+        start_idx = len(vertices)
+        n_segments = 6
+
+        # Spoke runs from inner_r to outer_r at given angle
+        spoke_start_x = cx + inner_r * np.cos(angle)
+        spoke_start_z = cz + inner_r * np.sin(angle)
+        spoke_end_x = cx + outer_r * np.cos(angle)
+        spoke_end_z = cz + outer_r * np.sin(angle)
+
+        # Generate cylinder along spoke direction
+        spoke_dir_x = np.cos(angle)
+        spoke_dir_z = np.sin(angle)
+        spoke_length = outer_r - inner_r
+
+        # Two rings of vertices
+        for i in range(2):
+            t = i  # 0 at start, 1 at end
+            sx = spoke_start_x + t * (spoke_end_x - spoke_start_x)
+            sz = spoke_start_z + t * (spoke_end_z - spoke_start_z)
+
+            for j in range(n_segments):
+                theta = (j / n_segments) * TWO_PI
+                # Perpendicular to spoke direction
+                # For Y-axis aligned wheel, spoke in XZ plane
+                # Normal perpendicular: (-sin(angle), 0, cos(angle)) and (0, 1, 0)
+                perp_x = -np.sin(angle) * np.cos(theta)
+                perp_y = np.sin(theta)
+                perp_z = np.cos(angle) * np.cos(theta)
+
+                x = sx + spoke_r * perp_x
+                y = cy + spoke_r * perp_y
+                z = sz + spoke_r * perp_z
+
+                vertices.append([x, y, z])
+                normals.append([perp_x, perp_y, perp_z])
+
+        # Side triangles
+        for j in range(n_segments):
+            j_next = (j + 1) % n_segments
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_segments + j_next
+            v3 = start_idx + n_segments + j
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
 
     def set_position(self, position: float):
         """
