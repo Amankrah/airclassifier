@@ -745,6 +745,16 @@ class GeometryVisualizer:
                             mesh_data.append((inst_name, inst.vertices, inst.indices, "#808080"))
                         except Exception:
                             pass
+            
+            # Add duct connections (silver/gray color for visibility)
+            if hasattr(system, 'get_all_duct_names'):
+                duct_color = "#A0A0A0"  # Silver/gray for ductwork
+                for duct_name in system.get_all_duct_names():
+                    try:
+                        duct_verts, duct_idx = system.get_duct_mesh(duct_name)
+                        mesh_data.append((duct_name, duct_verts, duct_idx, duct_color))
+                    except Exception:
+                        pass
         
         if not mesh_data:
             mesh_data = [(name, vertices, indices, request.color)]

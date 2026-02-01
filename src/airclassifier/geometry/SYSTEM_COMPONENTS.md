@@ -419,7 +419,7 @@ class CycloneSystemParams:
 ---
 
 ### 4.2 Bag Filter / Baghouse
-**Status:** ✅ Implemented  
+**Status:** ✅ Implemented (with Pulse-Jet System)  
 **Module:** `geometry/components/bag_filter.py`
 
 ```python
@@ -429,15 +429,27 @@ class BagFilterParams:
     housing_width: float         # [m] Housing width
     housing_depth: float         # [m] Housing depth
     housing_height: float        # [m] Housing height
-    num_bags: int                # Number of filter bags
+    num_bags_x: int              # Number of filter bags in X direction
+    num_bags_z: int              # Number of filter bags in Z direction
     bag_diameter: float          # [m] Individual bag diameter
     bag_length: float            # [m] Bag length
-    bag_material: str            # "polyester", "PTFE", "aramid"
-    cleaning_type: str           # "pulse_jet", "shaker", "reverse_air"
-    pulse_pressure: float        # [bar] Cleaning pulse pressure
-    hopper_angle: float          # [rad] Collection hopper angle
-    air_to_cloth_ratio: float    # [m³/min/m²] Filtration velocity
+    
+    # Pulse-jet cleaning system (geometrically modeled)
+    include_pulse_jet: bool = True        # Include pulse-jet system geometry
+    pulse_header_diameter: float = 0.05   # [m] Main air header pipe diameter
+    blow_tube_diameter: float = 0.025     # [m] Blow tube diameter
+    blow_tube_length: float = 0.15        # [m] Blow tube extension into bag
+    nozzle_diameter: float = 0.012        # [m] Nozzle tip diameter
+    air_tank_diameter: float = 0.20       # [m] Compressed air tank diameter
+    air_tank_length: float = 0.40         # [m] Compressed air tank length
 ```
+
+**Pulse-Jet System Components (Now Modeled):**
+- Compressed air tank/reservoir mounted on top of housing
+- Main feed pipe from tank to headers
+- Header pipes running across each row of bags
+- Blow tubes extending down above each bag opening
+- Conical nozzles directing air pulses into bags
 
 **Design Considerations:**
 - Air-to-cloth ratio: 1.5-3.0 m³/min/m² for food dust
@@ -942,6 +954,30 @@ Would you like me to implement these remaining components? I can organize them a
 Phase 7A: Alternative Classifiers (Turbo, Counterflow, Elutriator)
 Phase 7B: Auxiliary Equipment (Air Heater, Collection Bins, Exhaust Fan, Explosion Isolation)
 Or we could proceed directly to the System Integration phase that combines all existing components. Which would you prefer?
+
+## 4.3 Pulse-Jet Cleaning System Components
+1. Compressed Air Tank (Reservoir)
+Horizontal cylinder mounted on top of the bag filter housing
+Default: 200mm diameter × 400mm length
+Stores compressed air for cleaning pulses
+2. Main Feed Pipe
+Vertical pipe from tank down into the clean air plenum
+Connects tank to the header distribution system
+3. Header Pipes
+Horizontal pipes running across each row of bags (Z direction)
+One header per row of bags in X direction
+Default: 50mm diameter
+Distributes compressed air to blow tubes
+4. Blow Tubes
+Vertical pipes extending from headers
+One above each filter bag opening
+Default: 25mm diameter
+Guide air pulses down into bags
+5. Conical Nozzles
+Tapered tips at end of blow tubes
+Extend into bag openings
+Default: 12mm tip diameter
+Focus and accelerate cleaning pulses
 ---
 
 ## References

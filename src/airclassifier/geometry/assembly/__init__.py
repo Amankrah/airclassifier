@@ -94,6 +94,7 @@ from .complete_system import (
     create_pilot_scale_system,
     create_production_scale_system,
     create_minimal_classifier_system,
+    create_core_connections_system,
 )
 
 __all__ = [
@@ -141,4 +142,5 @@ __all__ = [
     "create_pilot_scale_system",
     "create_production_scale_system",
     "create_minimal_classifier_system",
+    "create_core_connections_system",
 ]

@@ -53,6 +53,15 @@ class BagFilterParams:
     dirty_air_inlet_diameter: float   # [m] Dirty air inlet diameter
     clean_air_outlet_diameter: float  # [m] Clean air outlet diameter
 
+    # Pulse-jet cleaning system
+    include_pulse_jet: bool = True           # Include pulse-jet system geometry
+    pulse_header_diameter: float = 0.05      # [m] Main air header pipe diameter (50mm)
+    blow_tube_diameter: float = 0.025        # [m] Blow tube diameter (25mm)
+    blow_tube_length: float = 0.15           # [m] Blow tube extension into bag
+    nozzle_diameter: float = 0.012           # [m] Nozzle tip diameter (12mm)
+    air_tank_diameter: float = 0.20          # [m] Compressed air tank diameter
+    air_tank_length: float = 0.40            # [m] Compressed air tank length
+
     # Position
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # Bottom center of hopper
 
@@ -96,7 +105,12 @@ class BagFilter:
     - Filter bags: Hanging from tube sheet
     - Tube sheet: Supports bags, separates dirty/clean air
     - Clean air plenum: Collects filtered air
-    - Pulse-jet system: Bag cleaning (not geometrically modeled)
+    - Pulse-jet cleaning system:
+      * Compressed air tank (reservoir) on top
+      * Main feed pipe from tank
+      * Header pipes across each bag row
+      * Blow tubes above each bag
+      * Conical nozzles directing pulses into bags
 
     Coordinate system:
     - Origin at bottom center of hopper outlet
@@ -166,6 +180,10 @@ class BagFilter:
 
         # Generate inlet and outlet
         self._generate_inlet_outlet(vertices, indices, normals)
+
+        # Generate pulse-jet cleaning system
+        if p.include_pulse_jet:
+            self._generate_pulse_jet_system(vertices, indices, normals)
 
         self._vertices = np.array(vertices, dtype=np.float32)
         self._indices = np.array(indices, dtype=np.int32)
@@ -405,6 +423,252 @@ class BagFilter:
 
             indices.extend([v0, v1, v2])
             indices.extend([v0, v2, v3])
+
+    def _generate_pulse_jet_system(self, vertices: List, indices: List, normals: List):
+        """
+        Generate pulse-jet cleaning system geometry.
+        
+        Components:
+        - Compressed air tank (reservoir) mounted on top
+        - Main header pipes running across bag rows
+        - Blow tubes extending down above each bag
+        - Nozzle tips for directing air pulses
+        """
+        p = self.params
+        n_radial = max(8, p.resolution // 2)
+        
+        # Position in clean air plenum (above tube sheet)
+        tube_sheet_top = p.center[1] + p.tube_sheet_height + p.tube_sheet_thickness
+        plenum_height = p.clean_air_plenum_height
+        
+        # Header height: in upper part of plenum
+        header_y = tube_sheet_top + plenum_height * 0.7
+        
+        # ============================================================
+        # 1. COMPRESSED AIR TANK (mounted on top of housing, +Z side)
+        # ============================================================
+        tank_y = p.center[1] + p.housing_height + p.air_tank_diameter / 2 + 0.05
+        tank_z = p.center[2] + p.housing_depth / 2 - p.air_tank_diameter
+        tank_x = p.center[0]
+        
+        self._add_horizontal_cylinder(
+            vertices, indices, normals,
+            center=(tank_x, tank_y, tank_z),
+            diameter=p.air_tank_diameter,
+            length=p.air_tank_length,
+            axis='x',
+            n_radial=n_radial,
+            caps=True
+        )
+        
+        # Tank end caps (hemispherical look - simplified as flat)
+        # Already included with caps=True
+        
+        # ============================================================
+        # 2. MAIN FEED PIPE from tank down into housing
+        # ============================================================
+        feed_pipe_length = tank_y - header_y - p.pulse_header_diameter
+        if feed_pipe_length > 0:
+            self._add_pipe(
+                vertices, indices, normals,
+                center=(tank_x, header_y + p.pulse_header_diameter/2, tank_z),
+                diameter=p.pulse_header_diameter,
+                length=feed_pipe_length,
+                axis='y',
+                n_radial=n_radial
+            )
+        
+        # ============================================================
+        # 3. HEADER PIPES (one for each row of bags in X direction)
+        # ============================================================
+        # Headers run along Z direction
+        x_start = p.center[0] - (p.num_bags_x - 1) * p.bag_spacing_x / 2
+        z_start = p.center[2] - (p.num_bags_z - 1) * p.bag_spacing_z / 2
+        z_end = p.center[2] + (p.num_bags_z - 1) * p.bag_spacing_z / 2
+        header_length = z_end - z_start + p.bag_spacing_z * 0.5
+        
+        for i in range(p.num_bags_x):
+            header_x = x_start + i * p.bag_spacing_x
+            header_z_start = z_start - p.bag_spacing_z * 0.25
+            
+            self._add_horizontal_cylinder(
+                vertices, indices, normals,
+                center=(header_x, header_y, header_z_start),
+                diameter=p.pulse_header_diameter,
+                length=header_length,
+                axis='z',
+                n_radial=n_radial,
+                caps=True
+            )
+        
+        # ============================================================
+        # 4. BLOW TUBES with NOZZLES (one above each bag)
+        # ============================================================
+        for bag_x, bag_y_top, bag_z in self.bag_positions:
+            # Blow tube extends from header down toward bag opening
+            tube_top = header_y - p.pulse_header_diameter / 2
+            tube_bottom = tube_sheet_top + 0.02  # Just above tube sheet
+            tube_length = tube_top - tube_bottom
+            
+            if tube_length > 0:
+                # Main blow tube
+                self._add_pipe(
+                    vertices, indices, normals,
+                    center=(bag_x, tube_bottom, bag_z),
+                    diameter=p.blow_tube_diameter,
+                    length=tube_length,
+                    axis='y',
+                    n_radial=n_radial
+                )
+                
+                # Nozzle tip (extends into bag opening)
+                nozzle_top = tube_bottom
+                nozzle_bottom = nozzle_top - p.blow_tube_length
+                
+                self._add_nozzle(
+                    vertices, indices, normals,
+                    center=(bag_x, nozzle_bottom, bag_z),
+                    top_diameter=p.blow_tube_diameter,
+                    bottom_diameter=p.nozzle_diameter,
+                    length=p.blow_tube_length,
+                    n_radial=n_radial
+                )
+
+    def _add_horizontal_cylinder(self, vertices: List, indices: List, normals: List,
+                                  center: Tuple, diameter: float, length: float,
+                                  axis: str, n_radial: int, caps: bool = False):
+        """Add a horizontal cylinder (for tanks and headers)."""
+        start_idx = len(vertices)
+        r = diameter / 2
+        
+        # Generate cylinder body
+        for i in range(2):  # Two end rings
+            if axis == 'x':
+                x = center[0] - length/2 + i * length
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    y = center[1] + r * np.cos(theta)
+                    z = center[2] + r * np.sin(theta)
+                    vertices.append([x, y, z])
+                    normals.append([0.0, np.cos(theta), np.sin(theta)])
+            elif axis == 'z':
+                z = center[2] + i * length
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    x = center[0] + r * np.cos(theta)
+                    y = center[1] + r * np.sin(theta)
+                    vertices.append([x, y, z])
+                    normals.append([np.cos(theta), np.sin(theta), 0.0])
+        
+        # Connect rings
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_radial + j_next
+            v3 = start_idx + n_radial + j
+            
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+        
+        # End caps
+        if caps:
+            for end in range(2):
+                cap_idx = len(vertices)
+                if axis == 'x':
+                    cap_x = center[0] - length/2 + end * length
+                    cap_normal = [-1.0, 0.0, 0.0] if end == 0 else [1.0, 0.0, 0.0]
+                    # Center vertex
+                    vertices.append([cap_x, center[1], center[2]])
+                    normals.append(cap_normal)
+                    # Rim vertices
+                    for j in range(n_radial):
+                        theta = (j / n_radial) * TWO_PI
+                        y = center[1] + r * np.cos(theta)
+                        z = center[2] + r * np.sin(theta)
+                        vertices.append([cap_x, y, z])
+                        normals.append(cap_normal)
+                elif axis == 'z':
+                    cap_z = center[2] + end * length
+                    cap_normal = [0.0, 0.0, -1.0] if end == 0 else [0.0, 0.0, 1.0]
+                    # Center vertex
+                    vertices.append([center[0], center[1], cap_z])
+                    normals.append(cap_normal)
+                    # Rim vertices
+                    for j in range(n_radial):
+                        theta = (j / n_radial) * TWO_PI
+                        x = center[0] + r * np.cos(theta)
+                        y = center[1] + r * np.sin(theta)
+                        vertices.append([x, y, cap_z])
+                        normals.append(cap_normal)
+                
+                # Cap triangles
+                for j in range(n_radial):
+                    j_next = (j + 1) % n_radial
+                    if end == 0:
+                        indices.extend([cap_idx, cap_idx + 1 + j_next, cap_idx + 1 + j])
+                    else:
+                        indices.extend([cap_idx, cap_idx + 1 + j, cap_idx + 1 + j_next])
+
+    def _add_nozzle(self, vertices: List, indices: List, normals: List,
+                    center: Tuple, top_diameter: float, bottom_diameter: float,
+                    length: float, n_radial: int):
+        """Add a conical nozzle (tapers from blow tube to nozzle tip)."""
+        start_idx = len(vertices)
+        r_top = top_diameter / 2
+        r_bottom = bottom_diameter / 2
+        
+        # Bottom ring (nozzle tip)
+        for j in range(n_radial):
+            theta = (j / n_radial) * TWO_PI
+            x = center[0] + r_bottom * np.cos(theta)
+            z = center[2] + r_bottom * np.sin(theta)
+            y = center[1]
+            vertices.append([x, y, z])
+            # Approximate outward normal for cone
+            slope = (r_top - r_bottom) / length
+            ny = slope / np.sqrt(1 + slope*slope)
+            nr = 1 / np.sqrt(1 + slope*slope)
+            normals.append([nr * np.cos(theta), ny, nr * np.sin(theta)])
+        
+        # Top ring (connects to blow tube)
+        for j in range(n_radial):
+            theta = (j / n_radial) * TWO_PI
+            x = center[0] + r_top * np.cos(theta)
+            z = center[2] + r_top * np.sin(theta)
+            y = center[1] + length
+            vertices.append([x, y, z])
+            slope = (r_top - r_bottom) / length
+            ny = slope / np.sqrt(1 + slope*slope)
+            nr = 1 / np.sqrt(1 + slope*slope)
+            normals.append([nr * np.cos(theta), ny, nr * np.sin(theta)])
+        
+        # Connect rings
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            v0 = start_idx + j
+            v1 = start_idx + j_next
+            v2 = start_idx + n_radial + j_next
+            v3 = start_idx + n_radial + j
+            
+            indices.extend([v0, v1, v2])
+            indices.extend([v0, v2, v3])
+        
+        # Bottom cap (nozzle tip opening)
+        cap_idx = len(vertices)
+        vertices.append([center[0], center[1], center[2]])
+        normals.append([0.0, -1.0, 0.0])
+        
+        for j in range(n_radial):
+            theta = (j / n_radial) * TWO_PI
+            x = center[0] + r_bottom * np.cos(theta)
+            z = center[2] + r_bottom * np.sin(theta)
+            vertices.append([x, center[1], z])
+            normals.append([0.0, -1.0, 0.0])
+        
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            indices.extend([cap_idx, cap_idx + 1 + j_next, cap_idx + 1 + j])
 
     def to_warp_mesh(self, device: str = "cuda") -> wp.Mesh:
         """Create a Warp mesh from the bag filter geometry."""

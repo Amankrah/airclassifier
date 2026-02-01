@@ -2,42 +2,22 @@
 """
 Geometry Visualization Example Script
 
-This script demonstrates how to visualize and inspect air classifier geometries:
-- Individual components
-- Assembled systems
-- Complete classifier system
+This script demonstrates how to visualize air classifier geometries:
+- Individual components (cyclone, hopper, etc.)
+- Assembled systems (feed, air, classification)
+- Complete classifier system with duct connections
 
 Run modes:
-    python examples/visualize_geometry.py                    # Interactive menu
-    python examples/visualize_geometry.py --component        # Single component
-    python examples/visualize_geometry.py --assembly         # Assembled system
-    python examples/visualize_geometry.py --complete         # Complete system
-    python examples/visualize_geometry.py --all              # All visualizations
-    python examples/visualize_geometry.py --export           # Export all to files
-
-    # Single component
-    python examples/visualize_geometry.py --component
-
-    # Feed system assembly
-    python examples/visualize_geometry.py --assembly
-
-    # Complete classifier system
-    python examples/visualize_geometry.py --complete
-
-    # Pilot-scale system  
-    python examples/visualize_geometry.py --pilot
-
-    # Production-scale system
-    python examples/visualize_geometry.py --production
-
-    # Export all geometries to STL files
-    python examples/visualize_geometry.py --export
-
-    # Export to custom directory
-    python examples/visualize_geometry.py --export -o ./my_exports
-
-    # Run all visualizations sequentially
-    python examples/visualize_geometry.py --all
+    python examples/visualize_geometry.py              # Interactive menu
+    python examples/visualize_geometry.py --component  # Single component
+    python examples/visualize_geometry.py --feed       # Feed system assembly
+    python examples/visualize_geometry.py --air        # Air system assembly
+    python examples/visualize_geometry.py --complete   # Complete system
+    python examples/visualize_geometry.py --core       # Core with 3 duct connections
+    python examples/visualize_geometry.py --pilot      # Pilot-scale system
+    python examples/visualize_geometry.py --production # Production-scale system
+    python examples/visualize_geometry.py --export     # Export all to STL files
+    python examples/visualize_geometry.py --all        # All visualizations
 
 Requirements:
     pip install pyvista  # For high-quality 3D (recommended)
@@ -429,6 +409,130 @@ def visualize_production_scale():
     return result
 
 
+def visualize_core_connections():
+    """
+    Visualize the core system with all three duct connections.
+
+    Shows the main flow path with ductwork connections:
+    1. Air System -> Venturi air_inlet
+    2. Feed System -> Venturi solids_inlet
+    3. Bag Filter -> Exhaust (Silencer)
+    """
+    print("\n" + "=" * 60)
+    print("CORE CONNECTIONS VISUALIZATION")
+    print("=" * 60)
+    print("Focus: 3 Main Ductwork Connections")
+    print("  1. Air System -> Venturi (air_inlet)")
+    print("  2. Feed System -> Venturi (solids_inlet)")
+    print("  3. Bag Filter -> Exhaust (Silencer)")
+    print("=" * 60)
+
+    from airclassifier.geometry.assembly import create_core_connections_system
+
+    system = create_core_connections_system()
+
+    # Print summary
+    system.print_summary()
+    print()
+    system.print_bill_of_materials()
+
+    # Use PyVista directly for better control over rendering (like classification viz)
+    try:
+        import pyvista as pv
+        import numpy as np
+
+        # Colors for different subsystems
+        colors = {
+            'classification': '#3498DB',  # Blue
+            'feed_system': '#27AE60',      # Green
+            'air_system': '#F39C12',       # Orange
+            'silencer': '#E74C3C',         # Red
+            'exhaust_stack': '#9B59B6',    # Purple
+            'ductwork': '#7F8C8D',         # Gray
+        }
+
+        print("\nInitializing PyVista plotter...")
+        plotter = pv.Plotter()
+
+        # Add each subsystem with its offset
+        for sub_name in system.get_all_subsystem_names():
+            offset_key = f'{sub_name}_offset'
+            offset = np.array(system._subsystems.get(offset_key, (0, 0, 0)))
+            subsystem = system.get_subsystem(sub_name)
+
+            if subsystem is not None:
+                print(f"  Adding {sub_name} mesh at offset {offset}...")
+                try:
+                    v, i = subsystem.build_mesh()
+                    v = v + offset  # Apply position offset
+                    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                    mesh = pv.PolyData(v, faces)
+                    color = colors.get(sub_name, '#808080')
+                    plotter.add_mesh(mesh, color=color, label=sub_name, opacity=0.85)
+                except Exception as e:
+                    print(f"    Warning: Failed to add {sub_name}: {e}")
+
+        # Add individual components (silencer, exhaust_stack)
+        for comp_name in system.get_all_component_names():
+            comp = system.get_component(comp_name)
+            if comp is not None:
+                print(f"  Adding {comp_name} mesh...")
+                try:
+                    v, i, _ = comp.generate_mesh()
+                    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                    mesh = pv.PolyData(v, faces)
+                    color = colors.get(comp_name, '#808080')
+                    plotter.add_mesh(mesh, color=color, label=comp_name, opacity=0.85)
+                except Exception as e:
+                    print(f"    Warning: Failed to add {comp_name}: {e}")
+
+        # Add duct connections (the key part - render each duct with position offset!)
+        if hasattr(system, '_duct_connections') and system._duct_connections:
+            print(f"  Adding {len(system._duct_connections)} duct connection sections...")
+            for idx, (duct, position) in enumerate(system._duct_connections):
+                try:
+                    v, i, _ = duct.generate_mesh()
+                    v = v + np.array(position)  # Apply position offset
+                    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                    mesh = pv.PolyData(v, faces)
+                    plotter.add_mesh(mesh, color=colors['ductwork'],
+                                    label="Ductwork" if idx == 0 else None, opacity=0.7)
+                except Exception as e:
+                    print(f"    Warning: Failed to add duct section {idx}: {e}")
+
+        plotter.add_legend(bcolor='white', face='circle')
+        plotter.add_title('Core System - 3 Duct Connections')
+        plotter.add_axes()
+        plotter.add_bounding_box(color='lightgray', opacity=0.1)
+
+        print("\nOpening visualization window...")
+        print("(Close the window to continue)")
+        plotter.show(interactive=True)
+
+        result = {'success': True, 'message': 'Core system visualized with PyVista'}
+
+    except ImportError:
+        # Fallback to basic visualization
+        print("PyVista not available, using fallback visualization...")
+        viz = GeometryVisualizer()
+        request = VisualizationRequest(
+            target_type="complete_system",
+            complete_system=system,
+            show=True,
+            opacity=0.8,
+            show_edges=True,
+            show_labels=True,
+            show_bounds=True,
+            show_axes=True,
+            title="Core System - 3 Duct Connections",
+            camera_position="iso",
+        )
+        result = viz.render(request)
+
+    print(f"\nResult: {result['message']}")
+    return result
+
+
 def export_all_geometries(output_dir: str = "geometry_exports"):
     """Export all geometries to files."""
     print("\n" + "=" * 60)
@@ -555,19 +659,20 @@ def interactive_menu():
         print("  4. Assembly - Air System")
         print("  5. Assembly - Classification System")
         print("  6. Complete System (Standard 500 kg/h)")
-        print("  7. Pilot-Scale System (100 kg/h)")
-        print("  8. Production-Scale System (2000 kg/h)")
-        print("  9. Export All to Files")
+        print("  7. Core Connections (3 Duct Connections)")
+        print("  8. Pilot-Scale System (100 kg/h)")
+        print("  9. Production-Scale System (2000 kg/h)")
+        print("  E. Export All to Files")
         print("  A. Run All Visualizations")
         print("  0. Exit")
         print()
-        
+
         try:
-            choice = input("Enter choice (0-9, A): ").strip().upper()
+            choice = input("Enter choice (0-9, E, A): ").strip().upper()
         except KeyboardInterrupt:
             print("\nExiting...")
             break
-        
+
         if choice == "0":
             print("Goodbye!")
             break
@@ -584,38 +689,43 @@ def interactive_menu():
         elif choice == "6":
             visualize_complete_system()
         elif choice == "7":
-            visualize_pilot_scale()
+            visualize_core_connections()
         elif choice == "8":
-            visualize_production_scale()
+            visualize_pilot_scale()
         elif choice == "9":
+            visualize_production_scale()
+        elif choice == "E":
             export_all_geometries()
         elif choice == "A":
             run_all_visualizations()
         else:
-            print("Invalid choice. Please enter 0-9 or A.")
+            print("Invalid choice. Please enter 0-9, E, or A.")
 
 
 def run_all_visualizations():
     """Run all visualizations in sequence."""
     print("\nRunning all visualizations...")
-    
+
     visualize_single_component()
     input("\nPress Enter to continue to next visualization...")
-    
+
     visualize_feed_hopper()
     input("\nPress Enter to continue to next visualization...")
-    
+
     visualize_feed_system_assembly()
     input("\nPress Enter to continue to next visualization...")
-    
+
     visualize_air_system_assembly()
     input("\nPress Enter to continue to next visualization...")
-    
+
     visualize_classification_system()
     input("\nPress Enter to continue to next visualization...")
-    
+
     visualize_complete_system()
-    
+    input("\nPress Enter to continue to next visualization...")
+
+    visualize_core_connections()
+
     print("\n" + "=" * 60)
     print("ALL VISUALIZATIONS COMPLETE")
     print("=" * 60)
@@ -628,13 +738,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python visualize_geometry.py                 # Interactive menu
-  python visualize_geometry.py --component     # Single component
-  python visualize_geometry.py --assembly      # Feed system assembly
-  python visualize_geometry.py --complete      # Complete system
-  python visualize_geometry.py --all           # All visualizations
-  python visualize_geometry.py --export        # Export all to STL files
-  python visualize_geometry.py --export -o ./my_exports  # Custom output dir
+  python visualize_geometry.py              # Interactive menu
+  python visualize_geometry.py --component  # Single component
+  python visualize_geometry.py --feed       # Feed system assembly
+  python visualize_geometry.py --complete   # Complete system
+  python visualize_geometry.py --core       # Core with 3 duct connections
+  python visualize_geometry.py --export     # Export all to STL files
         """
     )
     
@@ -688,12 +797,17 @@ Examples:
         action="store_true",
         help="Visualize production-scale system"
     )
+    parser.add_argument(
+        "--core",
+        action="store_true",
+        help="Visualize core system with 3 duct connections"
+    )
     
     args = parser.parse_args()
     
     # If no specific option, run interactive menu
     if not any([args.component, args.feed, args.air, args.classification,
-                args.complete, args.all, args.export, args.pilot, args.production]):
+                args.complete, args.all, args.export, args.pilot, args.production, args.core]):
         interactive_menu()
         return
     
@@ -719,6 +833,9 @@ Examples:
     
     if args.production:
         visualize_production_scale()
+    
+    if args.core:
+        visualize_core_connections()
     
     if args.all:
         run_all_visualizations()
