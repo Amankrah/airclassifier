@@ -13,11 +13,12 @@ Principle:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 import numpy as np
 import warp as wp
 
 from ...utils.constants import PI, TWO_PI
+from ..connection_ports import ConnectionPort, PortType
 
 
 @dataclass
@@ -347,13 +348,15 @@ class BagFilter:
         p = self.params
         n_radial = p.resolution
 
-        # Dirty air inlet (on side of housing, in dirty air section)
+        # Dirty air inlet (on -X side of housing, in dirty air section)
+        # Pipe extends from housing wall outward in -X direction
         inlet_y = p.center[1] + p.hopper_height + p.dirty_air_section_height / 2
-        inlet_x = p.center[0] + p.housing_width / 2
         inlet_length = p.housing_width * 0.3
+        # Start at outer end of pipe (most -X position), extend toward housing
+        inlet_x_start = p.center[0] - p.housing_width / 2 - inlet_length
 
         self._add_pipe(vertices, indices, normals,
-                      center=(inlet_x, inlet_y, p.center[2]),
+                      center=(inlet_x_start, inlet_y, p.center[2]),
                       diameter=p.dirty_air_inlet_diameter,
                       length=inlet_length,
                       axis='x', n_radial=n_radial)
@@ -433,6 +436,58 @@ class BagFilter:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    @property
+    def ports(self) -> Dict[str, ConnectionPort]:
+        """
+        Get connection ports for the bag filter.
+        
+        Ports:
+        - dirty_air_inlet: Inlet for dust-laden air (circular, on side)
+        - clean_air_outlet: Outlet for filtered air (circular, on top)
+        - dust_outlet: Outlet for collected dust at hopper bottom (rectangular)
+        """
+        p = self.params
+        
+        # Dirty air inlet (on -X side of housing, in dirty air section)
+        # This allows the bag filter to receive flow from cyclones on its left
+        inlet_y = p.center[1] + p.hopper_height + p.dirty_air_section_height / 2
+        inlet_x = p.center[0] - p.housing_width / 2 - p.housing_width * 0.3  # End of inlet pipe on -X side
+
+        dirty_air_inlet = ConnectionPort(
+            position=(inlet_x, inlet_y, p.center[2]),
+            direction=(-1.0, 0.0, 0.0),  # Faces -X (receives flow from -X direction)
+            diameter=p.dirty_air_inlet_diameter,
+            port_type=PortType.CIRCULAR,
+            name="dirty_air_inlet"
+        )
+        
+        # Clean air outlet (on top)
+        outlet_y = p.center[1] + p.housing_height + p.housing_height * 0.1  # End of outlet pipe
+        
+        clean_air_outlet = ConnectionPort(
+            position=(p.center[0], outlet_y, p.center[2]),
+            direction=(0.0, 1.0, 0.0),  # Faces up
+            diameter=p.clean_air_outlet_diameter,
+            port_type=PortType.CIRCULAR,
+            name="clean_air_outlet"
+        )
+        
+        # Dust outlet at hopper bottom
+        dust_outlet = ConnectionPort(
+            position=p.center,  # Bottom of hopper
+            direction=(0.0, -1.0, 0.0),  # Faces down
+            width=p.hopper_outlet_width,
+            height=p.hopper_outlet_depth,
+            port_type=PortType.RECTANGULAR,
+            name="dust_outlet"
+        )
+        
+        return {
+            'dirty_air_inlet': dirty_air_inlet,
+            'clean_air_outlet': clean_air_outlet,
+            'dust_outlet': dust_outlet
+        }
 
 
 def create_standard_bag_filter(

@@ -12,11 +12,12 @@ Principle:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 import numpy as np
 import warp as wp
 
 from ...utils.constants import PI, TWO_PI
+from ..connection_ports import ConnectionPort, PortType
 
 
 @dataclass
@@ -358,6 +359,84 @@ class VenturiEducator:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    @property
+    def ports(self) -> Dict[str, ConnectionPort]:
+        """
+        Get connection ports for the venturi eductor.
+        
+        Ports:
+        - air_inlet: Main air inlet at start (circular, -X direction)
+        - solids_inlet: Particle feed inlet at throat (angled, typically +Y component)
+        - outlet: Mixed flow outlet at end (circular, +X direction)
+        """
+        p = self.params
+        
+        # Air inlet at origin (start of venturi)
+        air_inlet = ConnectionPort(
+            position=p.center,
+            direction=(-1.0, 0.0, 0.0) if p.axis == "x" else (0.0, -1.0, 0.0) if p.axis == "y" else (0.0, 0.0, -1.0),
+            diameter=p.inlet_diameter,
+            port_type=PortType.CIRCULAR,
+            name="air_inlet"
+        )
+        
+        # Solids inlet at throat
+        x_throat = p.throat_start_position + p.solids_inlet_position
+        if p.axis == "x":
+            solids_pos = (
+                p.center[0] + x_throat,
+                p.center[1] + p.throat_diameter / 2,
+                p.center[2]
+            )
+            solids_dir = (0.0, 1.0, 0.0)  # Points upward (feed from above)
+        elif p.axis == "y":
+            solids_pos = (
+                p.center[0] + p.throat_diameter / 2,
+                p.center[1] + x_throat,
+                p.center[2]
+            )
+            solids_dir = (1.0, 0.0, 0.0)
+        else:
+            solids_pos = (
+                p.center[0] + p.throat_diameter / 2,
+                p.center[1],
+                p.center[2] + x_throat
+            )
+            solids_dir = (1.0, 0.0, 0.0)
+        
+        solids_inlet = ConnectionPort(
+            position=solids_pos,
+            direction=solids_dir,
+            diameter=p.solids_inlet_diameter,
+            port_type=PortType.CIRCULAR,
+            name="solids_inlet"
+        )
+        
+        # Outlet at end of venturi
+        if p.axis == "x":
+            outlet_pos = (p.center[0] + p.total_length, p.center[1], p.center[2])
+            outlet_dir = (1.0, 0.0, 0.0)
+        elif p.axis == "y":
+            outlet_pos = (p.center[0], p.center[1] + p.total_length, p.center[2])
+            outlet_dir = (0.0, 1.0, 0.0)
+        else:
+            outlet_pos = (p.center[0], p.center[1], p.center[2] + p.total_length)
+            outlet_dir = (0.0, 0.0, 1.0)
+        
+        outlet = ConnectionPort(
+            position=outlet_pos,
+            direction=outlet_dir,
+            diameter=p.outlet_diameter,
+            port_type=PortType.CIRCULAR,
+            name="outlet"
+        )
+        
+        return {
+            'air_inlet': air_inlet,
+            'solids_inlet': solids_inlet,
+            'outlet': outlet
+        }
 
 
 def create_standard_venturi_eductor(

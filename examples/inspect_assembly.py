@@ -11,17 +11,24 @@ This tool:
 3. Generates detailed reports on assembly quality
 4. Verifies dimension matching at connection points
 5. Verifies coordinate alignment at connection points
+6. Verifies port direction angles at connection points
 
 Usage:
     python examples/inspect_assembly.py                  # Interactive menu
     python examples/inspect_assembly.py --feed           # Inspect feed system
     python examples/inspect_assembly.py --air            # Inspect air system
+    python examples/inspect_assembly.py --classification # Inspect classification system
     python examples/inspect_assembly.py --feed --detailed # Detailed feed analysis
     python examples/inspect_assembly.py --air --detailed  # Detailed air analysis
+    python examples/inspect_assembly.py --classification --detailed # Detailed classification analysis
     python examples/inspect_assembly.py --drop           # Feed system vertical drop
     python examples/inspect_assembly.py --flow           # Air system flow path
+    python examples/inspect_assembly.py --class-flow     # Classification system flow path
     python examples/inspect_assembly.py --air-dims       # Verify air system dimensions
     python examples/inspect_assembly.py --air-coords     # Verify air system coordinates
+    python examples/inspect_assembly.py --class-dims     # Verify classification system dimensions
+    python examples/inspect_assembly.py --class-coords   # Verify classification system coordinates
+    python examples/inspect_assembly.py --class-angles   # Verify classification system port angles
     python examples/inspect_assembly.py --validate       # Validate all assemblies
 """
 
@@ -852,6 +859,1123 @@ def detailed_air_system_analysis():
         print("\n[ISSUES FOUND] - Please review failed checks above")
 
 
+def inspect_classification_system():
+    """Inspect classification system component positioning."""
+    print("\n" + "=" * 70)
+    print("CLASSIFICATION SYSTEM ASSEMBLY INSPECTION")
+    print("=" * 70)
+
+    classification = create_standard_classification_system()
+
+    # Print component positions
+    print("\n--- Component Positions ---")
+    positions = classification.get_component_positions()
+    for name, pos in positions.items():
+        print(f"{name:20s}: ({pos[0]:7.3f}, {pos[1]:7.3f}, {pos[2]:7.3f}) m")
+
+    # Print port locations for each component
+    print("\n--- Connection Ports ---")
+
+    components = {
+        'venturi': (classification.venturi, positions['venturi']),
+        'zigzag': (classification.zigzag, positions['zigzag']),
+        'multi_cyclone': (classification.multi_cyclone, positions['multi_cyclone']),
+        'bag_filter': (classification.bag_filter, positions['bag_filter']),
+    }
+
+    for comp_name, (comp, pos) in components.items():
+        if hasattr(comp, 'ports'):
+            print(f"\n  {comp_name.upper()}:")
+            for port_name, port in comp.ports.items():
+                world_pos = port.get_world_position(pos)
+                print(f"    {port_name:20s}: pos=({world_pos[0]:7.3f}, {world_pos[1]:7.3f}, {world_pos[2]:7.3f})")
+                print(f"                          dir=({port.direction[0]:5.2f}, {port.direction[1]:5.2f}, {port.direction[2]:5.2f})")
+                if hasattr(port, 'width') and port.width > 0:
+                    print(f"                          W={port.width*1000:.1f}mm, H={port.height*1000:.1f}mm, type={port.port_type.value}")
+                else:
+                    print(f"                          D={port.diameter*1000:.1f}mm, type={port.port_type.value}")
+
+    # Print duct sections
+    print("\n--- Duct Sections ---")
+    print(f"  Total duct sections: {len(classification._duct_sections)}")
+    for i, (duct, pos) in enumerate(classification._duct_sections):
+        duct_type = type(duct).__name__
+        print(f"  {i+1}. {duct_type}: pos=({pos[0]:7.3f}, {pos[1]:7.3f}, {pos[2]:7.3f})")
+
+        # Different info based on duct type
+        if hasattr(duct.params, 'diameter') and hasattr(duct.params, 'length'):
+            print(f"           D={duct.params.diameter*1000:.1f}mm, L={duct.params.length*1000:.1f}mm")
+        elif hasattr(duct.params, 'diameter') and hasattr(duct.params, 'angle'):
+            # Elbow
+            print(f"           D={duct.params.diameter*1000:.1f}mm, angle={duct.params.angle}°, R={duct.params.bend_radius*1000:.1f}mm")
+        elif hasattr(duct.params, 'inlet_dimensions') and hasattr(duct.params, 'outlet_dimensions'):
+            # Transition
+            inlet_dims = duct.params.inlet_dimensions
+            outlet_dims = duct.params.outlet_dimensions
+            length = duct.params.length * 1000
+            trans_type = duct.params.transition_type
+            if len(inlet_dims) == 1 and len(outlet_dims) == 1:
+                # Round-to-round
+                print(f"           {trans_type}: D={inlet_dims[0]*1000:.1f}mm → D={outlet_dims[0]*1000:.1f}mm, L={length:.1f}mm")
+            elif len(inlet_dims) == 1:
+                # Round-to-rect
+                print(f"           {trans_type}: D={inlet_dims[0]*1000:.1f}mm → {outlet_dims[0]*1000:.1f}x{outlet_dims[1]*1000:.1f}mm, L={length:.1f}mm")
+            elif len(outlet_dims) == 1:
+                # Rect-to-round
+                print(f"           {trans_type}: {inlet_dims[0]*1000:.1f}x{inlet_dims[1]*1000:.1f}mm → D={outlet_dims[0]*1000:.1f}mm, L={length:.1f}mm")
+            else:
+                # Rect-to-rect
+                print(f"           {trans_type}: {inlet_dims[0]*1000:.1f}x{inlet_dims[1]*1000:.1f}mm → {outlet_dims[0]*1000:.1f}x{outlet_dims[1]*1000:.1f}mm, L={length:.1f}mm")
+
+    # Print summary
+    classification.print_summary()
+
+    return classification
+
+
+def verify_classification_system_dimensions():
+    """
+    Verify dimension matching at all connection points in the classification system.
+
+    Checks transitions and connections through the complete flow path:
+    Venturi → Duct1a → Trans1 → Zigzag → Trans2a → Elbow2 → Duct2 → Trans2b →
+    Cyclone → Elbow3 → Duct3a → Expansion → Bag Filter
+
+    Uses flow area comparison for rectangular-to-round connections.
+    """
+    print("\n" + "=" * 70)
+    print("CLASSIFICATION SYSTEM DIMENSION VERIFICATION")
+    print("=" * 70)
+
+    classification = create_standard_classification_system()
+
+    verification_results = []
+    all_ok = True
+
+    # Get components
+    venturi = classification.venturi
+    zigzag = classification.zigzag
+    multi_cyclone = classification.multi_cyclone
+    bag_filter = classification.bag_filter
+    duct_sections = classification._duct_sections
+
+    print(f"\n  Total duct/transition sections: {len(duct_sections)}")
+
+    def get_equiv_diameter(port):
+        """Calculate equivalent diameter from port area: D_eq = sqrt(4*A/π)"""
+        area = port.area
+        return np.sqrt(4 * area / np.pi) * 1000
+
+    def get_round_duct_area(diameter_m):
+        """Calculate area of round duct."""
+        return np.pi * (diameter_m / 2) ** 2
+
+    def area_match_pct(area1, area2):
+        """Calculate area match percentage."""
+        if max(area1, area2) == 0:
+            return 0
+        return min(area1, area2) / max(area1, area2) * 100
+
+    def get_transition_dims(trans, end='inlet'):
+        """Get transition dimensions (inlet or outlet)."""
+        p = trans.params
+        if end == 'inlet':
+            dims = p.inlet_dimensions
+        else:
+            dims = p.outlet_dimensions
+        if len(dims) == 1:
+            return ('round', dims[0] * 1000)
+        else:
+            return ('rect', dims[0] * 1000, dims[1] * 1000)
+
+    # ============================================================
+    # 1. VENTURI OUTLET TO DUCT 1A
+    # ============================================================
+    print("\n--- 1. Venturi Outlet → Duct 1a ---")
+    venturi_outlet = venturi.ports['outlet']
+    duct1a = duct_sections[0][0]
+
+    venturi_d = venturi_outlet.diameter * 1000
+    duct1a_d = duct1a.params.diameter * 1000
+    match = abs(venturi_d - duct1a_d) < 1.0
+
+    print(f"  Venturi outlet:           D={venturi_d:.1f} mm")
+    print(f"  Duct 1a:                  D={duct1a_d:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Venturi→Duct1a", match, venturi_d, duct1a_d))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 2. DUCT 1A TO TRANSITION 1 (ROUND-TO-RECT)
+    # ============================================================
+    print("\n--- 2. Duct 1a → Transition 1 (round-to-rect) ---")
+    trans1 = duct_sections[1][0]
+    trans1_inlet = get_transition_dims(trans1, 'inlet')
+    trans1_outlet = get_transition_dims(trans1, 'outlet')
+
+    match = abs(duct1a_d - trans1_inlet[1]) < 1.0
+
+    print(f"  Duct 1a:                  D={duct1a_d:.1f} mm")
+    print(f"  Transition 1 inlet:       D={trans1_inlet[1]:.1f} mm (round)")
+    print(f"  Transition 1 outlet:      {trans1_outlet[1]:.1f} x {trans1_outlet[2]:.1f} mm (rect)")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct1a→Trans1", match, duct1a_d, trans1_inlet[1]))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 3. TRANSITION 1 TO ZIGZAG AIR INLET
+    # ============================================================
+    print("\n--- 3. Transition 1 → Zigzag Air Inlet ---")
+    zigzag_inlet = zigzag.ports['air_inlet']
+    zigzag_inlet_w = zigzag_inlet.width * 1000
+    zigzag_inlet_h = zigzag_inlet.height * 1000
+
+    match_w = abs(trans1_outlet[1] - zigzag_inlet_w) < 5.0
+    match_h = abs(trans1_outlet[2] - zigzag_inlet_h) < 5.0
+    match = match_w and match_h
+
+    print(f"  Transition 1 outlet:      {trans1_outlet[1]:.1f} x {trans1_outlet[2]:.1f} mm")
+    print(f"  Zigzag inlet:             {zigzag_inlet_w:.1f} x {zigzag_inlet_h:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans1→ZigzagIn", match, trans1_outlet[1], zigzag_inlet_w))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 4. ZIGZAG FINES OUTLET TO TRANSITION 2A (RECT-TO-ROUND)
+    # ============================================================
+    print("\n--- 4. Zigzag Fines Outlet → Transition 2a (rect-to-round) ---")
+    zigzag_fines = zigzag.ports['fines_outlet']
+    zigzag_fines_w = zigzag_fines.width * 1000
+    zigzag_fines_h = zigzag_fines.height * 1000
+
+    trans2a = duct_sections[2][0]
+    trans2a_inlet = get_transition_dims(trans2a, 'inlet')
+    trans2a_outlet = get_transition_dims(trans2a, 'outlet')
+
+    match_w = abs(trans2a_inlet[1] - zigzag_fines_w) < 5.0
+    match_h = abs(trans2a_inlet[2] - zigzag_fines_h) < 5.0
+    match = match_w and match_h
+
+    print(f"  Zigzag fines outlet:      {zigzag_fines_w:.1f} x {zigzag_fines_h:.1f} mm")
+    print(f"  Transition 2a inlet:      {trans2a_inlet[1]:.1f} x {trans2a_inlet[2]:.1f} mm (rect)")
+    print(f"  Transition 2a outlet:     D={trans2a_outlet[1]:.1f} mm (round)")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("ZigzagFines→Trans2a", match, zigzag_fines_w, trans2a_inlet[1]))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 5. TRANSITION 2A TO ELBOW 2
+    # ============================================================
+    print("\n--- 5. Transition 2a → Elbow 2 ---")
+    elbow2 = duct_sections[3][0]
+    elbow2_d = elbow2.params.diameter * 1000
+
+    match = abs(trans2a_outlet[1] - elbow2_d) < 1.0
+
+    print(f"  Transition 2a outlet:     D={trans2a_outlet[1]:.1f} mm")
+    print(f"  Elbow 2:                  D={elbow2_d:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans2a→Elbow2", match, trans2a_outlet[1], elbow2_d))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 6. ELBOW 2 TO DUCT 2
+    # ============================================================
+    print("\n--- 6. Elbow 2 → Duct 2 ---")
+    duct2 = duct_sections[4][0]
+    duct2_d = duct2.params.diameter * 1000
+
+    match = abs(elbow2_d - duct2_d) < 1.0
+
+    print(f"  Elbow 2:                  D={elbow2_d:.1f} mm")
+    print(f"  Duct 2:                   D={duct2_d:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Elbow2→Duct2", match, elbow2_d, duct2_d))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 7. DUCT 2 TO TRANSITION 2B (ROUND-TO-RECT)
+    # ============================================================
+    print("\n--- 7. Duct 2 → Transition 2b (round-to-rect) ---")
+    trans2b = duct_sections[5][0]
+    trans2b_inlet = get_transition_dims(trans2b, 'inlet')
+    trans2b_outlet = get_transition_dims(trans2b, 'outlet')
+
+    match = abs(duct2_d - trans2b_inlet[1]) < 1.0
+
+    print(f"  Duct 2:                   D={duct2_d:.1f} mm")
+    print(f"  Transition 2b inlet:      D={trans2b_inlet[1]:.1f} mm (round)")
+    print(f"  Transition 2b outlet:     {trans2b_outlet[1]:.1f} x {trans2b_outlet[2]:.1f} mm (rect)")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct2→Trans2b", match, duct2_d, trans2b_inlet[1]))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 8. TRANSITION 2B TO MULTI-CYCLONE INLET
+    # ============================================================
+    print("\n--- 8. Transition 2b → Multi-Cyclone Inlet ---")
+    cyclone_inlet = multi_cyclone.ports['inlet']
+    cyclone_inlet_w = cyclone_inlet.width * 1000
+    cyclone_inlet_h = cyclone_inlet.height * 1000
+
+    match_w = abs(trans2b_outlet[1] - cyclone_inlet_w) < 5.0
+    match_h = abs(trans2b_outlet[2] - cyclone_inlet_h) < 5.0
+    match = match_w and match_h
+
+    print(f"  Transition 2b outlet:     {trans2b_outlet[1]:.1f} x {trans2b_outlet[2]:.1f} mm")
+    print(f"  Cyclone inlet:            {cyclone_inlet_w:.1f} x {cyclone_inlet_h:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans2b→CycloneIn", match, trans2b_outlet[1], cyclone_inlet_w))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 9. MULTI-CYCLONE OVERFLOW TO ELBOW 3
+    # ============================================================
+    print("\n--- 9. Multi-Cyclone Overflow → Elbow 3 ---")
+    cyclone_overflow = multi_cyclone.ports['overflow']
+    elbow3 = duct_sections[6][0]
+
+    cyclone_overflow_d = cyclone_overflow.diameter * 1000
+    elbow3_d = elbow3.params.diameter * 1000
+
+    match = abs(cyclone_overflow_d - elbow3_d) < 1.0
+
+    print(f"  Cyclone overflow:         D={cyclone_overflow_d:.1f} mm")
+    print(f"  Elbow 3:                  D={elbow3_d:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("CycloneOver→Elbow3", match, cyclone_overflow_d, elbow3_d))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 10. ELBOW 3 TO DUCT 3A
+    # ============================================================
+    print("\n--- 10. Elbow 3 → Duct 3a ---")
+    duct3a = duct_sections[7][0]
+    duct3a_d = duct3a.params.diameter * 1000
+
+    match = abs(elbow3_d - duct3a_d) < 1.0
+
+    print(f"  Elbow 3:                  D={elbow3_d:.1f} mm")
+    print(f"  Duct 3a:                  D={duct3a_d:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Elbow3→Duct3a", match, elbow3_d, duct3a_d))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 11. DUCT 3A TO EXPANSION TRANSITION
+    # ============================================================
+    print("\n--- 11. Duct 3a → Expansion Transition ---")
+    expansion = duct_sections[8][0]
+    expansion_inlet_d = expansion.params.inlet_dimensions[0] * 1000
+    expansion_outlet_d = expansion.params.outlet_dimensions[0] * 1000
+
+    match = abs(duct3a_d - expansion_inlet_d) < 1.0
+
+    print(f"  Duct 3a:                  D={duct3a_d:.1f} mm")
+    print(f"  Expansion inlet:          D={expansion_inlet_d:.1f} mm")
+    print(f"  Expansion outlet:         D={expansion_outlet_d:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct3a→Expansion", match, duct3a_d, expansion_inlet_d))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 12. EXPANSION TRANSITION TO BAG FILTER INLET
+    # ============================================================
+    print("\n--- 12. Expansion → Bag Filter Inlet ---")
+    bag_inlet = bag_filter.ports['dirty_air_inlet']
+    bag_inlet_d = bag_inlet.diameter * 1000
+
+    match = abs(expansion_outlet_d - bag_inlet_d) < 5.0
+
+    print(f"  Expansion outlet:         D={expansion_outlet_d:.1f} mm")
+    print(f"  Bag filter inlet:         D={bag_inlet_d:.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Expansion→BagFilterIn", match, expansion_outlet_d, bag_inlet_d))
+    all_ok = all_ok and match
+
+    # Summary
+    print("\n" + "=" * 70)
+    print("DIMENSION VERIFICATION SUMMARY")
+    print("=" * 70)
+    passed = sum(1 for _, ok, _, _ in verification_results if ok)
+    total = len(verification_results)
+    print(f"\nResult: {passed}/{total} dimension checks passed")
+
+    if not all_ok:
+        print("\nIssues found:")
+        for name, ok, src, tgt in verification_results:
+            if not ok:
+                print(f"  [!] {name}")
+        print("\n  Note: Some issues may be acceptable depending on design intent.")
+    else:
+        print("\n[ALL DIMENSIONS MATCH] - Flow path dimensions are consistent")
+        print("  Transitions properly connect all components.")
+
+    return all_ok, verification_results
+
+
+def verify_classification_system_coordinates():
+    """
+    Verify coordinate alignment at all connection points in the classification system.
+
+    Checks that component flanges/ports align at the correct X, Y, Z positions.
+    New structure with 9 duct sections: duct1a, trans1, trans2a, elbow2, duct2, trans2b, elbow3, duct3a, expansion
+    """
+    print("\n" + "=" * 70)
+    print("CLASSIFICATION SYSTEM COORDINATE VERIFICATION")
+    print("=" * 70)
+
+    classification = create_standard_classification_system()
+
+    verification_results = []
+    all_ok = True
+    tolerance = 0.010  # 10mm tolerance
+
+    # Get components and positions
+    venturi = classification.venturi
+    zigzag = classification.zigzag
+    multi_cyclone = classification.multi_cyclone
+    bag_filter = classification.bag_filter
+    duct_sections = classification._duct_sections
+
+    positions = classification.get_component_positions()
+    venturi_pos = positions['venturi']
+    zigzag_pos = positions['zigzag']
+    cyclone_pos = positions['multi_cyclone']
+    bag_filter_pos = positions['bag_filter']
+
+    gap = classification.params.flange_gap
+    num_sections = len(duct_sections)
+    print(f"\n  Verifying {num_sections} duct sections with {gap*1000:.0f}mm gaps")
+
+    def check_coord(name, src, tgt, expected_gap_axis=None):
+        """Check coordinate alignment between source and target."""
+        diff = [abs(tgt[i] - src[i]) for i in range(3)]
+        if expected_gap_axis is not None:
+            diff[expected_gap_axis] = abs(diff[expected_gap_axis] - gap)
+        match = all(d < tolerance for d in diff)
+        return match, diff
+
+    # Expected duct structure (9 sections):
+    # 0: duct1a (RoundDuct) - vertical from venturi
+    # 1: trans1 (Transition round-to-rect) - to zigzag
+    # 2: trans2a (Transition rect-to-round) - from zigzag fines
+    # 3: elbow2 (DuctElbow) - 90° turn
+    # 4: duct2 (RoundDuct) - horizontal to cyclone
+    # 5: trans2b (Transition round-to-rect) - to cyclone inlet
+    # 6: elbow3 (DuctElbow) - 90° turn from cyclone overflow
+    # 7: duct3a (RoundDuct) - horizontal
+    # 8: expansion (Transition round-to-round) - to bag filter
+
+    # ============================================================
+    # 1. VENTURI OUTLET TO DUCT 1A START
+    # ============================================================
+    print("\n--- 1. Venturi Outlet → Duct 1a Start ---")
+    venturi_outlet = venturi.ports['outlet']
+    v_out = tuple(venturi_pos[i] + venturi_outlet.position[i] for i in range(3))
+    duct1a, duct1a_pos = duct_sections[0]
+    match, diff = check_coord("VenturiOut→Duct1a", v_out, duct1a_pos, 1)
+
+    print(f"  Venturi outlet:     X={v_out[0]*1000:8.1f}, Y={v_out[1]*1000:8.1f}, Z={v_out[2]*1000:8.1f} mm")
+    print(f"  Duct 1a start:      X={duct1a_pos[0]*1000:8.1f}, Y={duct1a_pos[1]*1000:8.1f}, Z={duct1a_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("VenturiOut→Duct1a", match, v_out, duct1a_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 2. DUCT 1A END TO TRANS 1 START
+    # ============================================================
+    print("\n--- 2. Duct 1a End → Transition 1 Start ---")
+    duct1a_end = (duct1a_pos[0], duct1a_pos[1] + duct1a.params.length, duct1a_pos[2])
+    trans1, trans1_pos = duct_sections[1]
+    match, diff = check_coord("Duct1a→Trans1", duct1a_end, trans1_pos, 1)
+
+    print(f"  Duct 1a end:        X={duct1a_end[0]*1000:8.1f}, Y={duct1a_end[1]*1000:8.1f}, Z={duct1a_end[2]*1000:8.1f} mm")
+    print(f"  Trans 1 start:      X={trans1_pos[0]*1000:8.1f}, Y={trans1_pos[1]*1000:8.1f}, Z={trans1_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct1a→Trans1", match, duct1a_end, trans1_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 3. TRANS 1 END TO ZIGZAG AIR INLET
+    # ============================================================
+    print("\n--- 3. Transition 1 End → Zigzag Air Inlet ---")
+    trans1_end = (trans1_pos[0], trans1_pos[1] + trans1.params.length, trans1_pos[2])
+    zigzag_inlet = zigzag.ports['air_inlet']
+    z_in = tuple(zigzag_pos[i] + zigzag_inlet.position[i] for i in range(3))
+    match, diff = check_coord("Trans1→ZigzagIn", trans1_end, z_in, 1)
+
+    print(f"  Trans 1 end:        X={trans1_end[0]*1000:8.1f}, Y={trans1_end[1]*1000:8.1f}, Z={trans1_end[2]*1000:8.1f} mm")
+    print(f"  Zigzag inlet:       X={z_in[0]*1000:8.1f}, Y={z_in[1]*1000:8.1f}, Z={z_in[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans1→ZigzagIn", match, trans1_end, z_in))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 4. ZIGZAG FINES OUTLET TO TRANS 2A START
+    # ============================================================
+    print("\n--- 4. Zigzag Fines Outlet → Transition 2a Start ---")
+    zigzag_fines = zigzag.ports['fines_outlet']
+    z_fines = tuple(zigzag_pos[i] + zigzag_fines.position[i] for i in range(3))
+    trans2a, trans2a_pos = duct_sections[2]
+    match, diff = check_coord("ZigzagFines→Trans2a", z_fines, trans2a_pos, 1)
+
+    print(f"  Zigzag fines:       X={z_fines[0]*1000:8.1f}, Y={z_fines[1]*1000:8.1f}, Z={z_fines[2]*1000:8.1f} mm")
+    print(f"  Trans 2a start:     X={trans2a_pos[0]*1000:8.1f}, Y={trans2a_pos[1]*1000:8.1f}, Z={trans2a_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("ZigzagFines→Trans2a", match, z_fines, trans2a_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 5. TRANS 2A END TO ELBOW 2 START
+    # ============================================================
+    print("\n--- 5. Transition 2a End → Elbow 2 Inlet ---")
+    trans2a_end = (trans2a_pos[0], trans2a_pos[1] + trans2a.params.length, trans2a_pos[2])
+    elbow2, elbow2_pos = duct_sections[3]
+    match, diff = check_coord("Trans2a→Elbow2", trans2a_end, elbow2_pos, 1)
+
+    print(f"  Trans 2a end:       X={trans2a_end[0]*1000:8.1f}, Y={trans2a_end[1]*1000:8.1f}, Z={trans2a_end[2]*1000:8.1f} mm")
+    print(f"  Elbow 2 inlet:      X={elbow2_pos[0]*1000:8.1f}, Y={elbow2_pos[1]*1000:8.1f}, Z={elbow2_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans2a→Elbow2", match, trans2a_end, elbow2_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 6. ELBOW 2 OUTLET TO DUCT 2 START
+    # ============================================================
+    print("\n--- 6. Elbow 2 Outlet → Duct 2 Start ---")
+    br2 = elbow2.params.bend_radius
+    elbow2_out = (elbow2_pos[0] + br2, elbow2_pos[1] + br2, elbow2_pos[2])
+    duct2, duct2_pos = duct_sections[4]
+    match, diff = check_coord("Elbow2→Duct2", elbow2_out, duct2_pos, 0)
+
+    print(f"  Elbow 2 outlet:     X={elbow2_out[0]*1000:8.1f}, Y={elbow2_out[1]*1000:8.1f}, Z={elbow2_out[2]*1000:8.1f} mm")
+    print(f"  Duct 2 start:       X={duct2_pos[0]*1000:8.1f}, Y={duct2_pos[1]*1000:8.1f}, Z={duct2_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Elbow2→Duct2", match, elbow2_out, duct2_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 7. DUCT 2 END TO TRANS 2B START
+    # ============================================================
+    print("\n--- 7. Duct 2 End → Transition 2b Start ---")
+    duct2_end = (duct2_pos[0] + duct2.params.length, duct2_pos[1], duct2_pos[2])
+    trans2b, trans2b_pos = duct_sections[5]
+    match, diff = check_coord("Duct2→Trans2b", duct2_end, trans2b_pos, 0)
+
+    print(f"  Duct 2 end:         X={duct2_end[0]*1000:8.1f}, Y={duct2_end[1]*1000:8.1f}, Z={duct2_end[2]*1000:8.1f} mm")
+    print(f"  Trans 2b start:     X={trans2b_pos[0]*1000:8.1f}, Y={trans2b_pos[1]*1000:8.1f}, Z={trans2b_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct2→Trans2b", match, duct2_end, trans2b_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 8. TRANS 2B END TO MULTI-CYCLONE INLET
+    # ============================================================
+    print("\n--- 8. Transition 2b End → Multi-Cyclone Inlet ---")
+    trans2b_end = (trans2b_pos[0] + trans2b.params.length, trans2b_pos[1], trans2b_pos[2])
+    cyclone_inlet = multi_cyclone.ports['inlet']
+    c_in = tuple(cyclone_pos[i] + cyclone_inlet.position[i] for i in range(3))
+    match, diff = check_coord("Trans2b→CycloneIn", trans2b_end, c_in, 0)
+
+    print(f"  Trans 2b end:       X={trans2b_end[0]*1000:8.1f}, Y={trans2b_end[1]*1000:8.1f}, Z={trans2b_end[2]*1000:8.1f} mm")
+    print(f"  Cyclone inlet:      X={c_in[0]*1000:8.1f}, Y={c_in[1]*1000:8.1f}, Z={c_in[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans2b→CycloneIn", match, trans2b_end, c_in))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 9. MULTI-CYCLONE OVERFLOW TO ELBOW 3 START
+    # ============================================================
+    print("\n--- 9. Multi-Cyclone Overflow → Elbow 3 Inlet ---")
+    cyclone_overflow = multi_cyclone.ports['overflow']
+    c_over = tuple(cyclone_pos[i] + cyclone_overflow.position[i] for i in range(3))
+    elbow3, elbow3_pos = duct_sections[6]
+    match, diff = check_coord("CycloneOver→Elbow3", c_over, elbow3_pos, 1)
+
+    print(f"  Cyclone overflow:   X={c_over[0]*1000:8.1f}, Y={c_over[1]*1000:8.1f}, Z={c_over[2]*1000:8.1f} mm")
+    print(f"  Elbow 3 inlet:      X={elbow3_pos[0]*1000:8.1f}, Y={elbow3_pos[1]*1000:8.1f}, Z={elbow3_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("CycloneOver→Elbow3", match, c_over, elbow3_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 10. ELBOW 3 OUTLET TO DUCT 3A START
+    # ============================================================
+    print("\n--- 10. Elbow 3 Outlet → Duct 3a Start ---")
+    br3 = elbow3.params.bend_radius
+    elbow3_out = (elbow3_pos[0] + br3, elbow3_pos[1] + br3, elbow3_pos[2])
+    duct3a, duct3a_pos = duct_sections[7]
+    match, diff = check_coord("Elbow3→Duct3a", elbow3_out, duct3a_pos, 0)
+
+    print(f"  Elbow 3 outlet:     X={elbow3_out[0]*1000:8.1f}, Y={elbow3_out[1]*1000:8.1f}, Z={elbow3_out[2]*1000:8.1f} mm")
+    print(f"  Duct 3a start:      X={duct3a_pos[0]*1000:8.1f}, Y={duct3a_pos[1]*1000:8.1f}, Z={duct3a_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Elbow3→Duct3a", match, elbow3_out, duct3a_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 11. DUCT 3A END TO EXPANSION START
+    # ============================================================
+    print("\n--- 11. Duct 3a End → Expansion Transition Start ---")
+    duct3a_end = (duct3a_pos[0] + duct3a.params.length, duct3a_pos[1], duct3a_pos[2])
+    expansion, expansion_pos = duct_sections[8]
+    match, diff = check_coord("Duct3a→Expansion", duct3a_end, expansion_pos, 0)
+
+    print(f"  Duct 3a end:        X={duct3a_end[0]*1000:8.1f}, Y={duct3a_end[1]*1000:8.1f}, Z={duct3a_end[2]*1000:8.1f} mm")
+    print(f"  Expansion start:    X={expansion_pos[0]*1000:8.1f}, Y={expansion_pos[1]*1000:8.1f}, Z={expansion_pos[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct3a→Expansion", match, duct3a_end, expansion_pos))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 12. EXPANSION END TO BAG FILTER INLET
+    # ============================================================
+    print("\n--- 12. Expansion End → Bag Filter Dirty Air Inlet ---")
+    expansion_end = (expansion_pos[0] + expansion.params.length, expansion_pos[1], expansion_pos[2])
+    bag_inlet = bag_filter.ports['dirty_air_inlet']
+    b_in = tuple(bag_filter_pos[i] + bag_inlet.position[i] for i in range(3))
+    match, diff = check_coord("Expansion→BagFilterIn", expansion_end, b_in, 0)
+
+    print(f"  Expansion end:      X={expansion_end[0]*1000:8.1f}, Y={expansion_end[1]*1000:8.1f}, Z={expansion_end[2]*1000:8.1f} mm")
+    print(f"  Bag filter inlet:   X={b_in[0]*1000:8.1f}, Y={b_in[1]*1000:8.1f}, Z={b_in[2]*1000:8.1f} mm")
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Expansion→BagFilterIn", match, expansion_end, b_in))
+    all_ok = all_ok and match
+
+    # Summary
+    print("\n" + "=" * 70)
+    print("COORDINATE VERIFICATION SUMMARY")
+    print("=" * 70)
+    passed = sum(1 for _, ok, _, _ in verification_results if ok)
+    total = len(verification_results)
+    print(f"\nResult: {passed}/{total} coordinate checks passed")
+
+    if not all_ok:
+        print("\nFailed checks:")
+        for name, ok, src, tgt in verification_results:
+            if not ok:
+                print(f"  [FAIL] {name}")
+    else:
+        print("\n[ALL COORDINATES ALIGN] - Connection points are properly positioned")
+
+    return all_ok, verification_results
+
+
+def verify_classification_system_angles():
+    """
+    Verify port direction angles at all connection points in the classification system.
+
+    Checks that port directions are properly aligned or perpendicular (for elbows).
+    """
+    print("\n" + "=" * 70)
+    print("CLASSIFICATION SYSTEM PORT ANGLE VERIFICATION")
+    print("=" * 70)
+
+    classification = create_standard_classification_system()
+
+    verification_results = []
+    all_ok = True
+    angle_tolerance = 5.0  # 5 degrees tolerance
+
+    # Get components
+    venturi = classification.venturi
+    zigzag = classification.zigzag
+    multi_cyclone = classification.multi_cyclone
+    bag_filter = classification.bag_filter
+    duct_sections = classification._duct_sections
+
+    def calc_angle(dir1, dir2):
+        """Calculate angle in degrees between two direction vectors."""
+        dot = sum(a * b for a, b in zip(dir1, dir2))
+        dot = max(-1.0, min(1.0, dot))  # Clamp for numerical stability
+        return np.degrees(np.arccos(dot))
+
+    def check_alignment(name, dir_a, dir_b, expected_angle, tolerance=angle_tolerance):
+        """Check if two directions have the expected angle between them."""
+        actual_angle = calc_angle(dir_a, dir_b)
+        match = abs(actual_angle - expected_angle) < tolerance
+        return actual_angle, match
+
+    # New duct structure (9 sections):
+    # [0]=duct1a, [1]=trans1, [2]=trans2a, [3]=elbow2, [4]=duct2,
+    # [5]=trans2b, [6]=elbow3, [7]=duct3a, [8]=expansion
+
+    # ============================================================
+    # 1. VENTURI OUTLET TO DUCT 1A DIRECTION (0°)
+    # ============================================================
+    print("\n--- 1. Venturi Outlet → Duct 1a Direction ---")
+    venturi_outlet = venturi.ports['outlet']
+    duct1a = duct_sections[0][0]
+    venturi_dir = venturi_outlet.direction
+    duct1a_dir = duct1a.params.direction
+    actual_angle, match = check_alignment("Venturi→Duct1a", venturi_dir, duct1a_dir, 0.0)
+    print(f"  Venturi outlet dir:  ({venturi_dir[0]:5.2f}, {venturi_dir[1]:5.2f}, {venturi_dir[2]:5.2f})")
+    print(f"  Duct 1a direction:   ({duct1a_dir[0]:5.2f}, {duct1a_dir[1]:5.2f}, {duct1a_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Venturi→Duct1a", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 2. DUCT 1A TO TRANS 1 DIRECTION (0°, both vertical)
+    # ============================================================
+    print("\n--- 2. Duct 1a → Transition 1 Direction ---")
+    trans1 = duct_sections[1][0]
+    trans1_dir = trans1.params.direction
+    actual_angle, match = check_alignment("Duct1a→Trans1", duct1a_dir, trans1_dir, 0.0)
+    print(f"  Duct 1a direction:   ({duct1a_dir[0]:5.2f}, {duct1a_dir[1]:5.2f}, {duct1a_dir[2]:5.2f})")
+    print(f"  Trans 1 direction:   ({trans1_dir[0]:5.2f}, {trans1_dir[1]:5.2f}, {trans1_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct1a→Trans1", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 3. TRANS 1 TO ZIGZAG AIR INLET (180° - opposing)
+    # ============================================================
+    print("\n--- 3. Transition 1 → Zigzag Air Inlet Direction ---")
+    zigzag_inlet = zigzag.ports['air_inlet']
+    zigzag_inlet_dir = zigzag_inlet.direction
+    actual_angle, match = check_alignment("Trans1→ZigzagIn", trans1_dir, zigzag_inlet_dir, 180.0)
+    print(f"  Trans 1 direction:   ({trans1_dir[0]:5.2f}, {trans1_dir[1]:5.2f}, {trans1_dir[2]:5.2f})")
+    print(f"  Zigzag inlet dir:    ({zigzag_inlet_dir[0]:5.2f}, {zigzag_inlet_dir[1]:5.2f}, {zigzag_inlet_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 180°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans1→ZigzagIn", match, actual_angle, 180.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 4. ZIGZAG FINES OUTLET TO TRANS 2A (0°)
+    # ============================================================
+    print("\n--- 4. Zigzag Fines Outlet → Transition 2a Direction ---")
+    zigzag_fines = zigzag.ports['fines_outlet']
+    trans2a = duct_sections[2][0]
+    zigzag_fines_dir = zigzag_fines.direction
+    trans2a_dir = trans2a.params.direction
+    actual_angle, match = check_alignment("ZigzagFines→Trans2a", zigzag_fines_dir, trans2a_dir, 0.0)
+    print(f"  Zigzag fines dir:    ({zigzag_fines_dir[0]:5.2f}, {zigzag_fines_dir[1]:5.2f}, {zigzag_fines_dir[2]:5.2f})")
+    print(f"  Trans 2a direction:  ({trans2a_dir[0]:5.2f}, {trans2a_dir[1]:5.2f}, {trans2a_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("ZigzagFines→Trans2a", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 5. TRANS 2A TO ELBOW 2 INLET (0°)
+    # ============================================================
+    print("\n--- 5. Transition 2a → Elbow 2 Inlet Direction ---")
+    elbow2 = duct_sections[3][0]
+    elbow2_inlet_dir = elbow2.params.inlet_direction
+    actual_angle, match = check_alignment("Trans2a→Elbow2", trans2a_dir, elbow2_inlet_dir, 0.0)
+    print(f"  Trans 2a direction:  ({trans2a_dir[0]:5.2f}, {trans2a_dir[1]:5.2f}, {trans2a_dir[2]:5.2f})")
+    print(f"  Elbow 2 inlet dir:   ({elbow2_inlet_dir[0]:5.2f}, {elbow2_inlet_dir[1]:5.2f}, {elbow2_inlet_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans2a→Elbow2", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 6. ELBOW 2 TURN (90°)
+    # ============================================================
+    print("\n--- 6. Elbow 2 Turn (90° from +Y to +X) ---")
+    elbow2_outlet_dir = (1.0, 0.0, 0.0)
+    actual_angle = calc_angle(elbow2_inlet_dir, elbow2_outlet_dir)
+    match = abs(actual_angle - 90.0) < angle_tolerance
+    print(f"  Elbow 2 inlet dir:   ({elbow2_inlet_dir[0]:5.2f}, {elbow2_inlet_dir[1]:5.2f}, {elbow2_inlet_dir[2]:5.2f})")
+    print(f"  Elbow 2 outlet dir:  ({elbow2_outlet_dir[0]:5.2f}, {elbow2_outlet_dir[1]:5.2f}, {elbow2_outlet_dir[2]:5.2f})")
+    print(f"  Turn angle: {actual_angle:.1f}° (expected: 90°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Elbow2Turn", match, actual_angle, 90.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 7. ELBOW 2 OUTLET TO DUCT 2 (0°)
+    # ============================================================
+    print("\n--- 7. Elbow 2 Outlet → Duct 2 Direction ---")
+    duct2 = duct_sections[4][0]
+    duct2_dir = duct2.params.direction
+    actual_angle, match = check_alignment("Elbow2→Duct2", elbow2_outlet_dir, duct2_dir, 0.0)
+    print(f"  Elbow 2 outlet dir:  ({elbow2_outlet_dir[0]:5.2f}, {elbow2_outlet_dir[1]:5.2f}, {elbow2_outlet_dir[2]:5.2f})")
+    print(f"  Duct 2 direction:    ({duct2_dir[0]:5.2f}, {duct2_dir[1]:5.2f}, {duct2_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Elbow2→Duct2", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 8. DUCT 2 TO TRANS 2B (0°)
+    # ============================================================
+    print("\n--- 8. Duct 2 → Transition 2b Direction ---")
+    trans2b = duct_sections[5][0]
+    trans2b_dir = trans2b.params.direction
+    actual_angle, match = check_alignment("Duct2→Trans2b", duct2_dir, trans2b_dir, 0.0)
+    print(f"  Duct 2 direction:    ({duct2_dir[0]:5.2f}, {duct2_dir[1]:5.2f}, {duct2_dir[2]:5.2f})")
+    print(f"  Trans 2b direction:  ({trans2b_dir[0]:5.2f}, {trans2b_dir[1]:5.2f}, {trans2b_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct2→Trans2b", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 9. TRANS 2B TO CYCLONE INLET (180° - opposing)
+    # ============================================================
+    print("\n--- 9. Transition 2b → Multi-Cyclone Inlet Direction ---")
+    cyclone_inlet = multi_cyclone.ports['inlet']
+    cyclone_inlet_dir = cyclone_inlet.direction
+    actual_angle, match = check_alignment("Trans2b→CycloneIn", trans2b_dir, cyclone_inlet_dir, 180.0)
+    print(f"  Trans 2b direction:  ({trans2b_dir[0]:5.2f}, {trans2b_dir[1]:5.2f}, {trans2b_dir[2]:5.2f})")
+    print(f"  Cyclone inlet dir:   ({cyclone_inlet_dir[0]:5.2f}, {cyclone_inlet_dir[1]:5.2f}, {cyclone_inlet_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 180°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Trans2b→CycloneIn", match, actual_angle, 180.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 10. CYCLONE OVERFLOW TO ELBOW 3 INLET (0°)
+    # ============================================================
+    print("\n--- 10. Multi-Cyclone Overflow → Elbow 3 Inlet Direction ---")
+    cyclone_overflow = multi_cyclone.ports['overflow']
+    elbow3 = duct_sections[6][0]
+    cyclone_overflow_dir = cyclone_overflow.direction
+    elbow3_inlet_dir = elbow3.params.inlet_direction
+    actual_angle, match = check_alignment("CycloneOver→Elbow3", cyclone_overflow_dir, elbow3_inlet_dir, 0.0)
+    print(f"  Cyclone overflow dir: ({cyclone_overflow_dir[0]:5.2f}, {cyclone_overflow_dir[1]:5.2f}, {cyclone_overflow_dir[2]:5.2f})")
+    print(f"  Elbow 3 inlet dir:   ({elbow3_inlet_dir[0]:5.2f}, {elbow3_inlet_dir[1]:5.2f}, {elbow3_inlet_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("CycloneOver→Elbow3", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 11. ELBOW 3 TURN (90°)
+    # ============================================================
+    print("\n--- 11. Elbow 3 Turn (90° from +Y to +X) ---")
+    elbow3_outlet_dir = (1.0, 0.0, 0.0)
+    actual_angle = calc_angle(elbow3_inlet_dir, elbow3_outlet_dir)
+    match = abs(actual_angle - 90.0) < angle_tolerance
+    print(f"  Elbow 3 inlet dir:   ({elbow3_inlet_dir[0]:5.2f}, {elbow3_inlet_dir[1]:5.2f}, {elbow3_inlet_dir[2]:5.2f})")
+    print(f"  Elbow 3 outlet dir:  ({elbow3_outlet_dir[0]:5.2f}, {elbow3_outlet_dir[1]:5.2f}, {elbow3_outlet_dir[2]:5.2f})")
+    print(f"  Turn angle: {actual_angle:.1f}° (expected: 90°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Elbow3Turn", match, actual_angle, 90.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 12. ELBOW 3 OUTLET TO DUCT 3A (0°)
+    # ============================================================
+    print("\n--- 12. Elbow 3 Outlet → Duct 3a Direction ---")
+    duct3a = duct_sections[7][0]
+    duct3a_dir = duct3a.params.direction
+    actual_angle, match = check_alignment("Elbow3→Duct3a", elbow3_outlet_dir, duct3a_dir, 0.0)
+    print(f"  Elbow 3 outlet dir:  ({elbow3_outlet_dir[0]:5.2f}, {elbow3_outlet_dir[1]:5.2f}, {elbow3_outlet_dir[2]:5.2f})")
+    print(f"  Duct 3a direction:   ({duct3a_dir[0]:5.2f}, {duct3a_dir[1]:5.2f}, {duct3a_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Elbow3→Duct3a", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 13. DUCT 3A TO EXPANSION (0°)
+    # ============================================================
+    print("\n--- 13. Duct 3a → Expansion Transition Direction ---")
+    expansion = duct_sections[8][0]
+    expansion_dir = expansion.params.direction
+    actual_angle, match = check_alignment("Duct3a→Expansion", duct3a_dir, expansion_dir, 0.0)
+    print(f"  Duct 3a direction:   ({duct3a_dir[0]:5.2f}, {duct3a_dir[1]:5.2f}, {duct3a_dir[2]:5.2f})")
+    print(f"  Expansion direction: ({expansion_dir[0]:5.2f}, {expansion_dir[1]:5.2f}, {expansion_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 0°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Duct3a→Expansion", match, actual_angle, 0.0))
+    all_ok = all_ok and match
+
+    # ============================================================
+    # 14. EXPANSION TO BAG FILTER INLET (180° - opposing)
+    # ============================================================
+    print("\n--- 14. Expansion → Bag Filter Inlet Direction ---")
+    bag_inlet = bag_filter.ports['dirty_air_inlet']
+    bag_inlet_dir = bag_inlet.direction
+    actual_angle, match = check_alignment("Expansion→BagFilterIn", expansion_dir, bag_inlet_dir, 180.0)
+    print(f"  Expansion direction: ({expansion_dir[0]:5.2f}, {expansion_dir[1]:5.2f}, {expansion_dir[2]:5.2f})")
+    print(f"  Bag filter inlet dir: ({bag_inlet_dir[0]:5.2f}, {bag_inlet_dir[1]:5.2f}, {bag_inlet_dir[2]:5.2f})")
+    print(f"  Angle: {actual_angle:.1f}° (expected: 180°) {'[OK]' if match else '[FAIL]'}")
+    verification_results.append(("Expansion→BagFilterIn", match, actual_angle, 180.0))
+    all_ok = all_ok and match
+
+    # Summary
+    print("\n" + "=" * 70)
+    print("PORT ANGLE VERIFICATION SUMMARY")
+    print("=" * 70)
+    passed = sum(1 for _, ok, _, _ in verification_results if ok)
+    total = len(verification_results)
+    print(f"\nResult: {passed}/{total} angle checks passed")
+
+    if not all_ok:
+        print("\nFailed/Warning checks:")
+        for name, ok, actual, expected in verification_results:
+            if not ok:
+                print(f"  [!] {name}: {actual:.1f}° (expected: {expected:.1f}°)")
+    else:
+        print("\n[ALL ANGLES CORRECT] - Flow directions are properly aligned")
+
+    return all_ok, verification_results
+
+
+def detailed_classification_system_analysis():
+    """Run detailed analysis of classification system component fitting."""
+    print("\n" + "=" * 70)
+    print("DETAILED CLASSIFICATION SYSTEM COMPONENT ANALYSIS")
+    print("=" * 70)
+
+    classification = create_standard_classification_system()
+    venturi = classification.venturi
+    zigzag = classification.zigzag
+    multi_cyclone = classification.multi_cyclone
+    bag_filter = classification.bag_filter
+
+    # Inspect each component's ports
+    inspect_component_ports(venturi, "Venturi Eductor")
+    inspect_component_ports(zigzag, "Zigzag Classifier")
+    inspect_component_ports(multi_cyclone, "Multi-Cyclone System")
+    inspect_component_ports(bag_filter, "Bag Filter")
+
+    # Check alignments with assembly's gap
+    gap = classification.params.flange_gap
+
+    print("\n" + "=" * 70)
+    print("PORT-TO-PORT ALIGNMENT ANALYSIS")
+    print("=" * 70)
+
+    print(f"\n(Using assembly gap: {gap*1000:.1f} mm)")
+
+    print("\n1. Venturi outlet -> Zigzag air_inlet (via duct)")
+    check_alignment_between_components(venturi, 'outlet', zigzag, 'air_inlet', gap=gap)
+
+    print("\n2. Zigzag fines_outlet -> Multi-Cyclone inlet (via elbow+duct)")
+    # Note: These are not directly aligned due to elbow
+    fines_dir = zigzag.ports['fines_outlet'].direction
+    cyclone_inlet_dir = multi_cyclone.ports['inlet'].direction
+    dot = sum(a*b for a, b in zip(fines_dir, cyclone_inlet_dir))
+    print(f"  Zigzag fines direction:    ({fines_dir[0]:.2f}, {fines_dir[1]:.2f}, {fines_dir[2]:.2f})")
+    print(f"  Cyclone inlet direction:   ({cyclone_inlet_dir[0]:.2f}, {cyclone_inlet_dir[1]:.2f}, {cyclone_inlet_dir[2]:.2f})")
+    print(f"  Ports are perpendicular (dot={dot:.2f}) - connected via 90 deg elbow")
+
+    print("\n3. Multi-Cyclone overflow -> Bag Filter inlet (via elbow+duct)")
+    overflow_dir = multi_cyclone.ports['overflow'].direction
+    bag_inlet_dir = bag_filter.ports['dirty_air_inlet'].direction
+    dot = sum(a*b for a, b in zip(overflow_dir, bag_inlet_dir))
+    print(f"  Cyclone overflow direction: ({overflow_dir[0]:.2f}, {overflow_dir[1]:.2f}, {overflow_dir[2]:.2f})")
+    print(f"  Bag filter inlet direction: ({bag_inlet_dir[0]:.2f}, {bag_inlet_dir[1]:.2f}, {bag_inlet_dir[2]:.2f})")
+    print(f"  Ports are perpendicular (dot={dot:.2f}) - connected via 90 deg elbow")
+
+    # Port diameter matching analysis
+    print("\n" + "=" * 70)
+    print("PORT DIAMETER MATCHING (via transitions)")
+    print("=" * 70)
+
+    duct_sections = classification._duct_sections
+    # Structure: [0]=duct1a, [1]=trans1, [2]=trans2a, [3]=elbow2, [4]=duct2, 
+    # [5]=trans2b, [6]=elbow3, [7]=duct3a, [8]=expansion
+
+    print("\n  New structure uses proper transitions for shape/size changes:")
+    print(f"    - Duct1a ({duct_sections[0][0].params.diameter*1000:.0f}mm round) → Trans1 → Zigzag inlet (rect)")
+    print(f"    - Zigzag fines (rect) → Trans2a → Elbow2 ({duct_sections[3][0].params.diameter*1000:.0f}mm)")
+    print(f"    - Elbow2 → Duct2 ({duct_sections[4][0].params.diameter*1000:.0f}mm) → Trans2b → Cyclone inlet (rect)")
+    print(f"    - Cyclone overflow ({multi_cyclone.ports['overflow'].diameter*1000:.0f}mm) → Elbow3 → Duct3a")
+    print(f"    - Duct3a ({duct_sections[7][0].params.diameter*1000:.0f}mm) → Expansion → Bag filter ({bag_filter.ports['dirty_air_inlet'].diameter*1000:.0f}mm)")
+
+    print("\n  Direct diameter matches (round-to-round connections):")
+    connections = [
+        ("Venturi outlet", venturi.ports['outlet'].diameter, "Duct 1a", duct_sections[0][0].params.diameter),
+        ("Elbow 2", duct_sections[3][0].params.diameter, "Duct 2", duct_sections[4][0].params.diameter),
+        ("Cyclone overflow", multi_cyclone.ports['overflow'].diameter, "Elbow 3", duct_sections[6][0].params.diameter),
+        ("Elbow 3", duct_sections[6][0].params.diameter, "Duct 3a", duct_sections[7][0].params.diameter),
+    ]
+
+    for src_name, src_d, tgt_name, tgt_d in connections:
+        match = abs(src_d - tgt_d) < 0.001
+        status = "[OK]" if match else f"[FAIL] diff={abs(src_d - tgt_d)*1000:.1f}mm"
+        print(f"    {src_name}: {src_d*1000:.1f}mm → {tgt_name}: {tgt_d*1000:.1f}mm {status}")
+
+    # ============================================================
+    # DIMENSION, COORDINATE, AND ANGLE VERIFICATION
+    # ============================================================
+    print("\n")
+    dim_ok, dim_results = verify_classification_system_dimensions()
+
+    print("\n")
+    coord_ok, coord_results = verify_classification_system_coordinates()
+
+    print("\n")
+    angle_ok, angle_results = verify_classification_system_angles()
+
+    # Final summary
+    print("\n" + "=" * 70)
+    print("OVERALL VERIFICATION SUMMARY")
+    print("=" * 70)
+    dim_passed = sum(1 for _, ok, _, _ in dim_results if ok)
+    coord_passed = sum(1 for _, ok, _, _ in coord_results if ok)
+    angle_passed = sum(1 for _, ok, _, _ in angle_results if ok)
+
+    total_checks = len(dim_results) + len(coord_results) + len(angle_results)
+    total_passed = dim_passed + coord_passed + angle_passed
+
+    print(f"\nDimension checks:   {dim_passed}/{len(dim_results)} passed")
+    print(f"Coordinate checks:  {coord_passed}/{len(coord_results)} passed")
+    print(f"Angle checks:       {angle_passed}/{len(angle_results)} passed")
+    print(f"Total:              {total_passed}/{total_checks} passed")
+
+    if dim_ok and coord_ok and angle_ok:
+        print("\n[SYSTEM VERIFIED] - All dimensions, coordinates, and angles are correct")
+    else:
+        print("\n[ISSUES FOUND] - Please review failed checks above")
+
+
+def calculate_classification_system_flow_path():
+    """Calculate flow path length through the classification system."""
+    classification = create_standard_classification_system()
+
+    print("\n" + "=" * 70)
+    print("CLASSIFICATION SYSTEM FLOW PATH ANALYSIS")
+    print("=" * 70)
+
+    positions = classification.get_component_positions()
+    duct_sections = classification._duct_sections
+
+    # Get key port positions (world coordinates)
+    print(f"\nAir flow path (key positions):")
+
+    # Venturi
+    venturi_inlet = classification.venturi.ports['air_inlet']
+    venturi_outlet = classification.venturi.ports['outlet']
+    venturi_pos = positions['venturi']
+    v_inlet_world = (
+        venturi_pos[0] + venturi_inlet.position[0],
+        venturi_pos[1] + venturi_inlet.position[1],
+        venturi_pos[2] + venturi_inlet.position[2],
+    )
+    v_outlet_world = (
+        venturi_pos[0] + venturi_outlet.position[0],
+        venturi_pos[1] + venturi_outlet.position[1],
+        venturi_pos[2] + venturi_outlet.position[2],
+    )
+    print(f"  Venturi air inlet:     Y = {v_inlet_world[1]*1000:8.1f} mm (air supply entry)")
+    print(f"  Venturi outlet:        Y = {v_outlet_world[1]*1000:8.1f} mm")
+
+    # Zigzag
+    zigzag_inlet = classification.zigzag.ports['air_inlet']
+    zigzag_fines = classification.zigzag.ports['fines_outlet']
+    zigzag_pos = positions['zigzag']
+    z_inlet_world = (
+        zigzag_pos[0] + zigzag_inlet.position[0],
+        zigzag_pos[1] + zigzag_inlet.position[1],
+        zigzag_pos[2] + zigzag_inlet.position[2],
+    )
+    z_fines_world = (
+        zigzag_pos[0] + zigzag_fines.position[0],
+        zigzag_pos[1] + zigzag_fines.position[1],
+        zigzag_pos[2] + zigzag_fines.position[2],
+    )
+    print(f"  Zigzag air inlet:      Y = {z_inlet_world[1]*1000:8.1f} mm")
+    print(f"  Zigzag fines outlet:   Y = {z_fines_world[1]*1000:8.1f} mm")
+
+    # After elbow 2, flow goes horizontal (+X)
+    elbow2, elbow2_pos = duct_sections[1]
+    elbow2_outlet_y = elbow2_pos[1] + elbow2.params.bend_radius
+    print(f"  Elbow 2 outlet:        Y = {elbow2_outlet_y*1000:8.1f} mm (turns to +X)")
+
+    # Cyclone
+    cyclone_inlet = classification.multi_cyclone.ports['inlet']
+    cyclone_overflow = classification.multi_cyclone.ports['overflow']
+    cyclone_pos = positions['multi_cyclone']
+    c_inlet_world = (
+        cyclone_pos[0] + cyclone_inlet.position[0],
+        cyclone_pos[1] + cyclone_inlet.position[1],
+        cyclone_pos[2] + cyclone_inlet.position[2],
+    )
+    c_overflow_world = (
+        cyclone_pos[0] + cyclone_overflow.position[0],
+        cyclone_pos[1] + cyclone_overflow.position[1],
+        cyclone_pos[2] + cyclone_overflow.position[2],
+    )
+    print(f"  Cyclone inlet:         X = {c_inlet_world[0]*1000:8.1f} mm, Y = {c_inlet_world[1]*1000:8.1f} mm")
+    print(f"  Cyclone overflow:      X = {c_overflow_world[0]*1000:8.1f} mm, Y = {c_overflow_world[1]*1000:8.1f} mm")
+
+    # Bag filter
+    bag_inlet = classification.bag_filter.ports['dirty_air_inlet']
+    bag_clean = classification.bag_filter.ports['clean_air_outlet']
+    bag_pos = positions['bag_filter']
+    b_inlet_world = (
+        bag_pos[0] + bag_inlet.position[0],
+        bag_pos[1] + bag_inlet.position[1],
+        bag_pos[2] + bag_inlet.position[2],
+    )
+    b_clean_world = (
+        bag_pos[0] + bag_clean.position[0],
+        bag_pos[1] + bag_clean.position[1],
+        bag_pos[2] + bag_clean.position[2],
+    )
+    print(f"  Bag filter inlet:      X = {b_inlet_world[0]*1000:8.1f} mm")
+    print(f"  Bag filter clean out:  Y = {b_clean_world[1]*1000:8.1f} mm (clean air exit)")
+
+    # Calculate total flow path length
+    print(f"\n--- Flow Path Length ---")
+    total_path = 0.0
+
+    # Venturi length
+    venturi_length = classification.venturi.params.total_length
+    print(f"  Venturi:              {venturi_length*1000:8.1f} mm")
+    total_path += venturi_length
+
+    # Duct 1 (vertical)
+    duct1_length = duct_sections[0][0].params.length
+    print(f"  Duct 1 (vertical):    {duct1_length*1000:8.1f} mm")
+    total_path += duct1_length
+
+    # Zigzag height
+    zigzag_height = classification.zigzag.params.total_height
+    print(f"  Zigzag classifier:    {zigzag_height*1000:8.1f} mm")
+    total_path += zigzag_height
+
+    # Elbow 2 arc
+    elbow2_arc = elbow2.params.bend_radius * np.radians(elbow2.params.angle)
+    print(f"  Elbow 2 arc:          {elbow2_arc*1000:8.1f} mm (90° turn)")
+    total_path += elbow2_arc
+
+    # Duct 2 (horizontal)
+    duct2_length = duct_sections[2][0].params.length
+    print(f"  Duct 2 (horizontal):  {duct2_length*1000:8.1f} mm")
+    total_path += duct2_length
+
+    # Multi-cyclone path (approximate as sum of cyclone heights)
+    mc_info = classification.multi_cyclone.get_stage_info()
+    mc_total_height = sum(info['total_height'] for info in mc_info) / 1000  # Convert to m
+    print(f"  Multi-cyclone:        {mc_total_height*1000:8.1f} mm (staged)")
+    total_path += mc_total_height
+
+    # Elbow 3 arc
+    elbow3 = duct_sections[3][0]
+    elbow3_arc = elbow3.params.bend_radius * np.radians(elbow3.params.angle)
+    print(f"  Elbow 3 arc:          {elbow3_arc*1000:8.1f} mm (90° turn)")
+    total_path += elbow3_arc
+
+    # Duct 3 (horizontal)
+    duct3_length = duct_sections[4][0].params.length
+    print(f"  Duct 3 (horizontal):  {duct3_length*1000:8.1f} mm")
+    total_path += duct3_length
+
+    # Bag filter path (approximate)
+    bag_height = classification.bag_filter.params.housing_height
+    print(f"  Bag filter:           {bag_height*1000:8.1f} mm")
+    total_path += bag_height
+
+    print(f"\n  TOTAL FLOW PATH:      {total_path*1000:.0f} mm ({total_path:.2f} m)")
+
+    # Horizontal vs vertical breakdown
+    print(f"\n--- Path Breakdown ---")
+    vertical_path = venturi_length + duct1_length + zigzag_height + mc_total_height + bag_height
+    horizontal_path = duct2_length + duct3_length
+    turns_path = elbow2_arc + elbow3_arc
+
+    print(f"  Vertical sections:    {vertical_path*1000:.0f} mm ({vertical_path/total_path*100:.0f}%)")
+    print(f"  Horizontal sections:  {horizontal_path*1000:.0f} mm ({horizontal_path/total_path*100:.0f}%)")
+    print(f"  Elbow turns:          {turns_path*1000:.0f} mm ({turns_path/total_path*100:.0f}%)")
+
+    # System extent
+    extent = classification.get_system_extent()
+    print(f"\n--- System Extent ---")
+    print(f"  X (width):  {extent[0]*1000:.0f} mm")
+    print(f"  Y (height): {extent[1]*1000:.0f} mm")
+    print(f"  Z (depth):  {extent[2]*1000:.0f} mm")
+
+
 def calculate_air_system_flow_path():
     """Calculate flow path length through the air system."""
     air = create_standard_air_system()
@@ -970,9 +2094,9 @@ def run_all_validations():
     print("\n" + "=" * 70)
     print("COMPREHENSIVE ASSEMBLY VALIDATION")
     print("=" * 70)
-    
+
     # Feed system
-    print("\n[1/3] Validating Feed System...")
+    print("\n[1/4] Validating Feed System...")
     try:
         feed = create_standard_feed_system()
         results = feed.validate_connections()
@@ -983,9 +2107,9 @@ def run_all_validations():
             feed.print_connection_report()
     except Exception as e:
         print(f"       ERROR: {e}")
-    
+
     # Air system
-    print("\n[2/3] Validating Air System...")
+    print("\n[2/4] Validating Air System...")
     try:
         air = create_standard_air_system()
         air.build_mesh()
@@ -1000,9 +2124,30 @@ def run_all_validations():
         print(f"       Pressure rise: {perf['blower_pressure_rise_Pa']:.0f} Pa")
     except Exception as e:
         print(f"       ERROR: {e}")
-    
+
+    # Classification system
+    print("\n[3/4] Validating Classification System...")
+    try:
+        classification = create_standard_classification_system()
+        classification.build_mesh()
+        bounds = classification.get_bounds()
+        extent = classification.get_system_extent()
+        print(f"       System bounds: ({bounds[0][0]:.3f}, {bounds[0][1]:.3f}, {bounds[0][2]:.3f}) to ({bounds[1][0]:.3f}, {bounds[1][1]:.3f}, {bounds[1][2]:.3f})")
+        print(f"       System extent: {extent[0]*1000:.0f} x {extent[1]*1000:.0f} x {extent[2]*1000:.0f} mm")
+        print(f"       Components: Venturi + Zigzag + MultiCyclone + BagFilter")
+        print(f"       Duct sections: {len(classification._duct_sections)}")
+
+        # Run dimension/coordinate/angle checks
+        dim_ok, _ = verify_classification_system_dimensions()
+        coord_ok, _ = verify_classification_system_coordinates()
+        angle_ok, _ = verify_classification_system_angles()
+        all_ok = dim_ok and coord_ok and angle_ok
+        print(f"       Port verification: {'[PASS]' if all_ok else '[ISSUES FOUND]'}")
+    except Exception as e:
+        print(f"       ERROR: {e}")
+
     # Complete system (if available)
-    print("\n[3/3] Validating Complete System...")
+    print("\n[4/4] Validating Complete System...")
     try:
         complete = create_complete_classifier_system()
         # Build mesh to ensure all components are created
@@ -1014,7 +2159,7 @@ def run_all_validations():
         print(f"       Instruments: {len(complete.get_all_instrument_names())}")
     except Exception as e:
         print(f"       ERROR: {e}")
-    
+
     print("\n" + "=" * 70)
     print("VALIDATION COMPLETE")
     print("=" * 70)
@@ -1036,13 +2181,20 @@ def interactive_menu():
         print("  6. Air System - Flow Path Analysis")
         print("  7. Air System - Dimension Verification")
         print("  8. Air System - Coordinate Verification")
+        print("\n--- Classification System ---")
+        print("  a. Classification System - Quick Inspection")
+        print("  b. Classification System - Detailed Analysis")
+        print("  c. Classification System - Flow Path Analysis")
+        print("  d. Classification System - Dimension Verification")
+        print("  e. Classification System - Coordinate Verification")
+        print("  f. Classification System - Angle Verification")
         print("\n--- General ---")
         print("  9. Run All Validations")
         print("  0. Exit")
         print()
 
         try:
-            choice = input("Enter choice (0-9): ").strip()
+            choice = input("Enter choice (0-9, a-f): ").strip().lower()
         except KeyboardInterrupt:
             print("\nExiting...")
             break
@@ -1066,10 +2218,22 @@ def interactive_menu():
             verify_air_system_dimensions()
         elif choice == "8":
             verify_air_system_coordinates()
+        elif choice == "a":
+            inspect_classification_system()
+        elif choice == "b":
+            detailed_classification_system_analysis()
+        elif choice == "c":
+            calculate_classification_system_flow_path()
+        elif choice == "d":
+            verify_classification_system_dimensions()
+        elif choice == "e":
+            verify_classification_system_coordinates()
+        elif choice == "f":
+            verify_classification_system_angles()
         elif choice == "9":
             run_all_validations()
         else:
-            print("Invalid choice. Please enter 0-9.")
+            print("Invalid choice. Please enter 0-9 or a-f.")
 
 
 def main():
@@ -1082,11 +2246,16 @@ Examples:
   python inspect_assembly.py                # Interactive menu
   python inspect_assembly.py --feed         # Inspect feed system
   python inspect_assembly.py --air          # Inspect air system
+  python inspect_assembly.py --classification  # Inspect classification system
   python inspect_assembly.py --validate     # Validate all assemblies
   python inspect_assembly.py --feed --detailed  # Detailed feed analysis
   python inspect_assembly.py --air --detailed   # Detailed air analysis
+  python inspect_assembly.py --classification --detailed  # Detailed classification analysis
   python inspect_assembly.py --air-dims     # Verify air system dimensions
   python inspect_assembly.py --air-coords   # Verify air system coordinates
+  python inspect_assembly.py --class-dims   # Verify classification system dimensions
+  python inspect_assembly.py --class-coords # Verify classification system coordinates
+  python inspect_assembly.py --class-angles # Verify classification system port angles
         """
     )
 
@@ -1106,16 +2275,29 @@ Examples:
     parser.add_argument("--air-coords", action="store_true",
                        help="Verify air system coordinate alignment at connections")
 
+    # Classification system options
+    parser.add_argument("--classification", "-c", action="store_true",
+                       help="Inspect classification system")
+    parser.add_argument("--class-flow", action="store_true",
+                       help="Classification system flow path analysis")
+    parser.add_argument("--class-dims", action="store_true",
+                       help="Verify classification system dimension matching at connections")
+    parser.add_argument("--class-coords", action="store_true",
+                       help="Verify classification system coordinate alignment at connections")
+    parser.add_argument("--class-angles", action="store_true",
+                       help="Verify classification system port direction angles at connections")
+
     # General options
     parser.add_argument("--detailed", "-d", action="store_true",
-                       help="Detailed component analysis (use with --feed or --air)")
+                       help="Detailed component analysis (use with --feed, --air, or --classification)")
     parser.add_argument("--validate", "-v", action="store_true",
                        help="Run all validations")
 
     args = parser.parse_args()
 
-    if not any([args.feed, args.air, args.drop, args.flow, args.validate,
-                args.air_dims, args.air_coords]):
+    if not any([args.feed, args.air, args.classification, args.drop, args.flow,
+                args.validate, args.air_dims, args.air_coords, args.class_flow,
+                args.class_dims, args.class_coords, args.class_angles]):
         interactive_menu()
         return
 
@@ -1144,6 +2326,25 @@ Examples:
 
     if args.air_coords:
         verify_air_system_coordinates()
+
+    # Classification system inspections
+    if args.classification:
+        if args.detailed:
+            detailed_classification_system_analysis()
+        else:
+            inspect_classification_system()
+
+    if args.class_flow:
+        calculate_classification_system_flow_path()
+
+    if args.class_dims:
+        verify_classification_system_dimensions()
+
+    if args.class_coords:
+        verify_classification_system_coordinates()
+
+    if args.class_angles:
+        verify_classification_system_angles()
 
     # Validations
     if args.validate:

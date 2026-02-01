@@ -1,17 +1,91 @@
 """
-Classification system assembly module.
+Classification System Assembly Module
+======================================
 
-Provides complete classification system assembly combining Phase 1 components:
-- Venturi Eductor
-- Zigzag Classifier
-- Multi-Cyclone System
-- Bag Filter
+This module provides the complete classification system assembly for protein separation.
+It combines all Phase 1 components into an integrated particle separation train.
+
+SYSTEM OVERVIEW
+===============
+
+The classification system separates particles by size using air classification:
+- Venturi Eductor: Entrains particles into airstream
+- Zigzag Classifier: Primary separation by particle size
+- Multi-Cyclone System: Staged collection of fines
+- Bag Filter: Final fine particle capture
+
+MATERIAL FLOW PATH
+==================
+
+    AIR SUPPLY (from blower, +Y direction upward)
+           │
+           ▼
+    ┌──────────────────┐
+    │ VENTURI EDUCTOR  │◄────── Feed (from de-agglomerator)
+    │   (entrainment)  │        enters via solids inlet (+X side)
+    │    axis='y'      │
+    └────────┬─────────┘
+             │ (air + particles, +Y upward)
+    ┌────────┴─────────┐
+    │   ROUND DUCT     │  ← Connects venturi outlet to zigzag air inlet
+    └────────┬─────────┘
+             ▼
+    ┌──────────────────┐
+    │ ZIGZAG CLASSIFIER│  ← Air flows upward, particles separate
+    │   (separation)   │
+    └────┬────────┬────┘
+         │        │
+    (fines)    (coarse)
+    +Y up      -Y down
+         │        │
+         │        ▼
+         │   ┌─────────┐
+         │   │ STARCH  │  (heavy particles fall out, collected below)
+         │   │ OUTLET  │
+         │   └─────────┘
+         │
+    ┌────┴─────────┐
+    │   ELBOW      │  ← Turns flow from +Y to +X (horizontal)
+    │  (90° turn)  │
+    └────┬─────────┘
+         │
+    ┌────┴─────────┐
+    │  HORIZ DUCT  │  ← Horizontal duct to cyclone inlet
+    └────┬─────────┘
+         ▼
+    ┌──────────────────┐
+    │ MULTI-CYCLONE    │  ← Tangential inlet on +X side
+    │  (series stages) │
+    │  Primary→Second→ │────► Dust outlets (staged product collection)
+    │  →Tertiary       │
+    └────────┬─────────┘
+             │ (overflow from last cyclone, +Y direction)
+    ┌────────┴─────────┐
+    │   ELBOW          │  ← Turns flow from +Y to +X
+    └────────┬─────────┘
+         │
+    ┌────┴─────────┐
+    │  HORIZ DUCT  │  ← To bag filter inlet
+    └────┬─────────┘
+         ▼
+    ┌──────────────────┐
+    │   BAG FILTER     │  ← Dirty air inlet on +X side
+    │  (fine capture)  │────► Dust outlet (protein-rich fines)
+    └────────┬─────────┘
+             │ (clean air, +Y direction)
+             ▼
+        CLEAN AIR EXHAUST (to exhaust system)
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List, Optional
 import numpy as np
 import warp as wp
+
+from ..connection_ports import (
+    ConnectionPort, PortType, calculate_alignment,
+    validate_assembly_connections, print_connection_report
+)
 
 
 @dataclass
@@ -20,28 +94,35 @@ class ClassificationSystemParams:
     Parameters for complete classification system.
 
     Combines all Phase 1 components into a protein separation system.
+
+    Industry Standard Pilot-Scale Proportions (100-500 kg/h):
+    - Zigzag channel: 100-200mm width, 5-7 stages
+    - Cyclones: Primary 250-400mm, Secondary 150-250mm, Tertiary 100-150mm
+    - Bag filter: sized for 0.1-0.3 m³/s (360-1080 m³/h)
+    - Venturi: 80-150mm inlet diameter
     """
 
-    # Zigzag classifier parameters
-    zigzag_channel_width: float = 0.15      # [m]
-    zigzag_num_stages: int = 5
-    zigzag_channel_depth: float = 0.30      # [m]
+    # Zigzag classifier parameters (pilot scale)
+    zigzag_channel_width: float = 0.12      # [m] 120mm - typical pilot scale
+    zigzag_num_stages: int = 5              # 5 stages for good separation
+    zigzag_channel_depth: float = 0.20      # [m] 200mm depth
 
     # Venturi eductor parameters
-    venturi_inlet_diameter: float = 0.10    # [m]
-    venturi_throat_ratio: float = 0.5
+    venturi_inlet_diameter: float = 0.08    # [m] 80mm - matches air supply
+    venturi_throat_ratio: float = 0.5       # Throat = 40mm
 
-    # Multi-cyclone parameters
-    primary_cyclone_diameter: float = 0.40   # [m]
-    secondary_cyclone_diameter: float = 0.25 # [m]
-    tertiary_cyclone_diameter: float = 0.15  # [m]
+    # Multi-cyclone parameters (pilot scale)
+    primary_cyclone_diameter: float = 0.30   # [m] 300mm - coarse/starch
+    secondary_cyclone_diameter: float = 0.20 # [m] 200mm - medium
+    tertiary_cyclone_diameter: float = 0.12  # [m] 120mm - fine/protein
 
-    # Bag filter parameters
-    bag_filter_flow_rate: float = 1.0       # [m3/s]
-    bag_filter_air_to_cloth: float = 2.0    # [m3/min/m2]
+    # Bag filter parameters (pilot scale: ~0.15 m³/s = 540 m³/h)
+    bag_filter_flow_rate: float = 0.15      # [m³/s] Pilot scale air flow
+    bag_filter_air_to_cloth: float = 2.5    # [m³/min/m²] Typical for food dust
 
     # Layout parameters
-    component_spacing: float = 0.5          # [m] Spacing between components
+    flange_gap: float = 0.005               # [m] Gap between flanges (5mm gasket space)
+    duct_spacing: float = 0.08              # [m] Minimum duct length between components
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     # Mesh resolution
@@ -52,20 +133,23 @@ class ClassificationSystemAssembly:
     """
     Complete protein separation/classification system assembly.
 
-    Combines all Phase 1 components:
-    - Venturi Eductor: Particle entrainment
-    - Zigzag Classifier: Primary separation
-    - Multi-Cyclone System: Staged collection
+    Combines all Phase 1 components with proper port-to-port connections:
+    - Venturi Eductor: Particle entrainment (vertical, axis='y')
+    - Zigzag Classifier: Primary separation (vertical)
+    - Multi-Cyclone System: Staged collection (vertical cyclones, series arrangement)
     - Bag Filter: Fine particle collection
 
-    Process flow:
-    Feed -> Venturi -> Zigzag -> Cyclones -> Bag Filter -> Clean Air
+    Flow path connections:
+    1. Venturi outlet (+Y) → Duct → Zigzag air_inlet (-Y facing)
+    2. Zigzag fines_outlet (+Y) → Elbow (90°) → Duct → Cyclone inlet (tangential +X)
+    3. Cyclone overflow (+Y) → Elbow (90°) → Duct → Bag filter dirty_air_inlet (+X)
+    4. Bag filter clean_air_outlet (+Y) → To exhaust system
 
     Coordinate system:
-    - Origin at center of system
-    - X-axis: Main flow direction
-    - Y-axis: Vertical (up)
-    - Z-axis: Depth
+    - Origin at venturi air inlet (bottom of system)
+    - X-axis: Horizontal (right)
+    - Y-axis: Vertical (up) - main flow direction through venturi/zigzag
+    - Z-axis: Depth (into page)
     """
 
     def __init__(self, params: ClassificationSystemParams = None, device: str = "cpu"):
@@ -79,91 +163,460 @@ class ClassificationSystemAssembly:
         self.params = params or ClassificationSystemParams()
         self.device = device
 
-        # Create components
-        self._create_components()
+        # Component storage
+        self.venturi = None
+        self.zigzag = None
+        self.multi_cyclone = None
+        self.bag_filter = None
+
+        # Component positions (world coordinates of component origins)
+        self._component_positions: Dict[str, np.ndarray] = {}
+
+        # Duct sections: list of (duct_component, world_position) tuples
+        self._duct_sections: List[Tuple[Any, Tuple[float, float, float]]] = []
 
         # Mesh data
         self._combined_vertices = None
         self._combined_indices = None
         self._mesh_built = False
 
+        # Create components with proper geometry-based positioning
+        self._create_components()
+
     def _create_components(self):
-        """Create all system components with proper positioning."""
-        # Lazy imports to avoid circular dependency
+        """
+        Create all system components with proper geometry-based positioning.
+
+        Layout: Vertical venturi/zigzag with horizontal runs to cyclones and bag filter.
+
+        Flow path (following port-to-port connections):
+        1. Venturi air_inlet (bottom) receives air from blower
+        2. Venturi outlet (+Y) → Duct → Zigzag air_inlet
+        3. Zigzag fines_outlet (+Y) → Elbow → Duct → Cyclone inlet (tangential)
+        4. Cyclone overflow (+Y) → Elbow → Duct → Bag filter dirty_air_inlet
+        5. Bag filter clean_air_outlet (+Y) → To exhaust
+
+        All positions calculated from port connection points.
+        """
         from ..components import (
-            create_standard_zigzag_classifier,
-            create_standard_venturi_eductor,
             MultiCycloneSystem, MultiCycloneParams, CycloneStageParams,
             create_standard_bag_filter,
         )
+        from ..components.zigzag_classifier import ZigzagClassifierParams, ZigzagClassifier
+        from ..components.venturi_eductor import VenturiEducatorParams, VenturiEducator
+        from ..components.ductwork import (
+            RoundDuct, RoundDuctParams,
+            DuctElbow, DuctElbowParams,
+            RectToRoundTransition, RectToRoundTransitionParams,
+        )
 
         p = self.params
-        spacing = p.component_spacing
+        gap = p.flange_gap
 
-        # Track X position along flow path
-        x_pos = p.center[0]
-
-        # 1. Venturi Eductor (first in flow path)
-        self.venturi = create_standard_venturi_eductor(
+        # ============================================================
+        # 1. VENTURI EDUCTOR - Positioned at origin, vertical (axis='y')
+        # ============================================================
+        # Venturi creates vertical upward flow for particle entrainment
+        # air_inlet at bottom (Y=0), outlet at top (Y=total_length)
+        throat_d = p.venturi_inlet_diameter * p.venturi_throat_ratio
+        venturi_params = VenturiEducatorParams(
             inlet_diameter=p.venturi_inlet_diameter,
-            throat_ratio=p.venturi_throat_ratio
+            throat_diameter=throat_d,
+            outlet_diameter=p.venturi_inlet_diameter * 0.9,
+            convergent_angle=np.radians(12),
+            divergent_angle=np.radians(5),
+            solids_inlet_diameter=throat_d * 0.8,
+            solids_inlet_angle=np.radians(45),
+            solids_inlet_position=throat_d * 0.3,
+            center=(0.0, 0.0, 0.0),  # Origin at air_inlet
+            axis="y"  # Vertical axis for upward flow
         )
-        # Position venturi at start
-        self._venturi_position = (x_pos, p.center[1], p.center[2])
-        x_pos += self.venturi.params.total_length + spacing
+        self.venturi = VenturiEducator(venturi_params)
 
-        # 2. Zigzag Classifier
-        self.zigzag = create_standard_zigzag_classifier(
+        # Venturi position: air_inlet at system origin
+        self._component_positions['venturi'] = np.array([
+            p.center[0], p.center[1], p.center[2]
+        ])
+
+        # Get venturi outlet port in world coordinates
+        venturi_outlet = self.venturi.ports['outlet']
+        venturi_outlet_world = self._get_port_world_pos('venturi', venturi_outlet)
+
+        # ============================================================
+        # 2. ZIGZAG CLASSIFIER - Above venturi
+        # ============================================================
+        # Zigzag receives air+particles from venturi
+        # air_inlet at bottom (receives from venturi), fines_outlet at top
+        zigzag_params = ZigzagClassifierParams(
             channel_width=p.zigzag_channel_width,
+            channel_depth=p.zigzag_channel_depth,
             num_stages=p.zigzag_num_stages,
-            channel_depth=p.zigzag_channel_depth
+            stage_height=p.zigzag_channel_width * 1.5,
+            zigzag_angle=np.radians(120),
+            feed_stage=(p.zigzag_num_stages + 1) // 2,
+            feed_width=p.zigzag_channel_width * 0.5,
+            air_inlet_width=p.zigzag_channel_width,
+            air_inlet_height=p.zigzag_channel_width * 0.5,
+            fines_outlet_width=p.zigzag_channel_width,
+            fines_outlet_height=p.zigzag_channel_width * 0.5,
+            coarse_outlet_width=p.zigzag_channel_width * 0.5,
+            coarse_outlet_height=p.zigzag_channel_width * 0.3,
+            center=(0.0, 0.0, 0.0)  # Will offset for port alignment
         )
-        self._zigzag_position = (x_pos, p.center[1], p.center[2])
-        x_pos += self.zigzag.params.total_width + spacing
+        self.zigzag = ZigzagClassifier(zigzag_params)
 
-        # 3. Multi-Cyclone System
+        # Get zigzag air_inlet port (in local coords relative to zigzag center)
+        zigzag_inlet = self.zigzag.ports['air_inlet']
+
+        # Duct length between venturi and zigzag
+        duct1_length = p.duct_spacing
+
+        # Position zigzag so its air_inlet aligns with venturi outlet + duct + transition
+        # Total distance = gap + duct1a_length + gap + trans1_length + gap
+        total_duct1_length = gap + (duct1_length * 0.3) + gap + (duct1_length * 0.7) + gap
+        zigzag_y = venturi_outlet_world[1] + total_duct1_length - zigzag_inlet.position[1]
+        self._component_positions['zigzag'] = np.array([
+            venturi_outlet_world[0] - zigzag_inlet.position[0],  # Align X
+            zigzag_y,
+            venturi_outlet_world[2] - zigzag_inlet.position[2],  # Align Z
+        ])
+
+        # Create duct + transition: venturi outlet (round) to zigzag inlet (rect)
+        # Split the duct length: short round duct + round-to-rect transition
+        venturi_d = self.venturi.params.outlet_diameter
+        zigzag_inlet_w = zigzag_inlet.width
+        zigzag_inlet_h = zigzag_inlet.height
+
+        # Short round duct from venturi
+        duct1a_length = duct1_length * 0.3
+        duct1a_start = (
+            venturi_outlet_world[0],
+            venturi_outlet_world[1] + gap,
+            venturi_outlet_world[2],
+        )
+        duct1a = RoundDuct(RoundDuctParams(
+            diameter=venturi_d,
+            length=duct1a_length,
+            wall_thickness=0.002,
+            direction=(0.0, 1.0, 0.0),  # Vertical +Y
+            center=(0, 0, 0),
+            flanged=True,
+        ))
+        self._duct_sections.append((duct1a, duct1a_start))
+
+        # Round-to-rect transition from venturi diameter to zigzag inlet
+        from ..components.transitions import Transition, TransitionParams
+        trans1_length = duct1_length * 0.7
+        trans1_start = (
+            duct1a_start[0],
+            duct1a_start[1] + duct1a_length + gap,
+            duct1a_start[2],
+        )
+        trans1 = Transition(TransitionParams(
+            transition_type="round_to_rect",
+            inlet_dimensions=(venturi_d,),
+            outlet_dimensions=(zigzag_inlet_w, zigzag_inlet_h),
+            length=trans1_length,
+            concentric=True,
+            wall_thickness=0.002,
+            direction=(0.0, 1.0, 0.0),  # Vertical +Y
+            center=(0, 0, 0),
+        ))
+        self._duct_sections.append((trans1, trans1_start))
+
+        # Get zigzag fines_outlet in world coordinates
+        zigzag_fines = self.zigzag.ports['fines_outlet']
+        zigzag_fines_world = self._get_port_world_pos('zigzag', zigzag_fines)
+
+        # ============================================================
+        # 3. MULTI-CYCLONE SYSTEM - To the right (+X) of zigzag top
+        # ============================================================
+        # Connection: zigzag fines (+Y) → 90° elbow → horizontal duct (+X) → cyclone inlet
+        # Cyclone inlet is on -X side of primary cyclone (tangential entry)
         cyclone_stages = [
             CycloneStageParams(
                 name="primary",
                 diameter=p.primary_cyclone_diameter,
-                design_d50=40e-6,
+                design_d50=40e-6,  # 40 μm - coarse/starch fraction
             ),
             CycloneStageParams(
                 name="secondary",
                 diameter=p.secondary_cyclone_diameter,
-                design_d50=20e-6,
+                design_d50=20e-6,  # 20 μm - medium fraction
             ),
             CycloneStageParams(
                 name="tertiary",
                 diameter=p.tertiary_cyclone_diameter,
-                design_d50=10e-6,
+                design_d50=10e-6,  # 10 μm - fine/protein fraction
             ),
         ]
+        # Spacing between cyclones = larger diameter * 0.3 for clearance
+        cyclone_spacing = p.primary_cyclone_diameter * 0.3
         cyclone_params = MultiCycloneParams(
             stages=cyclone_stages,
             arrangement="series",
-            spacing=spacing / 2,
-            center=(x_pos, p.center[1], p.center[2]),
+            spacing=cyclone_spacing,
+            center=(0.0, 0.0, 0.0),
             resolution=p.resolution,
         )
         self.multi_cyclone = MultiCycloneSystem(cyclone_params)
-        self._cyclone_position = (x_pos, p.center[1], p.center[2])
 
-        # Calculate cyclone extent
-        min_b, max_b = self.multi_cyclone.get_system_bounds()
-        cyclone_width = max_b[0] - min_b[0]
-        x_pos += cyclone_width + spacing
+        # Get cyclone inlet port dimensions
+        cyclone_inlet = self.multi_cyclone.ports['inlet']
+        cyclone_inlet_w = cyclone_inlet.width
+        cyclone_inlet_h = cyclone_inlet.height
+        cyclone_inlet_area = cyclone_inlet_w * cyclone_inlet_h
+        cyclone_inlet_equiv_d = np.sqrt(4 * cyclone_inlet_area / np.pi)
 
-        # 4. Bag Filter
+        # Calculate zigzag fines equivalent diameter
+        zigzag_fines_area = zigzag_fines.width * zigzag_fines.height
+        zigzag_fines_equiv_d = np.sqrt(4 * zigzag_fines_area / np.pi)
+
+        # ============================================================
+        # Connection: Zigzag fines (rect) → rect-to-round transition →
+        #             elbow → duct → round-to-rect transition → cyclone inlet (rect)
+        # ============================================================
+
+        # Use cyclone inlet equivalent diameter for the duct
+        # (flow accelerates into cyclone for better separation)
+        duct2_diameter = cyclone_inlet_equiv_d
+        elbow2_bend_radius = duct2_diameter * 1.5  # R/D = 1.5
+
+        # STEP 1: Rect-to-round transition from zigzag fines to round duct
+        trans2a_length = 0.15  # 150mm transition
+        trans2a_start = (
+            zigzag_fines_world[0],
+            zigzag_fines_world[1] + gap,
+            zigzag_fines_world[2],
+        )
+        trans2a = Transition(TransitionParams(
+            transition_type="rect_to_round",
+            inlet_dimensions=(zigzag_fines.width, zigzag_fines.height),
+            outlet_dimensions=(duct2_diameter,),
+            length=trans2a_length,
+            concentric=True,
+            wall_thickness=0.002,
+            direction=(0.0, 1.0, 0.0),  # Vertical +Y
+            center=(0, 0, 0),
+        ))
+        self._duct_sections.append((trans2a, trans2a_start))
+
+        # STEP 2: 90° elbow after transition (turns from +Y to +X)
+        elbow2_inlet_pos = (
+            trans2a_start[0],
+            trans2a_start[1] + trans2a_length + gap,
+            trans2a_start[2],
+        )
+        
+        # Create elbow with inlet at origin, will be positioned at elbow2_inlet_pos
+        # Note: To turn from +Y to +X, we need rotation_axis=(0, 0, 1)
+        # Right-hand rule: thumb points +Z, fingers curl from +Y to +X (90° counterclockwise viewed from +Z)
+        elbow2 = DuctElbow(DuctElbowParams(
+            diameter=duct2_diameter,
+            bend_radius=elbow2_bend_radius,
+            angle=90.0,
+            wall_thickness=0.002,
+            flanged=True,
+            center=(0, 0, 0),
+            inlet_direction=(0.0, 1.0, 0.0),   # Flow enters from +Y (vertical up)
+            rotation_axis=(0.0, 0.0, 1.0),     # Bend around +Z to turn toward +X
+        ))
+        
+        # Use elbow's calculated outlet position for accuracy
+        elbow2_local_outlet = elbow2.get_outlet_position()
+        elbow2_outlet_pos = (
+            elbow2_inlet_pos[0] + elbow2_local_outlet[0],
+            elbow2_inlet_pos[1] + elbow2_local_outlet[1],
+            elbow2_inlet_pos[2] + elbow2_local_outlet[2],
+        )
+        self._duct_sections.append((elbow2, elbow2_inlet_pos))
+
+        # STEP 3: Horizontal round duct
+        duct2_length = p.primary_cyclone_diameter * 0.5  # Shorter duct
+        duct2_start = (
+            elbow2_outlet_pos[0] + gap,
+            elbow2_outlet_pos[1],
+            elbow2_outlet_pos[2],
+        )
+        duct2 = RoundDuct(RoundDuctParams(
+            diameter=duct2_diameter,
+            length=duct2_length,
+            wall_thickness=0.002,
+            direction=(1.0, 0.0, 0.0),
+            center=(0, 0, 0),
+            flanged=True,
+        ))
+        self._duct_sections.append((duct2, duct2_start))
+
+        # STEP 4: Round-to-rect transition to cyclone inlet
+        trans2b_length = 0.10  # 100mm transition
+        trans2b_start = (
+            duct2_start[0] + duct2_length + gap,
+            duct2_start[1],
+            duct2_start[2],
+        )
+        trans2b = Transition(TransitionParams(
+            transition_type="round_to_rect",
+            inlet_dimensions=(duct2_diameter,),
+            outlet_dimensions=(cyclone_inlet_w, cyclone_inlet_h),
+            length=trans2b_length,
+            concentric=True,
+            wall_thickness=0.002,
+            direction=(1.0, 0.0, 0.0),  # Horizontal +X
+            center=(0, 0, 0),
+        ))
+        self._duct_sections.append((trans2b, trans2b_start))
+
+        # Position cyclone so its inlet aligns with end of transition
+        cyclone_inlet_target_x = trans2b_start[0] + trans2b_length + gap
+        cyclone_inlet_target_y = trans2b_start[1]
+        cyclone_inlet_target_z = trans2b_start[2]
+
+        self._component_positions['multi_cyclone'] = np.array([
+            cyclone_inlet_target_x - cyclone_inlet.position[0],
+            cyclone_inlet_target_y - cyclone_inlet.position[1],
+            cyclone_inlet_target_z - cyclone_inlet.position[2],
+        ])
+
+        # Get cyclone overflow port in world coordinates
+        cyclone_overflow = self.multi_cyclone.ports['overflow']
+        cyclone_overflow_world = self._get_port_world_pos('multi_cyclone', cyclone_overflow)
+
+        # ============================================================
+        # 4. BAG FILTER - To the right (+X) of cyclone system
+        # ============================================================
+        # Connection: cyclone overflow (+Y) → 90° elbow → horizontal duct (+X) →
+        #             expansion transition → bag filter inlet
+        # Bag filter is sized for pilot-scale flow rate
         self.bag_filter = create_standard_bag_filter(
             flow_rate_m3s=p.bag_filter_flow_rate,
             air_to_cloth=p.bag_filter_air_to_cloth
         )
-        self._bag_filter_position = (x_pos, p.center[1], p.center[2])
+
+        # Bag filter inlet port
+        bag_inlet = self.bag_filter.ports['dirty_air_inlet']
+        bag_inlet_diameter = bag_inlet.diameter
+
+        # Elbow parameters for cyclone-to-bagfilter connection
+        # Size elbow to match cyclone overflow
+        elbow3_diameter = cyclone_overflow.diameter
+        elbow3_bend_radius = elbow3_diameter * 1.5
+
+        # Elbow inlet receives from cyclone overflow (+Y), turns to +X
+        elbow3_inlet_pos = (
+            cyclone_overflow_world[0],
+            cyclone_overflow_world[1] + gap,
+            cyclone_overflow_world[2],
+        )
+
+        # Create elbow3 now (will add to duct_sections later)
+        # Note: To turn from +Y to +X, we need rotation_axis=(0, 0, 1)
+        elbow3 = DuctElbow(DuctElbowParams(
+            diameter=elbow3_diameter,
+            bend_radius=elbow3_bend_radius,
+            angle=90.0,
+            wall_thickness=0.002,
+            flanged=True,
+            center=(0, 0, 0),
+            inlet_direction=(0.0, 1.0, 0.0),   # Air comes from +Y (up from cyclone)
+            rotation_axis=(0.0, 0.0, 1.0),     # Rotate around +Z to turn toward +X
+        ))
+        elbow3_local_outlet = elbow3.get_outlet_position()
+        
+        # After 90° elbow (Y→X), outlet position:
+        elbow3_outlet_pos = (
+            elbow3_inlet_pos[0] + elbow3_local_outlet[0],
+            elbow3_inlet_pos[1] + elbow3_local_outlet[1],
+            elbow3_inlet_pos[2] + elbow3_local_outlet[2],
+        )
+
+        # Calculate clearance: bag filter should be positioned so it doesn't
+        # overlap with cyclones. We need to know the cyclone system extent.
+        mc_min, mc_max = self.multi_cyclone.get_system_bounds()
+        cyclone_max_x = self._component_positions['multi_cyclone'][0] + mc_max[0]
+
+        # We need: elbow → short duct → expansion transition → bag filter inlet
+        # Short duct from elbow maintains cyclone overflow diameter
+        duct3a_length = 0.1  # 100mm short duct section
+
+        # Expansion transition from cyclone overflow diameter to bag filter inlet diameter
+        # Expansion angle should be ≤15° to avoid flow separation
+        # Length = (D_out - D_in) / (2 * tan(angle))
+        expansion_angle = np.radians(12)  # 12° half-angle for gradual expansion
+        transition_length = (bag_inlet_diameter - elbow3_diameter) / (2 * np.tan(expansion_angle))
+        transition_length = max(transition_length, 0.15)  # Minimum 150mm
+
+        # Calculate total path length
+        total_duct_length = duct3a_length + transition_length
+        min_total_length = max(0.3, cyclone_max_x - elbow3_outlet_pos[0] + 0.15)
+        if total_duct_length < min_total_length:
+            # Extend duct3a to meet minimum length
+            duct3a_length = min_total_length - transition_length
+
+        # Position bag filter so its inlet aligns with end of transition
+        bag_inlet_target_x = elbow3_outlet_pos[0] + gap + duct3a_length + gap + transition_length + gap
+        bag_inlet_target_y = elbow3_outlet_pos[1]
+        bag_inlet_target_z = elbow3_outlet_pos[2]
+
+        self._component_positions['bag_filter'] = np.array([
+            bag_inlet_target_x - bag_inlet.position[0],
+            bag_inlet_target_y - bag_inlet.position[1],
+            bag_inlet_target_z - bag_inlet.position[2],
+        ])
+
+        # Add elbow3 (created earlier) to duct sections
+        self._duct_sections.append((elbow3, elbow3_inlet_pos))
+
+        # Create short duct section from elbow (maintains cyclone diameter)
+        duct3a_start = (
+            elbow3_outlet_pos[0] + gap,
+            elbow3_outlet_pos[1],
+            elbow3_outlet_pos[2],
+        )
+        duct3a = RoundDuct(RoundDuctParams(
+            diameter=elbow3_diameter,
+            length=duct3a_length,
+            wall_thickness=0.002,
+            direction=(1.0, 0.0, 0.0),  # Horizontal +X
+            center=(0, 0, 0),
+            flanged=True,
+        ))
+        self._duct_sections.append((duct3a, duct3a_start))
+
+        # Create expansion transition from cyclone diameter to bag filter diameter
+        transition_start = (
+            duct3a_start[0] + duct3a_length + gap,
+            duct3a_start[1],
+            duct3a_start[2],
+        )
+        # Use round-to-round Transition for concentric expansion
+        from ..components.transitions import Transition, TransitionParams
+        expansion = Transition(TransitionParams(
+            transition_type="round_to_round",
+            inlet_dimensions=(elbow3_diameter,),
+            outlet_dimensions=(bag_inlet_diameter,),
+            length=transition_length,
+            concentric=True,
+            wall_thickness=0.002,
+            direction=(1.0, 0.0, 0.0),  # Horizontal +X
+            center=(0, 0, 0),
+        ))
+        self._duct_sections.append((expansion, transition_start))
+
+    def _get_port_world_pos(self, component_name: str, port: ConnectionPort) -> np.ndarray:
+        """Helper to get port position in world coordinates."""
+        comp_pos = self._component_positions[component_name]
+        return np.array([
+            comp_pos[0] + port.position[0],
+            comp_pos[1] + port.position[1],
+            comp_pos[2] + port.position[2],
+        ])
+
+
 
     def build_mesh(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Build combined mesh for all components.
+        Build combined mesh for all components including duct sections.
 
         Returns:
             Tuple of (vertices, indices)
@@ -172,8 +625,8 @@ class ClassificationSystemAssembly:
         all_indices = []
         vertex_offset = 0
 
-        # Helper to add component mesh with position offset
         def add_component_mesh(component, position):
+            """Add component mesh with position offset."""
             nonlocal vertex_offset
             verts, idx, _ = component.generate_mesh()
 
@@ -185,17 +638,15 @@ class ClassificationSystemAssembly:
             all_indices.append(idx + vertex_offset)
             vertex_offset += len(verts)
 
-        # Add each component
-        add_component_mesh(self.venturi, self._venturi_position)
-        add_component_mesh(self.zigzag, self._zigzag_position)
+        # Add main components
+        add_component_mesh(self.venturi, self._component_positions['venturi'])
+        add_component_mesh(self.zigzag, self._component_positions['zigzag'])
+        add_component_mesh(self.multi_cyclone, self._component_positions['multi_cyclone'])
+        add_component_mesh(self.bag_filter, self._component_positions['bag_filter'])
 
-        # Multi-cyclone has its own positioning
-        mc_verts, mc_idx, _ = self.multi_cyclone.generate_mesh()
-        all_vertices.append(mc_verts)
-        all_indices.append(mc_idx + vertex_offset)
-        vertex_offset += len(mc_verts)
-
-        add_component_mesh(self.bag_filter, self._bag_filter_position)
+        # Add duct sections (each is a tuple of (duct_component, world_position))
+        for duct, position in self._duct_sections:
+            add_component_mesh(duct, position)
 
         self._combined_vertices = np.vstack(all_vertices).astype(np.float32)
         self._combined_indices = np.concatenate(all_indices).astype(np.int32)
@@ -204,12 +655,7 @@ class ClassificationSystemAssembly:
         return self._combined_vertices, self._combined_indices
 
     def get_bounds(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Get axis-aligned bounding box of the entire system.
-
-        Returns:
-            Tuple of (min_corner, max_corner) as numpy arrays
-        """
+        """Get axis-aligned bounding box of the entire system."""
         if not self._mesh_built:
             self.build_mesh()
 
@@ -219,25 +665,12 @@ class ClassificationSystemAssembly:
         return min_corner, max_corner
 
     def get_system_extent(self) -> np.ndarray:
-        """
-        Get system extent (dimensions) in each axis.
-
-        Returns:
-            Array of [width, height, depth]
-        """
+        """Get system extent (dimensions) in each axis."""
         min_c, max_c = self.get_bounds()
         return max_c - min_c
 
     def get_component(self, name: str) -> Any:
-        """
-        Get a specific component by name.
-
-        Args:
-            name: Component name ('venturi', 'zigzag', 'multi_cyclone', 'bag_filter')
-
-        Returns:
-            Component instance
-        """
+        """Get a specific component by name."""
         components = {
             'venturi': self.venturi,
             'zigzag': self.zigzag,
@@ -249,26 +682,26 @@ class ClassificationSystemAssembly:
         return components[name]
 
     def get_component_positions(self) -> Dict[str, Tuple[float, float, float]]:
+        """Get positions of all components."""
+        return {name: tuple(pos) for name, pos in self._component_positions.items()}
+
+    def get_port_world_position(self, component_name: str, port_name: str) -> np.ndarray:
         """
-        Get positions of all components.
+        Get the world position of a specific port.
+
+        Args:
+            component_name: Name of the component
+            port_name: Name of the port on that component
 
         Returns:
-            Dictionary of component names to positions
+            World position as numpy array [x, y, z]
         """
-        return {
-            'venturi': self._venturi_position,
-            'zigzag': self._zigzag_position,
-            'multi_cyclone': self._cyclone_position,
-            'bag_filter': self._bag_filter_position,
-        }
+        component = self.get_component(component_name)
+        port = component.ports[port_name]
+        return self._get_port_world_pos(component_name, port)
 
     def to_warp_mesh(self) -> wp.Mesh:
-        """
-        Create a Warp mesh from the system geometry.
-
-        Returns:
-            wp.Mesh object
-        """
+        """Create a Warp mesh from the system geometry."""
         if not self._mesh_built:
             self.build_mesh()
 
@@ -281,38 +714,110 @@ class ClassificationSystemAssembly:
         """Print summary of the classification system."""
         p = self.params
 
-        print("=" * 60)
+        print("=" * 70)
         print("Classification System Assembly Summary")
-        print("=" * 60)
+        print("=" * 70)
+        print("\nFLOW PATH:")
+        print("  Air Supply -> Venturi -> Zigzag -> Cyclones -> Bag Filter -> Clean Air")
+        print("                            |")
+        print("                      Coarse (starch) out")
 
-        print("\n1. VENTURI EDUCTOR")
-        print(f"   Inlet diameter:  {p.venturi_inlet_diameter * 1000:.0f} mm")
-        print(f"   Throat ratio:    {p.venturi_throat_ratio:.2f}")
-        print(f"   Total length:    {self.venturi.params.total_length * 1000:.0f} mm")
+        print("\n" + "-" * 70)
+        print("1. VENTURI EDUCTOR (Particle Entrainment)")
+        print("-" * 70)
+        pos = self._component_positions['venturi']
+        print(f"   Position:       ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) m")
+        print(f"   Axis:           Y (vertical, upward flow)")
+        print(f"   Inlet diameter: {p.venturi_inlet_diameter * 1000:.0f} mm")
+        print(f"   Throat ratio:   {p.venturi_throat_ratio:.2f}")
+        print(f"   Total length:   {self.venturi.params.total_length * 1000:.0f} mm")
 
-        print("\n2. ZIGZAG CLASSIFIER")
-        print(f"   Channel width:   {p.zigzag_channel_width * 1000:.0f} mm")
-        print(f"   Number of stages: {p.zigzag_num_stages}")
-        print(f"   Total height:    {self.zigzag.params.total_height * 1000:.0f} mm")
+        print("\n   Ports:")
+        for port_name, port in self.venturi.ports.items():
+            world_pos = self.get_port_world_position('venturi', port_name)
+            dim = f"D={port.diameter*1000:.0f}mm"
+            print(f"     {port_name:15s} pos=({world_pos[0]:.3f}, {world_pos[1]:.3f}, {world_pos[2]:.3f}) "
+                  f"dir={port.direction} {dim}")
 
-        print("\n3. MULTI-CYCLONE SYSTEM")
+        print("\n" + "-" * 70)
+        print("2. ZIGZAG CLASSIFIER (Primary Separation)")
+        print("-" * 70)
+        pos = self._component_positions['zigzag']
+        print(f"   Position:       ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) m")
+        print(f"   Channel width:  {p.zigzag_channel_width * 1000:.0f} mm")
+        print(f"   Channel depth:  {p.zigzag_channel_depth * 1000:.0f} mm")
+        print(f"   Stages:         {p.zigzag_num_stages}")
+        print(f"   Total height:   {self.zigzag.params.total_height * 1000:.0f} mm")
+
+        print("\n   Ports:")
+        for port_name, port in self.zigzag.ports.items():
+            world_pos = self.get_port_world_position('zigzag', port_name)
+            dim = f"D={port.diameter*1000:.0f}mm" if port.diameter > 0 else f"W={port.width*1000:.0f}mm"
+            print(f"     {port_name:15s} pos=({world_pos[0]:.3f}, {world_pos[1]:.3f}, {world_pos[2]:.3f}) "
+                  f"dir={port.direction} {dim}")
+
+        print("\n" + "-" * 70)
+        print("3. MULTI-CYCLONE SYSTEM (Staged Collection)")
+        print("-" * 70)
+        pos = self._component_positions['multi_cyclone']
+        print(f"   Position:       ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) m")
+        print(f"   Arrangement:    {self.multi_cyclone.params.arrangement}")
         for info in self.multi_cyclone.get_stage_info():
-            print(f"   {info['name'].title():12s} D={info['diameter']:.0f}mm, d50={info['design_d50']:.0f}um")
+            print(f"     {info['name'].title():12s} D={info['diameter']:.0f}mm, "
+                  f"d50={info['design_d50']:.0f}um, H={info['total_height']:.0f}mm")
 
-        print("\n4. BAG FILTER")
-        print(f"   Number of bags:  {self.bag_filter.params.num_bags}")
-        print(f"   Filter area:     {self.bag_filter.params.total_filter_area:.1f} m2")
-        print(f"   A/C ratio:       {self.bag_filter.params.get_air_to_cloth(p.bag_filter_flow_rate):.2f} m3/min/m2")
+        print("\n   Ports:")
+        for port_name, port in self.multi_cyclone.ports.items():
+            world_pos = self.get_port_world_position('multi_cyclone', port_name)
+            dim = f"D={port.diameter*1000:.0f}mm" if port.diameter > 0 else f"W={port.width*1000:.0f}mm"
+            print(f"     {port_name:20s} pos=({world_pos[0]:.3f}, {world_pos[1]:.3f}, {world_pos[2]:.3f}) {dim}")
 
-        print("-" * 60)
+        print("\n" + "-" * 70)
+        print("4. BAG FILTER (Fine Particle Collection)")
+        print("-" * 70)
+        pos = self._component_positions['bag_filter']
+        print(f"   Position:       ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) m")
+        print(f"   Number of bags: {self.bag_filter.params.num_bags}")
+        print(f"   Filter area:    {self.bag_filter.params.total_filter_area:.1f} m2")
+        print(f"   Air-to-cloth:   {self.bag_filter.params.air_to_cloth_ratio:.1f} m3/min/m2")
+
+        print("\n   Ports:")
+        for port_name, port in self.bag_filter.ports.items():
+            world_pos = self.get_port_world_position('bag_filter', port_name)
+            dim = f"D={port.diameter*1000:.0f}mm" if port.diameter > 0 else f"W={port.width*1000:.0f}mm"
+            print(f"     {port_name:20s} pos=({world_pos[0]:.3f}, {world_pos[1]:.3f}, {world_pos[2]:.3f}) {dim}")
+
+        print("\n" + "-" * 70)
+        print("5. CONNECTING DUCTWORK")
+        print("-" * 70)
+        for i, (duct, position) in enumerate(self._duct_sections):
+            duct_type = type(duct).__name__
+            if hasattr(duct, 'params'):
+                if hasattr(duct.params, 'diameter'):
+                    dim = f"D={duct.params.diameter*1000:.0f}mm"
+                else:
+                    dim = ""
+                if hasattr(duct.params, 'length'):
+                    length = f"L={duct.params.length*1000:.0f}mm"
+                elif hasattr(duct.params, 'bend_radius'):
+                    length = f"R={duct.params.bend_radius*1000:.0f}mm"
+                else:
+                    length = ""
+                print(f"   [{i+1}] {duct_type:20s} at ({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}) "
+                      f"{length} {dim}")
+            else:
+                print(f"   [{i+1}] {duct_type} at ({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f})")
+
+        print("\n" + "=" * 70)
         extent = self.get_system_extent()
         print(f"System extent: {extent[0]*1000:.0f} x {extent[1]*1000:.0f} x {extent[2]*1000:.0f} mm")
+        print(f"               ({extent[0]:.2f} x {extent[1]:.2f} x {extent[2]:.2f} m)")
 
         if self._mesh_built:
             n_verts = len(self._combined_vertices)
             n_tris = len(self._combined_indices) // 3
-            print(f"Total mesh:    {n_verts} vertices, {n_tris} triangles")
-        print("=" * 60)
+            print(f"Total mesh:    {n_verts:,} vertices, {n_tris:,} triangles")
+        print("=" * 70)
 
     @property
     def vertices(self) -> np.ndarray:
@@ -357,11 +862,7 @@ def create_protein_separation_system(
         ClassificationSystemAssembly configured for protein separation
     """
     # Scale parameters based on throughput
-    # Typical air/solids ratio: 2-3 m3/kg
-    # Assume bulk density ~500 kg/m3 for legume flour
     air_flow_m3s = throughput_kg_h * 2.5 / 3600  # m3/s
-
-    # Scale component sizes
     scale = (throughput_kg_h / 100) ** 0.5  # Square root scaling
 
     params = ClassificationSystemParams(

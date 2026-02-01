@@ -13,11 +13,12 @@ Principle:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 import numpy as np
 import warp as wp
 
 from ...utils.constants import PI, TWO_PI
+from ..connection_ports import ConnectionPort, PortType
 
 
 @dataclass
@@ -416,6 +417,75 @@ class ZigzagClassifier:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    @property
+    def ports(self) -> Dict[str, ConnectionPort]:
+        """
+        Get connection ports for the zigzag classifier.
+        
+        Ports:
+        - air_inlet: Main air inlet at bottom (rectangular, -Y direction - air flows up)
+        - feed_inlet: Particle feed inlet at feed stage (rectangular, +X direction)
+        - fines_outlet: Top outlet for light particles/protein (+Y direction)
+        - coarse_outlet: Bottom outlet for heavy particles/starch (-Y direction)
+        """
+        p = self.params
+        
+        # Air inlet at bottom center
+        # Position at bottom of air inlet box
+        x_bottom = self.stage_corners[0]['left'][0] + p.channel_width / 2
+        air_inlet = ConnectionPort(
+            position=(x_bottom, p.center[1] - p.air_inlet_height, p.center[2]),
+            direction=(0.0, -1.0, 0.0),  # Faces down (air comes from below)
+            width=p.air_inlet_width,
+            height=p.channel_depth,  # Depth becomes height for rectangular
+            port_type=PortType.RECTANGULAR,
+            name="air_inlet"
+        )
+        
+        # Feed inlet at feed stage (right side of channel)
+        stage_idx = p.feed_stage - 1
+        corners = self.stage_corners[stage_idx]
+        x_right = corners['right'][0]
+        y_feed = corners['right'][1] + p.stage_height / 2
+        feed_length = p.channel_width * 0.3  # Same as in _add_feed_inlet
+        
+        feed_inlet = ConnectionPort(
+            position=(x_right + feed_length, y_feed, p.center[2]),
+            direction=(1.0, 0.0, 0.0),  # Faces outward (+X)
+            width=p.feed_width,
+            height=p.channel_depth,
+            port_type=PortType.RECTANGULAR,
+            name="feed_inlet"
+        )
+        
+        # Fines outlet at top (light particles/protein carried up by air)
+        x_top = self.stage_corners[-1]['left'][0] + p.channel_width / 2
+        fines_outlet = ConnectionPort(
+            position=(x_top, p.center[1] + p.total_height + p.fines_outlet_height, p.center[2]),
+            direction=(0.0, 1.0, 0.0),  # Faces up
+            width=p.fines_outlet_width,
+            height=p.channel_depth,
+            port_type=PortType.RECTANGULAR,
+            name="fines_outlet"
+        )
+        
+        # Coarse outlet at bottom (heavy particles/starch fall down)
+        coarse_outlet = ConnectionPort(
+            position=(x_bottom, p.center[1] - p.air_inlet_height - p.coarse_outlet_height, p.center[2]),
+            direction=(0.0, -1.0, 0.0),  # Faces down
+            width=p.coarse_outlet_width,
+            height=p.channel_depth,
+            port_type=PortType.RECTANGULAR,
+            name="coarse_outlet"
+        )
+        
+        return {
+            'air_inlet': air_inlet,
+            'feed_inlet': feed_inlet,
+            'fines_outlet': fines_outlet,
+            'coarse_outlet': coarse_outlet
+        }
 
 
 def create_standard_zigzag_classifier(

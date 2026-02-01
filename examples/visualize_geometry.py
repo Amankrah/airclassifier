@@ -234,6 +234,129 @@ def visualize_air_system_assembly():
     return result
 
 
+def visualize_classification_system():
+    """Visualize the classification system assembly with color-coded components."""
+    print("\n" + "=" * 60)
+    print("CLASSIFICATION SYSTEM ASSEMBLY VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.assembly.classification import create_standard_classification_system
+    from airclassifier.geometry.components.ductwork import RoundDuct
+    import numpy as np
+
+    try:
+        print("Creating classification system...")
+        cls = create_standard_classification_system()
+        print("Building mesh...")
+        vertices, indices = cls.build_mesh()
+
+        print("Classification System Assembly includes:")
+        print("  - Venturi Eductor (particle entrainment)")
+        print("  - Zigzag Classifier (primary separation)")
+        print("  - Multi-Cyclone System (staged collection)")
+        print("  - Bag Filter (fine particle capture)")
+        print("  - Connecting Ductwork")
+        print(f"\nTotal mesh: {len(vertices):,} vertices, {len(indices)//3:,} triangles")
+
+        cls.print_summary()
+
+        # Use PyVista for color-coded visualization if available
+        if PYVISTA_AVAILABLE:
+            import pyvista as pv
+
+            print("\nInitializing PyVista plotter...")
+            plotter = pv.Plotter()
+            plotter.set_background('white')
+
+            # Component colors
+            colors = {
+                'venturi': '#3498DB',      # Blue
+                'zigzag': '#2ECC71',       # Green
+                'multi_cyclone': '#E74C3C', # Red
+                'bag_filter': '#F39C12',   # Orange
+                'duct': '#95A5A6'          # Gray
+            }
+
+            # Add Venturi
+            print("  Adding Venturi mesh...")
+            v, i, _ = cls.venturi.generate_mesh()
+            v = v + cls._component_positions['venturi']
+            faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+            mesh = pv.PolyData(v, faces)
+            plotter.add_mesh(mesh, color=colors['venturi'],
+                            label='Venturi Eductor', opacity=0.85)
+
+            # Add Zigzag
+            print("  Adding Zigzag mesh...")
+            v, i, _ = cls.zigzag.generate_mesh()
+            v = v + cls._component_positions['zigzag']
+            faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+            mesh = pv.PolyData(v, faces)
+            plotter.add_mesh(mesh, color=colors['zigzag'],
+                            label='Zigzag Classifier', opacity=0.85)
+
+            # Add Multi-Cyclone
+            print("  Adding Multi-Cyclone mesh...")
+            v, i, _ = cls.multi_cyclone.generate_mesh()
+            v = v + cls._component_positions['multi_cyclone']
+            faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+            mesh = pv.PolyData(v, faces)
+            plotter.add_mesh(mesh, color=colors['multi_cyclone'],
+                            label='Multi-Cyclone System', opacity=0.85)
+
+            # Add Bag Filter
+            print("  Adding Bag Filter mesh...")
+            v, i, _ = cls.bag_filter.generate_mesh()
+            v = v + cls._component_positions['bag_filter']
+            faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+            mesh = pv.PolyData(v, faces)
+            plotter.add_mesh(mesh, color=colors['bag_filter'],
+                            label='Bag Filter', opacity=0.85)
+
+            # Add Ducts (new format: list of (duct_component, position) tuples)
+            print(f"  Adding {len(cls._duct_sections)} duct sections...")
+            for idx, (duct, position) in enumerate(cls._duct_sections):
+                v, i, _ = duct.generate_mesh()
+                v = v + np.array(position)  # Apply position offset
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['duct'],
+                                label="Ductwork" if idx == 0 else None, opacity=0.7)
+
+            plotter.add_legend(bcolor='white', face='circle')
+            plotter.add_title('Classification System - Port-Based Assembly')
+            plotter.add_axes()
+
+            print("\nOpening visualization window...")
+            print("(Close the window to continue)")
+            plotter.show(interactive=True)
+
+            result = {'success': True, 'message': 'Classification system visualized with PyVista'}
+        else:
+            # Fallback to basic visualization
+            viz = GeometryVisualizer()
+            result = viz.visualize_assembly(
+                cls,
+                name="Classification System",
+                show=True,
+                opacity=0.8,
+                color="#9B59B6",
+                title="Classification System Assembly"
+            )
+
+        print(f"\nResult: {result['message']}")
+        return result
+
+    except Exception as e:
+        import traceback
+        print(f"\nERROR: Failed to visualize classification system!")
+        print(f"Exception type: {type(e).__name__}")
+        print(f"Exception message: {e}")
+        print("\nFull traceback:")
+        traceback.print_exc()
+        return {'success': False, 'message': f'Error: {e}'}
+
+
 def visualize_complete_system():
     """Visualize the complete classifier system."""
     print("\n" + "=" * 60)
@@ -322,6 +445,7 @@ def export_all_geometries(output_dir: str = "geometry_exports"):
         create_pilot_scale_system,
         create_production_scale_system,
     )
+    from airclassifier.geometry.assembly.classification import create_standard_classification_system
     from airclassifier.geometry.components import (
         CycloneBody, CycloneBodyParams,
         FeedHopper, FeedHopperParams,
@@ -331,7 +455,7 @@ def export_all_geometries(output_dir: str = "geometry_exports"):
     exported_files = []
     
     # Export cyclone body
-    print("\n[1/6] Exporting Cyclone Body...")
+    print("\n[1/7] Exporting Cyclone Body...")
     cyclone = CycloneBody(CycloneBodyParams(
         cylinder_diameter=0.3, cylinder_height=0.3,
         cone_height=0.5, cone_tip_diameter=0.05
@@ -342,7 +466,7 @@ def export_all_geometries(output_dir: str = "geometry_exports"):
     print(f"       Saved: {path}")
     
     # Export feed hopper
-    print("\n[2/6] Exporting Feed Hopper...")
+    print("\n[2/7] Exporting Feed Hopper...")
     hopper = FeedHopper(FeedHopperParams(
         top_diameter=0.6, bottom_diameter=0.15,
         cylindrical_height=0.3, conical_height=0.5
@@ -353,7 +477,7 @@ def export_all_geometries(output_dir: str = "geometry_exports"):
     print(f"       Saved: {path}")
     
     # Export feed system
-    print("\n[3/6] Exporting Feed System Assembly...")
+    print("\n[3/7] Exporting Feed System Assembly...")
     feed = create_standard_feed_system()
     path = os.path.join(output_dir, "feed_system_assembly.stl")
     viz.export_to_stl(feed, path)
@@ -361,15 +485,23 @@ def export_all_geometries(output_dir: str = "geometry_exports"):
     print(f"       Saved: {path}")
     
     # Export air system
-    print("\n[4/6] Exporting Air System Assembly...")
+    print("\n[4/7] Exporting Air System Assembly...")
     air = create_standard_air_system()
     path = os.path.join(output_dir, "air_system_assembly.stl")
     viz.export_to_stl(air, path)
     exported_files.append(path)
     print(f"       Saved: {path}")
     
+    # Export classification system
+    print("\n[5/7] Exporting Classification System Assembly...")
+    classification = create_standard_classification_system()
+    path = os.path.join(output_dir, "classification_system_assembly.stl")
+    viz.export_to_stl(classification, path)
+    exported_files.append(path)
+    print(f"       Saved: {path}")
+    
     # Export pilot scale
-    print("\n[5/6] Exporting Pilot-Scale System...")
+    print("\n[6/7] Exporting Pilot-Scale System...")
     pilot = create_pilot_scale_system()
     path = os.path.join(output_dir, "pilot_scale_system.stl")
     viz.export_to_stl(pilot, path)
@@ -377,7 +509,7 @@ def export_all_geometries(output_dir: str = "geometry_exports"):
     print(f"       Saved: {path}")
     
     # Export complete system
-    print("\n[6/6] Exporting Complete Production System...")
+    print("\n[7/7] Exporting Complete Production System...")
     complete = create_complete_classifier_system()
     path = os.path.join(output_dir, "complete_system.stl")
     viz.export_to_stl(complete, path)
@@ -421,16 +553,17 @@ def interactive_menu():
         print("  2. Single Component - Feed Hopper")
         print("  3. Assembly - Feed System")
         print("  4. Assembly - Air System")
-        print("  5. Complete System (Standard 500 kg/h)")
-        print("  6. Pilot-Scale System (100 kg/h)")
-        print("  7. Production-Scale System (2000 kg/h)")
-        print("  8. Export All to Files")
-        print("  9. Run All Visualizations")
+        print("  5. Assembly - Classification System")
+        print("  6. Complete System (Standard 500 kg/h)")
+        print("  7. Pilot-Scale System (100 kg/h)")
+        print("  8. Production-Scale System (2000 kg/h)")
+        print("  9. Export All to Files")
+        print("  A. Run All Visualizations")
         print("  0. Exit")
         print()
         
         try:
-            choice = input("Enter choice (0-9): ").strip()
+            choice = input("Enter choice (0-9, A): ").strip().upper()
         except KeyboardInterrupt:
             print("\nExiting...")
             break
@@ -447,17 +580,19 @@ def interactive_menu():
         elif choice == "4":
             visualize_air_system_assembly()
         elif choice == "5":
-            visualize_complete_system()
+            visualize_classification_system()
         elif choice == "6":
-            visualize_pilot_scale()
+            visualize_complete_system()
         elif choice == "7":
-            visualize_production_scale()
+            visualize_pilot_scale()
         elif choice == "8":
-            export_all_geometries()
+            visualize_production_scale()
         elif choice == "9":
+            export_all_geometries()
+        elif choice == "A":
             run_all_visualizations()
         else:
-            print("Invalid choice. Please enter 0-9.")
+            print("Invalid choice. Please enter 0-9 or A.")
 
 
 def run_all_visualizations():
@@ -474,6 +609,9 @@ def run_all_visualizations():
     input("\nPress Enter to continue to next visualization...")
     
     visualize_air_system_assembly()
+    input("\nPress Enter to continue to next visualization...")
+    
+    visualize_classification_system()
     input("\nPress Enter to continue to next visualization...")
     
     visualize_complete_system()
@@ -506,7 +644,7 @@ Examples:
         help="Visualize single component (cyclone body)"
     )
     parser.add_argument(
-        "--assembly", "-a",
+        "--feed", "-f",
         action="store_true",
         help="Visualize feed system assembly"
     )
@@ -514,6 +652,11 @@ Examples:
         "--air",
         action="store_true",
         help="Visualize air system assembly"
+    )
+    parser.add_argument(
+        "--classification", "-cls",
+        action="store_true",
+        help="Visualize classification system assembly"
     )
     parser.add_argument(
         "--complete", "-s",
@@ -549,8 +692,8 @@ Examples:
     args = parser.parse_args()
     
     # If no specific option, run interactive menu
-    if not any([args.component, args.assembly, args.air, args.complete, 
-                args.all, args.export, args.pilot, args.production]):
+    if not any([args.component, args.feed, args.air, args.classification,
+                args.complete, args.all, args.export, args.pilot, args.production]):
         interactive_menu()
         return
     
@@ -559,11 +702,14 @@ Examples:
     if args.component:
         visualize_single_component()
     
-    if args.assembly:
+    if args.feed:
         visualize_feed_system_assembly()
     
     if args.air:
         visualize_air_system_assembly()
+    
+    if args.classification:
+        visualize_classification_system()
     
     if args.complete:
         visualize_complete_system()
