@@ -55,10 +55,12 @@ class CompleteSystemParams:
     cut_size_um: float = 20.0
     air_flow_m3_h: float = 3000.0
 
-    # Layout positions
-    feed_position: Tuple[float, float, float] = (-4.0, -1.0, 0.0)
+    # Layout positions - optimized for protein separation
+    # Feed positioned in +Y (behind classifier), elevated for steep gravity chute
+    # Outlet at ~20° from vertical for optimal powder flow into venturi
+    feed_position: Tuple[float, float, float] = (0.0, 1.0, 3.5)  # +Y behind, +X right, elevated
     classifier_position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-    air_system_position: Tuple[float, float, float] = (-1.0, -5.0, 0.0)
+    air_system_position: Tuple[float, float, float] = (0.0, -3.0, 0.0)
 
     # Include flags
     include_feed_system: bool = True
@@ -222,13 +224,13 @@ class CompleteClassifierAssembly:
         class_positions = classification.get_component_positions()
         venturi_pos = np.array(class_positions['venturi']) + class_offset
 
-        # 1. Air System -> Venturi air inlet (primary air supply)
+        # 1. Air System -> Venturi air_inlet (primary air supply from -Y direction)
         if p.include_air_system and 'air_system' in self._subsystems:
             self._build_air_to_venturi_connection(venturi, venturi_pos)
 
-        # 2. Feed System -> Venturi solids inlet (powder feed)
+        # 2. Feed System -> Venturi solids_inlet (gravity feed from +Z direction)
         if p.include_feed_system and 'feed_system' in self._subsystems:
-            self._build_feed_to_venturi_connection(venturi, venturi_pos)
+            self._build_feed_to_solids_inlet(venturi, venturi_pos)
 
         # 3. Bag Filter -> Exhaust silencer (clean air exhaust)
         if p.include_exhaust and 'silencer' in self._components:
@@ -238,15 +240,15 @@ class CompleteClassifierAssembly:
         """
         Build ductwork from Air System outlet to Venturi air_inlet.
 
-        Target-aligned routing: work backwards from venturi inlet to ensure
-        the duct arrives at the exact target position.
+        The air system connects to the venturi's main air inlet (air_inlet port).
+        For a vertical venturi (axis='y'), air enters from -Y direction.
 
-        Route: Damper outlet (+X) -> elbow down (-Z) -> elbow toward classifier (+Y)
-               -> horizontal to X=target_x -> elbow to +Y approach -> transition to venturi
+        Route:
+        - Air from blower outlet (+X) -> elbows -> approach venturi in +Y direction
 
         Coordinates:
-        - Start: ~(1.01, -5.0, 0.88), direction +X
-        - Target: ~(0, 0, 0.5), expects flow from -Y direction (duct approaches in +Y)
+        - Air Start: damper outlet, direction +X
+        - Target: venturi air_inlet, expects flow from -Y direction (duct approaches in +Y)
         """
         from ..components.ductwork import RoundDuct, RoundDuctParams, DuctElbow, DuctElbowParams
         from ..components.transitions import Transition, TransitionParams
@@ -283,17 +285,37 @@ class CompleteClassifierAssembly:
         target_x, target_y, target_z = venturi_air_world
 
         # ============================================================
-        # Work backwards from target to ensure exact alignment
+        # TARGET-ALIGNED routing: Work backwards from venturi air_inlet
+        # to ensure the duct terminates exactly at the target position.
+        # 
         # Venturi air_inlet expects air from -Y, so final approach is +Y
+        # Final transition outlet must be at (target_x, target_y, target_z)
         # ============================================================
 
-        # Final approach: transition at target_x, target_z, entering at target_y
-        # Before transition: vertical duct section at target_x, target_z
-        # The duct approaches in +Y direction, transition outlet connects to venturi
+        # Work backwards from target:
+        # - Transition outlet at (target_x, target_y, target_z)
+        # - Transition inlet at (target_x, target_y - trans_len, target_z)
+        # - Final duct5 approaches in +Y at X=target_x, Z=target_z
+        # - Elbow4 turns -X to +Y, so elbow4 inlet_y determines final Y
+        # - etc.
 
-        # Calculate the level for horizontal routing
-        # We want to be at target_z for the final approach
-        horizontal_z = target_z  # Route at same Z as venturi inlet
+        # Transition position (outlet at target)
+        trans_outlet_y = target_y
+        trans_inlet_y = target_y - trans_len
+
+        # Elbow4: -X to +Y turn
+        # outlet_x = inlet_x - R, outlet_y = inlet_y + R
+        # We want outlet at (target_x, trans_inlet_y - gap - duct5_len)
+        # For simplicity, minimize duct5_len (just a small approach)
+        duct5_len = 0.05
+        e4_outlet_y = trans_inlet_y - gap - duct5_len
+        e4_outlet_x = target_x
+        
+        e4_inlet_x = e4_outlet_x + R
+        e4_inlet_y = e4_outlet_y - R
+        
+        # Route horizontal at target_z level for final approach
+        route_z = target_z
 
         # Step 1: Short duct from damper outlet in +X direction
         d1_len = 0.1
@@ -319,9 +341,9 @@ class CompleteClassifierAssembly:
         ))
         self._duct_connections.append((elbow1, e1_inlet))
 
-        # Step 3: Vertical duct down in -Z direction to reach horizontal_z + R
-        # Need to account for next elbow dropping by R
-        d2_target_z = horizontal_z + R + gap  # Elbow2 will bring us down to horizontal_z
+        # Step 3: Vertical duct down in -Z to reach route_z level
+        # Elbow2 will turn -Z to +Y, dropping by R in Z
+        d2_target_z = route_z + R + gap
         d2_len = max(e1_outlet_z - gap - d2_target_z, 0.05)
         d2_pos = (e1_outlet_x, start_y, e1_outlet_z - gap)
 
@@ -331,12 +353,12 @@ class CompleteClassifierAssembly:
         ))
         self._duct_connections.append((duct2, d2_pos))
 
-        curr_z = e1_outlet_z - gap - d2_len
+        e2_inlet_z = e1_outlet_z - gap - d2_len
 
         # Step 4: Elbow2 - turn from -Z to +Y (toward classifier)
-        e2_inlet = (e1_outlet_x, start_y, curr_z - gap)
+        e2_inlet = (e1_outlet_x, start_y, e2_inlet_z - gap)
         e2_outlet_y = start_y + R
-        e2_outlet_z = e2_inlet[2] - R
+        e2_outlet_z = e2_inlet[2] - R  # This should be close to route_z
 
         elbow2 = DuctElbow(DuctElbowParams(
             diameter=duct_d, bend_radius=R, angle=90.0, wall_thickness=0.002,
@@ -345,40 +367,30 @@ class CompleteClassifierAssembly:
         ))
         self._duct_connections.append((elbow2, e2_inlet))
 
-        # Step 5: Horizontal duct in +Y direction
-        # Go to where we need to turn toward target X
-        # We want to turn at Y such that after elbow3 we're at target_x path
-        # Elbow3 turns +Y to -X, outlet_x = inlet_x - R, outlet_y = inlet_y + R
-        # We want outlet_x after duct4 to be target_x + R (for final elbow)
-        # Work backwards: need elbow3 at X such that we can reach target_x
-
-        # First, calculate where elbow3 should be (horizontally)
-        # After elbow3, we go in -X direction
-        # We need to end up at target_x for the final approach
-        # Final elbow4 turns -X to +Y: outlet_x = inlet_x - R
-        # So elbow4 inlet_x = target_x + R
-        elbow4_inlet_x = target_x + R + gap
-
-        # Duct4 goes in -X from elbow3_outlet to elbow4_inlet
-        # elbow3_outlet_x = elbow3_inlet_x - R
-        # So: elbow3_outlet_x - gap - d4_len = elbow4_inlet_x
-        # We'll calculate d4_len after knowing elbow3 position
-
-        # For now, go in +Y until we're past target_y enough for final approach
-        # Final approach length needed: trans_len + some duct
-        final_approach_y = target_y - trans_len - 0.15 - gap  # Where transition starts
-        # Elbow4 turns -X to +Y: outlet_y = inlet_y + R
-        # So elbow4_inlet_y = final_approach_y - R
-        elbow4_inlet_y = final_approach_y - R - gap
-
-        # We need to reach elbow4_inlet_y with the +Y duct and elbow3
-        # elbow3_outlet_y = elbow3_inlet_y + R
-        # So d3 goes from e2_outlet_y to elbow3_inlet_y
-        elbow3_inlet_y = elbow4_inlet_y - gap  # Account for gap
-        # elbow3 turns +Y to -X: outlet_y = inlet_y + R
-        # So elbow3_outlet_y = elbow3_inlet_y + R = elbow4_inlet_y
-
-        d3_len = max(elbow3_inlet_y - (e2_outlet_y + gap), 0.2)
+        # Now we're at (e1_outlet_x, e2_outlet_y, e2_outlet_z) going +Y
+        # We need to reach elbow4 inlet at (e4_inlet_x, e4_inlet_y, route_z)
+        
+        # We need to turn from +Y to -X at some point
+        # Elbow3: +Y to -X, outlet_x = inlet_x - R, outlet_y = inlet_y + R
+        
+        # After elbow3, duct4 goes in -X to reach e4_inlet_x
+        # So: e3_outlet_x - gap - d4_len = e4_inlet_x + gap
+        # e3_outlet_x = e3_inlet_x - R = e1_outlet_x - R (since duct3 is vertical in Y)
+        
+        # We need duct4_len: (e1_outlet_x - R - gap) - (e4_inlet_x + gap) = duct4_len
+        d4_len = max((e1_outlet_x - R - gap) - (e4_inlet_x + gap), 0.1)
+        
+        # e3_outlet_y should equal e4_inlet_y (or close)
+        # e3_outlet_y = e3_inlet_y + R
+        # So e3_inlet_y = e4_inlet_y - R - gap (for duct4 in between)
+        
+        # Actually, duct4 is horizontal in -X at y = e3_outlet_y
+        # So e3_outlet_y should equal e4_inlet_y
+        e3_outlet_y = e4_inlet_y
+        e3_inlet_y = e3_outlet_y - R
+        
+        # Duct3 goes from e2_outlet_y to e3_inlet_y in +Y direction
+        d3_len = max(e3_inlet_y - (e2_outlet_y + gap) - gap, 0.1)
         d3_pos = (e1_outlet_x, e2_outlet_y + gap, e2_outlet_z)
 
         duct3 = RoundDuct(RoundDuctParams(
@@ -387,12 +399,12 @@ class CompleteClassifierAssembly:
         ))
         self._duct_connections.append((duct3, d3_pos))
 
-        curr_y = e2_outlet_y + gap + d3_len
+        d3_end_y = e2_outlet_y + gap + d3_len
 
         # Step 6: Elbow3 - turn from +Y to -X
-        e3_inlet = (e1_outlet_x, curr_y + gap, e2_outlet_z)
+        e3_inlet = (e1_outlet_x, d3_end_y + gap, e2_outlet_z)
         e3_outlet_x = e1_outlet_x - R
-        e3_outlet_y = e3_inlet[1] + R
+        e3_outlet_y_actual = e3_inlet[1] + R
 
         elbow3 = DuctElbow(DuctElbowParams(
             diameter=duct_d, bend_radius=R, angle=90.0, wall_thickness=0.002,
@@ -401,58 +413,211 @@ class CompleteClassifierAssembly:
         ))
         self._duct_connections.append((elbow3, e3_inlet))
 
-        # Step 7: Horizontal duct in -X direction toward target_x
-        d4_len = max((e3_outlet_x - gap) - elbow4_inlet_x, 0.1)
-        d4_pos = (e3_outlet_x - gap, e3_outlet_y, e2_outlet_z)
+        # Step 7: Horizontal duct in -X direction toward e4_inlet_x
+        d4_len_actual = max(e3_outlet_x - gap - (e4_inlet_x + gap), 0.05)
+        d4_pos = (e3_outlet_x - gap, e3_outlet_y_actual, e2_outlet_z)
 
         duct4 = RoundDuct(RoundDuctParams(
-            diameter=duct_d, length=d4_len, wall_thickness=0.002,
+            diameter=duct_d, length=d4_len_actual, wall_thickness=0.002,
             direction=(-1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
         self._duct_connections.append((duct4, d4_pos))
 
-        curr_x = e3_outlet_x - gap - d4_len
+        d4_end_x = e3_outlet_x - gap - d4_len_actual
 
         # Step 8: Elbow4 - turn from -X to +Y (final approach)
-        e4_inlet = (curr_x - gap, e3_outlet_y, e2_outlet_z)
-        e4_outlet_x = e4_inlet[0] - R
-        e4_outlet_y = e3_outlet_y + R
+        e4_inlet_actual = (d4_end_x - gap, e3_outlet_y_actual, e2_outlet_z)
+        e4_outlet_x_actual = e4_inlet_actual[0] - R
+        e4_outlet_y_actual = e3_outlet_y_actual + R
 
         elbow4 = DuctElbow(DuctElbowParams(
             diameter=duct_d, bend_radius=R, angle=90.0, wall_thickness=0.002,
             flanged=True, center=(0, 0, 0),
             inlet_direction=(-1.0, 0.0, 0.0), rotation_axis=(0.0, 0.0, 1.0),
         ))
-        self._duct_connections.append((elbow4, e4_inlet))
+        self._duct_connections.append((elbow4, e4_inlet_actual))
 
-        # Step 9: Final approach duct in +Y direction to transition
-        # IMPORTANT: Stay at the same Z level (e2_outlet_z) throughout the approach
-        trans_start_y = target_y - trans_len - gap
-        d5_len = max(trans_start_y - (e4_outlet_y + gap), 0.05)
-
-        if d5_len > 0.05:
-            d5_pos = (e4_outlet_x, e4_outlet_y + gap, e2_outlet_z)
+        # Step 9: Final approach duct in +Y direction
+        # Connect from e4_outlet to transition inlet
+        d5_len_actual = max(trans_inlet_y - gap - (e4_outlet_y_actual + gap), 0.02)
+        
+        if d5_len_actual > 0.02:
+            d5_pos = (e4_outlet_x_actual, e4_outlet_y_actual + gap, e2_outlet_z)
             duct5 = RoundDuct(RoundDuctParams(
-                diameter=duct_d, length=d5_len, wall_thickness=0.002,
+                diameter=duct_d, length=d5_len_actual, wall_thickness=0.002,
                 direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
             ))
             self._duct_connections.append((duct5, d5_pos))
-            trans_pos_y = e4_outlet_y + gap + d5_len + gap
+            trans_pos_y = e4_outlet_y_actual + gap + d5_len_actual + gap
         else:
-            trans_pos_y = e4_outlet_y + gap
+            trans_pos_y = e4_outlet_y_actual + gap
 
         # Step 10: Transition to venturi diameter
-        # Position at the SAME Z level as the approach ductwork (e2_outlet_z)
+        # CRITICAL: Position at target_x, target_z so outlet aligns with venturi
         trans = Transition(TransitionParams(
             transition_type="round_to_round",
             inlet_dimensions=(duct_d,), outlet_dimensions=(venturi_air_d,),
             length=trans_len, concentric=True, wall_thickness=0.002,
             direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
-        # Use e4_outlet_x and e2_outlet_z for continuity with ductwork
-        self._duct_connections.append((trans, (e4_outlet_x, trans_pos_y, e2_outlet_z)))
+        # Place transition at target X and Z, with outlet reaching target Y
+        self._duct_connections.append((trans, (target_x, trans_pos_y, target_z)))
 
-    def _build_feed_to_venturi_connection(self, venturi, venturi_pos: np.ndarray):
+    def _build_feed_to_solids_inlet(self, venturi, venturi_pos: np.ndarray):
+        """
+        Build gravity chute from Feed System outlet to Venturi solids_inlet.
+
+        The venturi solids_inlet is positioned at the outer end of the tangential
+        inlet tube. For a vertical venturi (axis='y'), the solids_inlet extends
+        in the +X/+Z direction for gravity feed.
+
+        TARGET-ALIGNED routing: Work backwards from solids_inlet to ensure
+        the chute terminates exactly at the connection port.
+        """
+        from ..components.ductwork import RoundDuct, RoundDuctParams, DuctElbow, DuctElbowParams
+        from ..components.transitions import Transition, TransitionParams
+
+        p = self.params
+        gap = 0.005  # 5mm flange gap
+
+        # Get feed system outlet
+        feed_system = self._subsystems['feed_system']
+        feed_offset = np.array(self._subsystems.get('feed_system_offset', (0, 0, 0)))
+        feed_positions = feed_system.get_component_positions()
+        deagg_local_pos = np.array(feed_positions['deagglomerator'])
+        deagg_outlet = feed_system.deagglomerator.ports['outlet']
+
+        feed_outlet_world = feed_offset + deagg_local_pos + np.array(deagg_outlet.position)
+        feed_outlet_d = deagg_outlet.diameter
+
+        # Get venturi solids inlet position and direction (at outer end of inlet tube)
+        solids_port = venturi.ports['solids_inlet']
+        solids_inlet_world = venturi_pos + np.array(solids_port.position)
+        solids_inlet_d = solids_port.diameter
+        solids_inlet_dir = np.array(solids_port.direction)
+
+        # Feed coordinates
+        feed_x, feed_y, feed_z = feed_outlet_world
+        target_x, target_y, target_z = solids_inlet_world
+
+        # Chute dimensions - sized for gravity feed
+        chute_d = max(min(feed_outlet_d * 0.6, solids_inlet_d * 1.5), 0.035)
+        chute_R = chute_d * 1.5  # Bend radius for smooth flow
+        trans_len = 0.08
+
+        # ============================================================
+        # TARGET-ALIGNED routing for 90° vertical solids inlet
+        # The solids inlet tube points straight up (+Z), so the feed
+        # approaches from above and drops down to connect.
+        # 
+        # Route: deagglomerator -> horizontal to above target -> drop down
+        # ============================================================
+
+        # Step F1: Short duct from deagglomerator in -Y direction
+        f1_len = 0.08
+        f1_pos = (feed_x, feed_y - gap, feed_z)
+
+        feed_duct1 = RoundDuct(RoundDuctParams(
+            diameter=chute_d, length=f1_len, wall_thickness=0.002,
+            direction=(0.0, -1.0, 0.0), center=(0, 0, 0), flanged=True,
+        ))
+        self._duct_connections.append((feed_duct1, f1_pos))
+
+        f_curr_y = feed_y - gap - f1_len
+
+        # Step F2: Elbow - turn from -Y to -X (toward target X position)
+        fe1_inlet = (feed_x, f_curr_y - gap, feed_z)
+
+        feed_elbow1 = DuctElbow(DuctElbowParams(
+            diameter=chute_d, bend_radius=chute_R, angle=90.0, wall_thickness=0.002,
+            flanged=True, center=(0, 0, 0),
+            inlet_direction=(0.0, -1.0, 0.0), rotation_axis=(0.0, 0.0, -1.0),  # -Z for -Y→-X
+        ))
+        self._duct_connections.append((feed_elbow1, fe1_inlet))
+
+        fe1_outlet_x = feed_x - chute_R
+        fe1_outlet_y = f_curr_y - gap - chute_R
+
+        # Step F3: Horizontal duct in -X direction to get above target X
+        # We want to end up directly above the solids inlet (at target_x, target_y)
+        h1_len = max(fe1_outlet_x - gap - (target_x + chute_R + gap), 0.1)
+        f2_pos = (fe1_outlet_x - gap, fe1_outlet_y, feed_z)
+
+        feed_duct2 = RoundDuct(RoundDuctParams(
+            diameter=chute_d, length=h1_len, wall_thickness=0.002,
+            direction=(-1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
+        ))
+        self._duct_connections.append((feed_duct2, f2_pos))
+
+        f_curr_x = fe1_outlet_x - gap - h1_len
+
+        # Step F4: Elbow - turn from -X to +Y (toward target Y position)
+        fe2_inlet = (f_curr_x - gap, fe1_outlet_y, feed_z)
+
+        feed_elbow2 = DuctElbow(DuctElbowParams(
+            diameter=chute_d, bend_radius=chute_R, angle=90.0, wall_thickness=0.002,
+            flanged=True, center=(0, 0, 0),
+            inlet_direction=(-1.0, 0.0, 0.0), rotation_axis=(0.0, 0.0, 1.0),  # +Z for -X→+Y
+        ))
+        self._duct_connections.append((feed_elbow2, fe2_inlet))
+
+        fe2_outlet_x = f_curr_x - gap - chute_R
+        fe2_outlet_y = fe1_outlet_y + chute_R
+
+        # Step F5: Horizontal duct in +Y to get to target Y position
+        h2_len = max(target_y - (fe2_outlet_y + gap + chute_R), 0.05)
+        f3_pos = (fe2_outlet_x, fe2_outlet_y + gap, feed_z)
+
+        if h2_len > 0.05:
+            feed_duct3 = RoundDuct(RoundDuctParams(
+                diameter=chute_d, length=h2_len, wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
+            ))
+            self._duct_connections.append((feed_duct3, f3_pos))
+            f_curr_y = fe2_outlet_y + gap + h2_len
+        else:
+            f_curr_y = fe2_outlet_y
+
+        # Step F6: Elbow - turn from +Y to -Z (drop down toward target)
+        fe3_inlet = (fe2_outlet_x, f_curr_y + gap, feed_z)
+
+        feed_elbow3 = DuctElbow(DuctElbowParams(
+            diameter=chute_d, bend_radius=chute_R, angle=90.0, wall_thickness=0.002,
+            flanged=True, center=(0, 0, 0),
+            inlet_direction=(0.0, 1.0, 0.0), rotation_axis=(1.0, 0.0, 0.0),  # +X for +Y→-Z
+        ))
+        self._duct_connections.append((feed_elbow3, fe3_inlet))
+
+        fe3_outlet_y = f_curr_y + gap + chute_R
+        fe3_outlet_z = feed_z - chute_R
+
+        # Step F7: Vertical drop duct in -Z direction to reach target Z
+        drop_len = max(fe3_outlet_z - gap - (target_z + trans_len), 0.1)
+        f4_pos = (fe2_outlet_x, fe3_outlet_y, fe3_outlet_z - gap)
+
+        feed_duct4 = RoundDuct(RoundDuctParams(
+            diameter=chute_d, length=drop_len, wall_thickness=0.002,
+            direction=(0.0, 0.0, -1.0), center=(0, 0, 0), flanged=True,
+        ))
+        self._duct_connections.append((feed_duct4, f4_pos))
+
+        f_curr_z = fe3_outlet_z - gap - drop_len
+
+        # Step F8: Transition positioned to connect at target
+        # The transition outlet should be at target position (solids_inlet)
+        # For 90° inlet, the target is at the TOP of the vertical inlet tube
+        trans = Transition(TransitionParams(
+            transition_type="round_to_round",
+            inlet_dimensions=(chute_d,), outlet_dimensions=(solids_inlet_d,),
+            length=trans_len, concentric=True, wall_thickness=0.002,
+            direction=(0.0, 0.0, -1.0), center=(0, 0, 0), flanged=True,
+        ))
+        # Position transition so outlet is at target Z
+        # Use the X, Y from the vertical drop duct
+        trans_start_z = target_z + trans_len
+        self._duct_connections.append((trans, (target_x, target_y, trans_start_z)))
+
+    def _build_feed_to_venturi_connection_UNUSED(self, venturi, venturi_pos: np.ndarray):
         """
         Build gravity chute from Feed System outlet to Venturi solids_inlet.
 
@@ -1308,10 +1473,11 @@ def create_core_connections_system() -> CompleteClassifierAssembly:
         include_ductwork=True,
         include_exhaust=True,
         include_support_structure=False,
-        # Positions for visible ductwork connections
+        # Positions optimized for protein separation
+        # Feed behind classifier (+Y), elevated for steep ~20° gravity chute
         classifier_position=(0.0, 0.0, 0.0),
-        feed_position=(-4.0, -1.0, 0.0),
-        air_system_position=(-1.0, -5.0, 0.0),
+        feed_position=(0.0, 1.0, 3.5), # +Y behind, +X right, elevated
+        air_system_position=(0.0, -3.0, 0.0),
         # Sizing
         classifier_width=0.15,
         cyclone_diameter=0.3,

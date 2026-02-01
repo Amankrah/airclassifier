@@ -226,7 +226,7 @@ class ClassificationSystemAssembly:
             convergent_angle=np.radians(12),
             divergent_angle=np.radians(5),
             solids_inlet_diameter=throat_d * 0.8,
-            solids_inlet_angle=np.radians(45),
+            solids_inlet_angle=np.radians(90), # Reduced angle for lower Z connection point
             solids_inlet_position=throat_d * 0.3,
             center=(0.0, 0.0, 0.0),  # Origin at air_inlet
             axis="y"  # Vertical axis for upward flow

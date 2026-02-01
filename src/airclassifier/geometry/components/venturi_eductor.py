@@ -252,53 +252,387 @@ class VenturiEducator:
         return stations
 
     def _add_solids_inlet(self, vertices: List, indices: List, normals: List):
-        """Add solids inlet tube geometry."""
+        """
+        Add solids inlet tube geometry with realistic industrial features.
+        
+        Creates a tangential inlet tube with:
+        - Proper wall thickness (schedule 40 pipe proportions)
+        - Weld fillet at junction with main body
+        - Flange collar at outer end for connection
+        - Correct orientation for each axis configuration
+        
+        For axis='y' (vertical venturi):
+        - Air enters from -Y (bottom), exits +Y (top)
+        - Solids inlet comes from +X direction, angled upward for gravity feed
+        """
         p = self.params
 
-        # Position of solids inlet
-        x_inlet = p.throat_start_position + p.solids_inlet_position
+        # Position of solids inlet along main axis
+        axial_pos = p.throat_start_position + p.solids_inlet_position
         r_main = p.throat_diameter / 2
-        r_inlet = p.solids_inlet_diameter / 2
+        r_inlet_outer = p.solids_inlet_diameter / 2
+        
+        # Wall thickness (typical schedule 40 proportions)
+        wall_thickness = max(r_inlet_outer * 0.15, 0.002)  # Min 2mm wall
+        r_inlet_inner = r_inlet_outer - wall_thickness
 
-        # Inlet tube length
-        tube_length = p.throat_diameter * 2
+        # Inlet tube length - extends outward for connection
+        tube_length = p.throat_diameter * 2.5
+        
+        # Weld fillet dimensions
+        weld_height = wall_thickness * 2.0
+        weld_radius = wall_thickness * 1.5
+        
+        # Flange collar at outer end
+        flange_thickness = wall_thickness * 2
+        flange_radius = r_inlet_outer * 1.3
 
-        n_radial = p.resolution_radial // 2
+        n_radial = max(p.resolution_radial // 2, 12)
+        n_axial = 5  # Sections along tube length
+        
+        # Entry angle from the radial direction
+        entry_angle = p.solids_inlet_angle
+
+        # ================================================================
+        # Generate inlet tube geometry based on venturi axis
+        # ================================================================
+        
+        if p.axis == "x":
+            # Horizontal venturi - flow along X
+            # Solids inlet extends in Y-Z plane at angle
+            self._generate_inlet_tube_x(
+                vertices, indices, normals,
+                axial_pos, r_main, r_inlet_outer, r_inlet_inner,
+                tube_length, entry_angle, weld_height, weld_radius,
+                flange_thickness, flange_radius, n_radial, n_axial
+            )
+            
+        elif p.axis == "y":
+            # Vertical venturi - flow along Y (main air from -Y)
+            # Solids inlet from +X side, angled for gravity feed from +Z
+            self._generate_inlet_tube_y(
+                vertices, indices, normals,
+                axial_pos, r_main, r_inlet_outer, r_inlet_inner,
+                tube_length, entry_angle, weld_height, weld_radius,
+                flange_thickness, flange_radius, n_radial, n_axial
+            )
+            
+        elif p.axis == "z":
+            # Flow along Z
+            self._generate_inlet_tube_z(
+                vertices, indices, normals,
+                axial_pos, r_main, r_inlet_outer, r_inlet_inner,
+                tube_length, entry_angle, weld_height, weld_radius,
+                flange_thickness, flange_radius, n_radial, n_axial
+            )
+
+    def _generate_inlet_tube_y(self, vertices, indices, normals,
+                                axial_pos, r_main, r_outer, r_inner,
+                                tube_length, entry_angle, weld_h, weld_r,
+                                flange_t, flange_r, n_radial, n_axial):
+        """
+        Generate solids inlet tube for vertical venturi (axis='y').
+        
+        The inlet extends from +X direction toward the throat.
+        Entry angle tilts the tube so particles can flow down via gravity.
+        """
+        p = self.params
         start_idx = len(vertices)
-
-        # Generate tube along inlet angle
-        for i in range(2):  # Start and end of tube
-            t = i  # 0 at main body, 1 at outer end
-
-            if p.axis == "x":
-                x_pos = x_inlet + p.center[0]
-                # Tube extends in Y-Z plane at angle
-                y_base = p.center[1] + r_main + t * tube_length * np.cos(p.solids_inlet_angle)
-                z_base = p.center[2] + t * tube_length * np.sin(p.solids_inlet_angle)
-
-                for j in range(n_radial):
-                    theta = (j / n_radial) * TWO_PI
-                    # Tube cross-section perpendicular to tube axis
-                    vy = y_base + r_inlet * np.cos(theta) * np.sin(p.solids_inlet_angle)
-                    vz = z_base + r_inlet * np.sin(theta)
-                    vx = x_pos + r_inlet * np.cos(theta) * np.cos(p.solids_inlet_angle)
-
-                    vertices.append([vx, vy, vz])
-                    # Normal pointing outward from tube
-                    normals.append([np.cos(theta) * np.cos(p.solids_inlet_angle),
-                                   np.cos(theta) * np.sin(p.solids_inlet_angle),
-                                   np.sin(theta)])
-
-        # Generate triangles for inlet tube
+        
+        # Y position along venturi
+        y_center = p.center[1] + axial_pos
+        
+        # Tube axis direction (from outer end toward main body)
+        # Points inward (-X) and slightly downward (-Z) for gravity feed
+        cos_a = np.cos(entry_angle)
+        sin_a = np.sin(entry_angle)
+        
+        # Tube direction: primarily +X with upward Z component
+        # (so particles flow DOWN into the venturi from above)
+        tube_dir = np.array([cos_a, 0.0, sin_a])
+        tube_dir = tube_dir / np.linalg.norm(tube_dir)
+        
+        # Starting point at main body surface
+        junction_x = p.center[0] + r_main
+        junction_z = p.center[2]
+        
+        # Create local coordinate system for tube cross-section
+        # tube_dir is axial, need two perpendicular vectors
+        up = np.array([0.0, 1.0, 0.0])  # Y is up
+        tangent = np.cross(tube_dir, up)
+        if np.linalg.norm(tangent) < 0.01:
+            tangent = np.array([0.0, 0.0, 1.0])
+        tangent = tangent / np.linalg.norm(tangent)
+        binormal = np.cross(tangent, tube_dir)
+        binormal = binormal / np.linalg.norm(binormal)
+        
+        # ============================================================
+        # Generate tube sections from junction to outer end
+        # ============================================================
+        
+        # Axial positions along tube
+        sections = []
+        
+        # Section 0: At junction with weld fillet (inner edge)
+        sections.append({
+            't': 0.0,
+            'r_out': r_outer + weld_h,
+            'r_in': r_inner,
+        })
+        
+        # Section 1: Just past weld fillet
+        sections.append({
+            't': weld_r * 2,
+            'r_out': r_outer,
+            'r_in': r_inner,
+        })
+        
+        # Section 2-3: Main tube body
+        sections.append({
+            't': tube_length * 0.3,
+            'r_out': r_outer,
+            'r_in': r_inner,
+        })
+        sections.append({
+            't': tube_length * 0.7,
+            'r_out': r_outer,
+            'r_in': r_inner,
+        })
+        
+        # Section 4: Flange start
+        sections.append({
+            't': tube_length - flange_t,
+            'r_out': r_outer,
+            'r_in': r_inner,
+        })
+        
+        # Section 5: Flange outer edge
+        sections.append({
+            't': tube_length,
+            'r_out': flange_r,
+            'r_in': r_inner,
+        })
+        
+        # Generate vertices for each section
+        for sec in sections:
+            t = sec['t']
+            r_out = sec['r_out']
+            r_in = sec['r_in']
+            
+            # Center point of this section
+            cx = junction_x + t * tube_dir[0]
+            cy = y_center + t * tube_dir[1]
+            cz = junction_z + t * tube_dir[2]
+            
+            # Outer ring
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                # Position in tube cross-section plane
+                offset = r_out * (np.cos(theta) * tangent + np.sin(theta) * binormal)
+                vx = cx + offset[0]
+                vy = cy + offset[1]
+                vz = cz + offset[2]
+                vertices.append([vx, vy, vz])
+                
+                # Normal pointing outward
+                n_vec = np.cos(theta) * tangent + np.sin(theta) * binormal
+                normals.append(n_vec.tolist())
+            
+            # Inner ring (for wall thickness)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                offset = r_in * (np.cos(theta) * tangent + np.sin(theta) * binormal)
+                vx = cx + offset[0]
+                vy = cy + offset[1]
+                vz = cz + offset[2]
+                vertices.append([vx, vy, vz])
+                
+                # Normal pointing inward
+                n_vec = -(np.cos(theta) * tangent + np.sin(theta) * binormal)
+                normals.append(n_vec.tolist())
+        
+        # ============================================================
+        # Generate triangles
+        # ============================================================
+        n_sections = len(sections)
+        verts_per_section = n_radial * 2  # outer + inner rings
+        
+        # Outer surface triangles (between sections)
+        for s in range(n_sections - 1):
+            base0 = start_idx + s * verts_per_section
+            base1 = start_idx + (s + 1) * verts_per_section
+            
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                
+                # Outer surface quad
+                v0 = base0 + j
+                v1 = base0 + j_next
+                v2 = base1 + j_next
+                v3 = base1 + j
+                indices.extend([v0, v1, v2])
+                indices.extend([v0, v2, v3])
+                
+                # Inner surface quad (reversed winding)
+                vi0 = base0 + n_radial + j
+                vi1 = base0 + n_radial + j_next
+                vi2 = base1 + n_radial + j_next
+                vi3 = base1 + n_radial + j
+                indices.extend([vi0, vi2, vi1])
+                indices.extend([vi0, vi3, vi2])
+        
+        # End cap at flange (outer ring to inner ring)
+        last_section_base = start_idx + (n_sections - 1) * verts_per_section
         for j in range(n_radial):
             j_next = (j + 1) % n_radial
-            v0 = start_idx + j
-            v1 = start_idx + j_next
-            v2 = start_idx + n_radial + j_next
-            v3 = start_idx + n_radial + j
+            vo0 = last_section_base + j
+            vo1 = last_section_base + j_next
+            vi0 = last_section_base + n_radial + j
+            vi1 = last_section_base + n_radial + j_next
+            indices.extend([vo0, vo1, vi1])
+            indices.extend([vo0, vi1, vi0])
 
-            indices.extend([v0, v1, v2])
-            indices.extend([v0, v2, v3])
+    def _generate_inlet_tube_x(self, vertices, indices, normals,
+                                axial_pos, r_main, r_outer, r_inner,
+                                tube_length, entry_angle, weld_h, weld_r,
+                                flange_t, flange_r, n_radial, n_axial):
+        """Generate solids inlet tube for horizontal venturi (axis='x')."""
+        p = self.params
+        start_idx = len(vertices)
+        
+        x_center = p.center[0] + axial_pos
+        cos_a = np.cos(entry_angle)
+        sin_a = np.sin(entry_angle)
+        
+        # Tube extends in Y-Z plane
+        tube_dir = np.array([0.0, cos_a, sin_a])
+        tube_dir = tube_dir / np.linalg.norm(tube_dir)
+        
+        junction_y = p.center[1] + r_main
+        junction_z = p.center[2]
+        
+        # Local coordinate system
+        tangent = np.array([1.0, 0.0, 0.0])
+        binormal = np.cross(tangent, tube_dir)
+        binormal = binormal / np.linalg.norm(binormal)
+        
+        sections = [
+            {'t': 0.0, 'r_out': r_outer + weld_h, 'r_in': r_inner},
+            {'t': weld_r * 2, 'r_out': r_outer, 'r_in': r_inner},
+            {'t': tube_length * 0.5, 'r_out': r_outer, 'r_in': r_inner},
+            {'t': tube_length - flange_t, 'r_out': r_outer, 'r_in': r_inner},
+            {'t': tube_length, 'r_out': flange_r, 'r_in': r_inner},
+        ]
+        
+        for sec in sections:
+            t = sec['t']
+            r_out, r_in = sec['r_out'], sec['r_in']
+            cx = x_center
+            cy = junction_y + t * tube_dir[1]
+            cz = junction_z + t * tube_dir[2]
+            
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                offset = r_out * (np.cos(theta) * tangent + np.sin(theta) * binormal)
+                vertices.append([cx + offset[0], cy + offset[1], cz + offset[2]])
+                n_vec = np.cos(theta) * tangent + np.sin(theta) * binormal
+                normals.append(n_vec.tolist())
+            
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                offset = r_in * (np.cos(theta) * tangent + np.sin(theta) * binormal)
+                vertices.append([cx + offset[0], cy + offset[1], cz + offset[2]])
+                n_vec = -(np.cos(theta) * tangent + np.sin(theta) * binormal)
+                normals.append(n_vec.tolist())
+        
+        self._generate_tube_triangles(indices, start_idx, len(sections), n_radial)
+
+    def _generate_inlet_tube_z(self, vertices, indices, normals,
+                                axial_pos, r_main, r_outer, r_inner,
+                                tube_length, entry_angle, weld_h, weld_r,
+                                flange_t, flange_r, n_radial, n_axial):
+        """Generate solids inlet tube for venturi with flow along Z-axis."""
+        p = self.params
+        start_idx = len(vertices)
+        
+        z_center = p.center[2] + axial_pos
+        cos_a = np.cos(entry_angle)
+        sin_a = np.sin(entry_angle)
+        
+        # Tube extends in X-Y plane
+        tube_dir = np.array([cos_a, sin_a, 0.0])
+        tube_dir = tube_dir / np.linalg.norm(tube_dir)
+        
+        junction_x = p.center[0] + r_main
+        junction_y = p.center[1]
+        
+        # Local coordinate system
+        tangent = np.array([0.0, 0.0, 1.0])
+        binormal = np.cross(tangent, tube_dir)
+        binormal = binormal / np.linalg.norm(binormal)
+        
+        sections = [
+            {'t': 0.0, 'r_out': r_outer + weld_h, 'r_in': r_inner},
+            {'t': weld_r * 2, 'r_out': r_outer, 'r_in': r_inner},
+            {'t': tube_length * 0.5, 'r_out': r_outer, 'r_in': r_inner},
+            {'t': tube_length - flange_t, 'r_out': r_outer, 'r_in': r_inner},
+            {'t': tube_length, 'r_out': flange_r, 'r_in': r_inner},
+        ]
+        
+        for sec in sections:
+            t = sec['t']
+            r_out, r_in = sec['r_out'], sec['r_in']
+            cx = junction_x + t * tube_dir[0]
+            cy = junction_y + t * tube_dir[1]
+            cz = z_center
+            
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                offset = r_out * (np.cos(theta) * tangent + np.sin(theta) * binormal)
+                vertices.append([cx + offset[0], cy + offset[1], cz + offset[2]])
+                n_vec = np.cos(theta) * tangent + np.sin(theta) * binormal
+                normals.append(n_vec.tolist())
+            
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                offset = r_in * (np.cos(theta) * tangent + np.sin(theta) * binormal)
+                vertices.append([cx + offset[0], cy + offset[1], cz + offset[2]])
+                n_vec = -(np.cos(theta) * tangent + np.sin(theta) * binormal)
+                normals.append(n_vec.tolist())
+        
+        self._generate_tube_triangles(indices, start_idx, len(sections), n_radial)
+
+    def _generate_tube_triangles(self, indices, start_idx, n_sections, n_radial):
+        """Generate triangles for tube geometry."""
+        verts_per_section = n_radial * 2
+        
+        for s in range(n_sections - 1):
+            base0 = start_idx + s * verts_per_section
+            base1 = start_idx + (s + 1) * verts_per_section
+            
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                
+                # Outer surface
+                v0, v1 = base0 + j, base0 + j_next
+                v2, v3 = base1 + j_next, base1 + j
+                indices.extend([v0, v1, v2])
+                indices.extend([v0, v2, v3])
+                
+                # Inner surface (reversed winding)
+                vi0, vi1 = base0 + n_radial + j, base0 + n_radial + j_next
+                vi2, vi3 = base1 + n_radial + j_next, base1 + n_radial + j
+                indices.extend([vi0, vi2, vi1])
+                indices.extend([vi0, vi3, vi2])
+        
+        # End cap
+        last_base = start_idx + (n_sections - 1) * verts_per_section
+        for j in range(n_radial):
+            j_next = (j + 1) % n_radial
+            vo0, vo1 = last_base + j, last_base + j_next
+            vi0, vi1 = last_base + n_radial + j, last_base + n_radial + j_next
+            indices.extend([vo0, vo1, vi1])
+            indices.extend([vo0, vi1, vi0])
 
     def get_velocity_at_throat(self, inlet_velocity: float) -> float:
         """
@@ -381,29 +715,47 @@ class VenturiEducator:
             name="air_inlet"
         )
         
-        # Solids inlet at throat
-        x_throat = p.throat_start_position + p.solids_inlet_position
+        # Solids inlet at throat - positioned at outer end of inlet tube
+        # The inlet tube extends outward with an angle for gravity feed
+        axial_pos = p.throat_start_position + p.solids_inlet_position
+        r_main = p.throat_diameter / 2
+        tube_length = p.throat_diameter * 2.5  # Match geometry generation
+        entry_angle = p.solids_inlet_angle
+        cos_a = np.cos(entry_angle)
+        sin_a = np.sin(entry_angle)
+        
         if p.axis == "x":
+            # Horizontal venturi - solids inlet extends in Y-Z plane
             solids_pos = (
-                p.center[0] + x_throat,
-                p.center[1] + p.throat_diameter / 2,
-                p.center[2]
+                p.center[0] + axial_pos,
+                p.center[1] + r_main + tube_length * cos_a,
+                p.center[2] + tube_length * sin_a
             )
-            solids_dir = (0.0, 1.0, 0.0)  # Points upward (feed from above)
+            # Direction points outward from tube (toward feed source)
+            norm = np.sqrt(cos_a**2 + sin_a**2)
+            solids_dir = (0.0, cos_a / norm, sin_a / norm)
+            
         elif p.axis == "y":
+            # Vertical venturi - air from -Y, solids from +X/+Z direction
+            # Tube extends in +X direction with upward +Z angle for gravity feed
             solids_pos = (
-                p.center[0] + p.throat_diameter / 2,
-                p.center[1] + x_throat,
-                p.center[2]
+                p.center[0] + r_main + tube_length * cos_a,
+                p.center[1] + axial_pos,
+                p.center[2] + tube_length * sin_a
             )
-            solids_dir = (1.0, 0.0, 0.0)
-        else:
+            # Direction points outward (+X, +Z) toward feed source
+            norm = np.sqrt(cos_a**2 + sin_a**2)
+            solids_dir = (cos_a / norm, 0.0, sin_a / norm)
+            
+        else:  # axis == "z"
+            # Flow along Z - solids inlet extends in X-Y plane
             solids_pos = (
-                p.center[0] + p.throat_diameter / 2,
-                p.center[1],
-                p.center[2] + x_throat
+                p.center[0] + r_main + tube_length * cos_a,
+                p.center[1] + tube_length * sin_a,
+                p.center[2] + axial_pos
             )
-            solids_dir = (1.0, 0.0, 0.0)
+            norm = np.sqrt(cos_a**2 + sin_a**2)
+            solids_dir = (cos_a / norm, sin_a / norm, 0.0)
         
         solids_inlet = ConnectionPort(
             position=solids_pos,
@@ -462,7 +814,7 @@ def create_standard_venturi_eductor(
         convergent_angle=np.radians(12),       # 12° half-angle
         divergent_angle=np.radians(5),         # 5° half-angle for good recovery
         solids_inlet_diameter=throat_d * 0.8,
-        solids_inlet_angle=np.radians(45),     # 45° entry
+        solids_inlet_angle=np.radians(90),     # 90° entry - lower Z for better feed alignment
         solids_inlet_position=throat_d * 0.3,  # Just into throat
     )
 
