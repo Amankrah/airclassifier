@@ -302,6 +302,314 @@ class AirSystemSimulator:
 
 
 # =============================================================================
+# GRANULAR SIMULATION KERNELS FOR HOPPER FILLING
+# =============================================================================
+
+@wp.func
+def hopper_sdf(
+    pos: wp.vec3,
+    hopper_center: wp.vec3,
+    top_radius: float,
+    bottom_radius: float,
+    cylinder_height: float,
+    cone_height: float,
+) -> float:
+    """
+    Signed distance function for a conical hopper.
+    
+    Negative inside, positive outside.
+    The hopper consists of:
+    - Cylindrical section at top
+    - Conical section below
+    
+    Origin is at center of bottom discharge.
+    """
+    # Local position relative to hopper center
+    px = pos[0] - hopper_center[0]
+    py = pos[1] - hopper_center[1]
+    pz = pos[2] - hopper_center[2]
+    
+    # Radial distance in XZ plane
+    r = wp.sqrt(px * px + pz * pz)
+    
+    # Height boundaries
+    cone_top_y = cone_height
+    cylinder_top_y = cone_height + cylinder_height
+    
+    # Determine which section we're in
+    if py < 0.0:
+        # Below hopper - distance to discharge opening
+        dist_to_bottom = -py
+        dist_to_edge = r - bottom_radius
+        if r < bottom_radius:
+            return dist_to_bottom  # Inside discharge opening
+        return wp.sqrt(dist_to_bottom * dist_to_bottom + dist_to_edge * dist_to_edge)
+    
+    elif py < cone_height:
+        # In conical section
+        # Radius at this height (linear interpolation)
+        t = py / cone_height
+        radius_at_y = bottom_radius + t * (top_radius - bottom_radius)
+        
+        # SDF for cone (negative inside)
+        cone_angle = wp.atan2(top_radius - bottom_radius, cone_height)
+        
+        if r < radius_at_y:
+            # Inside cone - find distance to wall
+            # Distance perpendicular to cone surface
+            dr = radius_at_y - r
+            dist_to_wall = dr * wp.cos(cone_angle)
+            return -dist_to_wall  # Negative inside
+        else:
+            # Outside cone
+            dr = r - radius_at_y
+            return dr * wp.cos(cone_angle)
+    
+    elif py < cylinder_top_y:
+        # In cylindrical section
+        if r < top_radius:
+            # Inside cylinder
+            return -(top_radius - r)  # Negative inside
+        else:
+            # Outside cylinder
+            return r - top_radius
+    
+    else:
+        # Above hopper
+        dist_above = py - cylinder_top_y
+        if r < top_radius:
+            return dist_above  # Above opening
+        # Outside and above
+        return wp.sqrt(dist_above * dist_above + (r - top_radius) * (r - top_radius))
+
+
+@wp.func
+def hopper_normal(
+    pos: wp.vec3,
+    hopper_center: wp.vec3,
+    top_radius: float,
+    bottom_radius: float,
+    cylinder_height: float,
+    cone_height: float,
+) -> wp.vec3:
+    """Get outward normal at position on/near hopper surface."""
+    px = pos[0] - hopper_center[0]
+    py = pos[1] - hopper_center[1]
+    pz = pos[2] - hopper_center[2]
+    
+    r = wp.sqrt(px * px + pz * pz)
+    
+    cone_top_y = cone_height
+    
+    if r < 1.0e-10:
+        # On axis - normal points up or down
+        if py < cone_height * 0.5:
+            return wp.vec3(0.0, -1.0, 0.0)
+        return wp.vec3(0.0, 1.0, 0.0)
+    
+    # Radial unit vector
+    r_unit_x = px / r
+    r_unit_z = pz / r
+    
+    if py < 0.0:
+        # Below - normal points down
+        return wp.vec3(0.0, -1.0, 0.0)
+    
+    elif py < cone_height:
+        # Conical section - normal is tilted
+        cone_angle = wp.atan2(top_radius - bottom_radius, cone_height)
+        cos_a = wp.cos(cone_angle)
+        sin_a = wp.sin(cone_angle)
+        
+        # Normal = (cos_a * radial, sin_a, 0) in local coords
+        return wp.vec3(cos_a * r_unit_x, sin_a, cos_a * r_unit_z)
+    
+    else:
+        # Cylindrical section - normal is purely radial
+        return wp.vec3(r_unit_x, 0.0, r_unit_z)
+
+
+@wp.kernel
+def granular_particle_update_kernel(
+    positions: wp.array(dtype=wp.vec3),
+    velocities: wp.array(dtype=wp.vec3),
+    diameters: wp.array(dtype=float),
+    is_active: wp.array(dtype=wp.int32),
+    # Hopper parameters
+    hopper_center: wp.vec3,
+    top_radius: float,
+    bottom_radius: float,
+    cylinder_height: float,
+    cone_height: float,
+    discharge_open: int,  # 0 = closed, 1 = open
+    # Physics parameters
+    dt: float,
+    gravity: float,
+    restitution: float,
+    friction: float,
+    damping: float,
+):
+    """
+    Update particles with gravity and hopper collision.
+    
+    Particles collide with hopper walls and accumulate like granular material.
+    """
+    tid = wp.tid()
+    
+    if is_active[tid] == 0:
+        return
+    
+    pos = positions[tid]
+    vel = velocities[tid]
+    d = diameters[tid]
+    radius = d * 0.5
+    
+    # Apply gravity
+    vel = vel + wp.vec3(0.0, -gravity * dt, 0.0)
+    
+    # Apply damping (air resistance for flour)
+    vel = vel * (1.0 - damping * dt)
+    
+    # Update position
+    new_pos = pos + vel * dt
+    
+    # Check hopper collision using SDF
+    sdf = hopper_sdf(new_pos, hopper_center, top_radius, bottom_radius, 
+                     cylinder_height, cone_height)
+    
+    # Collision with hopper walls (when inside hopper, sdf is negative)
+    # We want particles to stay inside, so check if sdf > -radius (too close to wall)
+    wall_dist = -sdf  # Distance from wall (positive when inside)
+    
+    if wall_dist < radius:
+        # Collision with wall
+        normal = hopper_normal(new_pos, hopper_center, top_radius, bottom_radius,
+                               cylinder_height, cone_height)
+        
+        # Push particle back inside
+        penetration = radius - wall_dist
+        new_pos = new_pos - normal * penetration
+        
+        # Velocity reflection with friction
+        v_normal = wp.dot(vel, normal)
+        
+        if v_normal > 0.0:
+            # Moving toward wall - reflect
+            v_normal_vec = normal * v_normal
+            v_tangent = vel - v_normal_vec
+            
+            # Apply restitution and friction
+            vel = v_tangent * (1.0 - friction) - v_normal_vec * restitution
+    
+    # Check discharge opening - prevent particles from falling through bottom
+    py = new_pos[1] - hopper_center[1]
+    px = new_pos[0] - hopper_center[0]
+    pz = new_pos[2] - hopper_center[2]
+    r = wp.sqrt(px * px + pz * pz)
+    
+    # Particle near or below discharge opening
+    if py < radius * 2.0 and r < bottom_radius + radius:
+        if discharge_open == 0:
+            # Discharge closed - keep particle above the opening
+            # Push up and toward center of cone
+            min_y = hopper_center[1] + radius * 2.0
+            if new_pos[1] < min_y:
+                new_pos = wp.vec3(new_pos[0], min_y, new_pos[2])
+                vel = wp.vec3(vel[0] * 0.2, wp.abs(vel[1]) * 0.1, vel[2] * 0.2)  # Reduce velocity, slight upward
+        # else: particle falls through (discharge)
+    
+    # Bottom floor collision (if particle escaped)
+    floor_y = hopper_center[1] - 1.0  # Floor 1m below hopper (for escaped particles)
+    if new_pos[1] < floor_y + radius:
+        new_pos = wp.vec3(new_pos[0], floor_y + radius, new_pos[2])
+        vel = wp.vec3(vel[0] * 0.1, 0.0, vel[2] * 0.1)  # Kill velocity on floor
+    
+    positions[tid] = new_pos
+    velocities[tid] = vel
+
+
+@wp.kernel
+def particle_particle_collision_kernel(
+    positions: wp.array(dtype=wp.vec3),
+    velocities: wp.array(dtype=wp.vec3),
+    diameters: wp.array(dtype=float),
+    is_active: wp.array(dtype=wp.int32),
+    grid: wp.uint64,
+    num_particles: int,
+    restitution: float,
+    friction: float,
+    neighbor_radius: float,
+):
+    """
+    Handle particle-particle collisions using hash grid.
+    
+    Uses DEM-style contact mechanics for granular material.
+    """
+    tid = wp.tid()
+    
+    if tid >= num_particles:
+        return
+    
+    if is_active[tid] == 0:
+        return
+    
+    pos_i = positions[tid]
+    vel_i = velocities[tid]
+    d_i = diameters[tid]
+    r_i = d_i * 0.5
+    
+    # Query neighbors
+    query = wp.hash_grid_query(grid, pos_i, neighbor_radius)
+    neighbor_idx = int(0)
+    
+    collision_impulse = wp.vec3(0.0, 0.0, 0.0)
+    num_collisions = int(0)
+    
+    while wp.hash_grid_query_next(query, neighbor_idx):
+        if neighbor_idx == tid:
+            continue
+        
+        if is_active[neighbor_idx] == 0:
+            continue
+        
+        pos_j = positions[neighbor_idx]
+        d_j = diameters[neighbor_idx]
+        r_j = d_j * 0.5
+        
+        # Vector from j to i
+        diff = pos_i - pos_j
+        dist = wp.length(diff)
+        
+        contact_dist = r_i + r_j
+        
+        if dist < contact_dist and dist > 1.0e-10:
+            # Collision detected
+            normal = diff / dist
+            penetration = contact_dist - dist
+            
+            # Relative velocity
+            vel_j = velocities[neighbor_idx]
+            v_rel = vel_i - vel_j
+            v_normal = wp.dot(v_rel, normal)
+            
+            if v_normal < 0.0:
+                # Approaching - apply impulse
+                # Simple spring-damper model
+                impulse_mag = -v_normal * (1.0 + restitution) * 0.5
+                impulse = normal * impulse_mag
+                
+                # Separation force
+                separation = normal * penetration * 0.5
+                
+                collision_impulse = collision_impulse + impulse + separation
+                num_collisions = num_collisions + 1
+    
+    # Apply accumulated impulse
+    if num_collisions > 0:
+        velocities[tid] = vel_i + collision_impulse
+
+
+# =============================================================================
 # FEED SYSTEM SIMULATOR
 # =============================================================================
 
@@ -311,7 +619,7 @@ class FeedSystemConfig(BaseSimulationConfig):
     
     # Feed parameters
     feed_rate_kg_h: float = 500.0    # [kg/h] Target feed rate
-    material_bulk_density: float = 500.0  # [kg/m³] Material density
+    material_bulk_density: float = 500.0  # [kg/m³] Material bulk density
     
     # Component speeds
     airlock_rpm: float = 20.0        # [RPM] Rotary airlock speed
@@ -321,9 +629,50 @@ class FeedSystemConfig(BaseSimulationConfig):
     # Ramp times
     ramp_time: float = 2.0           # [s] Time to reach full speed
     
-    # Particle tracking
+    # Particle tracking (for non-pouring mode)
     num_particles: int = 5000        # Number of particles to track
     injection_duration: float = 0.5  # [s] Duration over which to inject
+    
+    # Hopper lid animation
+    animate_lid: bool = True         # Whether to animate lid opening/closing
+    lid_open_angle: float = 90.0     # [degrees] Maximum lid opening angle
+    lid_animation_time: float = 1.0  # [s] Time to open/close lid
+    
+    # Hopper filling simulation
+    enable_pouring: bool = True             # Simulate pouring particles into hopper
+    hopper_fill_percentage: float = 50.0    # [%] Percentage of hopper capacity to fill (0-100)
+    pour_height: float = 0.3                # [m] Height above hopper to pour from
+    pour_rate_kg_s: float = 100.0           # [kg/s] Mass flow rate during pouring
+    pour_stream_radius: float = 0.15        # [m] Radius of pour stream
+    visual_particle_diameter: float = 0.04  # [m] Display size of visual particles (40mm)
+    settling_time: float = 0.5              # [s] Time to wait for particles to settle after pouring
+    
+    # Particle scaling (parcel method)
+    max_visual_particles: int = 1500        # Max particles to simulate (each represents a parcel)
+    
+    # Granular physics
+    enable_particle_collisions: bool = True  # Enable particle-particle collisions
+    granular_restitution: float = 0.1        # Low restitution for flour
+    granular_friction: float = 0.4           # Friction coefficient
+    granular_damping: float = 5.0            # Air damping for flour particles
+    hash_grid_dim: int = 64                  # Hash grid resolution
+    neighbor_search_radius: float = 0.02     # [m] Neighbor search radius
+
+
+class LidState(Enum):
+    """State of the hopper lid."""
+    CLOSED = "closed"
+    OPENING = "opening"
+    OPEN = "open"
+    CLOSING = "closing"
+
+
+class PouringState(Enum):
+    """State of particle pouring."""
+    IDLE = "idle"
+    POURING = "pouring"
+    SETTLING = "settling"  # Waiting for particles to enter hopper
+    COMPLETED = "completed"
 
 
 @dataclass
@@ -338,6 +687,7 @@ class FeedSystemState(BaseSimulationState):
     # Material flow
     mass_flow_rate_kg_h: float = 0.0
     hopper_mass_kg: float = 0.0
+    target_fill_mass_kg: float = 0.0    # Target mass to pour
     
     # Particle tracking (on device)
     positions: Optional[wp.array] = None
@@ -348,6 +698,20 @@ class FeedSystemState(BaseSimulationState):
     # Statistics
     particles_injected: int = 0
     particles_discharged: int = 0
+    total_particles_to_pour: int = 0    # Calculated from volume/mass
+    particles_inside_hopper: int = 0    # Particles that have entered hopper
+    
+    # Hopper lid animation state
+    lid_state: LidState = LidState.CLOSED
+    lid_angle: float = 0.0              # [degrees] Current lid angle (0=closed, 90=fully open)
+    lid_target_angle: float = 0.0       # [degrees] Target lid angle
+    lid_angular_velocity: float = 0.0   # [degrees/s] Current angular velocity
+    
+    # Pouring state
+    pouring_state: PouringState = PouringState.IDLE
+    pour_start_time: float = 0.0
+    settling_start_time: float = 0.0
+    particles_poured: int = 0
 
 
 class FeedSystemSimulator:
@@ -355,19 +719,22 @@ class FeedSystemSimulator:
     Simulator for the feed system (hopper + airlock + feeder + deagglomerator).
     
     Simulates:
+    - Hopper lid opening/closing animation
+    - Particle pouring into hopper from above
     - Material discharge from hopper (gravity flow)
     - Rotary airlock volumetric metering
     - Screw feeder controlled dosing
     - Deagglomerator lump breaking
     
     Flow path:
-    Hopper -> Airlock -> Screw Feeder -> Deagglomerator -> Outlet
+    [Pour from above] -> Hopper (lid opens) -> Airlock -> Screw Feeder -> Deagglomerator -> Outlet
     """
     
     def __init__(
         self,
         assembly: Any,  # FeedSystemAssembly
         config: FeedSystemConfig = None,
+        material: Any = None,  # Optional ParticleMaterial
     ):
         """
         Initialize feed system simulator.
@@ -375,21 +742,96 @@ class FeedSystemSimulator:
         Args:
             assembly: FeedSystemAssembly instance
             config: Simulation configuration
+            material: Optional ParticleMaterial for proper size distribution
         """
         self.assembly = assembly
         self.config = config or FeedSystemConfig()
+        self.material = material
         self.state = FeedSystemState()
         
         # Initialize Warp
         wp.init()
         self.device = self.config.device
         
-        # Initialize hopper mass
-        self.state.hopper_mass_kg = self.assembly.params.hopper_capacity_kg
+        # Calculate fill parameters if pouring is enabled
+        if self.config.enable_pouring:
+            self._calculate_fill_parameters()
+        
+        # Initialize hopper mass (starts empty for filling simulation)
+        self.state.hopper_mass_kg = 0.0 if self.config.enable_pouring else self.assembly.params.hopper_capacity_kg
         
         # Setup system
         self._setup_system_parameters()
         self._allocate_arrays()
+        
+        # Lid animation parameters
+        self._lid_max_angular_velocity = self.config.lid_open_angle / self.config.lid_animation_time
+    
+    def _calculate_fill_parameters(self):
+        """
+        Calculate fill parameters using VOLUME-BASED PARTICLE SIZING.
+        
+        Calculate the particle diameter needed so that a fixed number of particles
+        will visually fill the hopper to the specified percentage.
+        
+        Key formula:
+            particle_volume = (fill_volume * packing_efficiency) / num_particles
+            particle_diameter = 2 * (3 * particle_volume / (4 * π))^(1/3)
+        """
+        # Get hopper geometry
+        hopper_capacity_kg = self.assembly.params.hopper_capacity_kg
+        hopper = self.assembly.hopper
+        
+        # Total hopper volume from geometry (not from capacity/density)
+        hopper_total_volume_m3 = hopper.params.total_volume
+        
+        # Calculate target fill
+        fill_fraction = self.config.hopper_fill_percentage / 100.0
+        target_mass_kg = hopper_capacity_kg * fill_fraction
+        fill_volume_m3 = hopper_total_volume_m3 * fill_fraction
+        self.state.target_fill_mass_kg = target_mass_kg
+        
+        # Fixed number of particles
+        num_particles = self.config.max_visual_particles
+        self.config.num_particles = num_particles
+        self.state.total_particles_to_pour = num_particles
+        
+        # Calculate particle diameter to fill the volume
+        # With random packing efficiency (~64%), particles occupy 64% of volume
+        packing_efficiency = 0.64
+        volume_per_particle = (fill_volume_m3 * packing_efficiency) / num_particles
+        
+        # Sphere volume: V = (4/3) * π * r³  =>  r = (3V / 4π)^(1/3)
+        particle_radius = (3.0 * volume_per_particle / (4.0 * np.pi)) ** (1.0/3.0)
+        calculated_diameter = 2.0 * particle_radius
+        
+        # Store the calculated diameter (override config)
+        self._visual_particle_diameter = calculated_diameter
+        self.config.visual_particle_diameter = calculated_diameter
+        
+        # Update neighbor search radius to match particle size
+        self.config.neighbor_search_radius = calculated_diameter * 1.1
+        
+        # Each visual particle represents this much mass
+        self._mass_per_parcel = target_mass_kg / num_particles
+        
+        # Calculate pour duration from mass flow rate
+        if self.config.pour_rate_kg_s > 0:
+            pour_duration = target_mass_kg / self.config.pour_rate_kg_s
+            self._calculated_pour_duration = max(0.3, pour_duration)
+        else:
+            self._calculated_pour_duration = 1.0
+        
+        print(f"\n  Fill Calculation (Volume-Based Sizing):")
+        print(f"    Hopper volume:       {hopper_total_volume_m3 * 1000:.0f} liters")
+        print(f"    Hopper capacity:     {hopper_capacity_kg:.0f} kg")
+        print(f"    Fill percentage:     {self.config.hopper_fill_percentage:.0f}%")
+        print(f"    Target fill mass:    {target_mass_kg:.1f} kg")
+        print(f"    Fill volume:         {fill_volume_m3 * 1000:.0f} liters")
+        print(f"    Particles:           {num_particles:,}")
+        print(f"    Particle diameter:   {calculated_diameter * 1000:.1f} mm (calculated)")
+        print(f"    Mass per particle:   {self._mass_per_parcel:.3f} kg")
+        print(f"    Pour duration:       {self._calculated_pour_duration:.1f} s")
     
     def _setup_system_parameters(self):
         """Extract parameters from assembly."""
@@ -399,16 +841,39 @@ class FeedSystemSimulator:
         self.deagglomerator = self.assembly.deagglomerator
         
         # Get component positions
-        self.positions = self.assembly.get_component_positions()
+        self.component_positions = self.assembly.get_component_positions()
         
         # Calculate volumetric flow from airlock
         self.airlock_pocket_volume = (
             np.pi * (self.airlock.params.rotor_diameter / 2) ** 2 *
             self.airlock.params.rotor_length / self.airlock.params.num_vanes
         )
+        
+        # Get hopper dimensions for pouring and collision
+        hopper_pos = np.array(self.component_positions['hopper'])
+        self.hopper_center = hopper_pos.copy()  # Bottom center of hopper
+        
+        self.hopper_top_y = (
+            self.component_positions['hopper'][1] + 
+            self.hopper.params.total_height
+        )
+        self.hopper_top_radius = self.hopper.params.top_radius
+        self.hopper_bottom_radius = self.hopper.params.bottom_radius
+        self.hopper_cylinder_height = self.hopper.params.cylindrical_height
+        self.hopper_cone_height = self.hopper.params.conical_height
+        
+        # Hinge position for lid animation (on -X side of hopper)
+        self.lid_hinge_position = np.array([
+            hopper_pos[0] - self.hopper_top_radius * 1.08,
+            self.hopper_top_y,
+            hopper_pos[2]
+        ])
+        
+        # Discharge state (0 = closed during filling, 1 = open for discharge)
+        self._discharge_open = 0
     
     def _allocate_arrays(self):
-        """Pre-allocate particle arrays."""
+        """Pre-allocate particle arrays and hash grid."""
         n = self.config.num_particles
         
         self.state.positions = wp.zeros(n, dtype=wp.vec3, device=self.device)
@@ -418,17 +883,246 @@ class FeedSystemSimulator:
         
         # Temporary arrays
         self._accelerations = wp.zeros(n, dtype=wp.vec3, device=self.device)
+        
+        # Hash grid for particle-particle collisions
+        if self.config.enable_particle_collisions:
+            grid_dim = self.config.hash_grid_dim
+            self._hash_grid = wp.HashGrid(
+                dim_x=grid_dim, 
+                dim_y=grid_dim, 
+                dim_z=grid_dim, 
+                device=self.device
+            )
+    
+    def open_lid(self):
+        """Start opening the hopper lid."""
+        if self.state.lid_state in [LidState.CLOSED, LidState.CLOSING]:
+            self.state.lid_state = LidState.OPENING
+            self.state.lid_target_angle = self.config.lid_open_angle
+    
+    def close_lid(self):
+        """Start closing the hopper lid."""
+        if self.state.lid_state in [LidState.OPEN, LidState.OPENING]:
+            self.state.lid_state = LidState.CLOSING
+            self.state.lid_target_angle = 0.0
+    
+    def start_pouring(self):
+        """Start pouring particles into the hopper."""
+        if self.state.pouring_state == PouringState.IDLE:
+            # Must open lid first
+            self.open_lid()
+            self.state.pouring_state = PouringState.POURING
+            self.state.pour_start_time = self.state.time
+    
+    def stop_pouring(self):
+        """Stop pouring and close the lid."""
+        if self.state.pouring_state == PouringState.POURING:
+            self.state.pouring_state = PouringState.COMPLETED
+            self.close_lid()
     
     def start(self):
         """Start the feed system."""
         self.state.system_state = SystemState.STARTING
+        
+        # If pouring is enabled, start the pouring sequence
+        if self.config.enable_pouring:
+            self.start_pouring()
     
     def stop(self):
         """Stop the feed system."""
         self.state.system_state = SystemState.STOPPING
     
+    def _count_particles_inside_hopper(self):
+        """
+        Count how many particles are currently inside the hopper volume.
+        
+        Particles are considered "inside" if they are within the hopper geometry
+        (below the top opening and above the discharge).
+        """
+        if self.state.particles_poured == 0:
+            self.state.particles_inside_hopper = 0
+            return
+        
+        # Get positions from GPU
+        positions = self.state.positions.numpy()[:self.state.particles_poured]
+        
+        # Hopper boundaries
+        hopper_bottom_y = self.hopper_center[1]
+        hopper_top_y = hopper_bottom_y + self.hopper_cone_height + self.hopper_cylinder_height
+        hopper_cx = self.hopper_center[0]
+        hopper_cz = self.hopper_center[2]
+        
+        count_inside = 0
+        for i in range(len(positions)):
+            px, py, pz = positions[i]
+            
+            # Check if below top opening
+            if py > hopper_top_y:
+                continue
+            
+            # Check if above discharge
+            if py < hopper_bottom_y:
+                continue
+            
+            # Check radial distance at this height
+            if py < hopper_bottom_y + self.hopper_cone_height:
+                # In cone section - radius varies with height
+                t = (py - hopper_bottom_y) / self.hopper_cone_height
+                radius_at_y = self.hopper_bottom_radius + t * (self.hopper_top_radius - self.hopper_bottom_radius)
+            else:
+                # In cylinder section
+                radius_at_y = self.hopper_top_radius
+            
+            # Radial distance
+            r = np.sqrt((px - hopper_cx)**2 + (pz - hopper_cz)**2)
+            
+            if r < radius_at_y:
+                count_inside += 1
+        
+        self.state.particles_inside_hopper = count_inside
+    
+    def _get_average_particle_velocity(self) -> float:
+        """
+        Get the average velocity magnitude of all poured particles.
+        
+        Used to determine when particles have settled.
+        """
+        if self.state.particles_poured == 0:
+            return 0.0
+        
+        velocities = self.state.velocities.numpy()[:self.state.particles_poured]
+        speeds = np.linalg.norm(velocities, axis=1)
+        return float(np.mean(speeds))
+    
+    def _update_lid_animation(self, dt: float):
+        """Update lid opening/closing animation."""
+        if not self.config.animate_lid:
+            return
+        
+        angle_diff = self.state.lid_target_angle - self.state.lid_angle
+        
+        if abs(angle_diff) < 0.1:
+            # Reached target
+            self.state.lid_angle = self.state.lid_target_angle
+            self.state.lid_angular_velocity = 0.0
+            
+            if self.state.lid_state == LidState.OPENING:
+                self.state.lid_state = LidState.OPEN
+            elif self.state.lid_state == LidState.CLOSING:
+                self.state.lid_state = LidState.CLOSED
+        else:
+            # Animate with smooth acceleration/deceleration
+            direction = 1.0 if angle_diff > 0 else -1.0
+            
+            # Simple smooth interpolation
+            angular_speed = self._lid_max_angular_velocity
+            delta_angle = direction * angular_speed * dt
+            
+            # Clamp to not overshoot
+            if abs(delta_angle) > abs(angle_diff):
+                delta_angle = angle_diff
+            
+            self.state.lid_angle += delta_angle
+            self.state.lid_angular_velocity = delta_angle / dt if dt > 0 else 0.0
+    
+    def get_lid_transform(self) -> np.ndarray:
+        """
+        Get the 4x4 transformation matrix for the lid.
+        
+        The lid rotates around the hinge axis (Z-axis at hinge position).
+        
+        Returns:
+            4x4 transformation matrix
+        """
+        angle_rad = np.radians(self.state.lid_angle)
+        
+        # Rotation around Z axis at hinge position
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+        
+        # Translation to hinge, rotate, translate back
+        hx, hy, hz = self.lid_hinge_position
+        
+        # Combined transform: T(hinge) * Rz(angle) * T(-hinge)
+        transform = np.array([
+            [cos_a, -sin_a, 0, hx - hx*cos_a + hy*sin_a],
+            [sin_a,  cos_a, 0, hy - hx*sin_a - hy*cos_a],
+            [0,      0,     1, 0],
+            [0,      0,     0, 1]
+        ], dtype=np.float32)
+        
+        return transform
+    
+    def pour_particles(self, n_pour: int):
+        """
+        Pour particles from above into the open hopper.
+        
+        Creates a stream of particles falling from pour_height above the hopper.
+        """
+        if self.state.particles_poured >= self.config.num_particles:
+            return
+        
+        n_pour = min(n_pour, self.config.num_particles - self.state.particles_poured)
+        
+        # Only pour if lid is sufficiently open
+        if self.state.lid_angle < self.config.lid_open_angle * 0.5:
+            return
+        
+        rng = np.random.default_rng(self.state.step + 1234)
+        
+        # Use the calculated visual particle diameter (not microscopic flour diameter)
+        # Each visual particle represents a "parcel" of material
+        visual_diameter = self.config.visual_particle_diameter
+        
+        # Small random variation in visual particle size (±10%)
+        diameters = np.full(n_pour, visual_diameter, dtype=np.float32)
+        diameters *= (1.0 + rng.uniform(-0.1, 0.1, n_pour).astype(np.float32))
+        
+        # Pour position: above hopper center
+        hopper_pos = np.array(self.component_positions['hopper'])
+        pour_y = self.hopper_top_y + self.config.pour_height
+        
+        # Generate positions in a circular stream
+        positions = np.zeros((n_pour, 3), dtype=np.float32)
+        velocities = np.zeros((n_pour, 3), dtype=np.float32)
+        
+        # Limit pour stream to fit within hopper opening (with margin)
+        max_stream_radius = self.hopper_top_radius * 0.7  # 70% of hopper opening
+        stream_radius = min(self.config.pour_stream_radius, max_stream_radius)
+        
+        for i in range(n_pour):
+            # Random position within pour stream (uniform distribution in circle)
+            r = np.sqrt(rng.random()) * stream_radius  # sqrt for uniform area distribution
+            theta = rng.random() * 2 * np.pi
+            
+            positions[i, 0] = hopper_pos[0] + r * np.cos(theta)
+            positions[i, 1] = pour_y + rng.uniform(-0.01, 0.01)
+            positions[i, 2] = hopper_pos[2] + r * np.sin(theta)
+            
+            # Downward velocity (gravity-driven pour) - more vertical
+            velocities[i, 0] = rng.uniform(-0.05, 0.05)  # Less horizontal spread
+            velocities[i, 1] = -1.0 - rng.random() * 0.5  # Faster downward
+            velocities[i, 2] = rng.uniform(-0.05, 0.05)
+        
+        # Copy to device
+        start_idx = self.state.particles_poured
+        
+        positions_wp = wp.array(positions, dtype=wp.vec3, device=self.device)
+        velocities_wp = wp.array(velocities, dtype=wp.vec3, device=self.device)
+        diameters_wp = wp.array(diameters.astype(np.float32), dtype=float, device=self.device)
+        
+        wp.copy(self.state.positions, positions_wp, dest_offset=start_idx, count=n_pour)
+        wp.copy(self.state.velocities, velocities_wp, dest_offset=start_idx, count=n_pour)
+        wp.copy(self.state.diameters, diameters_wp, dest_offset=start_idx, count=n_pour)
+        
+        active_flags = wp.array(np.ones(n_pour, dtype=np.int32), dtype=wp.int32, device=self.device)
+        wp.copy(self.state.is_active, active_flags, dest_offset=start_idx, count=n_pour)
+        
+        self.state.particles_poured += n_pour
+        self.state.particles_injected += n_pour
+    
     def inject_particles(self, n_inject: int):
-        """Inject particles at hopper discharge."""
+        """Inject particles at hopper discharge (when system is running)."""
         if self.state.particles_injected >= self.config.num_particles:
             return
         
@@ -436,16 +1130,20 @@ class FeedSystemSimulator:
         
         # Generate random particle sizes (log-normal distribution)
         rng = np.random.default_rng(self.state.step + 42)
-        mean_diameter = 50e-6  # 50 microns
-        diameters = rng.lognormal(
-            mean=np.log(mean_diameter),
-            sigma=0.5,
-            size=n_inject
-        ).astype(np.float32)
-        diameters = np.clip(diameters, 5e-6, 500e-6)
+        
+        if self.material is not None:
+            diameters = self.material.sample_diameters(n_inject, seed=self.state.step)
+        else:
+            mean_diameter = 50e-6  # 50 microns
+            diameters = rng.lognormal(
+                mean=np.log(mean_diameter),
+                sigma=0.5,
+                size=n_inject
+            ).astype(np.float32)
+            diameters = np.clip(diameters, 5e-6, 500e-6)
         
         # Get hopper discharge position
-        hopper_pos = np.array(self.positions['hopper'])
+        hopper_pos = np.array(self.component_positions['hopper'])
         discharge_port = self.hopper.ports['discharge']
         discharge_pos = hopper_pos + np.array(discharge_port.position)
         
@@ -471,7 +1169,7 @@ class FeedSystemSimulator:
         
         positions_wp = wp.array(positions, dtype=wp.vec3, device=self.device)
         velocities_wp = wp.array(velocities, dtype=wp.vec3, device=self.device)
-        diameters_wp = wp.array(diameters, dtype=float, device=self.device)
+        diameters_wp = wp.array(diameters.astype(np.float32), dtype=float, device=self.device)
         
         wp.copy(self.state.positions, positions_wp, dest_offset=start_idx, count=n_inject)
         wp.copy(self.state.velocities, velocities_wp, dest_offset=start_idx, count=n_inject)
@@ -486,26 +1184,85 @@ class FeedSystemSimulator:
         """Advance simulation by one time step."""
         dt = self.config.dt
         
-        # Update component speeds (ramp up/down)
+        # ===== LID ANIMATION =====
+        self._update_lid_animation(dt)
+        
+        # ===== POURING PHASE =====
+        if self.state.pouring_state == PouringState.POURING:
+            elapsed_pour_time = self.state.time - self.state.pour_start_time
+            pour_duration = getattr(self, '_calculated_pour_duration', 2.0)
+            
+            # Check if we've poured all particles
+            if self.state.particles_poured < self.state.total_particles_to_pour:
+                # Calculate pour rate based on calculated duration
+                pour_rate = self.state.total_particles_to_pour / pour_duration
+                n_pour = int(pour_rate * dt) + (1 if np.random.random() < (pour_rate * dt % 1) else 0)
+                n_pour = min(n_pour, self.state.total_particles_to_pour - self.state.particles_poured)
+                
+                if n_pour > 0:
+                    self.pour_particles(n_pour)
+            else:
+                # All particles poured, transition to settling
+                self.state.pouring_state = PouringState.SETTLING
+                self.state.settling_start_time = self.state.time
+        
+        # ===== SETTLING PHASE - Wait for particles to settle inside hopper =====
+        elif self.state.pouring_state == PouringState.SETTLING:
+            settling_elapsed = self.state.time - self.state.settling_start_time
+            
+            # Check settling state every 20 steps
+            if self.state.step % 20 == 0:
+                self._count_particles_inside_hopper()
+                avg_velocity = self._get_average_particle_velocity()
+                
+                # Update mass progressively during settling
+                if self.state.total_particles_to_pour > 0:
+                    mass_per_particle = self.state.target_fill_mass_kg / self.state.total_particles_to_pour
+                    self.state.hopper_mass_kg = self.state.particles_inside_hopper * mass_per_particle
+                
+                # Settling is complete when:
+                # 1. Most particles are inside hopper (>90%)
+                # 2. Average velocity is low (particles have settled)
+                # 3. Minimum settling time elapsed (give particles time to fall)
+                particles_inside_ratio = self.state.particles_inside_hopper / max(1, self.state.particles_poured)
+                velocity_settled = avg_velocity < 0.15  # Less than 15 cm/s average
+                min_time_elapsed = settling_elapsed >= 0.3  # At least 0.3s
+                max_time_elapsed = settling_elapsed >= self.config.settling_time * 3  # Safety timeout
+                
+                # Close lid when settled OR timeout
+                if (particles_inside_ratio > 0.90 and velocity_settled and min_time_elapsed) or max_time_elapsed:
+                    # Final count
+                    self._count_particles_inside_hopper()
+                    if self.state.total_particles_to_pour > 0:
+                        mass_per_particle = self.state.target_fill_mass_kg / self.state.total_particles_to_pour
+                        self.state.hopper_mass_kg = self.state.particles_inside_hopper * mass_per_particle
+                    
+                    # Now close the lid
+                    self.close_lid()
+                    self.state.pouring_state = PouringState.COMPLETED
+        
+        # ===== COMPONENT SPEED RAMP =====
         if self.state.system_state == SystemState.STARTING:
-            ramp_rate = 1.0 / self.config.ramp_time
-            
-            self.state.airlock_rpm = min(
-                self.state.airlock_rpm + self.config.airlock_rpm * ramp_rate * dt,
-                self.config.airlock_rpm
-            )
-            self.state.feeder_rpm = min(
-                self.state.feeder_rpm + self.config.feeder_rpm * ramp_rate * dt,
-                self.config.feeder_rpm
-            )
-            self.state.deagg_rpm = min(
-                self.state.deagg_rpm + self.config.deagg_rpm * ramp_rate * dt,
-                self.config.deagg_rpm
-            )
-            
-            if (self.state.airlock_rpm >= self.config.airlock_rpm * 0.99 and
-                self.state.feeder_rpm >= self.config.feeder_rpm * 0.99):
-                self.state.system_state = SystemState.RUNNING
+            # Wait for pouring AND settling to complete before starting components
+            if self.state.pouring_state == PouringState.COMPLETED:
+                ramp_rate = 1.0 / self.config.ramp_time
+                
+                self.state.airlock_rpm = min(
+                    self.state.airlock_rpm + self.config.airlock_rpm * ramp_rate * dt,
+                    self.config.airlock_rpm
+                )
+                self.state.feeder_rpm = min(
+                    self.state.feeder_rpm + self.config.feeder_rpm * ramp_rate * dt,
+                    self.config.feeder_rpm
+                )
+                self.state.deagg_rpm = min(
+                    self.state.deagg_rpm + self.config.deagg_rpm * ramp_rate * dt,
+                    self.config.deagg_rpm
+                )
+                
+                if (self.state.airlock_rpm >= self.config.airlock_rpm * 0.99 and
+                    self.state.feeder_rpm >= self.config.feeder_rpm * 0.99):
+                    self.state.system_state = SystemState.RUNNING
                 
         elif self.state.system_state == SystemState.STOPPING:
             ramp_rate = 1.0 / self.config.ramp_time
@@ -517,7 +1274,7 @@ class FeedSystemSimulator:
             if self.state.airlock_rpm <= 0.01:
                 self.state.system_state = SystemState.OFF
         
-        # Calculate mass flow rate
+        # ===== MASS FLOW CALCULATION =====
         if self.state.system_state == SystemState.RUNNING:
             # Airlock volumetric flow
             vol_flow_m3_s = self.airlock_pocket_volume * (self.state.airlock_rpm / 60.0)
@@ -531,32 +1288,73 @@ class FeedSystemSimulator:
         else:
             self.state.mass_flow_rate_kg_h = 0.0
         
-        # Inject particles if running
-        if self.state.system_state == SystemState.RUNNING:
+        # ===== DISCHARGE INJECTION (when running) =====
+        if self.state.system_state == SystemState.RUNNING and not self.config.enable_pouring:
             if self.state.time < self.config.injection_duration:
                 inject_rate = self.config.num_particles / self.config.injection_duration
                 n_inject = int(inject_rate * dt) + (1 if np.random.random() < (inject_rate * dt % 1) else 0)
                 if n_inject > 0:
                     self.inject_particles(n_inject)
         
-        # Update particle positions (gravity + simple drag)
+        # ===== GRANULAR PARTICLE PHYSICS UPDATE =====
         n = self.state.particles_injected
         if n > 0:
+            # Hopper center as vec3
+            hopper_center = wp.vec3(
+                float(self.hopper_center[0]),
+                float(self.hopper_center[1]),
+                float(self.hopper_center[2])
+            )
+            
+            # Update particles with hopper collision using SDF
             wp.launch(
-                kernel=feed_particle_update_kernel,
+                kernel=granular_particle_update_kernel,
                 dim=n,
                 inputs=[
                     self.state.positions,
                     self.state.velocities,
                     self.state.diameters,
                     self.state.is_active,
+                    hopper_center,
+                    float(self.hopper_top_radius),
+                    float(self.hopper_bottom_radius),
+                    float(self.hopper_cylinder_height),
+                    float(self.hopper_cone_height),
+                    self._discharge_open,
                     dt,
                     float(GRAVITY),
-                    AirProperties.DENSITY,
-                    AirProperties.DYNAMIC_VISCOSITY,
+                    float(self.config.granular_restitution),
+                    float(self.config.granular_friction),
+                    float(self.config.granular_damping),
                 ],
                 device=self.device
             )
+            
+            # Particle-particle collisions using hash grid
+            if self.config.enable_particle_collisions and n > 1:
+                # Rebuild hash grid with current particle positions
+                self._hash_grid.build(
+                    points=self.state.positions,
+                    radius=self.config.neighbor_search_radius
+                )
+                
+                # Apply particle-particle collision forces
+                wp.launch(
+                    kernel=particle_particle_collision_kernel,
+                    dim=n,
+                    inputs=[
+                        self.state.positions,
+                        self.state.velocities,
+                        self.state.diameters,
+                        self.state.is_active,
+                        self._hash_grid.id,
+                        n,
+                        float(self.config.granular_restitution),
+                        float(self.config.granular_friction),
+                        float(self.config.neighbor_search_radius),
+                    ],
+                    device=self.device
+                )
         
         # Update time
         self.state.time += dt
@@ -588,7 +1386,42 @@ class FeedSystemSimulator:
             "mass_flow_rate_kg_h": self.state.mass_flow_rate_kg_h,
             "hopper_mass_kg": self.state.hopper_mass_kg,
             "particles_injected": self.state.particles_injected,
+            # Lid animation state
+            "lid_state": self.state.lid_state.value,
+            "lid_angle": self.state.lid_angle,
+            "lid_angular_velocity": self.state.lid_angular_velocity,
+            # Pouring state
+            "pouring_state": self.state.pouring_state.value,
+            "particles_poured": self.state.particles_poured,
+            # Fill tracking
+            "total_particles_to_pour": self.state.total_particles_to_pour,
+            "particles_inside_hopper": self.state.particles_inside_hopper,
+            "target_fill_mass_kg": self.state.target_fill_mass_kg,
         }
+    
+    def get_particle_positions(self) -> np.ndarray:
+        """Get current particle positions as numpy array."""
+        if self.state.particles_injected == 0:
+            return np.zeros((0, 3), dtype=np.float32)
+        return self.state.positions.numpy()[:self.state.particles_injected]
+    
+    def get_particle_velocities(self) -> np.ndarray:
+        """Get current particle velocities as numpy array."""
+        if self.state.particles_injected == 0:
+            return np.zeros((0, 3), dtype=np.float32)
+        return self.state.velocities.numpy()[:self.state.particles_injected]
+    
+    def get_particle_diameters(self) -> np.ndarray:
+        """Get particle diameters as numpy array."""
+        if self.state.particles_injected == 0:
+            return np.zeros(0, dtype=np.float32)
+        return self.state.diameters.numpy()[:self.state.particles_injected]
+    
+    def get_active_particles(self) -> np.ndarray:
+        """Get particle active state as numpy array."""
+        if self.state.particles_injected == 0:
+            return np.zeros(0, dtype=np.int32)
+        return self.state.is_active.numpy()[:self.state.particles_injected]
 
 
 # =============================================================================

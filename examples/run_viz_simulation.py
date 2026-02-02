@@ -120,15 +120,25 @@ class LiveSimulationVisualizer:
                 f"Time: {results.get('time', 0):.2f} s"
             )
         elif system_type == 'feed':
+            # Include lid and pouring state if available
+            lid_state = results.get('lid_state', 'N/A')
+            lid_angle = results.get('lid_angle', 0)
+            pour_state = results.get('pouring_state', 'N/A')
+            particles_poured = results.get('particles_poured', results.get('particles_injected', 0))
+            
             text = (
                 f"FEED SYSTEM SIMULATION\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"State: {results.get('system_state', 'N/A')}\n"
+                f"Lid: {lid_angle:.0f}° ({lid_state})\n"
+                f"Pour: {pour_state}\n"
+                f"Particles: {particles_poured:,}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"Airlock: {results.get('airlock_rpm', 0):.0f} RPM\n"
                 f"Feeder: {results.get('feeder_rpm', 0):.0f} RPM\n"
                 f"Deagg: {results.get('deagg_rpm', 0):.0f} RPM\n"
                 f"Flow: {results.get('mass_flow_rate_kg_h', 0):.0f} kg/h\n"
-                f"Hopper: {results.get('hopper_mass_kg', 0):.0f} kg\n"
+                f"Hopper: {results.get('hopper_mass_kg', 0):.1f} kg\n"
                 f"Time: {results.get('time', 0):.2f} s"
             )
         elif system_type == 'classification':
@@ -620,13 +630,22 @@ def run_air_system_live():
 def run_feed_system_live():
     """
     Run Feed System simulation with live 3D visualization.
+    
+    Features:
+    - Animated hopper lid opening/closing
+    - Live particle pouring visualization
+    - Particles falling into hopper under gravity
+    - Component speed ramp-up after filling
     """
     print("\n" + "="*70)
     print("FEED SYSTEM - LIVE VISUALIZATION")
+    print("  With Animated Lid & Particle Pouring")
     print("="*70)
     
     from airclassifier.geometry.assembly import create_standard_feed_system
-    from airclassifier.simulation.simulator import FeedSystemSimulator, FeedSystemConfig
+    from airclassifier.simulation.simulator import (
+        FeedSystemSimulator, FeedSystemConfig, LidState, PouringState
+    )
     
     # Create assembly
     print("\nCreating feed system assembly...")
@@ -643,19 +662,66 @@ def run_feed_system_live():
         return simulator
     
     # Create plotter
-    print("\nInitializing 3D visualization...")
-    plotter = pv.Plotter(title="Feed System - Live Simulation")
+    print("\nInitializing 3D visualization with LID ANIMATION & PARTICLES...")
+    plotter = pv.Plotter(title="Feed System - Hopper Filling Simulation")
     plotter.set_background('white')
     plotter.camera.up = (0, 1, 0)
     
-    # Add geometry meshes
-    print("  Adding hopper...")
-    v, i, _ = assembly.hopper.generate_mesh()
-    v = v + np.array(assembly._hopper_position)
-    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
-    mesh = pv.PolyData(v, faces)
-    plotter.add_mesh(mesh, color=COLORS['hopper'], label='Feed Hopper', opacity=0.85)
+    # Track animated actors
+    animated_actors = {}
     
+    # ============================================
+    # BUILD HOPPER MESH (STATIC - body only, no lid)
+    # ============================================
+    print("  Adding hopper body (static)...")
+    # We need to separate lid from hopper body for animation
+    # For now, add full hopper and we'll overlay animated lid
+    hopper_offset = np.array(assembly._hopper_position)
+    v, i, _ = assembly.hopper.generate_mesh()
+    v = v + hopper_offset
+    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+    hopper_mesh = pv.PolyData(v, faces)
+    plotter.add_mesh(hopper_mesh, color=COLORS['hopper'], label='Feed Hopper', opacity=0.7)
+    
+    # Store hopper info for lid animation reference
+    hopper_params = assembly.hopper.params
+    hopper_top_y = hopper_offset[1] + hopper_params.total_height
+    hopper_top_radius = hopper_params.top_radius
+    lid_hinge_x = hopper_offset[0] - hopper_top_radius * 1.08
+    
+    # ============================================
+    # CREATE ANIMATED LID MESH
+    # ============================================
+    print("  Creating animated lid...")
+    # Create a simple lid representation for animation
+    # Lid is a disc that rotates around hinge axis
+    lid_radius = hopper_top_radius * 1.08
+    lid_thickness = hopper_params.lid_height * 0.4
+    
+    # Create lid disc mesh
+    lid_disc = pv.Disc(center=(hopper_offset[0], hopper_top_y + lid_thickness/2, hopper_offset[2]),
+                       inner=0, outer=lid_radius, normal=(0, 1, 0), r_res=1, c_res=32)
+    lid_disc_top = pv.Disc(center=(hopper_offset[0], hopper_top_y + lid_thickness, hopper_offset[2]),
+                           inner=0, outer=lid_radius, normal=(0, 1, 0), r_res=1, c_res=32)
+    
+    # Combine into single lid mesh
+    lid_mesh = lid_disc + lid_disc_top
+    
+    # Store original points for rotation
+    lid_original_points = lid_mesh.points.copy()
+    lid_actor = plotter.add_mesh(lid_mesh, color='#D4A574', label='Hopper Lid', opacity=0.95)
+    
+    animated_actors['lid'] = {
+        'mesh': lid_mesh,
+        'actor': lid_actor,
+        'original_points': lid_original_points,
+        'hinge_position': np.array([lid_hinge_x, hopper_top_y, hopper_offset[2]]),
+        'current_angle': 0.0,
+    }
+    
+    # ============================================
+    # ADD OTHER COMPONENTS (STATIC)
+    # ============================================
     print("  Adding airlock...")
     v, i, _ = assembly.airlock.generate_mesh()
     v = v + np.array(assembly._airlock_position)
@@ -687,115 +753,293 @@ def run_feed_system_live():
             plotter.add_mesh(mesh, color=COLORS['transition'],
                             label="Transitions" if idx == 0 else None, opacity=0.7)
     
+    # ============================================
+    # PARTICLE VISUALIZATION SETUP
+    # ============================================
+    print("  Setting up particle visualization...")
+    particle_actor = None
+    particle_mesh = None
+    
     plotter.add_legend(bcolor='white', face='circle')
     plotter.add_axes()
     plotter.reset_camera()
-    plotter.camera.azimuth = -170
-    plotter.camera.elevation = -20
+    plotter.camera.azimuth = -150
+    plotter.camera.elevation = 15
+    plotter.camera.zoom(1.2)
     
-    # Create simulator
+    # ============================================
+    # CREATE SIMULATOR WITH VOLUME-BASED SIZING
+    # ============================================
+    # Particle size auto-calculated so 5000 particles fill the hopper volume
     config = FeedSystemConfig(
-        dt=1.0e-3,
-        duration=5.0,
+        dt=5.0e-4,        # 0.5ms timestep
+        duration=15.0,    # 15 second simulation (enough for settling)
         output_interval=0.1,
         feed_rate_kg_h=500.0,
         airlock_rpm=20.0,
         feeder_rpm=60.0,
         deagg_rpm=1500.0,
         ramp_time=1.0,
-        num_particles=500,
-        device="cpu",
+        device="cuda",        # Use GPU for particles
+        
+        # LID ANIMATION SETTINGS
+        animate_lid=True,
+        lid_open_angle=85.0,    # Open wide to 85 degrees
+        lid_animation_time=0.5, # 0.5 seconds to open/close
+        
+        # HOPPER FILLING - Volume-based particle sizing
+        enable_pouring=True,
+        hopper_fill_percentage=60.0,    # Fill 60% of 500kg = 300kg
+        pour_height=0.08,               # 8cm above hopper
+        pour_rate_kg_s=200.0,           # 200 kg/s pour rate (~1.5s pour)
+        pour_stream_radius=0.35,        # Will be clamped to hopper opening
+        visual_particle_diameter=0.05,  # Will be recalculated from volume
+        settling_time=1.0,              # Base settling time (actual uses velocity check)
+        max_visual_particles=5000,      # 5000 particles to fill hopper
+        
+        # GRANULAR PHYSICS
+        enable_particle_collisions=True,
+        granular_restitution=0.02,   # Very low bounce (flour-like)
+        granular_friction=0.6,       # Higher friction
+        granular_damping=20.0,       # Higher damping (settle faster)
+        hash_grid_dim=64,            # Hash grid resolution
+        neighbor_search_radius=0.05, # Will be auto-adjusted
     )
     simulator = FeedSystemSimulator(assembly, config)
     
-    # Start the system!
+    # Start the system (begins with lid opening and pouring)
     simulator.start()
     
     print("\n" + "-"*70)
     print("LIVE SIMULATION STARTING")
     print("-"*70)
-    print("3D window will show live simulation updates.")
+    print("  Phase 1: Lid opens")
+    print("  Phase 2: Particles pour into hopper")
+    print("  Phase 3: Lid closes")
+    print("  Phase 4: System starts (airlock, feeder, deagglomerator)")
+    print("-"*70)
+    print("3D window will show live simulation with particle animation.")
     print("Close the window (press 'q') to stop.")
     print("-"*70)
     
-    # Add initial info text (using named actor for smooth updates)
+    # Add initial info text
     plotter.add_text(
-        "FEED SYSTEM SIMULATION\nStarting...",
+        "FEED SYSTEM SIMULATION\nOpening lid...",
         position='upper_left', font_size=12, color='black', name='sim_info'
     )
     
-    # Show plotter in interactive mode for live updates
+    # Show plotter in interactive mode
     plotter.show(interactive_update=True, auto_close=False)
     
-    # Run simulation with live visualization updates
+    # Animation timing
+    import time as time_module
+    last_wall_time = time_module.time()
+    target_fps = 30
+    frame_interval = 1.0 / target_fps
+    
+    # Run simulation
     total_steps = config.num_steps
-    update_interval = max(1, total_steps // 50)
+    steps_per_frame = max(1, int(frame_interval / config.dt))
+    
+    # Progress tracking
+    last_print_pct = -10
+    print_interval_pct = 10
+    
+    print(f"  Animation: {target_fps} FPS, {steps_per_frame} sim steps per frame")
+    
+    def rotate_points_around_axis(points, axis_point, axis_dir, angle_rad):
+        """Rotate points around an arbitrary axis."""
+        # Translate to origin
+        p = points - axis_point
+        
+        # Rodrigues' rotation formula
+        k = axis_dir / np.linalg.norm(axis_dir)
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+        
+        # v_rot = v*cos(a) + (k x v)*sin(a) + k*(k.v)*(1-cos(a))
+        k_cross_p = np.cross(k, p)
+        k_dot_p = np.dot(p, k)[:, np.newaxis]
+        
+        rotated = p * cos_a + k_cross_p * sin_a + k * k_dot_p * (1 - cos_a)
+        
+        # Translate back
+        return rotated + axis_point
     
     try:
-        for step in range(total_steps):
-            simulator.step()
+        step = 0
+        while step < total_steps:
+            # Run simulation steps
+            frame_steps = min(steps_per_frame, total_steps - step)
+            for _ in range(frame_steps):
+                simulator.step()
+                step += 1
             
-            if step % update_interval == 0:
-                results = simulator.get_results()
-                pct = (step / total_steps) * 100
+            results = simulator.get_results()
+            
+            # ============================================
+            # ANIMATE LID
+            # ============================================
+            if 'lid' in animated_actors:
+                lid_data = animated_actors['lid']
+                current_angle = results['lid_angle']
                 
-                # Update info text using same name to replace without blinking
-                text = (
-                    f"FEED SYSTEM SIMULATION\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"State: {results['system_state']}\n"
-                    f"Airlock: {results['airlock_rpm']:.0f} RPM\n"
-                    f"Feeder: {results['feeder_rpm']:.0f} RPM\n"
-                    f"Deagg: {results['deagg_rpm']:.0f} RPM\n"
-                    f"Flow: {results['mass_flow_rate_kg_h']:.0f} kg/h\n"
-                    f"Hopper: {results['hopper_mass_kg']:.0f} kg\n"
-                    f"Particles: {results['particles_injected']}\n"
-                    f"Progress: {pct:.0f}%\n"
-                    f"Time: {results['time']:.2f} s"
+                if abs(current_angle - lid_data['current_angle']) > 0.1:
+                    # Convert to radians (rotation around Z axis at hinge)
+                    angle_rad = np.radians(current_angle)
+                    
+                    # Hinge axis is along Z
+                    hinge_pos = lid_data['hinge_position']
+                    axis = np.array([0.0, 0.0, 1.0])
+                    
+                    # Rotate original points
+                    rotated = rotate_points_around_axis(
+                        lid_data['original_points'],
+                        hinge_pos,
+                        axis,
+                        angle_rad
+                    )
+                    
+                    lid_data['mesh'].points[:] = rotated
+                    lid_data['mesh'].Modified()
+                    lid_data['current_angle'] = current_angle
+            
+            # ============================================
+            # UPDATE PARTICLE VISUALIZATION
+            # ============================================
+            positions = simulator.get_particle_positions()
+            
+            if len(positions) > 0:
+                # Remove old particle actor
+                if particle_actor is not None:
+                    try:
+                        plotter.remove_actor(particle_actor)
+                    except:
+                        pass
+                
+                # Get velocities for coloring
+                velocities = simulator.get_particle_velocities()
+                speeds = np.linalg.norm(velocities, axis=1)
+                
+                # Create new particle point cloud
+                particle_mesh = pv.PolyData(positions)
+                particle_mesh['velocity'] = speeds
+                
+                # Add particles with velocity coloring
+                # Point size scales with particle diameter (diameter in mm / 4)
+                particle_dia_mm = config.visual_particle_diameter * 1000
+                point_size = max(8, min(25, int(particle_dia_mm / 2.5)))
+                
+                particle_actor = plotter.add_mesh(
+                    particle_mesh,
+                    scalars='velocity',
+                    cmap='YlOrBr',  # Brown/tan for flour-like appearance
+                    point_size=point_size,
+                    render_points_as_spheres=True,
+                    opacity=0.85,
+                    clim=[0, 1.5],
+                    show_scalar_bar=False,
                 )
-                
-                plotter.add_text(text, position='upper_left', font_size=12, 
-                               color='black', name='sim_info')
-                plotter.update()
-                
-                if step % (update_interval * 5) == 0:
-                    print(f"  [{pct:5.1f}%] Airlock: {results['airlock_rpm']:4.0f} | "
-                          f"Feeder: {results['feeder_rpm']:4.0f} | "
-                          f"Flow: {results['mass_flow_rate_kg_h']:4.0f} kg/h")
+            
+            # ============================================
+            # UPDATE INFO TEXT
+            # ============================================
+            pct = (step / total_steps) * 100
+            
+            # Determine phase
+            lid_state = results['lid_state']
+            pour_state = results['pouring_state']
+            
+            if pour_state == 'pouring':
+                phase = "POURING"
+            elif pour_state == 'settling':
+                phase = "SETTLING..."
+            elif lid_state == 'opening':
+                phase = "LID OPENING"
+            elif lid_state == 'closing':
+                phase = "LID CLOSING"
+            elif results['system_state'] == 'starting':
+                phase = "STARTING"
+            elif results['system_state'] == 'running':
+                phase = "RUNNING"
+            else:
+                phase = results['system_state'].upper()
+            
+            # Get particle counts
+            particles_poured = results.get('particles_poured', 0)
+            particles_inside = results.get('particles_inside_hopper', 0)
+            total_to_pour = results.get('total_particles_to_pour', 0)
+            target_mass = results.get('target_fill_mass_kg', 0)
+            
+            # Calculate inside percentage
+            inside_pct = (particles_inside / max(1, particles_poured)) * 100 if particles_poured > 0 else 0
+            
+            text = (
+                f"FEED SYSTEM SIMULATION\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Phase: {phase}\n"
+                f"Lid: {results['lid_angle']:.0f}° ({lid_state})\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Particles: {particles_poured:,}/{total_to_pour:,}\n"
+                f"Inside hopper: {inside_pct:.0f}%\n"
+                f"Mass: {results['hopper_mass_kg']:.1f}/{target_mass:.0f} kg\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Airlock: {results['airlock_rpm']:.0f} RPM\n"
+                f"Feeder: {results['feeder_rpm']:.0f} RPM\n"
+                f"Flow: {results['mass_flow_rate_kg_h']:.0f} kg/h\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Time: {results['time']:.2f} s"
+            )
+            
+            plotter.add_text(text, position='upper_left', font_size=11, 
+                           color='black', name='sim_info')
+            plotter.update()
+            
+            # Console progress
+            if pct >= last_print_pct + print_interval_pct:
+                last_print_pct = int(pct / print_interval_pct) * print_interval_pct
+                inside_info = f"Inside: {inside_pct:.0f}%" if pour_state in ['pouring', 'settling'] else ""
+                print(f"  [{pct:5.1f}%] {phase:14s} | "
+                      f"Lid: {results['lid_angle']:5.1f}° | "
+                      f"Particles: {results['particles_poured']:5,} | "
+                      f"{inside_info:12s} | "
+                      f"Time: {results['time']:.2f}s")
+            
+            time_module.sleep(0.001)
         
-        # Get final results
+        # Final results
         results = simulator.get_results()
         
         print("\n" + "-"*70)
         print("SIMULATION COMPLETE")
         print("-"*70)
-        print(f"  Final State:     {results['system_state']}")
+        print(f"  Final Lid Angle: {results['lid_angle']:.1f}°")
+        print(f"  Particles Poured: {results['particles_poured']:,}")
         print(f"  Airlock RPM:     {results['airlock_rpm']:.0f}")
         print(f"  Feeder RPM:      {results['feeder_rpm']:.0f}")
         print(f"  Deagg RPM:       {results['deagg_rpm']:.0f}")
         print(f"  Mass Flow:       {results['mass_flow_rate_kg_h']:.0f} kg/h")
-        print(f"  Hopper Mass:     {results['hopper_mass_kg']:.0f} kg")
-        print(f"  Particles:       {results['particles_injected']}")
+        print(f"  Hopper Mass:     {results['hopper_mass_kg']:.2f} kg")
         print("-"*70)
         
-        # Update to final results display
+        # Final display
         final_text = (
             f"FEED SYSTEM - COMPLETE\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"State: {results['system_state']}\n"
+            f"Lid: CLOSED\n"
+            f"Particles: {results['particles_poured']:,}\n"
+            f"Hopper: {results['hopper_mass_kg']:.2f} kg\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Airlock: {results['airlock_rpm']:.0f} RPM\n"
             f"Feeder: {results['feeder_rpm']:.0f} RPM\n"
-            f"Deagg: {results['deagg_rpm']:.0f} RPM\n"
             f"Flow: {results['mass_flow_rate_kg_h']:.0f} kg/h\n"
-            f"Hopper: {results['hopper_mass_kg']:.0f} kg\n"
-            f"Particles: {results['particles_injected']}\n"
-            f"\n[DONE - Press 'q' to close]"
+            f"\n[DONE - Press ENTER to close]"
         )
-        plotter.add_text(final_text, position='upper_left', font_size=12, 
+        plotter.add_text(final_text, position='upper_left', font_size=11, 
                         color='black', name='sim_info')
         plotter.update()
         
-        # Keep window responsive until user presses Enter in console
+        # Wait for user
         print("\nSimulation finished!")
         print(">>> Press ENTER in this terminal to close the 3D window <<<")
         
@@ -813,7 +1057,9 @@ def run_feed_system_live():
             time.sleep(0.05)
             
     except Exception as e:
+        import traceback
         print(f"Visualization error: {e}")
+        traceback.print_exc()
     finally:
         try:
             plotter.close()
