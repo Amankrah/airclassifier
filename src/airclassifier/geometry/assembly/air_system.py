@@ -25,14 +25,14 @@ MATERIAL FLOW PATH
     └──────┬──────┘
            │
     ┌──────┴──────┐
-    │ DUCT SECTION │  ← Transition: Filter outlet → Blower inlet
+    │ DUCT + ELBOW │  ← Transition: Filter outlet → Blower inlet (via 90° elbow)
     └──────┬──────┘
            │
            ▼
     ┌─────────────┐
-    │ CENTRIFUGAL │  ← Air enters axially, exits radially
-    │   BLOWER    │     Provides pressure rise (5000 Pa typical)
-    │  (Scroll)   │
+    │ CENTRIFUGAL │  ← Air enters axially (via inlet bell on -Z side)
+    │   BLOWER    │     Exits radially (+X), pressure rise (5000 Pa typical)
+    │  (Scroll)   │     Motor/belt drive below scroll (-Y)
     └──────┬──────┘
            │
     ┌──────┴──────┐
@@ -132,8 +132,8 @@ class AirSystemAssembly:
 
         Layout: Linear arrangement along X axis for clear visualization.
 
-        Flow path:
-        Filter → Duct → Elbow → Duct → Blower inlet bell → Blower → Transition → Dampers
+        Flow path (along +Z then +X):
+        Filter → Duct → Elbow(turn +Z) → Duct(+Z) → Blower inlet bell(-Z side) → Scroll → Outlet(+X) → Transition → Dampers
 
         All components centered at Y=0, Z=0 for simplicity.
 
@@ -208,24 +208,31 @@ class AirSystemAssembly:
 
         # The blower scroll body extends from center-half_width to center+half_width
         # where half_width = impeller_width/2 * 1.2
-        # The inlet bell starts at center + half_width (at scroll +Z edge)
-        # The duct must be long enough to:
-        #   1. Start OUTSIDE the scroll body (with clearance)
-        #   2. End at the inlet bell opening
+        # The inlet bell is at -Z side: starts at (center - half_width) and extends to
+        # (center - half_width - inlet_bell_length) where the duct connects.
+        #
+        # Layout (Z axis):
+        #   [FILTER]  →  [ELBOW]  →  [DUCT going +Z]  →  [INLET BELL]  →  [SCROLL]  →  [OUTLET]
+        #   lower Z                                                                    higher Z
+        
         impeller_width = self.blower.params.impeller_width
+        inlet_diameter = self.blower.params.inlet_diameter
         scroll_half_width = impeller_width / 2 * 1.2  # Half depth of scroll body
-        scroll_clearance = 0.05  # 50mm clearance before scroll body
+        inlet_bell_length = inlet_diameter * 0.5  # Length of inlet bell cone
+        
+        # Duct length: just enough to connect elbow outlet to inlet bell
+        duct_clearance = 0.02  # 20mm clearance
+        duct_vert_length = duct_clearance + inlet_bell_length  # Duct connects to bell opening
 
-        # Duct length = clearance + full scroll depth to reach inlet bell
-        # duct starts at elbow_outlet_z, must clear scroll body, then reach inlet bell
-        duct_vert_length = scroll_clearance + 2 * scroll_half_width  # clearance + scroll depth
-
-        # Position blower so:
-        #   - Duct starts at elbow_outlet_z (with clearance before scroll)
-        #   - Duct ends at inlet bell opening (scroll +Z edge)
+        # Position blower so inlet bell opening aligns with duct end
+        # Duct end position (where duct ends, in +Z direction from elbow):
         duct_end_z = elbow_outlet_z + duct_vert_length
-        inlet_bell_offset = scroll_half_width  # Inlet bell starts at center + half_width
-        blower_center_z = duct_end_z - inlet_bell_offset
+        
+        # Inlet bell opening is at: center_z - scroll_half_width - inlet_bell_length
+        # We want: inlet_opening_z = duct_end_z
+        # So: center_z - scroll_half_width - inlet_bell_length = duct_end_z
+        # Therefore: center_z = duct_end_z + scroll_half_width + inlet_bell_length
+        blower_center_z = duct_end_z + scroll_half_width + inlet_bell_length
 
         # Blower center X: inlet bell is at center X, so blower X = elbow outlet X
         blower_center_x = elbow_outlet_x
@@ -282,7 +289,8 @@ class AirSystemAssembly:
             damper = create_standard_damper(
                 diameter=self._duct_diameter,
                 damper_type=p.damper_type,
-                position=1.0  # Fully open
+                position=0.0,  # CLOSED when system is OFF (fail-safe position)
+                actuator_type="electric"  # Electric actuator for automated control
             )
             self.dampers.append(damper)
 
@@ -370,7 +378,7 @@ class AirSystemAssembly:
         ))
         self._duct_sections.append((elbow_component, elbow['inlet_pos']))
 
-        # 1c. Vertical duct from elbow outlet to blower inlet
+        # 1c. Vertical duct from elbow outlet to blower inlet bell
         # Elbow outlet position (after 90° bend)
         elbow_outlet_pos = (
             elbow['inlet_pos'][0] + elbow['bend_radius'],
@@ -378,7 +386,8 @@ class AirSystemAssembly:
             elbow['inlet_pos'][2] + elbow['bend_radius'],
         )
 
-        # Vertical duct connects elbow outlet to blower inlet (on +Z side of blower)
+        # Vertical duct connects elbow outlet to blower inlet bell (on -Z side of blower)
+        # The duct goes +Z direction, and the blower inlet bell opening faces -Z
         duct_vert = RoundDuct(RoundDuctParams(
             diameter=elbow['diameter'],
             length=elbow['duct_vert_length'],

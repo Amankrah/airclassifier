@@ -134,6 +134,11 @@ def render_component(component, name: str, color: str, use_mesh: bool = False, u
 
         plotter.add_axes()
         plotter.add_legend(bcolor='white', face='circle')
+        
+        # Reset camera to fit entire scene and set isometric view
+        plotter.reset_camera()
+        plotter.camera.azimuth = -170
+        plotter.camera.elevation = -20
 
         print("\nOpening visualization window...")
         print("(Close the window to continue)")
@@ -337,12 +342,13 @@ def visualize_zigzag(use_mesh: bool = False):
 
 
 def visualize_feed_system_assembly():
-    """Visualize the feed system assembly."""
+    """Visualize the feed system assembly with color-coded components."""
     print("\n" + "=" * 60)
     print("FEED SYSTEM ASSEMBLY VISUALIZATION")
     print("=" * 60)
 
     from airclassifier.geometry.assembly import create_standard_feed_system
+    import numpy as np
 
     feed = create_standard_feed_system()
     vertices, indices = feed.build_mesh()
@@ -359,29 +365,126 @@ def visualize_feed_system_assembly():
     feed.print_summary()
     feed.print_transition_report()
 
-    viz = GeometryVisualizer()
-    request = VisualizationRequest(
-        target_type="assembly",
-        assembly=feed,
-        show=True,
-        opacity=0.8,
-        show_edges=True,
-        title="Feed System Assembly (Enclosed Design)",
-        show_labels=True,
-    )
-    result = viz.render(request)
+    if PYVISTA_AVAILABLE:
+        import pyvista as pv
+
+        print("\nInitializing PyVista plotter...")
+        plotter = pv.Plotter()
+        plotter.set_background('white')
+        plotter.camera.up = (0, 1, 0)  # Y-up coordinate system
+
+        # Component colors
+        colors = {
+            'hopper': '#F0AD4E',        # Orange
+            'airlock': '#3498DB',       # Light Blue
+            'screw_feeder': '#27AE60',  # Green
+            'deagglomerator': '#9B59B6', # Purple
+            'transition': '#95A5A6',    # Gray
+        }
+
+        # Add hopper
+        if feed.hopper is not None:
+            print("  Adding hopper mesh...")
+            try:
+                v, i, _ = feed.hopper.generate_mesh()
+                v = v + np.array(feed._hopper_position)
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['hopper'], label='Feed Hopper', opacity=0.85)
+            except Exception as e:
+                print(f"    Warning: Failed to add hopper: {e}")
+
+        # Add airlock
+        if feed.airlock is not None:
+            print("  Adding airlock mesh...")
+            try:
+                v, i, _ = feed.airlock.generate_mesh()
+                v = v + np.array(feed._airlock_position)
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['airlock'], label='Rotary Airlock', opacity=0.85)
+            except Exception as e:
+                print(f"    Warning: Failed to add airlock: {e}")
+
+        # Add screw feeder
+        if feed.feeder is not None:
+            print("  Adding screw feeder mesh...")
+            try:
+                v, i, _ = feed.feeder.generate_mesh()
+                v = v + np.array(feed._feeder_position)
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['screw_feeder'], label='Screw Feeder', opacity=0.85)
+            except Exception as e:
+                print(f"    Warning: Failed to add screw feeder: {e}")
+
+        # Add deagglomerator
+        if feed.deagglomerator is not None:
+            print("  Adding deagglomerator mesh...")
+            try:
+                v, i, _ = feed.deagglomerator.generate_mesh()
+                v = v + np.array(feed._deagglomerator_position)
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['deagglomerator'], label='Deagglomerator', opacity=0.85)
+            except Exception as e:
+                print(f"    Warning: Failed to add deagglomerator: {e}")
+
+        # Add transition connectors (format: transition, position, name)
+        if hasattr(feed, '_transition_connectors') and feed._transition_connectors:
+            print(f"  Adding {len(feed._transition_connectors)} transition connectors...")
+            for idx, connector_data in enumerate(feed._transition_connectors):
+                try:
+                    trans = connector_data[0]
+                    # Position is baked into transition center, use (0,0,0) offset
+                    v, i, _ = trans.generate_mesh()
+                    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                    mesh = pv.PolyData(v, faces)
+                    plotter.add_mesh(mesh, color=colors['transition'],
+                                    label="Transitions" if idx == 0 else None, opacity=0.7)
+                except Exception as e:
+                    print(f"    Warning: Failed to add transition {idx}: {e}")
+
+        plotter.add_legend(bcolor='white', face='circle')
+        plotter.add_title('Feed System Assembly')
+        plotter.add_axes()
+        
+        # Reset camera to fit entire scene and set isometric view
+        plotter.reset_camera()
+        plotter.camera.azimuth = -170
+        plotter.camera.elevation = -20
+
+        print("\nOpening visualization window...")
+        print("(Close the window to continue)")
+        plotter.show(interactive=True)
+
+        result = {'success': True, 'message': 'Feed system visualized with PyVista'}
+    else:
+        # Fallback to basic visualization
+        viz = GeometryVisualizer()
+        request = VisualizationRequest(
+            target_type="assembly",
+            assembly=feed,
+            show=True,
+            opacity=0.8,
+            show_edges=True,
+            title="Feed System Assembly (Enclosed Design)",
+            show_labels=True,
+        )
+        result = viz.render(request)
 
     print(f"\nResult: {result['message']}")
     return result
 
 
 def visualize_air_system_assembly():
-    """Visualize the air system assembly."""
+    """Visualize the air system assembly with color-coded components."""
     print("\n" + "=" * 60)
     print("AIR SYSTEM ASSEMBLY VISUALIZATION")
     print("=" * 60)
 
     from airclassifier.geometry.assembly import create_standard_air_system
+    import numpy as np
 
     air = create_standard_air_system()
     vertices, indices = air.build_mesh()
@@ -394,15 +497,99 @@ def visualize_air_system_assembly():
 
     air.print_summary()
 
-    viz = GeometryVisualizer()
-    result = viz.visualize_assembly(
-        air,
-        name="Air System",
-        show=True,
-        opacity=0.8,
-        color="#5CB85C",
-        title="Air System Assembly"
-    )
+    if PYVISTA_AVAILABLE:
+        import pyvista as pv
+
+        print("\nInitializing PyVista plotter...")
+        plotter = pv.Plotter()
+        plotter.set_background('white')
+        plotter.camera.up = (0, 1, 0)  # Y-up coordinate system
+
+        # Component colors
+        colors = {
+            'air_filter': '#3498DB',    # Blue
+            'blower': '#27AE60',        # Green
+            'damper': '#F39C12',        # Orange
+            'duct': '#95A5A6',          # Gray
+        }
+
+        # Add inlet filter
+        if air.inlet_filter is not None:
+            print("  Adding inlet filter mesh...")
+            try:
+                v, i, _ = air.inlet_filter.generate_mesh()
+                v = v + np.array(air._filter_position)
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['air_filter'], label='Inlet Filter', opacity=0.85)
+            except Exception as e:
+                print(f"    Warning: Failed to add inlet filter: {e}")
+
+        # Add blower
+        if air.blower is not None:
+            print("  Adding blower mesh...")
+            try:
+                v, i, _ = air.blower.generate_mesh()
+                v = v + np.array(air._blower_position)
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['blower'], label='Centrifugal Blower', opacity=0.85)
+            except Exception as e:
+                print(f"    Warning: Failed to add blower: {e}")
+
+        # Add dampers
+        if hasattr(air, 'dampers') and air.dampers:
+            print(f"  Adding {len(air.dampers)} damper(s)...")
+            for idx, (damper, position) in enumerate(zip(air.dampers, air._damper_positions)):
+                try:
+                    v, i, _ = damper.generate_mesh()
+                    v = v + np.array(position)
+                    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                    mesh = pv.PolyData(v, faces)
+                    plotter.add_mesh(mesh, color=colors['damper'],
+                                    label='Flow Damper' if idx == 0 else None, opacity=0.85)
+                except Exception as e:
+                    print(f"    Warning: Failed to add damper {idx}: {e}")
+
+        # Add duct sections
+        if hasattr(air, '_duct_sections') and air._duct_sections:
+            print(f"  Adding {len(air._duct_sections)} duct sections...")
+            for idx, (duct, position) in enumerate(air._duct_sections):
+                try:
+                    v, i, _ = duct.generate_mesh()
+                    v = v + np.array(position)
+                    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                    mesh = pv.PolyData(v, faces)
+                    plotter.add_mesh(mesh, color=colors['duct'],
+                                    label='Ductwork' if idx == 0 else None, opacity=0.7)
+                except Exception as e:
+                    print(f"    Warning: Failed to add duct section {idx}: {e}")
+
+        plotter.add_legend(bcolor='white', face='circle')
+        plotter.add_title('Air System Assembly')
+        plotter.add_axes()
+        
+        # Reset camera to fit entire scene and set isometric view
+        plotter.reset_camera()
+        plotter.camera.azimuth = -170
+        plotter.camera.elevation = -20
+
+        print("\nOpening visualization window...")
+        print("(Close the window to continue)")
+        plotter.show(interactive=True)
+
+        result = {'success': True, 'message': 'Air system visualized with PyVista'}
+    else:
+        # Fallback to basic visualization
+        viz = GeometryVisualizer()
+        result = viz.visualize_assembly(
+            air,
+            name="Air System",
+            show=True,
+            opacity=0.8,
+            color="#5CB85C",
+            title="Air System Assembly"
+        )
 
     print(f"\nResult: {result['message']}")
     return result
@@ -500,6 +687,11 @@ def visualize_classification_system():
             plotter.add_legend(bcolor='white', face='circle')
             plotter.add_title('Classification System - Port-Based Assembly')
             plotter.add_axes()
+            
+            # Reset camera to fit entire scene and set isometric view
+            plotter.reset_camera()
+            plotter.camera.azimuth = -170
+            plotter.camera.elevation = -20
 
             print("\nOpening visualization window...")
             print("(Close the window to continue)")
@@ -627,6 +819,11 @@ def visualize_core_system():
         plotter.add_title('Core System - 3 Duct Connections')
         plotter.add_axes()
         plotter.add_bounding_box(color='lightgray', opacity=0.1)
+        
+        # Reset camera to fit entire scene and set isometric view
+        plotter.reset_camera()
+        plotter.camera.azimuth = -170
+        plotter.camera.elevation = -20
 
         print("\nOpening visualization window...")
         print("(Close the window to continue)")
@@ -914,29 +1111,13 @@ def interactive_menu():
 
 
 def run_all_visualizations():
-    """Run all visualizations in sequence."""
-    print("\nRunning all visualizations...")
-
-    visualize_cyclone(use_mesh=False)
-    input("\nPress Enter to continue to next visualization...")
-
-    visualize_multicyclone(use_mesh=False)
-    input("\nPress Enter to continue to next visualization...")
-
-    visualize_blower(use_mesh=False)
-    input("\nPress Enter to continue to next visualization...")
-
-    visualize_deagglomerator(use_mesh=False)
-    input("\nPress Enter to continue to next visualization...")
-
-    visualize_hopper(use_mesh=False)
-    input("\nPress Enter to continue to next visualization...")
-
-    visualize_airlock(use_mesh=False)
-    input("\nPress Enter to continue to next visualization...")
-
-    visualize_zigzag(use_mesh=False)
-    input("\nPress Enter to continue to next visualization...")
+    """Run the 3 system assemblies and the complete core system."""
+    print("\nRunning system visualizations...")
+    print("  1. Feed System Assembly")
+    print("  2. Air System Assembly")
+    print("  3. Classification System Assembly")
+    print("  4. Complete Core System")
+    print()
 
     visualize_feed_system_assembly()
     input("\nPress Enter to continue to next visualization...")
@@ -950,7 +1131,7 @@ def run_all_visualizations():
     visualize_core_system()
 
     print("\n" + "=" * 60)
-    print("ALL VISUALIZATIONS COMPLETE")
+    print("ALL SYSTEM VISUALIZATIONS COMPLETE")
     print("=" * 60)
 
 

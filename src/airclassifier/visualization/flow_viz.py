@@ -873,3 +873,607 @@ def generate_seed_points_grid(
     points[:, 2] = Z.ravel()
 
     return points
+
+
+# =============================================================================
+# SYSTEM-LEVEL VISUALIZATION
+# =============================================================================
+
+def visualize_air_system_flow(
+    simulator,
+    figsize: Tuple[float, float] = (14, 6),
+    save_path: Optional[str] = None
+):
+    """
+    Visualize flow through the air system.
+
+    Shows blower RPM, flow rate, pressure, and power over time.
+
+    Args:
+        simulator: AirSystemSimulator instance (after running)
+        figsize: Figure size
+        save_path: Optional path to save figure
+
+    Returns:
+        Matplotlib figure
+    """
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+
+    results = simulator.get_results()
+    time = simulator.state.time
+
+    # Plot 1: Blower RPM
+    ax = axes[0, 0]
+    ax.axhline(results['blower_rpm'], color='blue', linewidth=2)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Blower RPM')
+    ax.set_title(f"Blower Speed: {results['blower_rpm']:.0f} RPM")
+    ax.grid(True, alpha=0.3)
+
+    # Plot 2: Flow Rate
+    ax = axes[0, 1]
+    ax.axhline(results['flow_rate_m3_h'], color='green', linewidth=2)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Flow Rate (m³/h)')
+    ax.set_title(f"Flow Rate: {results['flow_rate_m3_h']:.0f} m³/h")
+    ax.grid(True, alpha=0.3)
+
+    # Plot 3: Pressure
+    ax = axes[1, 0]
+    ax.axhline(results['pressure_Pa'], color='red', linewidth=2)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Pressure (Pa)')
+    ax.set_title(f"System Pressure: {results['pressure_Pa']:.0f} Pa")
+    ax.grid(True, alpha=0.3)
+
+    # Plot 4: Power
+    ax = axes[1, 1]
+    ax.axhline(results['power_consumption_kW'], color='orange', linewidth=2)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Power (kW)')
+    ax.set_title(f"Power: {results['power_consumption_kW']:.2f} kW")
+    ax.grid(True, alpha=0.3)
+
+    plt.suptitle(f"Air System State: {results['system_state']}", fontsize=14)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Air system visualization saved to: {save_path}")
+
+    return fig
+
+
+def visualize_feed_system_flow(
+    simulator,
+    figsize: Tuple[float, float] = (14, 6),
+    save_path: Optional[str] = None
+):
+    """
+    Visualize material flow through the feed system.
+
+    Shows component speeds, mass flow, and hopper level.
+
+    Args:
+        simulator: FeedSystemSimulator instance (after running)
+        figsize: Figure size
+        save_path: Optional path to save figure
+
+    Returns:
+        Matplotlib figure
+    """
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+
+    results = simulator.get_results()
+
+    # Plot 1: Component Speeds
+    ax = axes[0, 0]
+    speeds = [results['airlock_rpm'], results['feeder_rpm'], results['deagg_rpm']]
+    names = ['Airlock', 'Feeder', 'Deagglomerator']
+    colors = ['blue', 'green', 'red']
+    bars = ax.bar(names, speeds, color=colors, alpha=0.7)
+    ax.set_ylabel('RPM')
+    ax.set_title('Component Speeds')
+    for bar, speed in zip(bars, speeds):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 10,
+                f'{speed:.0f}', ha='center', va='bottom')
+
+    # Plot 2: Mass Flow Rate
+    ax = axes[0, 1]
+    ax.bar(['Feed Rate'], [results['mass_flow_rate_kg_h']], color='green', alpha=0.7)
+    ax.set_ylabel('Mass Flow (kg/h)')
+    ax.set_title(f"Mass Flow Rate: {results['mass_flow_rate_kg_h']:.0f} kg/h")
+
+    # Plot 3: Hopper Level
+    ax = axes[1, 0]
+    initial_mass = simulator.assembly.params.hopper_capacity_kg
+    remaining_pct = (results['hopper_mass_kg'] / initial_mass) * 100
+    ax.bar(['Hopper'], [remaining_pct], color='orange', alpha=0.7)
+    ax.set_ylabel('Fill Level (%)')
+    ax.set_ylim(0, 100)
+    ax.set_title(f"Hopper Level: {remaining_pct:.1f}% ({results['hopper_mass_kg']:.0f} kg)")
+
+    # Plot 4: System State
+    ax = axes[1, 1]
+    ax.text(0.5, 0.5, results['system_state'].upper(),
+            fontsize=24, ha='center', va='center',
+            transform=ax.transAxes,
+            bbox=dict(boxstyle='round', facecolor='lightgreen' if results['system_state'] == 'running' else 'lightyellow'))
+    ax.axis('off')
+    ax.set_title('System State')
+
+    plt.suptitle("Feed System Status", fontsize=14)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Feed system visualization saved to: {save_path}")
+
+    return fig
+
+
+def visualize_classification_results(
+    simulator,
+    figsize: Tuple[float, float] = (16, 10),
+    save_path: Optional[str] = None
+):
+    """
+    Visualize particle separation results from classification system.
+
+    Shows particle distribution across collection zones and size analysis.
+
+    Args:
+        simulator: ClassificationSystemSimulator instance (after running)
+        figsize: Figure size
+        save_path: Optional path to save figure
+
+    Returns:
+        Matplotlib figure
+    """
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 3, figsize=figsize)
+
+    results = simulator.get_results()
+
+    # Plot 1: Particle Distribution by Zone
+    ax = axes[0, 0]
+    zones = ['Coarse', 'Fines', 'Cyclone 1', 'Cyclone 2', 'Cyclone 3', 'Bag Filter', 'Active']
+    counts = [
+        results['particles_coarse'],
+        results['particles_fines'],
+        results['particles_cyclone_1'],
+        results['particles_cyclone_2'],
+        results['particles_cyclone_3'],
+        results['particles_bag_filter'],
+        results['particles_active'],
+    ]
+    colors = ['brown', 'gold', 'blue', 'green', 'red', 'purple', 'gray']
+    bars = ax.bar(zones, counts, color=colors, alpha=0.7)
+    ax.set_ylabel('Particle Count')
+    ax.set_title('Particle Distribution by Collection Zone')
+    ax.tick_params(axis='x', rotation=45)
+
+    # Plot 2: Separation Efficiency
+    ax = axes[0, 1]
+    efficiency = results['separation_efficiency'] * 100
+    ax.pie([efficiency, 100 - efficiency],
+           labels=[f'Fines ({efficiency:.1f}%)', f'Coarse ({100-efficiency:.1f}%)'],
+           colors=['gold', 'brown'],
+           autopct='%1.1f%%',
+           startangle=90)
+    ax.set_title('Separation Efficiency')
+
+    # Plot 3: Mean Particle Sizes
+    ax = axes[0, 2]
+    sizes = [results['mean_coarse_diameter_um'], results['mean_fines_diameter_um']]
+    ax.bar(['Coarse', 'Fines'], sizes, color=['brown', 'gold'], alpha=0.7)
+    ax.set_ylabel('Mean Diameter (μm)')
+    ax.set_title('Mean Particle Sizes by Fraction')
+    for i, (bar, size) in enumerate(zip(ax.patches, sizes)):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
+                f'{size:.1f} μm', ha='center', va='bottom')
+
+    # Plot 4: Cyclone Collection Summary
+    ax = axes[1, 0]
+    cyclone_counts = [
+        results['particles_cyclone_1'],
+        results['particles_cyclone_2'],
+        results['particles_cyclone_3'],
+    ]
+    cyclone_names = ['Primary\n(Coarse)', 'Secondary\n(Medium)', 'Tertiary\n(Fine)']
+    ax.bar(cyclone_names, cyclone_counts, color=['darkblue', 'blue', 'lightblue'], alpha=0.7)
+    ax.set_ylabel('Particles Collected')
+    ax.set_title('Cyclone Stage Collection')
+
+    # Plot 5: Mass Balance
+    ax = axes[1, 1]
+    total_collected = (results['particles_coarse'] + results['particles_fines'] +
+                      results['particles_cyclone_1'] + results['particles_cyclone_2'] +
+                      results['particles_cyclone_3'] + results['particles_bag_filter'])
+    total_injected = results['particles_injected']
+    balance_pct = (total_collected / max(1, total_injected)) * 100
+
+    ax.bar(['Injected', 'Collected', 'Active'],
+           [total_injected, total_collected, results['particles_active']],
+           color=['green', 'blue', 'gray'], alpha=0.7)
+    ax.set_ylabel('Particle Count')
+    ax.set_title(f'Mass Balance: {balance_pct:.1f}% Collected')
+
+    # Plot 6: Simulation Info
+    ax = axes[1, 2]
+    info_text = (
+        f"Simulation Time: {results['time']:.3f} s\n"
+        f"Time Steps: {results['steps']:,}\n"
+        f"Particles Injected: {results['particles_injected']:,}\n"
+        f"Separation Efficiency: {efficiency:.1f}%\n"
+        f"Mean Coarse Size: {results['mean_coarse_diameter_um']:.1f} μm\n"
+        f"Mean Fines Size: {results['mean_fines_diameter_um']:.1f} μm"
+    )
+    ax.text(0.5, 0.5, info_text, fontsize=12, ha='center', va='center',
+            transform=ax.transAxes, family='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    ax.axis('off')
+    ax.set_title('Simulation Summary')
+
+    plt.suptitle("Classification System Results", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Classification results saved to: {save_path}")
+
+    return fig
+
+
+def visualize_complete_system_status(
+    simulator,
+    figsize: Tuple[float, float] = (18, 12),
+    save_path: Optional[str] = None
+):
+    """
+    Visualize complete system status including all subsystems.
+
+    Creates a comprehensive dashboard showing:
+    - Air system status
+    - Feed system status
+    - Classification results
+    - Overall system metrics
+
+    Args:
+        simulator: CompleteSystemSimulator instance (after running)
+        figsize: Figure size
+        save_path: Optional path to save figure
+
+    Returns:
+        Matplotlib figure
+    """
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=figsize)
+
+    # Create a grid for subplots
+    gs = fig.add_gridspec(3, 4, hspace=0.3, wspace=0.3)
+
+    results = simulator.get_results()
+
+    # =========================================================================
+    # Row 1: System Overview
+    # =========================================================================
+
+    # System State
+    ax = fig.add_subplot(gs[0, 0])
+    state = results['system_state']
+    state_color = 'lightgreen' if state == 'running' else 'lightyellow'
+    ax.text(0.5, 0.5, state.upper(), fontsize=20, ha='center', va='center',
+            transform=ax.transAxes,
+            bbox=dict(boxstyle='round', facecolor=state_color, edgecolor='black'))
+    ax.axis('off')
+    ax.set_title('System State', fontsize=12, fontweight='bold')
+
+    # Flow Rate
+    ax = fig.add_subplot(gs[0, 1])
+    ax.bar(['Flow'], [results['total_flow_rate_m3_h']], color='blue', alpha=0.7)
+    ax.set_ylabel('m³/h')
+    ax.set_title(f"Flow: {results['total_flow_rate_m3_h']:.0f} m³/h", fontsize=10)
+
+    # Pressure
+    ax = fig.add_subplot(gs[0, 2])
+    ax.bar(['Pressure'], [results['system_pressure_Pa']], color='red', alpha=0.7)
+    ax.set_ylabel('Pa')
+    ax.set_title(f"Pressure: {results['system_pressure_Pa']:.0f} Pa", fontsize=10)
+
+    # Power
+    ax = fig.add_subplot(gs[0, 3])
+    ax.bar(['Power'], [results['total_power_kW']], color='orange', alpha=0.7)
+    ax.set_ylabel('kW')
+    ax.set_title(f"Power: {results['total_power_kW']:.2f} kW", fontsize=10)
+
+    # =========================================================================
+    # Row 2: Subsystem Details
+    # =========================================================================
+
+    # Air System
+    ax = fig.add_subplot(gs[1, 0])
+    if 'air_system' in results:
+        air = results['air_system']
+        metrics = ['Blower RPM', 'Flow (m³/h)', 'Pressure (Pa)']
+        values = [air['blower_rpm']/30, air['flow_rate_m3_h']/30, air['pressure_Pa']/50]
+        ax.barh(metrics, values, color='lightblue', alpha=0.7)
+        ax.set_xlabel('Scaled Value')
+        ax.set_title('Air System', fontsize=11, fontweight='bold')
+    else:
+        ax.text(0.5, 0.5, 'N/A', ha='center', va='center', transform=ax.transAxes)
+        ax.axis('off')
+
+    # Feed System
+    ax = fig.add_subplot(gs[1, 1])
+    if 'feed_system' in results:
+        feed = results['feed_system']
+        metrics = ['Airlock', 'Feeder', 'Deagg']
+        values = [feed['airlock_rpm'], feed['feeder_rpm']/10, feed['deagg_rpm']/100]
+        ax.barh(metrics, values, color='lightgreen', alpha=0.7)
+        ax.set_xlabel('RPM (scaled)')
+        ax.set_title('Feed System', fontsize=11, fontweight='bold')
+    else:
+        ax.text(0.5, 0.5, 'N/A', ha='center', va='center', transform=ax.transAxes)
+        ax.axis('off')
+
+    # Classification Overview
+    ax = fig.add_subplot(gs[1, 2:4])
+    if 'classification' in results:
+        cls = results['classification']
+        zones = ['Coarse', 'Fines', 'C1', 'C2', 'C3', 'Filter']
+        counts = [
+            cls['particles_coarse'], cls['particles_fines'],
+            cls['particles_cyclone_1'], cls['particles_cyclone_2'],
+            cls['particles_cyclone_3'], cls['particles_bag_filter']
+        ]
+        colors = ['brown', 'gold', 'blue', 'green', 'red', 'purple']
+        ax.bar(zones, counts, color=colors, alpha=0.7)
+        ax.set_ylabel('Particles')
+        ax.set_title('Classification Results', fontsize=11, fontweight='bold')
+    else:
+        ax.text(0.5, 0.5, 'N/A', ha='center', va='center', transform=ax.transAxes)
+        ax.axis('off')
+
+    # =========================================================================
+    # Row 3: Summary Statistics
+    # =========================================================================
+
+    # Separation Efficiency Pie
+    ax = fig.add_subplot(gs[2, 0:2])
+    if 'classification' in results:
+        cls = results['classification']
+        eff = cls['separation_efficiency'] * 100
+        ax.pie([eff, 100 - eff],
+               labels=[f'Fines\n({eff:.1f}%)', f'Coarse\n({100-eff:.1f}%)'],
+               colors=['gold', 'brown'], autopct='%1.1f%%', startangle=90)
+        ax.set_title('Separation Efficiency', fontsize=11, fontweight='bold')
+    else:
+        ax.text(0.5, 0.5, 'N/A', ha='center', va='center', transform=ax.transAxes)
+        ax.axis('off')
+
+    # Summary Text
+    ax = fig.add_subplot(gs[2, 2:4])
+    summary = (
+        f"═══════════════════════════════════════\n"
+        f"           SIMULATION SUMMARY\n"
+        f"═══════════════════════════════════════\n"
+        f"  Time:           {results['time']:.3f} s\n"
+        f"  Steps:          {results['steps']:,}\n"
+        f"  Flow Rate:      {results['total_flow_rate_m3_h']:.0f} m³/h\n"
+        f"  Feed Rate:      {results['feed_rate_kg_h']:.0f} kg/h\n"
+        f"  Power:          {results['total_power_kW']:.2f} kW\n"
+    )
+    if 'classification' in results:
+        cls = results['classification']
+        summary += (
+            f"  Particles:      {cls['particles_injected']:,}\n"
+            f"  Efficiency:     {cls['separation_efficiency']*100:.1f}%\n"
+        )
+    summary += f"═══════════════════════════════════════"
+
+    ax.text(0.5, 0.5, summary, fontsize=10, ha='center', va='center',
+            transform=ax.transAxes, family='monospace',
+            bbox=dict(boxstyle='round', facecolor='white', edgecolor='black'))
+    ax.axis('off')
+
+    plt.suptitle("Complete Air Classifier System Status", fontsize=16, fontweight='bold')
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Complete system visualization saved to: {save_path}")
+
+    return fig
+
+
+def plot_particle_trajectories_3d(
+    simulator,
+    max_particles: int = 500,
+    sample_interval: int = 10,
+    ax=None,
+    title: str = "Particle Trajectories",
+    color_by_size: bool = True,
+    alpha: float = 0.5
+):
+    """
+    Plot 3D particle trajectories from classification simulation.
+
+    Args:
+        simulator: ClassificationSystemSimulator instance (after running)
+        max_particles: Maximum number of trajectories to plot
+        sample_interval: Sample every N-th particle
+        ax: Matplotlib 3D axes
+        title: Plot title
+        color_by_size: Color trajectories by particle size
+        alpha: Line transparency
+
+    Returns:
+        Matplotlib 3D axes
+    """
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+
+    if ax is None:
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+
+    # Get particle positions
+    positions = simulator.state.positions.numpy()
+    diameters = simulator.state.diameters.numpy()
+    is_active = simulator.state.is_active.numpy()
+
+    # Select particles to plot
+    n_particles = min(max_particles, simulator.state.particles_injected)
+    indices = np.arange(0, simulator.state.particles_injected, sample_interval)[:n_particles]
+
+    # Get colormap
+    if color_by_size:
+        cmap = plt.cm.viridis
+        d_min, d_max = diameters[indices].min(), diameters[indices].max()
+
+    # Plot each particle position
+    for idx in indices:
+        pos = positions[idx]
+        d = diameters[idx]
+
+        if color_by_size and d_max > d_min:
+            color = cmap((d - d_min) / (d_max - d_min))
+        else:
+            color = 'blue'
+
+        ax.scatter(pos[0] * 1000, pos[1] * 1000, pos[2] * 1000,
+                   c=[color], s=20, alpha=alpha)
+
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    ax.set_zlabel('Z (mm)')
+    ax.set_title(title)
+
+    return ax
+
+
+def create_system_flow_summary(
+    complete_assembly,
+    simulator=None,
+    figsize: Tuple[float, float] = (20, 16),
+    save_path: Optional[str] = None
+):
+    """
+    Create comprehensive flow visualization for the complete system.
+
+    Shows:
+    - System geometry (2D projections)
+    - Flow paths through each subsystem
+    - Key operating points
+    - Simulation results (if simulator provided)
+
+    Args:
+        complete_assembly: CompleteClassifierAssembly instance
+        simulator: Optional CompleteSystemSimulator (for results)
+        figsize: Figure size
+        save_path: Optional path to save figure
+
+    Returns:
+        Matplotlib figure
+    """
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+
+    # Get system bounds
+    bounds_min, bounds_max = complete_assembly.get_bounds()
+
+    # =========================================================================
+    # Plot 1: XY Projection (Side View)
+    # =========================================================================
+    ax = axes[0, 0]
+
+    vertices = complete_assembly.vertices
+    ax.scatter(vertices[:, 0], vertices[:, 1], s=0.5, c='blue', alpha=0.3)
+
+    ax.set_xlabel('X (m)')
+    ax.set_ylabel('Y (m)')
+    ax.set_title('System Side View (XY Projection)')
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+
+    # =========================================================================
+    # Plot 2: XZ Projection (Top View)
+    # =========================================================================
+    ax = axes[0, 1]
+
+    ax.scatter(vertices[:, 0], vertices[:, 2], s=0.5, c='green', alpha=0.3)
+
+    ax.set_xlabel('X (m)')
+    ax.set_ylabel('Z (m)')
+    ax.set_title('System Top View (XZ Projection)')
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+
+    # =========================================================================
+    # Plot 3: Flow Path Schematic
+    # =========================================================================
+    ax = axes[1, 0]
+
+    # Draw simplified flow path
+    path_x = [0, 1, 2, 3, 4, 5]
+    path_y = [0, 0.5, 1, 1.5, 1, 0.5]
+    ax.plot(path_x, path_y, 'b-', linewidth=3, alpha=0.5)
+    ax.scatter(path_x, path_y, s=100, c=['gray', 'blue', 'green', 'orange', 'red', 'purple'], zorder=5)
+
+    labels = ['Feed', 'Airlock', 'Venturi', 'Zigzag', 'Cyclones', 'Bag Filter']
+    for i, (x, y, label) in enumerate(zip(path_x, path_y, labels)):
+        ax.annotate(label, (x, y), textcoords='offset points', xytext=(0, 15),
+                    ha='center', fontsize=10, fontweight='bold')
+
+    ax.set_xlim(-0.5, 5.5)
+    ax.set_ylim(-0.5, 2)
+    ax.set_title('Material Flow Path')
+    ax.axis('off')
+
+    # =========================================================================
+    # Plot 4: System Summary
+    # =========================================================================
+    ax = axes[1, 1]
+
+    summary = complete_assembly.get_system_summary()
+
+    text = (
+        f"╔══════════════════════════════════════════╗\n"
+        f"║      COMPLETE SYSTEM SUMMARY             ║\n"
+        f"╠══════════════════════════════════════════╣\n"
+        f"║  Throughput:    {summary['design_throughput_kg_h']:.0f} kg/h             ║\n"
+        f"║  Cut Size:      {summary['design_cut_size_um']:.0f} μm                ║\n"
+        f"║  Air Flow:      {summary['design_air_flow_m3_h']:.0f} m³/h            ║\n"
+        f"║                                          ║\n"
+        f"║  Subsystems:    {summary['num_subsystems']}                      ║\n"
+        f"║  Components:    {summary['num_components']}                      ║\n"
+        f"║  Duct Sections: {summary['num_duct_connections']}                     ║\n"
+        f"║                                          ║\n"
+        f"║  Dimensions:    {summary['dimensions_m'][0]:.1f} x {summary['dimensions_m'][1]:.1f} x {summary['dimensions_m'][2]:.1f} m    ║\n"
+        f"║  Vertices:      {summary['total_vertices']:,}               ║\n"
+        f"║  Triangles:     {summary['total_triangles']:,}               ║\n"
+        f"╚══════════════════════════════════════════╝"
+    )
+
+    ax.text(0.5, 0.5, text, fontsize=11, ha='center', va='center',
+            transform=ax.transAxes, family='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', edgecolor='black'))
+    ax.axis('off')
+    ax.set_title('System Specifications')
+
+    plt.suptitle("Complete Air Classifier System Flow Visualization",
+                 fontsize=16, fontweight='bold')
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"System flow summary saved to: {save_path}")
+
+    return fig

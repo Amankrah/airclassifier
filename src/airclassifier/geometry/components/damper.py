@@ -109,14 +109,19 @@ class FlowDamper:
     Flow control damper for air flow regulation.
 
     Components:
-    - Cylindrical housing
-    - Damper blade(s)
-    - Actuator housing
-    - Flanges
+    - Cylindrical housing (static)
+    - Damper blade(s) (ANIMATED - rotates based on position)
+    - Actuator housing (static)
+    - Flanges (static)
 
     Coordinate system:
     - Origin at center of damper
     - Flow along specified axis
+    
+    Animation:
+    - Butterfly blade rotates from 0° (closed) to 90° (open)
+    - Use get_blade_mesh() for animated blade
+    - Use get_static_mesh() for non-moving parts
     """
 
     def __init__(self, params: DamperParams):
@@ -130,6 +135,18 @@ class FlowDamper:
         self._vertices = None
         self._indices = None
         self._normals = None
+        
+        # Animation state
+        self._current_position = params.position  # 0=closed, 1=open
+        self._target_position = params.position
+        
+        # Cached separate meshes for animation
+        self._static_vertices = None
+        self._static_indices = None
+        self._static_normals = None
+        self._blade_base_vertices = None  # Blade at position=0
+        self._blade_indices = None
+        self._blade_base_normals = None
 
     def generate_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -1377,6 +1394,238 @@ class FlowDamper:
             indices.extend([v0, v1, v2])
             indices.extend([v0, v2, v3])
 
+    # =========================================================================
+    # ANIMATION METHODS
+    # =========================================================================
+    
+    def update_animation(self, dt: float, target_position: float = None, 
+                         transition_time: float = 0.5):
+        """
+        Update damper blade animation with smooth transition.
+        
+        The blade rotates from closed (0°) to open (90°).
+        
+        Args:
+            dt: Time step [seconds]
+            target_position: Target position (0=closed, 1=open). 
+                           Uses current target if None.
+            transition_time: Time for full 0→1 transition [seconds]
+        """
+        if target_position is not None:
+            self._target_position = max(0.0, min(1.0, target_position))
+        
+        # Move current position toward target
+        if transition_time > 0:
+            rate = 1.0 / transition_time  # Position change per second
+            delta = self._target_position - self._current_position
+            
+            if abs(delta) > rate * dt:
+                # Haven't reached target yet
+                self._current_position += np.sign(delta) * rate * dt
+            else:
+                # Reached target
+                self._current_position = self._target_position
+        else:
+            self._current_position = self._target_position
+        
+        # Keep in valid range
+        self._current_position = max(0.0, min(1.0, self._current_position))
+    
+    def get_blade_position(self) -> float:
+        """Get current blade position (0=closed, 1=open)."""
+        return self._current_position
+    
+    def get_blade_angle(self) -> float:
+        """
+        Get current blade rotation angle [radians].
+        
+        Position 0 (closed) = 0° = blade perpendicular to flow
+        Position 1 (open) = 90° = blade parallel to flow
+        """
+        return self._current_position * PI / 2
+    
+    def set_blade_position(self, position: float):
+        """
+        Set blade position directly (no animation).
+        
+        Args:
+            position: Position 0=closed, 1=fully open
+        """
+        self._current_position = max(0.0, min(1.0, position))
+        self._target_position = self._current_position
+    
+    def get_blade_transform(self, position: float = None) -> np.ndarray:
+        """
+        Get 4x4 transformation matrix for blade rotation.
+        
+        For butterfly damper (axis='x'):
+        - Blade rotates around Y-axis (shaft axis)
+        - Centered at damper center
+        
+        Args:
+            position: Damper position (0-1). Uses current if None.
+            
+        Returns:
+            4x4 homogeneous transformation matrix
+        """
+        if position is None:
+            position = self._current_position
+        
+        p = self.params
+        cx, cy, cz = p.center
+        
+        # Blade angle: 0 at closed, 90° at open
+        angle = position * PI / 2
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+        
+        if p.axis == "x":
+            # Blade rotates around Y-axis (perpendicular to flow and blade face)
+            # Rotation is in XZ plane
+            transform = np.array([
+                [cos_a,  0, sin_a, cx - cx*cos_a - cz*sin_a],
+                [0,      1, 0,     0],
+                [-sin_a, 0, cos_a, cz + cx*sin_a - cz*cos_a],
+                [0,      0, 0,     1]
+            ], dtype=np.float32)
+        elif p.axis == "y":
+            # Blade rotates around X-axis
+            transform = np.array([
+                [1, 0,      0,     0],
+                [0, cos_a, -sin_a, cy - cy*cos_a + cz*sin_a],
+                [0, sin_a,  cos_a, cz - cy*sin_a - cz*cos_a],
+                [0, 0,      0,     1]
+            ], dtype=np.float32)
+        else:  # z axis
+            # Blade rotates around X-axis
+            transform = np.array([
+                [1, 0,      0,     0],
+                [0, cos_a, -sin_a, cy - cy*cos_a + cz*sin_a],
+                [0, sin_a,  cos_a, cz - cy*sin_a - cz*cos_a],
+                [0, 0,      0,     1]
+            ], dtype=np.float32)
+        
+        return transform
+    
+    def get_static_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get mesh for static (non-moving) parts of the damper.
+        
+        Static parts:
+        - Cylindrical housing
+        - Flanges
+        - Actuator housing
+        
+        Returns:
+            Tuple of (vertices, indices, normals)
+        """
+        if self._static_vertices is None:
+            self._generate_separated_meshes()
+        
+        return self._static_vertices, self._static_indices, self._static_normals
+    
+    def get_blade_mesh(self, position: float = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get mesh for the damper blade at specified position.
+        
+        Uses cached base mesh and applies rotation transform for efficiency.
+        
+        Args:
+            position: Damper position (0=closed, 1=open). 
+                     Uses current position if None.
+            
+        Returns:
+            Tuple of (vertices, indices, normals) with rotation applied
+        """
+        if position is None:
+            position = self._current_position
+        
+        p = self.params
+        
+        # Generate base blade mesh at position=0 if not cached
+        if self._blade_base_vertices is None:
+            blade_verts = []
+            blade_indices = []
+            blade_normals = []
+            
+            # Generate at position=0 (closed)
+            original_position = p.position
+            p.position = 0.0
+            
+            if p.damper_type == "butterfly":
+                self._generate_butterfly_blade(blade_verts, blade_indices, blade_normals)
+            elif p.damper_type == "louver":
+                self._generate_louver_blades(blade_verts, blade_indices, blade_normals)
+            else:
+                self._generate_iris_blades(blade_verts, blade_indices, blade_normals)
+            
+            p.position = original_position
+            
+            self._blade_base_vertices = np.array(blade_verts, dtype=np.float32)
+            self._blade_indices = np.array(blade_indices, dtype=np.int32)
+            self._blade_base_normals = np.array(blade_normals, dtype=np.float32)
+        
+        # Apply rotation based on position
+        # Position 0 = 0° (blade perpendicular to flow - closed)
+        # Position 1 = 90° (blade parallel to flow - open)
+        angle = position * PI / 2
+        
+        if abs(angle) < 1e-6:
+            # No rotation needed
+            return (self._blade_base_vertices.copy(), 
+                    self._blade_indices.copy(), 
+                    self._blade_base_normals.copy())
+        
+        # Apply rotation transform
+        rotated_verts = self._blade_base_vertices.copy()
+        rotated_normals = self._blade_base_normals.copy()
+        
+        cx, cy, cz = p.center
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+        
+        if p.axis == "x":
+            # Blade rotates in XZ plane (around Y axis through blade center)
+            for i in range(len(rotated_verts)):
+                # Translate to origin relative to blade pivot
+                x = rotated_verts[i, 0] - cx
+                z = rotated_verts[i, 2] - cz
+                
+                # Rotate around Y
+                new_x = x * cos_a + z * sin_a
+                new_z = -x * sin_a + z * cos_a
+                
+                rotated_verts[i, 0] = new_x + cx
+                rotated_verts[i, 2] = new_z + cz
+                
+                # Rotate normals
+                nx = rotated_normals[i, 0]
+                nz = rotated_normals[i, 2]
+                rotated_normals[i, 0] = nx * cos_a + nz * sin_a
+                rotated_normals[i, 2] = -nx * sin_a + nz * cos_a
+        else:
+            # For other axes, similar rotation logic
+            pass
+        
+        return rotated_verts, self._blade_indices.copy(), rotated_normals
+    
+    def _generate_separated_meshes(self):
+        """Generate separate meshes for static and animated parts."""
+        p = self.params
+        
+        # Generate static parts
+        static_verts = []
+        static_indices = []
+        static_normals = []
+        
+        self._generate_housing(static_verts, static_indices, static_normals)
+        self._generate_flanges(static_verts, static_indices, static_normals)
+        self._generate_actuator(static_verts, static_indices, static_normals)
+        
+        self._static_vertices = np.array(static_verts, dtype=np.float32)
+        self._static_indices = np.array(static_indices, dtype=np.int32)
+        self._static_normals = np.array(static_normals, dtype=np.float32)
+    
     def set_position(self, position: float):
         """
         Set damper position.
@@ -1385,10 +1634,13 @@ class FlowDamper:
             position: Position 0=closed, 1=fully open
         """
         self.params.position = max(0, min(1, position))
+        self._current_position = self.params.position
+        self._target_position = self.params.position
         # Invalidate mesh to regenerate
         self._vertices = None
         self._indices = None
         self._normals = None
+        self._static_vertices = None  # Also invalidate separated meshes
 
     def get_pressure_drop(self, flow_rate: float) -> float:
         """
@@ -1510,7 +1762,8 @@ class FlowDamper:
 def create_standard_damper(
     diameter: float = 0.30,
     damper_type: str = "butterfly",
-    position: float = 1.0
+    position: float = 1.0,
+    actuator_type: str = "manual"
 ) -> FlowDamper:
     """
     Create a standard flow control damper.
@@ -1519,6 +1772,7 @@ def create_standard_damper(
         diameter: Duct diameter [m]
         damper_type: Type ("butterfly", "louver", "iris")
         position: Initial position (0=closed, 1=open)
+        actuator_type: Actuator type ("manual", "pneumatic", "electric")
 
     Returns:
         FlowDamper instance
@@ -1527,6 +1781,7 @@ def create_standard_damper(
         diameter=diameter,
         damper_type=damper_type,
         position=position,
+        actuator_type=actuator_type,
     )
 
     return FlowDamper(params)

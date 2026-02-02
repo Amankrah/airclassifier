@@ -22,6 +22,7 @@ from .renderer import (
 )
 
 from .flow_viz import (
+    # Single flow field visualization
     plot_velocity_magnitude_slice,
     plot_velocity_components_slice,
     plot_velocity_vectors,
@@ -36,6 +37,13 @@ from .flow_viz import (
     plot_flow_summary,
     generate_seed_points_ring,
     generate_seed_points_grid,
+    # System-level visualization
+    visualize_air_system_flow,
+    visualize_feed_system_flow,
+    visualize_classification_results,
+    visualize_complete_system_status,
+    plot_particle_trajectories_3d,
+    create_system_flow_summary,
 )
 
 from .geometry_viz import (
@@ -83,6 +91,13 @@ __all__ = [
     "plot_flow_summary",
     "generate_seed_points_ring",
     "generate_seed_points_grid",
+    # System-level Visualization
+    "visualize_air_system_flow",
+    "visualize_feed_system_flow",
+    "visualize_classification_results",
+    "visualize_complete_system_status",
+    "plot_particle_trajectories_3d",
+    "create_system_flow_summary",
     # Geometry Visualization
     "GeometryVisualizer",
     "VisualizationRequest",
