@@ -134,6 +134,106 @@ class MaterialDensities:
     GLASS = 2500.0
     CERAMIC = 2400.0
 
+    # =========================================================================
+    # FOOD POWDERS - Plant-Based Protein Sources
+    # =========================================================================
+    
+    # Yellow Pea (Pisum sativum) - True densities
+    YELLOW_PEA_WHOLE = 1420.0        # Whole flour particle density
+    YELLOW_PEA_PROTEIN = 1350.0     # Protein-rich fraction (lighter, finer)
+    YELLOW_PEA_STARCH = 1500.0      # Starch-rich fraction (denser, coarser)
+    YELLOW_PEA_FIBER = 1250.0       # Fiber fraction (lightest)
+    
+    # Faba Bean (Vicia faba) - True densities
+    FABA_BEAN_WHOLE = 1450.0        # Whole flour particle density
+    FABA_BEAN_PROTEIN = 1380.0      # Protein-rich fraction
+    FABA_BEAN_STARCH = 1520.0       # Starch-rich fraction
+    FABA_BEAN_FIBER = 1280.0        # Fiber fraction
+    
+    # Oat (Avena sativa) - True densities
+    OAT_WHOLE = 1350.0              # Whole oat flour
+    OAT_PROTEIN = 1320.0            # Protein-rich fraction
+    OAT_STARCH = 1450.0             # Starch-rich fraction
+    OAT_BRAN = 1280.0               # Bran/fiber fraction
+    OAT_BETA_GLUCAN = 1380.0        # Beta-glucan rich fraction
+    
+    # Generic food powder ranges
+    FLOUR_TYPICAL = 1400.0          # Typical flour density
+    PROTEIN_ISOLATE = 1300.0        # Pure protein isolate
+    STARCH_GRANULE = 1500.0         # Pure starch granule
+
+
+class FoodPowderBulkDensities:
+    """
+    Bulk densities for food powders (includes air between particles).
+    Used for hopper/feeder calculations.
+    """
+    
+    # Yellow Pea
+    YELLOW_PEA_LOOSE = 450.0        # [kg/m³] Loose/poured
+    YELLOW_PEA_TAPPED = 580.0       # [kg/m³] Tapped/settled
+    
+    # Faba Bean
+    FABA_BEAN_LOOSE = 480.0
+    FABA_BEAN_TAPPED = 620.0
+    
+    # Oat
+    OAT_LOOSE = 400.0
+    OAT_TAPPED = 520.0
+
+
+class FoodPowderComposition:
+    """
+    Typical composition of plant protein sources (mass fractions).
+    Used for determining particle type ratios in simulation.
+    """
+    
+    # Yellow Pea flour composition
+    YELLOW_PEA_PROTEIN_CONTENT = 0.23      # 23% protein
+    YELLOW_PEA_STARCH_CONTENT = 0.52       # 52% starch
+    YELLOW_PEA_FIBER_CONTENT = 0.15        # 15% fiber
+    YELLOW_PEA_OTHER_CONTENT = 0.10        # 10% lipids, minerals, etc.
+    
+    # Faba Bean flour composition
+    FABA_BEAN_PROTEIN_CONTENT = 0.28       # 28% protein (higher than pea)
+    FABA_BEAN_STARCH_CONTENT = 0.48        # 48% starch
+    FABA_BEAN_FIBER_CONTENT = 0.14         # 14% fiber
+    FABA_BEAN_OTHER_CONTENT = 0.10         # 10% other
+    
+    # Oat flour composition
+    OAT_PROTEIN_CONTENT = 0.13             # 13% protein
+    OAT_STARCH_CONTENT = 0.60              # 60% starch
+    OAT_FIBER_CONTENT = 0.10               # 10% fiber (incl. beta-glucan)
+    OAT_LIPID_CONTENT = 0.07               # 7% lipids (higher than legumes)
+    OAT_OTHER_CONTENT = 0.10               # 10% other
+
+
+class FoodPowderSizeRanges:
+    """
+    Typical particle size ranges for food powder fractions [m].
+    Based on air classification separation characteristics.
+    """
+    
+    # Protein-rich fraction (finer particles)
+    PROTEIN_D_MIN = 2.0e-6         # 2 μm
+    PROTEIN_D50 = 12.0e-6          # 12 μm median
+    PROTEIN_D_MAX = 35.0e-6        # 35 μm
+    
+    # Starch-rich fraction (coarser particles)  
+    STARCH_D_MIN = 15.0e-6         # 15 μm
+    STARCH_D50 = 45.0e-6           # 45 μm median
+    STARCH_D_MAX = 120.0e-6        # 120 μm
+    
+    # Fiber fraction (large irregular particles)
+    FIBER_D_MIN = 50.0e-6          # 50 μm
+    FIBER_D50 = 150.0e-6           # 150 μm median
+    FIBER_D_MAX = 500.0e-6         # 500 μm
+    
+    # Whole flour (before classification)
+    WHOLE_D_MIN = 2.0e-6           # 2 μm
+    WHOLE_D50 = 50.0e-6            # 50 μm median
+    WHOLE_D_MAX = 500.0e-6         # 500 μm
+
 
 # =============================================================================
 # DIMENSIONLESS NUMBERS THRESHOLDS

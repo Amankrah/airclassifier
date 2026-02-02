@@ -63,6 +63,20 @@ from .geometry_viz import (
     WARP_AVAILABLE,
 )
 
+from .particle_viz import (
+    # Particle visualization classes
+    ParticleVisualizer,
+    ParticleVisualizationConfig,
+    ParticleColorMapper,
+    ColorMode,
+    RenderMode,
+    MatplotlibParticleAnimator,
+    # Convenience functions
+    visualize_particles,
+    animate_simulation,
+    create_separation_animation,
+)
+
 __all__ = [
     # Plotters
     "plot_particle_positions_2d",
@@ -110,4 +124,14 @@ __all__ = [
     "quick_render",
     "PYVISTA_AVAILABLE",
     "WARP_AVAILABLE",
+    # Particle Visualization
+    "ParticleVisualizer",
+    "ParticleVisualizationConfig",
+    "ParticleColorMapper",
+    "ColorMode",
+    "RenderMode",
+    "MatplotlibParticleAnimator",
+    "visualize_particles",
+    "animate_simulation",
+    "create_separation_animation",
 ]

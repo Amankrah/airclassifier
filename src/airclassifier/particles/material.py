@@ -11,7 +11,12 @@ from enum import Enum
 import numpy as np
 import warp as wp
 
-from ..utils.constants import PI, MaterialDensities
+from ..utils.constants import (
+    PI, 
+    MaterialDensities, 
+    FoodPowderSizeRanges,
+    FoodPowderComposition,
+)
 
 
 class SizeDistributionType(Enum):
@@ -141,6 +146,120 @@ class MaterialProperties:
                 density=MaterialDensities.MAGNETITE,
                 sphericity=0.78,
                 restitution_coefficient=0.6,
+            ),
+            # =========================================================
+            # Food Powders - Plant-Based Protein Sources
+            # =========================================================
+            # Yellow Pea
+            "yellow_pea": cls(
+                name="yellow_pea",
+                density=MaterialDensities.YELLOW_PEA_WHOLE,
+                sphericity=0.70,  # Irregular flour particles
+                shape_factor=1.2,
+                surface_roughness=0.15,
+                restitution_coefficient=0.3,  # Soft organic material
+                friction_coefficient=0.5,
+            ),
+            "yellow_pea_protein": cls(
+                name="yellow_pea_protein",
+                density=MaterialDensities.YELLOW_PEA_PROTEIN,
+                sphericity=0.65,  # Fine, irregular protein bodies
+                shape_factor=1.3,
+                surface_roughness=0.20,
+                restitution_coefficient=0.25,
+                friction_coefficient=0.55,
+            ),
+            "yellow_pea_starch": cls(
+                name="yellow_pea_starch",
+                density=MaterialDensities.YELLOW_PEA_STARCH,
+                sphericity=0.85,  # Starch granules are more rounded
+                shape_factor=1.1,
+                surface_roughness=0.08,
+                restitution_coefficient=0.35,
+                friction_coefficient=0.4,
+            ),
+            "yellow_pea_fiber": cls(
+                name="yellow_pea_fiber",
+                density=MaterialDensities.YELLOW_PEA_FIBER,
+                sphericity=0.55,  # Very irregular fiber particles
+                shape_factor=1.5,
+                surface_roughness=0.25,
+                restitution_coefficient=0.20,
+                friction_coefficient=0.60,
+            ),
+            # Faba Bean
+            "faba_bean": cls(
+                name="faba_bean",
+                density=MaterialDensities.FABA_BEAN_WHOLE,
+                sphericity=0.72,
+                shape_factor=1.2,
+                surface_roughness=0.12,
+                restitution_coefficient=0.3,
+                friction_coefficient=0.5,
+            ),
+            "faba_bean_protein": cls(
+                name="faba_bean_protein",
+                density=MaterialDensities.FABA_BEAN_PROTEIN,
+                sphericity=0.68,
+                shape_factor=1.25,
+                surface_roughness=0.18,
+                restitution_coefficient=0.28,
+                friction_coefficient=0.52,
+            ),
+            "faba_bean_starch": cls(
+                name="faba_bean_starch",
+                density=MaterialDensities.FABA_BEAN_STARCH,
+                sphericity=0.82,  # Starch granules
+                shape_factor=1.1,
+                surface_roughness=0.10,
+                restitution_coefficient=0.32,
+                friction_coefficient=0.42,
+            ),
+            "faba_bean_fiber": cls(
+                name="faba_bean_fiber",
+                density=MaterialDensities.FABA_BEAN_FIBER,
+                sphericity=0.52,  # Very irregular fiber particles
+                shape_factor=1.55,
+                surface_roughness=0.28,
+                restitution_coefficient=0.18,
+                friction_coefficient=0.62,
+            ),
+            # Oat
+            "oat": cls(
+                name="oat",
+                density=MaterialDensities.OAT_WHOLE,
+                sphericity=0.68,  # Oat particles tend to be more irregular
+                shape_factor=1.3,
+                surface_roughness=0.18,
+                restitution_coefficient=0.28,
+                friction_coefficient=0.55,
+            ),
+            "oat_protein": cls(
+                name="oat_protein",
+                density=MaterialDensities.OAT_PROTEIN,
+                sphericity=0.62,
+                shape_factor=1.35,
+                surface_roughness=0.22,
+                restitution_coefficient=0.25,
+                friction_coefficient=0.58,
+            ),
+            "oat_starch": cls(
+                name="oat_starch",
+                density=MaterialDensities.OAT_STARCH,
+                sphericity=0.80,
+                shape_factor=1.15,
+                surface_roughness=0.12,
+                restitution_coefficient=0.30,
+                friction_coefficient=0.45,
+            ),
+            "oat_bran": cls(
+                name="oat_bran",
+                density=MaterialDensities.OAT_BRAN,
+                sphericity=0.55,  # Very irregular fiber particles
+                shape_factor=1.5,
+                surface_roughness=0.25,
+                restitution_coefficient=0.20,
+                friction_coefficient=0.60,
             ),
         }
 
@@ -310,6 +429,84 @@ class ParticleMaterial:
         )
 
         return cls(properties=props, size_distribution=size_dist)
+    
+    @classmethod
+    def create_food_powder(
+        cls,
+        source: str,
+        fraction: str = "whole",
+    ) -> "ParticleMaterial":
+        """
+        Create a food powder material with appropriate size distribution.
+        
+        Designed for protein separation from legumes and cereals.
+        
+        Args:
+            source: "yellow_pea", "faba_bean", or "oat"
+            fraction: "whole", "protein", "starch", or "fiber"/"bran"
+            
+        Returns:
+            ParticleMaterial configured for the food powder type
+            
+        Example:
+            >>> pea_protein = ParticleMaterial.create_food_powder("yellow_pea", "protein")
+            >>> oat_flour = ParticleMaterial.create_food_powder("oat", "whole")
+        """
+        source = source.lower().replace(" ", "_")
+        fraction = fraction.lower()
+        
+        # Build material name
+        if fraction == "whole":
+            material_name = source
+        elif source == "oat" and fraction in ["fiber", "bran"]:
+            material_name = f"{source}_bran"
+        else:
+            material_name = f"{source}_{fraction}"
+        
+        # Get size distribution based on fraction type
+        if fraction == "protein":
+            size_params = SizeDistributionParams(
+                type=SizeDistributionType.LOGNORMAL,
+                d_min=FoodPowderSizeRanges.PROTEIN_D_MIN,
+                d_max=FoodPowderSizeRanges.PROTEIN_D_MAX,
+                d50=FoodPowderSizeRanges.PROTEIN_D50,
+                d_mean=FoodPowderSizeRanges.PROTEIN_D50,
+                d_std=FoodPowderSizeRanges.PROTEIN_D50 * 0.6,
+                spread=2.5,  # Narrow distribution for protein
+            )
+        elif fraction == "starch":
+            size_params = SizeDistributionParams(
+                type=SizeDistributionType.ROSIN_RAMMLER,
+                d_min=FoodPowderSizeRanges.STARCH_D_MIN,
+                d_max=FoodPowderSizeRanges.STARCH_D_MAX,
+                d50=FoodPowderSizeRanges.STARCH_D50,
+                d_mean=FoodPowderSizeRanges.STARCH_D50,
+                d_std=FoodPowderSizeRanges.STARCH_D50 * 0.5,
+                spread=2.0,
+            )
+        elif fraction in ["fiber", "bran"]:
+            size_params = SizeDistributionParams(
+                type=SizeDistributionType.ROSIN_RAMMLER,
+                d_min=FoodPowderSizeRanges.FIBER_D_MIN,
+                d_max=FoodPowderSizeRanges.FIBER_D_MAX,
+                d50=FoodPowderSizeRanges.FIBER_D50,
+                d_mean=FoodPowderSizeRanges.FIBER_D50,
+                d_std=FoodPowderSizeRanges.FIBER_D50 * 0.7,
+                spread=1.5,  # Wide distribution for fiber
+            )
+        else:  # whole
+            size_params = SizeDistributionParams(
+                type=SizeDistributionType.ROSIN_RAMMLER,
+                d_min=FoodPowderSizeRanges.WHOLE_D_MIN,
+                d_max=FoodPowderSizeRanges.WHOLE_D_MAX,
+                d50=FoodPowderSizeRanges.WHOLE_D50,
+                d_mean=FoodPowderSizeRanges.WHOLE_D50,
+                d_std=FoodPowderSizeRanges.WHOLE_D50 * 0.8,
+                spread=1.8,  # Broad distribution for whole flour
+            )
+        
+        props = MaterialProperties.from_preset(material_name)
+        return cls(properties=props, size_distribution=size_params)
 
 
 # =============================================================================
