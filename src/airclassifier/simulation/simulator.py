@@ -634,6 +634,176 @@ def particle_particle_collision_kernel(
         velocities[tid] = vel_i + collision_impulse
 
 
+@wp.kernel
+def flow_simulation_kernel(
+    positions: wp.array(dtype=wp.vec3),
+    velocities: wp.array(dtype=wp.vec3),
+    zones: wp.array(dtype=wp.int32),
+    is_active: wp.array(dtype=wp.int32),
+    num_particles: int,
+    # Hopper parameters
+    hopper_center: wp.vec3,
+    hopper_bottom_radius: float,
+    # Airlock parameters
+    airlock_center: wp.vec3,
+    airlock_radius: float,
+    airlock_rpm: float,
+    # Feeder parameters
+    feeder_center: wp.vec3,
+    feeder_radius: float,
+    feeder_length: float,
+    feeder_rpm: float,
+    feeder_pitch: float,
+    # Deagg parameters  
+    deagg_center: wp.vec3,
+    deagg_radius: float,
+    deagg_rpm: float,
+    # Exit Y
+    exit_y: float,
+    # Time
+    dt: float,
+    gravity: float,
+    discharge_open: int,
+):
+    """
+    Simulate particle flow through feed system components.
+    
+    Flow zones:
+    0 = Hopper (gravity flow to discharge)
+    1 = Airlock (rotating vanes carry particles)
+    2 = Screw Feeder (screw pushes particles horizontally)
+    3 = Deagglomerator (high-speed rotation, exit through screen)
+    4 = Exited (particles have left the system)
+    """
+    tid = wp.tid()
+    
+    if tid >= num_particles:
+        return
+    
+    if is_active[tid] == 0:
+        return
+    
+    pos = positions[tid]
+    vel = velocities[tid]
+    zone = zones[tid]
+    
+    # Angular velocities
+    airlock_omega = airlock_rpm * 2.0 * 3.14159 / 60.0  # rad/s
+    feeder_omega = feeder_rpm * 2.0 * 3.14159 / 60.0
+    deagg_omega = deagg_rpm * 2.0 * 3.14159 / 60.0
+    
+    # ===== ZONE 0: HOPPER =====
+    if zone == 0:
+        # Gravity flow
+        vel = vel + wp.vec3(0.0, -gravity * dt, 0.0)
+        vel = vel * 0.98  # Damping
+        
+        # Check if particle reached discharge
+        if discharge_open == 1:
+            py = pos[1] - hopper_center[1]
+            px = pos[0] - hopper_center[0]
+            pz = pos[2] - hopper_center[2]
+            r = wp.sqrt(px * px + pz * pz)
+            
+            if py < hopper_bottom_radius * 0.5 and r < hopper_bottom_radius:
+                # Transition to airlock
+                zones[tid] = 1
+                vel = wp.vec3(0.0, -0.5, 0.0)  # Initial downward velocity
+    
+    # ===== ZONE 1: AIRLOCK =====
+    elif zone == 1:
+        # Particles rotate with airlock vanes
+        px = pos[0] - airlock_center[0]
+        pz = pos[2] - airlock_center[2]
+        r = wp.sqrt(px * px + pz * pz)
+        
+        if r > 0.01:
+            # Tangential velocity from rotation (around Y axis)
+            tangent_x = -pz / r
+            tangent_z = px / r
+            v_tang = airlock_omega * r
+            
+            # Apply rotational velocity + gravity
+            vel = wp.vec3(tangent_x * v_tang * 0.5, -gravity * dt * 0.5, tangent_z * v_tang * 0.5)
+        
+        # Check if reached outlet (bottom of airlock)
+        if pos[1] < airlock_center[1] - airlock_radius * 0.8:
+            # Transition to feeder
+            zones[tid] = 2
+            pos = wp.vec3(feeder_center[0], feeder_center[1], feeder_center[2])
+            vel = wp.vec3(0.5, 0.0, 0.0)  # Initial X velocity toward outlet
+    
+    # ===== ZONE 2: SCREW FEEDER =====
+    elif zone == 2:
+        # Screw feeder pushes particles along X axis
+        # Axial velocity = pitch * rotation rate
+        axial_vel = feeder_pitch * feeder_omega / (2.0 * 3.14159)
+        
+        # Keep particle within feeder tube
+        py = pos[1] - feeder_center[1]
+        pz = pos[2] - feeder_center[2]
+        r_yz = wp.sqrt(py * py + pz * pz)
+        
+        if r_yz > feeder_radius * 0.9:
+            # Push back to center
+            if r_yz > 0.01:
+                factor = feeder_radius * 0.8 / r_yz
+                pos = wp.vec3(pos[0], feeder_center[1] + py * factor, feeder_center[2] + pz * factor)
+        
+        # Screw motion (axial + slight rotation)
+        vel = wp.vec3(axial_vel, 0.0, 0.0)
+        
+        # Check if reached feeder outlet
+        if pos[0] > feeder_center[0] + feeder_length * 0.9:
+            # Transition to deagglomerator
+            zones[tid] = 3
+            pos = wp.vec3(deagg_center[0], deagg_center[1] + deagg_radius * 0.5, deagg_center[2])
+            vel = wp.vec3(0.0, -1.0, 0.0)
+    
+    # ===== ZONE 3: DEAGGLOMERATOR =====
+    elif zone == 3:
+        # High-speed rotation + gravity exit
+        px = pos[0] - deagg_center[0]
+        pz = pos[2] - deagg_center[2]
+        r = wp.sqrt(px * px + pz * pz)
+        
+        if r > 0.01:
+            # Tangential velocity from high-speed rotation
+            tangent_x = -pz / r
+            tangent_z = px / r
+            v_tang = deagg_omega * r * 0.3  # Particles don't move at full rotor speed
+            
+            vel = wp.vec3(tangent_x * v_tang, -gravity * dt, tangent_z * v_tang)
+        
+        # Centrifugal push to edge
+        if r < deagg_radius * 0.9 and r > 0.01:
+            centrifugal = deagg_omega * deagg_omega * r * 0.01
+            pos = pos + wp.vec3(px / r * centrifugal * dt, 0.0, pz / r * centrifugal * dt)
+        
+        # Check if exited through screen (bottom)
+        if pos[1] < deagg_center[1] - deagg_radius * 0.8:
+            # Particle exits system
+            zones[tid] = 4
+            vel = wp.vec3(0.0, -1.0, 0.0)
+    
+    # ===== ZONE 4: EXITED =====
+    elif zone == 4:
+        # Free fall after exiting
+        vel = vel + wp.vec3(0.0, -gravity * dt, 0.0)
+        
+        # Stop at floor
+        if pos[1] < exit_y:
+            pos = wp.vec3(pos[0], exit_y, pos[2])
+            vel = wp.vec3(0.0, 0.0, 0.0)
+            is_active[tid] = 0  # Deactivate
+    
+    # Update position
+    pos = pos + vel * dt
+    
+    positions[tid] = pos
+    velocities[tid] = vel
+
+
 # =============================================================================
 # FEED SYSTEM SIMULATOR
 # =============================================================================
@@ -896,6 +1066,58 @@ class FeedSystemSimulator:
         
         # Discharge state (0 = closed during filling, 1 = open for discharge)
         self._discharge_open = 0
+        
+        # Setup flow path parameters for particle flow simulation
+        self._setup_flow_path()
+    
+    def _setup_flow_path(self):
+        """
+        Setup flow path parameters for particle simulation through all components.
+        
+        Flow path: Hopper -> Airlock -> Screw Feeder -> Deagglomerator -> Exit
+        """
+        # Get component positions
+        hopper_pos = np.array(self.component_positions['hopper'])
+        airlock_pos = np.array(self.component_positions['airlock'])
+        feeder_pos = np.array(self.component_positions['feeder'])
+        deagg_pos = np.array(self.component_positions['deagglomerator'])
+        
+        # Airlock parameters
+        airlock = self.assembly.airlock
+        self.airlock_center = airlock_pos.copy()
+        self.airlock_radius = airlock.params.rotor_diameter / 2
+        self.airlock_length = airlock.params.rotor_length
+        self.airlock_inlet_y = self.airlock_center[1] + self.airlock_radius
+        self.airlock_outlet_y = self.airlock_center[1] - self.airlock_radius
+        
+        # Screw feeder parameters  
+        feeder = self.assembly.feeder
+        self.feeder_center = feeder_pos.copy()
+        self.feeder_radius = feeder.params.screw_diameter / 2 + feeder.params.trough_clearance
+        self.feeder_length = feeder.params.trough_length
+        self.feeder_inlet_pos = self.feeder_center.copy()
+        self.feeder_outlet_pos = self.feeder_center.copy()
+        self.feeder_outlet_pos[0] += self.feeder_length  # Feeder moves along X
+        
+        # Deagglomerator parameters
+        deagg = self.assembly.deagglomerator
+        self.deagg_center = deagg_pos.copy()
+        self.deagg_radius = deagg.params.housing_diameter / 2
+        self.deagg_length = deagg.params.housing_length
+        self.deagg_outlet_y = self.deagg_center[1] - self.deagg_radius
+        
+        # Exit position (below deagglomerator)
+        self.exit_y = self.deagg_outlet_y - 0.2
+        
+        # Flow zone boundaries (Y coordinates)
+        self.flow_zones = {
+            'hopper': (self.hopper_center[1], self.hopper_top_y),
+            'airlock': (self.airlock_outlet_y, self.airlock_inlet_y),
+            'feeder': (self.feeder_center[1] - self.feeder_radius, 
+                      self.feeder_center[1] + self.feeder_radius),
+            'deagg': (self.deagg_outlet_y, self.deagg_center[1] + self.deagg_radius),
+            'exit': (self.exit_y - 0.5, self.exit_y),
+        }
     
     def _allocate_arrays(self):
         """Pre-allocate particle arrays and hash grid."""
@@ -905,6 +1127,9 @@ class FeedSystemSimulator:
         self.state.velocities = wp.zeros(n, dtype=wp.vec3, device=self.device)
         self.state.diameters = wp.zeros(n, dtype=float, device=self.device)
         self.state.is_active = wp.zeros(n, dtype=wp.int32, device=self.device)
+        
+        # Zone tracking: 0=hopper, 1=airlock, 2=feeder, 3=deagg, 4=exit
+        self._particle_zones = wp.zeros(n, dtype=wp.int32, device=self.device)
         
         # Temporary arrays
         self._accelerations = wp.zeros(n, dtype=wp.vec3, device=self.device)
@@ -918,6 +1143,9 @@ class FeedSystemSimulator:
                 dim_z=grid_dim, 
                 device=self.device
             )
+        
+        # Counters for particles in each zone
+        self._zone_counts = {'hopper': 0, 'airlock': 0, 'feeder': 0, 'deagg': 0, 'exit': 0}
     
     def open_lid(self):
         """Start opening the hopper lid."""
@@ -1018,6 +1246,28 @@ class FeedSystemSimulator:
         velocities = self.state.velocities.numpy()[:self.state.particles_poured]
         speeds = np.linalg.norm(velocities, axis=1)
         return float(np.mean(speeds))
+    
+    def _update_zone_counts(self):
+        """
+        Update counts of particles in each flow zone.
+        """
+        if not hasattr(self, '_particle_zones'):
+            return
+        
+        zones = self._particle_zones.numpy()[:self.state.particles_poured]
+        
+        self._zone_counts = {
+            'hopper': int(np.sum(zones == 0)),
+            'airlock': int(np.sum(zones == 1)),
+            'feeder': int(np.sum(zones == 2)),
+            'deagg': int(np.sum(zones == 3)),
+            'exit': int(np.sum(zones == 4)),
+        }
+        
+        # Update hopper mass based on particles in hopper zone
+        if self.state.total_particles_to_pour > 0:
+            mass_per_particle = self.state.target_fill_mass_kg / self.state.total_particles_to_pour
+            self.state.hopper_mass_kg = self._zone_counts['hopper'] * mass_per_particle
     
     def _update_lid_animation(self, dt: float):
         """Update lid opening/closing animation."""
@@ -1302,17 +1552,22 @@ class FeedSystemSimulator:
         
         # ===== MASS FLOW CALCULATION =====
         if self.state.system_state == SystemState.RUNNING:
+            # Enable discharge when system is running
+            self._discharge_open = 1
+            
             # Airlock volumetric flow
             vol_flow_m3_s = self.airlock_pocket_volume * (self.state.airlock_rpm / 60.0)
             self.state.mass_flow_rate_kg_h = (
                 vol_flow_m3_s * self.config.material_bulk_density * 3600.0
             )
             
-            # Deplete hopper
-            mass_removed = self.state.mass_flow_rate_kg_h * dt / 3600.0
-            self.state.hopper_mass_kg = max(0, self.state.hopper_mass_kg - mass_removed)
+            # Mass is now tracked by particles in zones, not simple depletion
+            # Count particles in hopper zone
+            if hasattr(self, '_zone_counts'):
+                self._update_zone_counts()
         else:
             self.state.mass_flow_rate_kg_h = 0.0
+            self._discharge_open = 0  # Keep discharge closed when not running
         
         # ===== DISCHARGE INJECTION (when running) =====
         if self.state.system_state == SystemState.RUNNING and not self.config.enable_pouring:
@@ -1381,6 +1636,47 @@ class FeedSystemSimulator:
                     ],
                     device=self.device
                 )
+            
+            # ===== FLOW THROUGH COMPONENTS (when system is running) =====
+            if self.state.system_state == SystemState.RUNNING and self._discharge_open == 1:
+                # Get feeder pitch for screw motion
+                feeder_pitch = self.assembly.feeder.params.screw_pitch
+                
+                wp.launch(
+                    kernel=flow_simulation_kernel,
+                    dim=n,
+                    inputs=[
+                        self.state.positions,
+                        self.state.velocities,
+                        self._particle_zones,
+                        self.state.is_active,
+                        n,
+                        # Hopper
+                        wp.vec3(float(self.hopper_center[0]), float(self.hopper_center[1]), float(self.hopper_center[2])),
+                        float(self.hopper_bottom_radius),
+                        # Airlock
+                        wp.vec3(float(self.airlock_center[0]), float(self.airlock_center[1]), float(self.airlock_center[2])),
+                        float(self.airlock_radius),
+                        float(self.state.airlock_rpm),
+                        # Feeder
+                        wp.vec3(float(self.feeder_center[0]), float(self.feeder_center[1]), float(self.feeder_center[2])),
+                        float(self.feeder_radius),
+                        float(self.feeder_length),
+                        float(self.state.feeder_rpm),
+                        float(feeder_pitch),
+                        # Deagg
+                        wp.vec3(float(self.deagg_center[0]), float(self.deagg_center[1]), float(self.deagg_center[2])),
+                        float(self.deagg_radius),
+                        float(self.state.deagg_rpm),
+                        # Exit
+                        float(self.exit_y),
+                        # Time
+                        dt,
+                        float(GRAVITY),
+                        self._discharge_open,
+                    ],
+                    device=self.device
+                )
         
         # Update time
         self.state.time += dt
@@ -1402,6 +1698,11 @@ class FeedSystemSimulator:
     
     def get_results(self) -> Dict[str, Any]:
         """Get simulation results."""
+        # Get zone counts if available
+        zone_counts = getattr(self, '_zone_counts', {
+            'hopper': 0, 'airlock': 0, 'feeder': 0, 'deagg': 0, 'exit': 0
+        })
+        
         return {
             "time": self.state.time,
             "steps": self.state.step,
@@ -1423,6 +1724,12 @@ class FeedSystemSimulator:
             "total_particles_to_pour": self.state.total_particles_to_pour,
             "particles_inside_hopper": self.state.particles_inside_hopper,
             "target_fill_mass_kg": self.state.target_fill_mass_kg,
+            # Flow zone counts
+            "zone_hopper": zone_counts.get('hopper', 0),
+            "zone_airlock": zone_counts.get('airlock', 0),
+            "zone_feeder": zone_counts.get('feeder', 0),
+            "zone_deagg": zone_counts.get('deagg', 0),
+            "zone_exit": zone_counts.get('exit', 0),
         }
     
     def get_particle_positions(self) -> np.ndarray:

@@ -773,7 +773,7 @@ def run_feed_system_live():
     # Particle size auto-calculated so 5000 particles fill the hopper volume
     config = FeedSystemConfig(
         dt=5.0e-4,        # 0.5ms timestep
-        duration=8.0,     # 8 second simulation (pour + settle + brief run)
+        duration=20.0,    # 20 second simulation (pour + settle + flow through system)
         output_interval=0.1,
         feed_rate_kg_h=500.0,
         airlock_rpm=20.0,
@@ -974,22 +974,48 @@ def run_feed_system_live():
             # Calculate inside percentage
             inside_pct = (particles_inside / max(1, particles_poured)) * 100 if particles_poured > 0 else 0
             
-            text = (
-                f"FEED SYSTEM SIMULATION\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Phase: {phase}\n"
-                f"Lid: {results['lid_angle']:.0f}° ({lid_state})\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Particles: {particles_poured:,}/{total_to_pour:,}\n"
-                f"Inside hopper: {inside_pct:.0f}%\n"
-                f"Mass: {results['hopper_mass_kg']:.1f}/{target_mass:.0f} kg\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Airlock: {results['airlock_rpm']:.0f} RPM\n"
-                f"Feeder: {results['feeder_rpm']:.0f} RPM\n"
-                f"Flow: {results['mass_flow_rate_kg_h']:.0f} kg/h\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Time: {results['time']:.2f} s"
-            )
+            # Get zone counts during RUNNING phase
+            zone_hopper = results.get('zone_hopper', 0)
+            zone_airlock = results.get('zone_airlock', 0)
+            zone_feeder = results.get('zone_feeder', 0)
+            zone_deagg = results.get('zone_deagg', 0)
+            zone_exit = results.get('zone_exit', 0)
+            
+            if results['system_state'] == 'running':
+                text = (
+                    f"FEED SYSTEM - RUNNING\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Particle Flow:\n"
+                    f"  Hopper:   {zone_hopper:,}\n"
+                    f"  Airlock:  {zone_airlock:,}\n"
+                    f"  Feeder:   {zone_feeder:,}\n"
+                    f"  Deagg:    {zone_deagg:,}\n"
+                    f"  Exited:   {zone_exit:,}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Airlock: {results['airlock_rpm']:.0f} RPM\n"
+                    f"Feeder: {results['feeder_rpm']:.0f} RPM\n"
+                    f"Deagg: {results['deagg_rpm']:.0f} RPM\n"
+                    f"Flow: {results['mass_flow_rate_kg_h']:.0f} kg/h\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Time: {results['time']:.2f} s"
+                )
+            else:
+                text = (
+                    f"FEED SYSTEM SIMULATION\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Phase: {phase}\n"
+                    f"Lid: {results['lid_angle']:.0f}° ({lid_state})\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Particles: {particles_poured:,}/{total_to_pour:,}\n"
+                    f"Inside hopper: {inside_pct:.0f}%\n"
+                    f"Mass: {results['hopper_mass_kg']:.1f}/{target_mass:.0f} kg\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Airlock: {results['airlock_rpm']:.0f} RPM\n"
+                    f"Feeder: {results['feeder_rpm']:.0f} RPM\n"
+                    f"Flow: {results['mass_flow_rate_kg_h']:.0f} kg/h\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Time: {results['time']:.2f} s"
+                )
             
             plotter.add_text(text, position='upper_left', font_size=11, 
                            color='black', name='sim_info')
