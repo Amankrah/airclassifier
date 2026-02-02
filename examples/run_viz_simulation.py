@@ -720,28 +720,82 @@ def run_feed_system_live():
     }
     
     # ============================================
-    # ADD OTHER COMPONENTS (STATIC)
+    # ADD OTHER COMPONENTS (WITH ANIMATED ROTORS)
     # ============================================
-    print("  Adding airlock...")
-    v, i, _ = assembly.airlock.generate_mesh()
-    v = v + np.array(assembly._airlock_position)
-    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
-    mesh = pv.PolyData(v, faces)
+    print("  Adding airlock (static housing + animated rotor)...")
+    # Static housing
+    v_static, i_static, _ = assembly.airlock.get_static_mesh()
+    v_static = v_static + np.array(assembly._airlock_position)
+    faces = np.hstack([[3] + list(face) for face in i_static.reshape(-1, 3)])
+    mesh = pv.PolyData(v_static, faces)
     plotter.add_mesh(mesh, color=COLORS['airlock'], label='Rotary Airlock', opacity=0.85)
     
-    print("  Adding screw feeder...")
-    v, i, _ = assembly.feeder.generate_mesh()
-    v = v + np.array(assembly._feeder_position)
-    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
-    mesh = pv.PolyData(v, faces)
+    # Animated rotor
+    v_rotor, i_rotor, _ = assembly.airlock.get_rotor_mesh(0)
+    v_rotor = v_rotor + np.array(assembly._airlock_position)
+    faces = np.hstack([[3] + list(face) for face in i_rotor.reshape(-1, 3)])
+    airlock_rotor_mesh = pv.PolyData(v_rotor, faces)
+    airlock_rotor_original = v_rotor.copy()
+    airlock_rotor_actor = plotter.add_mesh(airlock_rotor_mesh, color='#4A90D9', opacity=0.9)
+    
+    animated_actors['airlock_rotor'] = {
+        'mesh': airlock_rotor_mesh,
+        'actor': airlock_rotor_actor,
+        'original_points': airlock_rotor_original,
+        'component': assembly.airlock,
+        'position': np.array(assembly._airlock_position),
+        'axis': 'z',  # Rotates around Z-axis
+    }
+    
+    print("  Adding screw feeder (static trough + animated screw)...")
+    # Static trough
+    v_static, i_static, _ = assembly.feeder.get_static_mesh()
+    v_static = v_static + np.array(assembly._feeder_position)
+    faces = np.hstack([[3] + list(face) for face in i_static.reshape(-1, 3)])
+    mesh = pv.PolyData(v_static, faces)
     plotter.add_mesh(mesh, color=COLORS['screw_feeder'], label='Screw Feeder', opacity=0.85)
     
-    print("  Adding deagglomerator...")
-    v, i, _ = assembly.deagglomerator.generate_mesh()
-    v = v + np.array(assembly._deagglomerator_position)
-    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
-    mesh = pv.PolyData(v, faces)
+    # Animated screw
+    v_screw, i_screw, _ = assembly.feeder.get_screw_mesh(0)
+    v_screw = v_screw + np.array(assembly._feeder_position)
+    faces = np.hstack([[3] + list(face) for face in i_screw.reshape(-1, 3)])
+    feeder_screw_mesh = pv.PolyData(v_screw, faces)
+    feeder_screw_original = v_screw.copy()
+    feeder_screw_actor = plotter.add_mesh(feeder_screw_mesh, color='#2ECC71', opacity=0.9)
+    
+    animated_actors['feeder_screw'] = {
+        'mesh': feeder_screw_mesh,
+        'actor': feeder_screw_actor,
+        'original_points': feeder_screw_original,
+        'component': assembly.feeder,
+        'position': np.array(assembly._feeder_position),
+        'axis': 'x',  # Rotates around X-axis
+    }
+    
+    print("  Adding deagglomerator (static housing + animated rotor)...")
+    # Static housing
+    v_static, i_static, _ = assembly.deagglomerator.get_static_mesh()
+    v_static = v_static + np.array(assembly._deagglomerator_position)
+    faces = np.hstack([[3] + list(face) for face in i_static.reshape(-1, 3)])
+    mesh = pv.PolyData(v_static, faces)
     plotter.add_mesh(mesh, color=COLORS['deagglomerator'], label='Deagglomerator', opacity=0.85)
+    
+    # Animated rotor
+    v_rotor, i_rotor, _ = assembly.deagglomerator.get_rotor_mesh(0)
+    v_rotor = v_rotor + np.array(assembly._deagglomerator_position)
+    faces = np.hstack([[3] + list(face) for face in i_rotor.reshape(-1, 3)])
+    deagg_rotor_mesh = pv.PolyData(v_rotor, faces)
+    deagg_rotor_original = v_rotor.copy()
+    deagg_rotor_actor = plotter.add_mesh(deagg_rotor_mesh, color='#9B59B6', opacity=0.9)
+    
+    animated_actors['deagg_rotor'] = {
+        'mesh': deagg_rotor_mesh,
+        'actor': deagg_rotor_actor,
+        'original_points': deagg_rotor_original,
+        'component': assembly.deagglomerator,
+        'position': np.array(assembly._deagglomerator_position),
+        'axis': 'x',  # Rotates around X-axis
+    }
     
     print("  Adding transitions...")
     if hasattr(assembly, '_transition_connectors') and assembly._transition_connectors:
@@ -905,6 +959,50 @@ def run_feed_system_live():
                     lid_data['current_angle'] = current_angle
             
             # ============================================
+            # ANIMATE ROTATING COMPONENTS (AIRLOCK, FEEDER, DEAGG)
+            # ============================================
+            frame_dt = config.dt * steps_per_frame
+            
+            # Airlock rotor rotation
+            if 'airlock_rotor' in animated_actors and results['airlock_rpm'] > 0:
+                data = animated_actors['airlock_rotor']
+                component = data['component']
+                component.update_rotation(frame_dt, results['airlock_rpm'])
+                angle = component.get_rotor_angle()
+                
+                # Get rotated mesh vertices
+                v_rot, _, _ = component.get_rotor_mesh(angle)
+                v_rot = v_rot + data['position']
+                data['mesh'].points[:] = v_rot
+                data['mesh'].Modified()
+            
+            # Screw feeder rotation  
+            if 'feeder_screw' in animated_actors and results['feeder_rpm'] > 0:
+                data = animated_actors['feeder_screw']
+                component = data['component']
+                component.update_rotation(frame_dt, results['feeder_rpm'])
+                angle = component.get_screw_angle()
+                
+                # Get rotated mesh vertices
+                v_rot, _, _ = component.get_screw_mesh(angle)
+                v_rot = v_rot + data['position']
+                data['mesh'].points[:] = v_rot
+                data['mesh'].Modified()
+            
+            # Deagglomerator rotor rotation (high speed!)
+            if 'deagg_rotor' in animated_actors and results['deagg_rpm'] > 0:
+                data = animated_actors['deagg_rotor']
+                component = data['component']
+                component.update_rotation(frame_dt, results['deagg_rpm'])
+                angle = component.get_rotor_angle()
+                
+                # Get rotated mesh vertices
+                v_rot, _, _ = component.get_rotor_mesh(angle)
+                v_rot = v_rot + data['position']
+                data['mesh'].points[:] = v_rot
+                data['mesh'].Modified()
+            
+            # ============================================
             # UPDATE PARTICLE VISUALIZATION
             # ============================================
             positions = simulator.get_particle_positions()
@@ -983,7 +1081,7 @@ def run_feed_system_live():
             
             if results['system_state'] == 'running':
                 text = (
-                    f"FEED SYSTEM - RUNNING\n"
+                    f"FEED SYSTEM - DISCHARGING\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"Particle Flow:\n"
                     f"  Hopper:   {zone_hopper:,}\n"
@@ -996,6 +1094,23 @@ def run_feed_system_live():
                     f"Feeder: {results['feeder_rpm']:.0f} RPM\n"
                     f"Deagg: {results['deagg_rpm']:.0f} RPM\n"
                     f"Flow: {results['mass_flow_rate_kg_h']:.0f} kg/h\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Time: {results['time']:.2f} s"
+                )
+            elif results['system_state'] == 'starting':
+                # Components ramping up after lid closed
+                text = (
+                    f"FEED SYSTEM - STARTING\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Components ramping up...\n"
+                    f"Lid: CLOSED\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Particles: {particles_poured:,}\n"
+                    f"Mass: {results['hopper_mass_kg']:.1f} kg\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Airlock: {results['airlock_rpm']:.0f} RPM\n"
+                    f"Feeder: {results['feeder_rpm']:.0f} RPM\n"
+                    f"Deagg: {results['deagg_rpm']:.0f} RPM\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"Time: {results['time']:.2f} s"
                 )
@@ -1024,12 +1139,19 @@ def run_feed_system_live():
             # Console progress
             if pct >= last_print_pct + print_interval_pct:
                 last_print_pct = int(pct / print_interval_pct) * print_interval_pct
-                inside_info = f"Inside: {inside_pct:.0f}%" if pour_state in ['pouring', 'settling'] else ""
-                print(f"  [{pct:5.1f}%] {phase:14s} | "
-                      f"Lid: {results['lid_angle']:5.1f}° | "
-                      f"Particles: {results['particles_poured']:5,} | "
-                      f"{inside_info:12s} | "
-                      f"Time: {results['time']:.2f}s")
+                
+                if results['system_state'] == 'running':
+                    # Show zone distribution during running
+                    print(f"  [{pct:5.1f}%] {phase:14s} | "
+                          f"H:{zone_hopper:4} A:{zone_airlock:3} F:{zone_feeder:3} D:{zone_deagg:3} E:{zone_exit:4} | "
+                          f"Time: {results['time']:.2f}s")
+                else:
+                    inside_info = f"Inside: {inside_pct:.0f}%" if pour_state in ['pouring', 'settling'] else ""
+                    print(f"  [{pct:5.1f}%] {phase:14s} | "
+                          f"Lid: {results['lid_angle']:5.1f}° | "
+                          f"Particles: {results['particles_poured']:5,} | "
+                          f"{inside_info:12s} | "
+                          f"Time: {results['time']:.2f}s")
             
             time_module.sleep(0.001)
         

@@ -117,6 +117,17 @@ class Deagglomerator:
         self._vertices = None
         self._indices = None
         self._normals = None
+        
+        # Animation state for rotor
+        self._rotor_angle = 0.0  # Current rotation angle [radians]
+        
+        # Cached separate meshes for animation
+        self._static_vertices = None
+        self._static_indices = None
+        self._static_normals = None
+        self._rotor_vertices = None
+        self._rotor_indices = None
+        self._rotor_normals = None
 
     def generate_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -596,6 +607,120 @@ class Deagglomerator:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    # =========================================================================
+    # ANIMATION METHODS
+    # =========================================================================
+    
+    def update_rotation(self, dt: float, rpm: float):
+        """
+        Update rotor rotation angle based on time step and RPM.
+        
+        Args:
+            dt: Time step [seconds]
+            rpm: Rotational speed [RPM]
+        """
+        omega = rpm * TWO_PI / 60.0  # Convert to rad/s
+        self._rotor_angle += omega * dt
+        self._rotor_angle = self._rotor_angle % TWO_PI
+    
+    def get_rotor_angle(self) -> float:
+        """Get current rotor rotation angle [radians]."""
+        return self._rotor_angle
+    
+    def set_rotor_angle(self, angle: float):
+        """Set rotor rotation angle directly [radians]."""
+        self._rotor_angle = angle % TWO_PI
+    
+    def get_static_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get mesh for static parts (housing, screen, inlet/outlet).
+        
+        Returns:
+            Tuple of (vertices, indices, normals)
+        """
+        if self._static_vertices is None:
+            self._generate_separated_meshes()
+        return self._static_vertices, self._static_indices, self._static_normals
+    
+    def get_rotor_mesh(self, angle: float = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get mesh for rotor with pins at specified rotation angle.
+        
+        Args:
+            angle: Rotation angle [radians]. Uses current angle if None.
+            
+        Returns:
+            Tuple of (vertices, indices, normals) with rotation applied
+        """
+        if self._rotor_vertices is None:
+            self._generate_separated_meshes()
+        
+        if angle is None:
+            angle = self._rotor_angle
+        
+        if abs(angle) < 1e-6:
+            return self._rotor_vertices.copy(), self._rotor_indices.copy(), self._rotor_normals.copy()
+        
+        # Apply rotation around X-axis (rotor axis)
+        p = self.params
+        cx, cy, cz = p.center
+        
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+        
+        rotated_vertices = self._rotor_vertices.copy()
+        rotated_normals = self._rotor_normals.copy()
+        
+        for i in range(len(rotated_vertices)):
+            # Translate to origin (rotation around X-axis at center)
+            y = rotated_vertices[i, 1] - cy
+            z = rotated_vertices[i, 2] - cz
+            
+            # Rotate around X-axis (high speed!)
+            new_y = y * cos_a - z * sin_a
+            new_z = y * sin_a + z * cos_a
+            
+            # Translate back
+            rotated_vertices[i, 1] = new_y + cy
+            rotated_vertices[i, 2] = new_z + cz
+            
+            # Rotate normals
+            ny = rotated_normals[i, 1]
+            nz = rotated_normals[i, 2]
+            rotated_normals[i, 1] = ny * cos_a - nz * sin_a
+            rotated_normals[i, 2] = ny * sin_a + nz * cos_a
+        
+        return rotated_vertices, self._rotor_indices.copy(), rotated_normals
+    
+    def _generate_separated_meshes(self):
+        """Generate separate meshes for static parts and animated rotor."""
+        p = self.params
+        
+        # Static parts: housing, screen, inlet/outlet
+        static_verts = []
+        static_indices = []
+        static_normals = []
+        
+        self._generate_housing(static_verts, static_indices, static_normals)
+        self._generate_screen(static_verts, static_indices, static_normals)
+        self._generate_inlet(static_verts, static_indices, static_normals)
+        self._generate_outlet(static_verts, static_indices, static_normals)
+        
+        self._static_vertices = np.array(static_verts, dtype=np.float32)
+        self._static_indices = np.array(static_indices, dtype=np.int32)
+        self._static_normals = np.array(static_normals, dtype=np.float32)
+        
+        # Animated part: rotor with pins
+        rotor_verts = []
+        rotor_indices = []
+        rotor_normals = []
+        
+        self._generate_rotor(rotor_verts, rotor_indices, rotor_normals)
+        
+        self._rotor_vertices = np.array(rotor_verts, dtype=np.float32)
+        self._rotor_indices = np.array(rotor_indices, dtype=np.int32)
+        self._rotor_normals = np.array(rotor_normals, dtype=np.float32)
 
     @property
     def ports(self) -> Dict[str, ConnectionPort]:

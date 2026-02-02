@@ -141,6 +141,17 @@ class ScrewFeeder:
         self._vertices = None
         self._indices = None
         self._normals = None
+        
+        # Animation state for screw
+        self._screw_angle = 0.0  # Current rotation angle [radians]
+        
+        # Cached separate meshes for animation
+        self._static_vertices = None
+        self._static_indices = None
+        self._static_normals = None
+        self._screw_vertices = None
+        self._screw_indices = None
+        self._screw_normals = None
 
     def generate_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -819,6 +830,119 @@ class ScrewFeeder:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    # =========================================================================
+    # ANIMATION METHODS
+    # =========================================================================
+    
+    def update_rotation(self, dt: float, rpm: float):
+        """
+        Update screw rotation angle based on time step and RPM.
+        
+        Args:
+            dt: Time step [seconds]
+            rpm: Rotational speed [RPM]
+        """
+        omega = rpm * TWO_PI / 60.0  # Convert to rad/s
+        self._screw_angle += omega * dt
+        self._screw_angle = self._screw_angle % TWO_PI
+    
+    def get_screw_angle(self) -> float:
+        """Get current screw rotation angle [radians]."""
+        return self._screw_angle
+    
+    def set_screw_angle(self, angle: float):
+        """Set screw rotation angle directly [radians]."""
+        self._screw_angle = angle % TWO_PI
+    
+    def get_static_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get mesh for static parts (trough, end caps, inlet/outlet necks).
+        
+        Returns:
+            Tuple of (vertices, indices, normals)
+        """
+        if self._static_vertices is None:
+            self._generate_separated_meshes()
+        return self._static_vertices, self._static_indices, self._static_normals
+    
+    def get_screw_mesh(self, angle: float = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get mesh for screw/auger at specified rotation angle.
+        
+        Args:
+            angle: Rotation angle [radians]. Uses current angle if None.
+            
+        Returns:
+            Tuple of (vertices, indices, normals) with rotation applied
+        """
+        if self._screw_vertices is None:
+            self._generate_separated_meshes()
+        
+        if angle is None:
+            angle = self._screw_angle
+        
+        if abs(angle) < 1e-6:
+            return self._screw_vertices.copy(), self._screw_indices.copy(), self._screw_normals.copy()
+        
+        # Apply rotation around X-axis (screw axis)
+        p = self.params
+        cx, cy, cz = p.center
+        
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+        
+        rotated_vertices = self._screw_vertices.copy()
+        rotated_normals = self._screw_normals.copy()
+        
+        for i in range(len(rotated_vertices)):
+            # Translate to origin (rotation around X-axis at center)
+            y = rotated_vertices[i, 1] - cy
+            z = rotated_vertices[i, 2] - cz
+            
+            # Rotate around X-axis
+            new_y = y * cos_a - z * sin_a
+            new_z = y * sin_a + z * cos_a
+            
+            # Translate back
+            rotated_vertices[i, 1] = new_y + cy
+            rotated_vertices[i, 2] = new_z + cz
+            
+            # Rotate normals
+            ny = rotated_normals[i, 1]
+            nz = rotated_normals[i, 2]
+            rotated_normals[i, 1] = ny * cos_a - nz * sin_a
+            rotated_normals[i, 2] = ny * sin_a + nz * cos_a
+        
+        return rotated_vertices, self._screw_indices.copy(), rotated_normals
+    
+    def _generate_separated_meshes(self):
+        """Generate separate meshes for static parts and animated screw."""
+        p = self.params
+        
+        # Static parts: trough (enclosed tube), inlet/outlet necks
+        static_verts = []
+        static_indices = []
+        static_normals = []
+        
+        self._generate_trough(static_verts, static_indices, static_normals)
+        self._generate_inlet(static_verts, static_indices, static_normals)
+        self._generate_outlet(static_verts, static_indices, static_normals)
+        
+        self._static_vertices = np.array(static_verts, dtype=np.float32)
+        self._static_indices = np.array(static_indices, dtype=np.int32)
+        self._static_normals = np.array(static_normals, dtype=np.float32)
+        
+        # Animated part: screw with shaft and helical flights
+        screw_verts = []
+        screw_indices = []
+        screw_normals = []
+        
+        self._generate_screw(screw_verts, screw_indices, screw_normals)
+        
+        self._screw_vertices = np.array(screw_verts, dtype=np.float32)
+        self._screw_indices = np.array(screw_indices, dtype=np.int32)
+        self._screw_normals = np.array(screw_normals, dtype=np.float32)
 
     @property
     def ports(self) -> Dict[str, ConnectionPort]:
