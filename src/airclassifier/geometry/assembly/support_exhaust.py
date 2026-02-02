@@ -3,6 +3,11 @@ Support and exhaust system assembly for air classification systems.
 
 This module provides assembly of support structures (frames, legs),
 silencers, and exhaust stacks for complete system installations.
+
+Coordinate System (Y-up):
+    - X: horizontal (width)
+    - Y: vertical (height) - UP
+    - Z: horizontal (depth)
 """
 
 from dataclasses import dataclass, field
@@ -21,9 +26,9 @@ class SupportExhaustParams:
     Parameters for support and exhaust system.
     
     Attributes:
-        frame_width: Support frame width [m]
-        frame_depth: Support frame depth [m]
-        frame_height: Support frame height [m]
+        frame_width: Support frame width [m] (X direction)
+        frame_depth: Support frame depth [m] (Z direction)
+        frame_height: Support frame height [m] (Y direction - vertical)
         has_legs: Whether to include equipment legs
         leg_height: Leg height if included [m]
         num_platform_levels: Number of platform levels
@@ -67,6 +72,7 @@ class SupportExhaustAssembly:
     Complete support and exhaust system assembly.
     
     Assembles structural frames, legs, silencers, and exhaust stacks.
+    Uses Y-up coordinate system (Y is vertical).
     """
     
     def __init__(self, params: SupportExhaustParams):
@@ -94,7 +100,7 @@ class SupportExhaustAssembly:
         p = self.params
         cx, cy, cz = p.center
         
-        # Equipment legs at base
+        # Equipment legs at base (Y is vertical)
         if p.has_legs:
             legs = create_tubular_legs(
                 num_legs=p.num_legs,
@@ -103,11 +109,11 @@ class SupportExhaustAssembly:
                 center=(cx, cy, cz)
             )
             self._components['legs'] = legs
-            frame_base_z = cz + p.leg_height
+            frame_base_y = cy + p.leg_height
         else:
-            frame_base_z = cz
+            frame_base_y = cy
         
-        # Structural frame
+        # Structural frame (sits on top of legs)
         platform_levels = [
             p.frame_height * (i + 1) / (p.num_platform_levels + 1)
             for i in range(p.num_platform_levels)
@@ -119,31 +125,31 @@ class SupportExhaustAssembly:
             depth=p.frame_depth,
             height=p.frame_height,
             platform_levels=platform_levels,
-            center=(cx, cy, frame_base_z)
+            center=(cx, frame_base_y, cz)
         )
         self._components['frame'] = frame
         
-        # Calculate top of frame
-        frame_top_z = frame_base_z + p.frame_height
+        # Calculate top of frame (Y coordinate)
+        frame_top_y = frame_base_y + p.frame_height
         
-        # Silencer (horizontal, near top of frame)
+        # Silencer (horizontal along X, near top of frame)
         if p.has_silencer:
-            silencer_z = frame_top_z - 0.3
+            silencer_y = frame_top_y - 0.3
             silencer = create_absorptive_silencer(
                 diameter=p.silencer_diameter,
                 length=p.silencer_length,
-                center=(cx + p.frame_width/2 + p.silencer_length/2 + 0.1, cy, silencer_z),
-                direction=(1, 0, 0)  # Horizontal
+                center=(cx + p.frame_width/2 + p.silencer_length/2 + 0.1, silencer_y, cz),
+                direction=(1, 0, 0)  # Horizontal along X
             )
             self._components['silencer'] = silencer
         
-        # Exhaust stack (vertical, on top of frame)
+        # Exhaust stack (vertical along Y, on top of frame)
         if p.has_exhaust_stack:
             stack = create_standard_exhaust_stack(
                 diameter=p.stack_diameter,
                 height=p.stack_height,
                 cap_type=p.stack_cap_type,
-                center=(cx, cy, frame_top_z)
+                center=(cx, frame_top_y, cz)
             )
             self._components['exhaust_stack'] = stack
     
@@ -267,7 +273,7 @@ def create_standard_support_exhaust(frame_height: float = 3.0,
     Create a standard support and exhaust system.
     
     Args:
-        frame_height: Frame height [m]
+        frame_height: Frame height [m] (Y direction - vertical)
         stack_height: Exhaust stack height [m]
         **kwargs: Additional parameters
         
@@ -290,9 +296,9 @@ def create_compact_support(frame_width: float = 1.5,
     Create a compact support system for smaller equipment.
     
     Args:
-        frame_width: Frame width [m]
-        frame_depth: Frame depth [m]
-        frame_height: Frame height [m]
+        frame_width: Frame width [m] (X direction)
+        frame_depth: Frame depth [m] (Z direction)
+        frame_height: Frame height [m] (Y direction - vertical)
         **kwargs: Additional parameters
         
     Returns:
@@ -318,9 +324,9 @@ def create_industrial_support(frame_width: float = 4.0,
     Create an industrial-scale support and exhaust system.
     
     Args:
-        frame_width: Frame width [m]
-        frame_depth: Frame depth [m]
-        frame_height: Frame height [m]
+        frame_width: Frame width [m] (X direction)
+        frame_depth: Frame depth [m] (Z direction)
+        frame_height: Frame height [m] (Y direction - vertical)
         **kwargs: Additional parameters
         
     Returns:

@@ -7,6 +7,11 @@ This script demonstrates how to visualize air classifier geometries:
 - Assembled systems (feed, air, classification)
 - Complete core system with duct connections
 
+Coordinate System (Y-up):
+- X: Horizontal (width)
+- Y: Vertical (height) - UP
+- Z: Horizontal (depth)
+
 Individual Component Modes:
     python examples/visualize_geometry.py --cyclone --color    # Cyclone with colors
     python examples/visualize_geometry.py --cyclone --mesh     # Cyclone wireframe
@@ -110,6 +115,7 @@ def render_component(component, name: str, color: str, use_mesh: bool = False, u
 
         plotter = pv.Plotter()
         plotter.set_background('white')
+        plotter.camera.up = (0, 1, 0)  # Y-up coordinate system
 
         faces = np.hstack([[3] + list(face) for face in indices.reshape(-1, 3)])
         mesh = pv.PolyData(vertices, faces)
@@ -434,6 +440,7 @@ def visualize_classification_system():
             print("\nInitializing PyVista plotter...")
             plotter = pv.Plotter()
             plotter.set_background('white')
+            plotter.camera.up = (0, 1, 0)  # Y-up coordinate system
 
             # Component colors
             colors = {
@@ -568,6 +575,7 @@ def visualize_core_system():
 
         print("\nInitializing PyVista plotter...")
         plotter = pv.Plotter()
+        plotter.camera.up = (0, 1, 0)  # Y-up coordinate system
 
         # Add each subsystem with its offset
         for sub_name in system.get_all_subsystem_names():

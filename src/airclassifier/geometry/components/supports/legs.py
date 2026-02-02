@@ -3,6 +3,11 @@ Equipment leg components for air classification systems.
 
 This module provides support leg geometries for equipment mounting
 including tubular legs, channel legs, and adjustable legs.
+
+Coordinate System (Y-up):
+    - X: horizontal (width)
+    - Y: vertical (height) - UP
+    - Z: horizontal (depth)
 """
 
 from dataclasses import dataclass, field
@@ -63,13 +68,13 @@ class EquipmentLegParams:
         return self.mounting_diameter / 2
     
     def get_leg_positions(self) -> List[Tuple[float, float]]:
-        """Get (x, y) positions of each leg."""
+        """Get (x, z) positions of each leg in the horizontal plane."""
         positions = []
         for i in range(self.num_legs):
             angle = 2 * np.pi * i / self.num_legs + np.pi / self.num_legs
             x = self.center[0] + self.mounting_radius * np.cos(angle)
-            y = self.center[1] + self.mounting_radius * np.sin(angle)
-            positions.append((x, y))
+            z = self.center[2] + self.mounting_radius * np.sin(angle)
+            positions.append((x, z))
         return positions
 
 
@@ -78,6 +83,7 @@ class EquipmentLegs:
     Equipment support legs geometry.
     
     Generates mesh for support legs with various configurations.
+    Uses Y-up coordinate system (Y is vertical).
     """
     
     def __init__(self, params: EquipmentLegParams):
@@ -130,29 +136,29 @@ class EquipmentLegs:
         p = self.params
         leg_positions = p.get_leg_positions()
         
-        for leg_x, leg_y in leg_positions:
+        for leg_x, leg_z in leg_positions:
             base_idx = len(all_vertices)
             
             if p.leg_type == "tubular":
                 self._add_tubular_leg(all_vertices, all_indices, all_normals,
-                                     leg_x, leg_y, num_segments, base_idx)
+                                     leg_x, leg_z, num_segments, base_idx)
             elif p.leg_type == "channel":
                 self._add_channel_leg(all_vertices, all_indices, all_normals,
-                                     leg_x, leg_y, num_segments, base_idx)
+                                     leg_x, leg_z, num_segments, base_idx)
             else:  # adjustable
                 self._add_adjustable_leg(all_vertices, all_indices, all_normals,
-                                        leg_x, leg_y, num_segments, base_idx)
+                                        leg_x, leg_z, num_segments, base_idx)
             
             # Add foot
             foot_base_idx = len(all_vertices)
             self._add_foot(all_vertices, all_indices, all_normals,
-                          leg_x, leg_y, num_segments, foot_base_idx)
+                          leg_x, leg_z, num_segments, foot_base_idx)
             
             # Add gusset if specified
             if p.gusset_plates:
                 gusset_base_idx = len(all_vertices)
                 self._add_gusset(all_vertices, all_indices, all_normals,
-                               leg_x, leg_y, gusset_base_idx)
+                               leg_x, leg_z, gusset_base_idx)
         
         self._vertices = np.array(all_vertices, dtype=np.float32)
         self._indices = np.array(all_indices, dtype=np.int32)
@@ -161,20 +167,20 @@ class EquipmentLegs:
         return self._vertices, self._indices, self._normals
     
     def _add_tubular_leg(self, all_vertices, all_indices, all_normals,
-                         leg_x, leg_y, num_segments, base_idx):
-        """Add tubular leg cylinder."""
+                         leg_x, leg_z, num_segments, base_idx):
+        """Add tubular leg cylinder (vertical along Y axis)."""
         p = self.params
-        z_base = p.center[2]
+        y_base = p.center[1]
         
-        # Outer surface
+        # Outer surface - cylinder extends along Y
         for t in [0, 1]:
-            z = z_base + t * p.leg_height
+            y = y_base + t * p.leg_height
             for i in range(num_segments):
                 theta = 2 * np.pi * i / num_segments
                 x = leg_x + p.leg_radius * np.cos(theta)
-                y = leg_y + p.leg_radius * np.sin(theta)
+                z = leg_z + p.leg_radius * np.sin(theta)
                 all_vertices.append([x, y, z])
-                n = [np.cos(theta), np.sin(theta), 0]
+                n = [np.cos(theta), 0, np.sin(theta)]
                 all_normals.append(n)
         
         for i in range(num_segments):
@@ -186,17 +192,17 @@ class EquipmentLegs:
             all_indices.extend([i1, i2, i3])
     
     def _add_channel_leg(self, all_vertices, all_indices, all_normals,
-                         leg_x, leg_y, num_segments, base_idx):
-        """Add channel/C-section leg."""
+                         leg_x, leg_z, num_segments, base_idx):
+        """Add channel/C-section leg (vertical along Y axis)."""
         p = self.params
-        z_base = p.center[2]
+        y_base = p.center[1]
         
         # Channel dimensions
         web = p.leg_diameter
         flange = web * 0.4
         thick = p.wall_thickness
         
-        # Profile points (C-shape cross section)
+        # Profile points (C-shape cross section in XZ plane)
         profile = [
             (flange, 0),
             (0, 0),
@@ -208,14 +214,14 @@ class EquipmentLegs:
             (flange, thick),
         ]
         
-        # Extrude profile
+        # Extrude profile along Y
         for t in [0, 1]:
-            z = z_base + t * p.leg_height
-            for px, py in profile:
+            y = y_base + t * p.leg_height
+            for px, pz in profile:
                 x = leg_x + px - flange/2
-                y = leg_y + py - web/2
+                z = leg_z + pz - web/2
                 all_vertices.append([x, y, z])
-                all_normals.append([0, 0, 1 if t > 0 else -1])
+                all_normals.append([0, 1 if t > 0 else -1, 0])
         
         # Create faces between profile rings
         n = len(profile)
@@ -228,10 +234,10 @@ class EquipmentLegs:
             all_indices.extend([i1, i2, i3])
     
     def _add_adjustable_leg(self, all_vertices, all_indices, all_normals,
-                            leg_x, leg_y, num_segments, base_idx):
-        """Add adjustable leg (threaded rod + tube)."""
+                            leg_x, leg_z, num_segments, base_idx):
+        """Add adjustable leg (threaded rod + tube, vertical along Y)."""
         p = self.params
-        z_base = p.center[2]
+        y_base = p.center[1]
         
         # Upper tube section (2/3 of height)
         tube_height = p.leg_height * 0.65
@@ -239,13 +245,13 @@ class EquipmentLegs:
         
         # Tube section
         for t in [0, 1]:
-            z = z_base + rod_height + t * tube_height
+            y = y_base + rod_height + t * tube_height
             for i in range(num_segments):
                 theta = 2 * np.pi * i / num_segments
                 x = leg_x + p.leg_radius * np.cos(theta)
-                y = leg_y + p.leg_radius * np.sin(theta)
+                z = leg_z + p.leg_radius * np.sin(theta)
                 all_vertices.append([x, y, z])
-                n = [np.cos(theta), np.sin(theta), 0]
+                n = [np.cos(theta), 0, np.sin(theta)]
                 all_normals.append(n)
         
         for i in range(num_segments):
@@ -261,13 +267,13 @@ class EquipmentLegs:
         rod_base = len(all_vertices)
         
         for t in [0, 1]:
-            z = z_base + t * rod_height
+            y = y_base + t * rod_height
             for i in range(num_segments):
                 theta = 2 * np.pi * i / num_segments
                 x = leg_x + rod_radius * np.cos(theta)
-                y = leg_y + rod_radius * np.sin(theta)
+                z = leg_z + rod_radius * np.sin(theta)
                 all_vertices.append([x, y, z])
-                n = [np.cos(theta), np.sin(theta), 0]
+                n = [np.cos(theta), 0, np.sin(theta)]
                 all_normals.append(n)
         
         for i in range(num_segments):
@@ -279,22 +285,22 @@ class EquipmentLegs:
             all_indices.extend([i1, i2, i3])
     
     def _add_foot(self, all_vertices, all_indices, all_normals,
-                  leg_x, leg_y, num_segments, base_idx):
-        """Add foot plate."""
+                  leg_x, leg_z, num_segments, base_idx):
+        """Add foot plate (horizontal in XZ plane)."""
         p = self.params
-        z_base = p.center[2]
+        y_base = p.center[1]
         foot_r = p.foot_diameter / 2
         
         if p.foot_type == "leveling":
             # Leveling pad with central hole
             for t in [0, p.foot_thickness]:
-                z = z_base - p.foot_thickness + t
+                y = y_base - p.foot_thickness + t
                 for i in range(num_segments):
                     theta = 2 * np.pi * i / num_segments
                     x = leg_x + foot_r * np.cos(theta)
-                    y = leg_y + foot_r * np.sin(theta)
+                    z = leg_z + foot_r * np.sin(theta)
                     all_vertices.append([x, y, z])
-                    all_normals.append([0, 0, 1 if t > 0 else -1])
+                    all_normals.append([0, 1 if t > 0 else -1, 0])
             
             # Outer surface
             for i in range(num_segments):
@@ -307,44 +313,44 @@ class EquipmentLegs:
         else:
             # Simple flat plate
             face_base = len(all_vertices)
-            all_vertices.append([leg_x, leg_y, z_base])
-            all_normals.append([0, 0, -1])
+            all_vertices.append([leg_x, y_base, leg_z])
+            all_normals.append([0, -1, 0])
             
             for i in range(num_segments):
                 theta = 2 * np.pi * i / num_segments
                 x = leg_x + foot_r * np.cos(theta)
-                y = leg_y + foot_r * np.sin(theta)
-                all_vertices.append([x, y, z_base])
-                all_normals.append([0, 0, -1])
+                z = leg_z + foot_r * np.sin(theta)
+                all_vertices.append([x, y_base, z])
+                all_normals.append([0, -1, 0])
             
             for i in range(num_segments):
                 all_indices.extend([face_base, face_base + 1 + (i + 1) % num_segments, face_base + 1 + i])
     
     def _add_gusset(self, all_vertices, all_indices, all_normals,
-                    leg_x, leg_y, base_idx):
-        """Add triangular gusset plates."""
+                    leg_x, leg_z, base_idx):
+        """Add triangular gusset plates (vertical triangles)."""
         p = self.params
-        z_top = p.center[2] + p.leg_height
-        z_gusset_bottom = z_top - p.gusset_height
+        y_top = p.center[1] + p.leg_height
+        y_gusset_bottom = y_top - p.gusset_height
         gusset_width = p.leg_radius * 2
         gusset_thick = 0.006
         
-        # Add 4 gusset plates around the leg (at 45 degrees to give rigidity)
+        # Add 4 gusset plates around the leg (at 90 degree intervals)
         for angle in [0, np.pi/2, np.pi, 3*np.pi/2]:
             dx = np.cos(angle)
-            dy = np.sin(angle)
+            dz = np.sin(angle)
             
-            # Gusset triangle vertices
-            v0 = [leg_x + p.leg_radius * dx, leg_y + p.leg_radius * dy, z_gusset_bottom]
-            v1 = [leg_x + p.leg_radius * dx, leg_y + p.leg_radius * dy, z_top]
-            v2 = [leg_x + (p.leg_radius + gusset_width) * dx, 
-                  leg_y + (p.leg_radius + gusset_width) * dy, z_top]
+            # Gusset triangle vertices (in XY plane, extending radially)
+            v0 = [leg_x + p.leg_radius * dx, y_gusset_bottom, leg_z + p.leg_radius * dz]
+            v1 = [leg_x + p.leg_radius * dx, y_top, leg_z + p.leg_radius * dz]
+            v2 = [leg_x + (p.leg_radius + gusset_width) * dx, y_top, 
+                  leg_z + (p.leg_radius + gusset_width) * dz]
             
             gusset_base = len(all_vertices)
             for v in [v0, v1, v2]:
                 all_vertices.append(v)
-                # Normal perpendicular to gusset
-                n = [-dy, dx, 0]
+                # Normal perpendicular to gusset (in XZ plane)
+                n = [-dz, 0, dx]
                 all_normals.append(n)
             
             all_indices.extend([gusset_base, gusset_base + 1, gusset_base + 2])

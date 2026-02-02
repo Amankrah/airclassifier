@@ -107,11 +107,7 @@ class CompleteClassifierAssembly:
         """Build the complete system assembly."""
         p = self.params
 
-        # Build support structure first (defines the frame of reference)
-        if p.include_support_structure:
-            self._build_support_structure()
-
-        # Build classification system (core)
+        # Build classification system (core) FIRST
         self._build_classification_system()
 
         # Build feed system
@@ -130,41 +126,29 @@ class CompleteClassifierAssembly:
         if p.include_ductwork:
             self._build_ductwork()
     
-    def _build_support_structure(self):
-        """Build support frame and legs."""
-        from .support_exhaust import create_standard_support_exhaust
-        
-        p = self.params
-        cx, cy, cz = p.classifier_position
-        
-        support = create_standard_support_exhaust(
-            frame_width=p.frame_width,
-            frame_depth=p.frame_depth,
-            frame_height=p.frame_height,
-            has_exhaust_stack=False,  # We'll add this separately
-            has_silencer=False,
-            center=(cx, cy, cz)
-        )
-        self._subsystems['support_structure'] = support
-    
     def _build_classification_system(self):
-        """Build the classification system (zigzag + cyclones + bag filter)."""
-        from .classification import create_standard_classification_system
+        """
+        Build the classification system (zigzag + cyclones + bag filter).
         
+        Coordinate System (Y-up):
+        - X: Horizontal (width)
+        - Y: Vertical (height) - UP
+        - Z: Horizontal (depth)
+        """
+        from .classification import create_standard_classification_system
+
         p = self.params
         cx, cy, cz = p.classifier_position
-        
-        # Position classification on top of support frame
-        if p.include_support_structure:
-            class_z = cz + p.frame_height + 0.5  # 0.5m above frame
-        else:
-            class_z = cz + 0.5
-        
+
+        # Position classification - elevate 0.5m above base position
+        # Y is the vertical axis, so add elevation to Y
+        class_y = cy + 0.5
+
         classification = create_standard_classification_system(device="cpu")
         self._subsystems['classification'] = classification
-        
+
         # Store position offset for mesh transformation
-        self._subsystems['classification_offset'] = (cx, cy, class_z)
+        self._subsystems['classification_offset'] = (cx, class_y, cz)
     
     def _build_feed_system(self):
         """
@@ -255,12 +239,13 @@ class CompleteClassifierAssembly:
             
         else:
             # Fallback to default position if classification not available
+            # Y-up coordinate system: Y is vertical (height)
             fx, fy, fz = p.feed_position
             if p.include_support_structure:
-                feed_z = fz + p.frame_height + 1.0
+                feed_y = fy + p.frame_height + 1.0  # Add height to Y (vertical)
             else:
-                feed_z = fz + 1.0
-            feed_x, feed_y = fx, fy
+                feed_y = fy + 1.0  # Add height to Y (vertical)
+            feed_x, feed_z = fx, fz
         
         self._subsystems['feed_system_offset'] = (feed_x, feed_y, feed_z)
     
@@ -1580,34 +1565,45 @@ def create_core_connections_system() -> CompleteClassifierAssembly:
     """
     Create a system focused on the three main duct connections.
 
+    Optimized for protein separation with steep gravity-fed chute (~20°).
+    Support structure is excluded to focus on core flow components.
+
     LAYOUT (top view, Y is depth, X is width):
 
                         +Y (back)
                           |
                           |   +-------------+
-                          |   | Bag Filter  |
-                          |   | (part of    |
-                          |   | classif.)   |
+                          |   | FEED SYSTEM |
+                          |   | (hopper)    |
                           |   +-------------+
-                          |
-    +----------+          |   +-------------+
-    | FEED     | ---------+-->|  VENTURI    |  Classification
-    | SYSTEM   |  chute   |   |  (origin)   |  System at (0,0,0)
-    +----------+          |   +-------------+
-    at (-4, -1, Z)        |         ^
+                          |   at (0, +1, 3.5)
+                          |         |
+                          |         | gravity chute
+                          |         v
+                          |   +-------------+
+                          |   |  VENTURI    |  Classification
+                          |   |  (origin)   |  System at (0,0,0)
+                          |   +-------------+
+                          |         ^
                           |         | air duct
-                          |   +-----+-----+
-                          |   | AIR SYSTEM |
-                          |   | (blower)   |
-                          |   +-----------+
-                          |   at (-1, -5, Z)
+                          |   +-------------+
+                          |   | AIR SYSTEM  |
+                          |   | (blower)    |
+                          |   +-------------+
+                          |   at (0, -3, 0)
                        ---+--------------------> +X (right)
                           |
                         -Y (front)
 
+    System Parameters:
+    - Throughput: 500 kg/h
+    - Air flow: 3000 m³/h
+    - Classifier width: 0.15 m
+    - Main duct diameter: 0.2 m
+
     Connections:
-    1. Air System outlet -> Venturi air_inlet
-    2. Feed System outlet -> Venturi solids_inlet
+    1. Air System outlet -> Venturi air_inlet (vertical from front)
+    2. Feed System outlet -> Venturi solids_inlet (gravity chute from above/behind)
     3. Bag Filter clean_air_outlet -> Exhaust silencer
 
     Returns:

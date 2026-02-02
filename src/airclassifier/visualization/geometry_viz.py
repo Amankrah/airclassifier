@@ -152,6 +152,9 @@ class VisualizationRequest:
     show_axes: bool = True
     show_labels: bool = True
     title: Optional[str] = None
+    
+    # Coordinate system
+    up_axis: str = "Y"  # "Y" for Y-up (graphics convention), "Z" for Z-up (engineering)
 
 
 class WarpMeshProcessor:
@@ -293,6 +296,14 @@ class PyVistaRenderer:
         )
         
         self.plotter.set_background(request.background_color)
+        
+        # Set coordinate convention based on up_axis setting
+        # Y-up: common in graphics/CAD/game engines
+        # Z-up: common in engineering/scientific (VTK default)
+        if request.up_axis.upper() == "Y":
+            self.plotter.camera.up = (0, 1, 0)  # Y-up
+        else:
+            self.plotter.camera.up = (0, 0, 1)  # Z-up (default VTK)
         
         if request.show_axes:
             self.plotter.add_axes()
