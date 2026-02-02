@@ -473,56 +473,81 @@ def granular_particle_update_kernel(
     # Update position
     new_pos = pos + vel * dt
     
-    # Check hopper collision using SDF
-    sdf = hopper_sdf(new_pos, hopper_center, top_radius, bottom_radius, 
-                     cylinder_height, cone_height)
-    
-    # Collision with hopper walls (when inside hopper, sdf is negative)
-    # We want particles to stay inside, so check if sdf > -radius (too close to wall)
-    wall_dist = -sdf  # Distance from wall (positive when inside)
-    
-    if wall_dist < radius:
-        # Collision with wall
-        normal = hopper_normal(new_pos, hopper_center, top_radius, bottom_radius,
-                               cylinder_height, cone_height)
-        
-        # Push particle back inside
-        penetration = radius - wall_dist
-        new_pos = new_pos - normal * penetration
-        
-        # Velocity reflection with friction
-        v_normal = wp.dot(vel, normal)
-        
-        if v_normal > 0.0:
-            # Moving toward wall - reflect
-            v_normal_vec = normal * v_normal
-            v_tangent = vel - v_normal_vec
-            
-            # Apply restitution and friction
-            vel = v_tangent * (1.0 - friction) - v_normal_vec * restitution
-    
-    # Check discharge opening - prevent particles from falling through bottom
-    py = new_pos[1] - hopper_center[1]
+    # Local coordinates relative to hopper center (bottom of discharge)
     px = new_pos[0] - hopper_center[0]
+    py = new_pos[1] - hopper_center[1]  # Height above discharge
     pz = new_pos[2] - hopper_center[2]
     r = wp.sqrt(px * px + pz * pz)
     
-    # Particle near or below discharge opening
-    if py < radius * 2.0 and r < bottom_radius + radius:
-        if discharge_open == 0:
-            # Discharge closed - keep particle above the opening
-            # Push up and toward center of cone
-            min_y = hopper_center[1] + radius * 2.0
-            if new_pos[1] < min_y:
-                new_pos = wp.vec3(new_pos[0], min_y, new_pos[2])
-                vel = wp.vec3(vel[0] * 0.2, wp.abs(vel[1]) * 0.1, vel[2] * 0.2)  # Reduce velocity, slight upward
-        # else: particle falls through (discharge)
+    # Hopper geometry heights
+    cone_top_y = cone_height
+    cylinder_top_y = cone_height + cylinder_height
     
-    # Bottom floor collision (if particle escaped)
-    floor_y = hopper_center[1] - 1.0  # Floor 1m below hopper (for escaped particles)
+    # ====== WALL COLLISION ======
+    # Only apply if particle is WITHIN the hopper body (not above the opening)
+    if py >= 0.0 and py < cylinder_top_y:
+        # Calculate wall radius at this height
+        if py < cone_height:
+            # In cone section - radius varies linearly with height
+            t = py / cone_height
+            wall_radius = bottom_radius + t * (top_radius - bottom_radius)
+        else:
+            # In cylinder section - constant radius
+            wall_radius = top_radius
+        
+        # Check if particle is hitting or through the wall
+        dist_from_wall = wall_radius - r  # Positive when inside, negative when outside
+        
+        if dist_from_wall < radius:
+            # Particle is too close to or through the wall - push inward
+            penetration = radius - dist_from_wall
+            
+            # Radial inward normal
+            if r > 1.0e-6:
+                nx = -px / r
+                nz = -pz / r
+            else:
+                nx = 0.0
+                nz = 0.0
+            
+            # For cone section, add upward component to normal
+            if py < cone_height:
+                cone_angle = wp.atan2(top_radius - bottom_radius, cone_height)
+                ny = wp.sin(cone_angle)
+                horiz = wp.cos(cone_angle)
+                normal = wp.normalize(wp.vec3(nx * horiz, ny, nz * horiz))
+            else:
+                normal = wp.vec3(nx, 0.0, nz)
+            
+            # Push particle inward
+            new_pos = new_pos + normal * (penetration + 0.001)
+            
+            # Reflect velocity off wall
+            v_normal = wp.dot(vel, normal)
+            if v_normal < 0.0:  # Moving outward (toward wall)
+                v_normal_vec = normal * v_normal
+                v_tangent = vel - v_normal_vec
+                vel = v_tangent * (1.0 - friction) - v_normal_vec * restitution
+    
+    # ====== DISCHARGE BLOCKING ======
+    # Recalculate local coords after wall collision
+    px = new_pos[0] - hopper_center[0]
+    py = new_pos[1] - hopper_center[1]
+    pz = new_pos[2] - hopper_center[2]
+    r = wp.sqrt(px * px + pz * pz)
+    
+    if discharge_open == 0:
+        # Keep particles above discharge opening
+        min_y = radius * 1.5
+        if py < min_y and r < bottom_radius + radius:
+            new_pos = wp.vec3(new_pos[0], hopper_center[1] + min_y, new_pos[2])
+            vel = wp.vec3(vel[0] * 0.3, 0.0, vel[2] * 0.3)
+    
+    # ====== FLOOR COLLISION (safety) ======
+    floor_y = hopper_center[1] - 0.3
     if new_pos[1] < floor_y + radius:
         new_pos = wp.vec3(new_pos[0], floor_y + radius, new_pos[2])
-        vel = wp.vec3(vel[0] * 0.1, 0.0, vel[2] * 0.1)  # Kill velocity on floor
+        vel = wp.vec3(0.0, 0.0, 0.0)
     
     positions[tid] = new_pos
     velocities[tid] = vel
@@ -1221,16 +1246,17 @@ class FeedSystemSimulator:
                     self.state.hopper_mass_kg = self.state.particles_inside_hopper * mass_per_particle
                 
                 # Settling is complete when:
-                # 1. Most particles are inside hopper (>90%)
+                # 1. ALL particles are inside hopper (100%)
                 # 2. Average velocity is low (particles have settled)
                 # 3. Minimum settling time elapsed (give particles time to fall)
                 particles_inside_ratio = self.state.particles_inside_hopper / max(1, self.state.particles_poured)
-                velocity_settled = avg_velocity < 0.15  # Less than 15 cm/s average
-                min_time_elapsed = settling_elapsed >= 0.3  # At least 0.3s
-                max_time_elapsed = settling_elapsed >= self.config.settling_time * 3  # Safety timeout
+                velocity_settled = avg_velocity < 0.10  # Less than 10 cm/s average
+                min_time_elapsed = settling_elapsed >= 0.5  # At least 0.5s
+                max_time_elapsed = settling_elapsed >= self.config.settling_time * 5  # Safety timeout (longer)
                 
-                # Close lid when settled OR timeout
-                if (particles_inside_ratio > 0.90 and velocity_settled and min_time_elapsed) or max_time_elapsed:
+                # Close lid when ALL particles settled OR timeout
+                all_inside = particles_inside_ratio >= 0.99  # 99%+ inside (account for counting errors)
+                if (all_inside and velocity_settled and min_time_elapsed) or max_time_elapsed:
                     # Final count
                     self._count_particles_inside_hopper()
                     if self.state.total_particles_to_pour > 0:

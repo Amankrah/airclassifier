@@ -773,7 +773,7 @@ def run_feed_system_live():
     # Particle size auto-calculated so 5000 particles fill the hopper volume
     config = FeedSystemConfig(
         dt=5.0e-4,        # 0.5ms timestep
-        duration=15.0,    # 15 second simulation (enough for settling)
+        duration=8.0,     # 8 second simulation (pour + settle + brief run)
         output_interval=0.1,
         feed_rate_kg_h=500.0,
         airlock_rpm=20.0,
@@ -794,7 +794,7 @@ def run_feed_system_live():
         pour_rate_kg_s=200.0,           # 200 kg/s pour rate (~1.5s pour)
         pour_stream_radius=0.35,        # Will be clamped to hopper opening
         visual_particle_diameter=0.05,  # Will be recalculated from volume
-        settling_time=1.0,              # Base settling time (actual uses velocity check)
+        settling_time=2.0,              # Base settling time (actual uses velocity check)
         max_visual_particles=5000,      # 5000 particles to fill hopper
         
         # GRANULAR PHYSICS
