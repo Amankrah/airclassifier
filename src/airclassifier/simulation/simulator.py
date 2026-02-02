@@ -484,22 +484,26 @@ def granular_particle_update_kernel(
     cylinder_top_y = cone_height + cylinder_height
     
     # ====== WALL COLLISION ======
-    # Only apply if particle is WITHIN the hopper body (not above the opening)
-    if py >= 0.0 and py < cylinder_top_y:
+    # Apply wall collision for particles inside hopper AND constrain particles above opening
+    if py >= 0.0:
         # Calculate wall radius at this height
         if py < cone_height:
             # In cone section - radius varies linearly with height
             t = py / cone_height
             wall_radius = bottom_radius + t * (top_radius - bottom_radius)
-        else:
+        elif py < cylinder_top_y:
             # In cylinder section - constant radius
+            wall_radius = top_radius
+        else:
+            # Above cylinder (above opening) - constrain to opening radius
+            # Particles can only be above the opening, not outside it
             wall_radius = top_radius
         
         # Check if particle is hitting or through the wall
         dist_from_wall = wall_radius - r  # Positive when inside, negative when outside
         
         if dist_from_wall < radius:
-            # Particle is too close to or through the wall - push inward
+            # Particle is too close to or through the wall - push inward HARD
             penetration = radius - dist_from_wall
             
             # Radial inward normal
@@ -519,15 +523,41 @@ def granular_particle_update_kernel(
             else:
                 normal = wp.vec3(nx, 0.0, nz)
             
-            # Push particle inward
-            new_pos = new_pos + normal * (penetration + 0.001)
+            # Push particle inward with extra margin
+            new_pos = new_pos + normal * (penetration + radius * 0.1)
             
-            # Reflect velocity off wall
+            # Strongly reflect velocity off wall
             v_normal = wp.dot(vel, normal)
             if v_normal < 0.0:  # Moving outward (toward wall)
                 v_normal_vec = normal * v_normal
                 v_tangent = vel - v_normal_vec
                 vel = v_tangent * (1.0 - friction) - v_normal_vec * restitution
+    
+    # ====== ADDITIONAL CONTAINMENT: Force particles inside hopper radius ======
+    # This catches any particles that escaped through numerical errors
+    px = new_pos[0] - hopper_center[0]
+    py = new_pos[1] - hopper_center[1]
+    pz = new_pos[2] - hopper_center[2]
+    r = wp.sqrt(px * px + pz * pz)
+    
+    # Calculate max allowed radius at this height
+    if py < 0.0:
+        max_r = bottom_radius * 2.0  # Below discharge, wider tolerance
+    elif py < cone_height:
+        t = py / cone_height
+        max_r = bottom_radius + t * (top_radius - bottom_radius)
+    else:
+        max_r = top_radius
+    
+    # Hard clamp to prevent escapes
+    if r > max_r - radius * 0.5:
+        if r > 0.01:
+            factor = (max_r - radius * 0.6) / r
+            new_pos = wp.vec3(hopper_center[0] + px * factor, new_pos[1], hopper_center[2] + pz * factor)
+            # Kill outward velocity
+            radial_v = (px * vel[0] + pz * vel[2]) / r
+            if radial_v > 0.0:
+                vel = wp.vec3(vel[0] - px / r * radial_v, vel[1], vel[2] - pz / r * radial_v)
     
     # ====== DISCHARGE BLOCKING ======
     # Recalculate local coords after wall collision
@@ -705,88 +735,97 @@ def continuous_flow_kernel(
         # Gravity
         vel = vel + wp.vec3(0.0, -gravity * dt, 0.0)
         
-        # Check if near discharge
+        # Check position relative to hopper
         py = pos[1] - hopper_center[1]
         px = pos[0] - hopper_center[0]
         pz = pos[2] - hopper_center[2]
         r = wp.sqrt(px * px + pz * pz)
         
+        # CONTAINMENT: Ensure particles stay within hopper (backup for granular kernel)
+        # This prevents escape through numerical errors
+        max_r = hopper_bottom_radius * 8.0  # Rough hopper top radius
+        if r > max_r * 0.95:
+            if r > 0.01:
+                factor = max_r * 0.9 / r
+                pos = wp.vec3(hopper_center[0] + px * factor, pos[1], hopper_center[2] + pz * factor)
+                # Kill outward velocity
+                radial_v = (px * vel[0] + pz * vel[2]) / r
+                if radial_v > 0.0:
+                    vel = wp.vec3(vel[0] - px / r * radial_v * 1.5, vel[1], vel[2] - pz / r * radial_v * 1.5)
+        
         if discharge_open == 1:
             # Near discharge opening - funnel toward center
             if py < hopper_bottom_radius * 4.0:
-                # Gentle pull toward discharge center
-                if r > hopper_bottom_radius * 0.5:
-                    pull_strength = 0.5 * dt
+                # Stronger pull toward discharge center
+                if r > hopper_bottom_radius * 0.3:
+                    pull_strength = 1.0 * dt
                     norm_r = wp.sqrt(px * px + pz * pz)
                     if norm_r > 0.001:
                         vel = vel + wp.vec3(-px / norm_r * pull_strength, 0.0, -pz / norm_r * pull_strength)
             
             # Transition when passing through discharge hole
-            if py < 0.0 and r < hopper_bottom_radius * 1.5:
+            if py < -hopper_bottom_radius * 0.2 and r < hopper_bottom_radius * 1.2:
                 zones[tid] = 1
-                # Keep velocity, natural transition
-                vel = wp.vec3(vel[0] * 0.3, wp.min(vel[1], -0.3), vel[2] * 0.3)
+                # Place at airlock inlet with downward velocity
+                vel = wp.vec3(vel[0] * 0.2, -0.5, vel[2] * 0.2)
     
     # ===== ZONE 1: AIRLOCK (Rotational metering) =====
+    # Airlock: horizontal cylinder, rotor rotates around Z-axis
+    # - Housing has inlet hole at +Y (top), outlet hole at -Y (bottom)
+    # - Particles enter pocket at top, rotor carries them around, exit at bottom
+    # - Constrain X position (side walls), allow Y movement (through flow)
     elif zone == 1:
         # Position relative to airlock center
         px = pos[0] - airlock_center[0]
         py = pos[1] - airlock_center[1]
         pz = pos[2] - airlock_center[2]
-        r_xz = wp.sqrt(px * px + pz * pz)
         
-        # Gravity + rotational drag from vanes
+        # Gravity pulls particles down through airlock
         vel = vel + wp.vec3(0.0, -gravity * dt, 0.0)
         
-        # Rotational motion - particles are carried by vane pockets
-        # Apply tangential velocity proportional to RPM and contact
-        if r_xz > 0.01:
-            # Tangent direction (around Z axis for airlock)
-            tang_x = -pz / r_xz
-            tang_z = px / r_xz
-            
-            # Particle's angular position
-            particle_angle = wp.atan2(pz, px)
-            
-            # Vane contact - particles near vanes get pushed
-            # Simple model: continuous rotational drag
-            v_tangential = airlock_omega * r_xz * 0.9  # 90% of solid body rotation
-            
-            # Blend current velocity with rotational velocity
-            blend = 0.3  # How quickly particles match rotation
-            vel = wp.vec3(
-                vel[0] * (1.0 - blend) + tang_x * v_tangential * blend,
-                vel[1],  # Keep vertical velocity
-                vel[2] * (1.0 - blend) + tang_z * v_tangential * blend
-            )
+        # Rotational motion - vanes push particles tangentially
+        # Distance from rotation axis (Z)
+        r_from_axis = wp.sqrt(px * px + py * py)
         
-        # Contain within airlock cylinder (horizontal radius)
-        if r_xz > airlock_radius * 0.95:
-            # Push back inward
-            if r_xz > 0.01:
-                factor = airlock_radius * 0.9 / r_xz
-                pos = wp.vec3(airlock_center[0] + px * factor, pos[1], airlock_center[2] + pz * factor)
-                # Kill outward velocity
-                radial_vel = (px * vel[0] + pz * vel[2]) / r_xz
-                if radial_vel > 0.0:
-                    vel = wp.vec3(vel[0] - px / r_xz * radial_vel, vel[1], vel[2] - pz / r_xz * radial_vel)
+        if r_from_axis > 0.02:
+            # Tangent direction around Z axis
+            tang_x = -py / r_from_axis
+            tang_y = px / r_from_axis
+            
+            # Vanes carry particles with rotational velocity (scaled by distance from axis)
+            v_tangential = airlock_omega * r_from_axis * 0.7
+            
+            # Apply rotational push
+            vel = vel + wp.vec3(tang_x * v_tangential * dt * 10.0, tang_y * v_tangential * dt * 10.0, 0.0)
         
-        # Axial containment (within airlock length)
+        # Constrain to airlock housing - only in X direction (side walls)
+        # Allow free movement in Y for through-flow
+        if wp.abs(px) > airlock_radius * 0.85:
+            # Push back from side walls
+            sign_x = 1.0 if px > 0.0 else -1.0
+            pos = wp.vec3(airlock_center[0] + sign_x * airlock_radius * 0.8, pos[1], pos[2])
+            if px * vel[0] > 0.0:  # Moving toward wall
+                vel = wp.vec3(-vel[0] * 0.3, vel[1], vel[2])
+        
+        # Constrain top (don't go back up through inlet once inside)
+        if py > airlock_radius * 0.9:
+            pos = wp.vec3(pos[0], airlock_center[1] + airlock_radius * 0.85, pos[2])
+            if vel[1] > 0.0:
+                vel = wp.vec3(vel[0], 0.0, vel[2])
+        
+        # Axial containment along Z (rotor length)
         half_len = airlock_length / 2.0
-        if py < -half_len:
-            py = -half_len
-            pos = wp.vec3(pos[0], airlock_center[1] + py, pos[2])
-        if py > half_len:
-            py = half_len
-            pos = wp.vec3(pos[0], airlock_center[1] + py, pos[2])
+        if pz < -half_len:
+            pos = wp.vec3(pos[0], pos[1], airlock_center[2] - half_len)
+        if pz > half_len:
+            pos = wp.vec3(pos[0], pos[1], airlock_center[2] + half_len)
         
-        # Transition to feeder: particles at bottom of airlock, near outlet
-        outlet_y = airlock_center[1] - airlock_radius * 0.8
-        if pos[1] < outlet_y and r_xz < airlock_radius * 0.7:
+        # Transition to feeder: particles exit at bottom of airlock (-Y direction)
+        if py < -airlock_radius * 0.7:
             zones[tid] = 2
             # Place at feeder inlet with entry velocity
             pos = wp.vec3(feeder_inlet[0], feeder_inlet[1], feeder_inlet[2])
-            vel = wp.vec3(feeder_axis[0] * 0.2, -0.2, feeder_axis[2] * 0.2)
+            vel = wp.vec3(feeder_axis[0] * 0.5, -0.2, feeder_axis[2] * 0.5)
     
     # ===== ZONE 2: SCREW FEEDER (Axial push from helix) =====
     elif zone == 2:
