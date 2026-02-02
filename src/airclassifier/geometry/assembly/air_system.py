@@ -258,12 +258,11 @@ class AirSystemAssembly:
             self._blower_position[2] + blower_inlet.position[2],
         )
 
-        # Blower outlet port is at scroll edge, but outlet duct extends further
-        # The actual outlet flange is at: port_position + outlet_duct_length
-        # outlet_duct_length = outlet_height * 1.5 (from _generate_outlet)
-        blower_outlet_duct_length = self.blower.params.outlet_height * 1.5
+        # Blower outlet port is now at TOP of scroll (like real centrifugal blowers)
+        # The port position already includes the outlet duct length
+        # (outlet is at: x_end = x_start + outlet_length, y = scroll_top)
         blower_outlet_flange_world = (
-            self._blower_position[0] + blower_outlet.position[0] + blower_outlet_duct_length,
+            self._blower_position[0] + blower_outlet.position[0],
             self._blower_position[1] + blower_outlet.position[1],
             self._blower_position[2] + blower_outlet.position[2],
         )
@@ -275,14 +274,16 @@ class AirSystemAssembly:
         self._damper_positions: List = []
 
         # Position dampers after blower outlet along +X
+        # The blower outlet is now at TOP of scroll, so downstream components
+        # are at the same elevated Y position
         # Direct connection: blower outlet flange → transition (with flange rings) → duct → damper
         transition_length = 0.15  # 150mm rect-to-round transition piece
         duct_after_transition = 0.05  # 50mm round duct
 
-        # Start from actual outlet flange position (end of blower's outlet duct)
+        # Start from actual outlet flange position (at top of scroll)
         # Path: blower flange → transition → duct → damper
         prev_outlet_x = blower_outlet_flange_world[0] + transition_length + duct_after_transition
-        prev_outlet_y = blower_outlet_flange_world[1]
+        prev_outlet_y = blower_outlet_flange_world[1]  # At top of scroll height
         prev_outlet_z = blower_outlet_flange_world[2]
 
         for i in range(p.num_control_dampers):
@@ -306,6 +307,9 @@ class AirSystemAssembly:
             # Update for next component: add small duct section between dampers
             duct_between_dampers = 0.05  # 50mm duct
             prev_outlet_x = damper_pos[0] + damper_outlet.position[0] + duct_between_dampers
+        
+        # Store outlet Y position for ductwork generation
+        self._blower_outlet_y = blower_outlet_flange_world[1]
         
         # ============================================================
         # 4. CREATE CONNECTING DUCTWORK

@@ -300,6 +300,9 @@ class CentrifugalBlower:
 
         # Add side walls of scroll (front and back plates)
         self._generate_scroll_sidewalls(vertices, indices, normals)
+        
+        # Add proper outlet casing extending toward +X direction
+        self._generate_scroll_outlet_casing(vertices, indices, normals)
 
     def _generate_scroll_sidewalls(self, vertices: List, indices: List, normals: List):
         """Generate front and back plates of scroll casing."""
@@ -338,6 +341,244 @@ class CentrifugalBlower:
                 else:
                     indices.extend([v0, v1, v2])
                     indices.extend([v0, v2, v3])
+
+    def _generate_scroll_outlet_casing(self, vertices: List, indices: List, normals: List):
+        """
+        Generate scroll outlet casing extending toward +X direction.
+        
+        This creates the proper housing that transitions from the circular scroll
+        volute to a rectangular outlet duct. In real centrifugal blowers, this is
+        the "discharge casing" or "scroll tongue" area where air exits tangentially.
+        
+        Geometry (top view, looking at -Y):
+        
+                     +Z
+                      │
+            ┌─────────┼─────────┐
+            │  SCROLL │ CASING  │════════► +X (to ductwork)
+            │    ○    │         │  Outlet casing
+            │ impeller│         │
+            └─────────┼─────────┘
+                      │
+                     -Z
+        
+        The outlet casing:
+        1. Extends from the scroll outer edge at theta=0 (where spiral ends)
+        2. Creates a rectangular channel toward +X
+        3. Has top, bottom, front and back walls
+        4. Ends with a flange face for duct connection
+        """
+        p = self.params
+        n_segments = 8  # Resolution for transition
+        
+        # Scroll geometry
+        r_scroll = p.scroll_inner_radius * p.scroll_expansion
+        half_width = p.impeller_width / 2 * 1.2  # Scroll axial half-width
+        
+        # Outlet casing dimensions
+        # Height matches the scroll width (Z dimension becomes Y in outlet)
+        casing_height = p.outlet_height if p.outlet_height else half_width * 2 * 0.8
+        casing_width = p.outlet_width if p.outlet_width else half_width * 2
+        casing_length = p.outlet_height * 2.0  # Length extending toward +X
+        
+        hw = casing_width / 2   # Half width (Z direction)
+        hh = casing_height / 2  # Half height (Y direction)
+        
+        # Starting position: tangent to scroll at theta=0 (+X side)
+        # The scroll at theta=0 has radius r_scroll at position (center_x + r_scroll, center_y)
+        x_start = p.center[0] + r_scroll  # At scroll outer edge
+        x_end = x_start + casing_length    # At flange/outlet face
+        y_center = p.center[1]             # Centered vertically on scroll axis
+        z_center = p.center[2]             # Centered axially
+        
+        # ============================================================
+        # Generate transition from scroll to rectangular casing
+        # ============================================================
+        # The transition blends from the curved scroll surface to flat walls
+        
+        casing_start = len(vertices)
+        
+        # Generate casing as a series of profiles from scroll to outlet
+        for i in range(n_segments + 1):
+            t = i / n_segments  # 0 = at scroll, 1 = at outlet
+            
+            # X position along casing length
+            x = x_start + t * casing_length
+            
+            # Blend from scroll curvature to rectangular
+            # At t=0 (scroll): profile follows scroll curve
+            # At t=1 (outlet): profile is rectangular
+            
+            # Top edge Y position
+            # At scroll: top follows scroll curve
+            # At outlet: flat at y_center + hh
+            y_scroll_top = p.center[1] + np.sqrt(max(0, r_scroll**2 - (x_start - p.center[0])**2)) if t == 0 else 0
+            y_top = p.center[1] + hh  # Target rectangular top
+            if t < 0.3:
+                # Transition zone: blend from scroll curve to flat
+                blend = t / 0.3
+                y_actual_top = y_scroll_top * (1 - blend) + y_top * blend if y_scroll_top > 0 else y_top
+            else:
+                y_actual_top = y_top
+            
+            # Bottom edge Y position  
+            y_scroll_bottom = p.center[1] - np.sqrt(max(0, r_scroll**2 - (x_start - p.center[0])**2)) if t == 0 else 0
+            y_bottom = p.center[1] - hh  # Target rectangular bottom
+            if t < 0.3:
+                blend = t / 0.3
+                y_actual_bottom = y_scroll_bottom * (1 - blend) + y_bottom * blend if y_scroll_bottom < 0 else y_bottom
+            else:
+                y_actual_bottom = y_bottom
+            
+            # Width (Z) - stays roughly constant but can taper slightly
+            z_half = half_width * (1 - t * 0.1) + hw * t * 0.1  # Slight blend to outlet width
+            z_half = hw  # Keep width constant for cleaner geometry
+            
+            # Add 4 corner vertices for this profile
+            # Order: bottom-back, bottom-front, top-front, top-back
+            vertices.append([x, y_actual_bottom, z_center - z_half])  # 0: bottom-back
+            normals.append([0.0, -1.0, 0.0])
+            vertices.append([x, y_actual_bottom, z_center + z_half])  # 1: bottom-front
+            normals.append([0.0, -1.0, 0.0])
+            vertices.append([x, y_actual_top, z_center + z_half])     # 2: top-front
+            normals.append([0.0, 1.0, 0.0])
+            vertices.append([x, y_actual_top, z_center - z_half])     # 3: top-back
+            normals.append([0.0, 1.0, 0.0])
+        
+        # Generate wall surfaces connecting profiles
+        pts_per_profile = 4
+        for i in range(n_segments):
+            base = casing_start + i * pts_per_profile
+            next_base = casing_start + (i + 1) * pts_per_profile
+            
+            # Bottom wall (connects vertices 0 and 1 between profiles)
+            v0, v1 = base + 0, base + 1
+            v2, v3 = next_base + 0, next_base + 1
+            indices.extend([v0, v2, v3])
+            indices.extend([v0, v3, v1])
+            
+            # Top wall (connects vertices 2 and 3 between profiles)
+            v0, v1 = base + 3, base + 2
+            v2, v3 = next_base + 3, next_base + 2
+            indices.extend([v0, v1, v3])
+            indices.extend([v0, v3, v2])
+            
+            # Back wall (-Z side, connects vertices 0 and 3 between profiles)
+            v0, v1 = base + 0, base + 3
+            v2, v3 = next_base + 0, next_base + 3
+            indices.extend([v0, v1, v3])
+            indices.extend([v0, v3, v2])
+            
+            # Front wall (+Z side, connects vertices 1 and 2 between profiles)
+            v0, v1 = base + 1, base + 2
+            v2, v3 = next_base + 1, next_base + 2
+            indices.extend([v0, v3, v1])
+            indices.extend([v0, v2, v3])
+        
+        # ============================================================
+        # End cap / flange face at outlet (for duct connection)
+        # ============================================================
+        flange_start = len(vertices)
+        
+        # Flange is at x_end, rectangular
+        flange_verts = [
+            [x_end, y_center - hh, z_center - hw],  # 0: bottom-back
+            [x_end, y_center - hh, z_center + hw],  # 1: bottom-front
+            [x_end, y_center + hh, z_center + hw],  # 2: top-front
+            [x_end, y_center + hh, z_center - hw],  # 3: top-back
+        ]
+        
+        for v in flange_verts:
+            vertices.append(v)
+            normals.append([1.0, 0.0, 0.0])  # Facing +X
+        
+        # Flange face triangles
+        indices.extend([flange_start, flange_start + 1, flange_start + 2])
+        indices.extend([flange_start, flange_start + 2, flange_start + 3])
+        
+        # ============================================================
+        # Connect casing to scroll body at the starting edge
+        # ============================================================
+        # Add a curved transition piece that blends into the scroll surface
+        self._generate_scroll_casing_blend(vertices, indices, normals, x_start, y_center, z_center, hw, hh, r_scroll, half_width)
+
+    def _generate_scroll_casing_blend(self, vertices: List, indices: List, normals: List,
+                                       x_start: float, y_center: float, z_center: float,
+                                       hw: float, hh: float, r_scroll: float, scroll_half_width: float):
+        """
+        Generate a smooth blend between the circular scroll and rectangular casing.
+        
+        This creates a curved surface that transitions from the scroll's cylindrical
+        shape to the casing's rectangular cross-section.
+        """
+        p = self.params
+        n_blend = 6  # Resolution for blend
+        
+        blend_start = len(vertices)
+        
+        # The blend covers the area from the scroll surface to the casing entrance
+        # It wraps around the +X portion of the scroll (from about -45° to +45° around X axis)
+        
+        angle_range = PI / 3  # 60 degrees total (30° above and below)
+        
+        for i in range(n_blend + 1):
+            t = i / n_blend  # 0 = bottom of blend, 1 = top of blend
+            
+            # Angle on scroll circle (from -angle_range/2 to +angle_range/2, centered at theta=0)
+            angle = -angle_range / 2 + t * angle_range
+            
+            # Position on scroll surface
+            scroll_x = p.center[0] + r_scroll * np.cos(angle)
+            scroll_y = p.center[1] + r_scroll * np.sin(angle)
+            
+            # Target position on casing entrance
+            casing_y = y_center - hh + t * 2 * hh
+            
+            # For each point, generate front and back vertices (along Z)
+            for z_sign in [-1, 1]:
+                z = z_center + z_sign * scroll_half_width  # At scroll width
+                
+                vertices.append([scroll_x, scroll_y, z])
+                # Normal points outward from scroll center
+                normals.append([np.cos(angle), np.sin(angle), 0.0])
+        
+        # Generate triangles for the blend surface
+        for i in range(n_blend):
+            base = blend_start + i * 2
+            next_base = blend_start + (i + 1) * 2
+            
+            # Back face (-Z)
+            indices.extend([base, next_base, next_base + 1])
+            indices.extend([base, next_base + 1, base + 1])
+        
+        # Add side caps for the blend (connect to scroll sidewalls)
+        # These fill the gap between the blend edge and the casing walls
+        for z_sign, z_dir in [(-1, -1.0), (1, 1.0)]:
+            cap_start = len(vertices)
+            z = z_center + z_sign * scroll_half_width
+            
+            # Triangle fan from scroll edge to casing corner
+            # Center point at casing corner
+            casing_corner_y = y_center - hh if z_sign == -1 else y_center + hh
+            vertices.append([x_start, y_center, z])
+            normals.append([0.0, 0.0, z_dir])
+            
+            # Add points along the scroll edge
+            for i in range(n_blend + 1):
+                t = i / n_blend
+                angle = -angle_range / 2 + t * angle_range
+                scroll_x = p.center[0] + r_scroll * np.cos(angle)
+                scroll_y = p.center[1] + r_scroll * np.sin(angle)
+                
+                vertices.append([scroll_x, scroll_y, z])
+                normals.append([0.0, 0.0, z_dir])
+            
+            # Create triangles
+            for i in range(n_blend):
+                if z_sign > 0:
+                    indices.extend([cap_start, cap_start + 1 + i, cap_start + 2 + i])
+                else:
+                    indices.extend([cap_start, cap_start + 2 + i, cap_start + 1 + i])
 
     def _generate_impeller(self, vertices: List, indices: List, normals: List):
         """Generate impeller with blades."""
@@ -545,145 +786,110 @@ class CentrifugalBlower:
 
     def _generate_outlet(self, vertices: List, indices: List, normals: List):
         """
-        Generate rectangular outlet duct with curled scroll-side edge.
-
-        The scroll-side edge is curved to match the scroll body's cylindrical
-        surface for proper welded connection in real-world fabrication.
-        The flange-side is flat rectangular for standard connector attachment.
+        Generate outlet reinforcement/flange details.
+        
+        The main outlet casing is now generated by _generate_scroll_outlet_casing()
+        which creates a proper rectangular duct extending from the scroll toward +X.
+        
+        This method adds additional flange details and reinforcement ribs around
+        the outlet opening for a more realistic appearance.
+        
+        Geometry (top view, looking at -Y):
+        
+                     +Z
+                      │
+            ┌─────────┼─────────┐
+            │  SCROLL │ CASING  │══[FLANGE]══► +X (to ductwork)
+            │    ○    │         │  
+            │ impeller│         │
+            └─────────┼─────────┘
+                      │
+                     -Z
         """
         p = self.params
-        n_curl_segments = 8  # Segments for the curved scroll-side edge
-
-        outlet_start = len(vertices)
-
-        # Outlet position (tangent to scroll at largest radius)
-        r_outlet = p.scroll_inner_radius * p.scroll_expansion
-        outlet_length = p.outlet_height * 1.5
-
-        hw = p.outlet_width / 2  # Half width (Z direction)
-        hh = p.outlet_height / 2  # Half height (Y direction)
-        scroll_half_width = p.impeller_width / 2 * 1.2  # Scroll axial half-width
-
-        # X positions
-        x_start = p.center[0] + r_outlet  # At scroll outer edge
-        x_end = x_start + outlet_length  # At flange
-
-        # Generate curled scroll-side edge vertices
-        # The edge curves inward to match the scroll's cylindrical surface
-        curl_bottom = []  # Bottom edge vertices (Y = center - hh)
-        curl_top = []     # Top edge vertices (Y = center + hh)
-
-        for i in range(n_curl_segments + 1):
-            t = i / n_curl_segments
-            # Z position along the scroll width
-            z = p.center[2] - scroll_half_width + t * 2 * scroll_half_width
-
-            # Curl follows scroll surface: deeper curl at center, less at edges
-            z_normalized = (z - p.center[2]) / scroll_half_width  # -1 to +1
-            curl_depth = 0.015 * (1 - z_normalized ** 2)  # Parabolic curl, max 15mm
-
-            x_curled = x_start - curl_depth
-
-            curl_bottom.append([x_curled, p.center[1] - hh, z])
-            curl_top.append([x_curled, p.center[1] + hh, z])
-
-        # Add curl vertices to mesh
-        curl_bottom_start = len(vertices)
-        for v in curl_bottom:
-            vertices.append(v)
-            normals.append([-1.0, 0.0, 0.0])
-
-        curl_top_start = len(vertices)
-        for v in curl_top:
-            vertices.append(v)
-            normals.append([-1.0, 0.0, 0.0])
-
-        # Flange-side vertices (flat rectangular)
+        
+        # Scroll geometry - must match _generate_scroll_outlet_casing
+        r_scroll = p.scroll_inner_radius * p.scroll_expansion
+        half_width = p.impeller_width / 2 * 1.2
+        
+        # Outlet casing dimensions - must match _generate_scroll_outlet_casing
+        casing_height = p.outlet_height if p.outlet_height else half_width * 2 * 0.8
+        casing_width = p.outlet_width if p.outlet_width else half_width * 2
+        casing_length = p.outlet_height * 2.0
+        
+        hw = casing_width / 2
+        hh = casing_height / 2
+        
+        x_start = p.center[0] + r_scroll
+        x_end = x_start + casing_length
+        y_center = p.center[1]
+        z_center = p.center[2]
+        
+        # ============================================================
+        # Add flange ring around outlet opening
+        # ============================================================
+        flange_thickness = 0.015  # 15mm thick flange
+        flange_width = 0.025     # 25mm wide flange lip
+        
         flange_start = len(vertices)
-        flange_corners = [
-            [x_end, p.center[1] - hh, p.center[2] - hw],  # 0: Bottom-back
-            [x_end, p.center[1] + hh, p.center[2] - hw],  # 1: Top-back
-            [x_end, p.center[1] + hh, p.center[2] + hw],  # 2: Top-front
-            [x_end, p.center[1] - hh, p.center[2] + hw],  # 3: Bottom-front
+        
+        # Outer flange rectangle
+        flange_outer_verts = [
+            [x_end, y_center - hh - flange_width, z_center - hw - flange_width],
+            [x_end, y_center - hh - flange_width, z_center + hw + flange_width],
+            [x_end, y_center + hh + flange_width, z_center + hw + flange_width],
+            [x_end, y_center + hh + flange_width, z_center - hw - flange_width],
+            [x_end + flange_thickness, y_center - hh - flange_width, z_center - hw - flange_width],
+            [x_end + flange_thickness, y_center - hh - flange_width, z_center + hw + flange_width],
+            [x_end + flange_thickness, y_center + hh + flange_width, z_center + hw + flange_width],
+            [x_end + flange_thickness, y_center + hh + flange_width, z_center - hw - flange_width],
         ]
-        for corner in flange_corners:
-            vertices.append(corner)
+        
+        for v in flange_outer_verts:
+            vertices.append(v)
             normals.append([1.0, 0.0, 0.0])
-
-        # Connect curled scroll-side to flat flange-side with walls
-
-        # Bottom wall (Y = center - hh)
-        for i in range(n_curl_segments):
-            v0 = curl_bottom_start + i
-            v1 = curl_bottom_start + i + 1
-
-            # Interpolate flange Z positions
-            t0 = i / n_curl_segments
-            t1 = (i + 1) / n_curl_segments
-            fz0 = p.center[2] - hw + t0 * 2 * hw
-            fz1 = p.center[2] - hw + t1 * 2 * hw
-
-            f0_idx = len(vertices)
-            vertices.append([x_end, p.center[1] - hh, fz0])
-            normals.append([0.0, -1.0, 0.0])
-            f1_idx = len(vertices)
-            vertices.append([x_end, p.center[1] - hh, fz1])
-            normals.append([0.0, -1.0, 0.0])
-
-            indices.extend([v0, f0_idx, f1_idx])
-            indices.extend([v0, f1_idx, v1])
-
-        # Top wall (Y = center + hh)
-        for i in range(n_curl_segments):
-            v0 = curl_top_start + i
-            v1 = curl_top_start + i + 1
-
-            t0 = i / n_curl_segments
-            t1 = (i + 1) / n_curl_segments
-            fz0 = p.center[2] - hw + t0 * 2 * hw
-            fz1 = p.center[2] - hw + t1 * 2 * hw
-
-            f0_idx = len(vertices)
-            vertices.append([x_end, p.center[1] + hh, fz0])
-            normals.append([0.0, 1.0, 0.0])
-            f1_idx = len(vertices)
-            vertices.append([x_end, p.center[1] + hh, fz1])
-            normals.append([0.0, 1.0, 0.0])
-
-            indices.extend([v0, f1_idx, f0_idx])
-            indices.extend([v0, v1, f1_idx])
-
-        # Back wall (-Z side)
-        back_start = len(vertices)
-        vertices.extend([
-            curl_bottom[0],  # Curl bottom-back
-            curl_top[0],     # Curl top-back
-            [x_end, p.center[1] + hh, p.center[2] - hw],  # Flange top-back
-            [x_end, p.center[1] - hh, p.center[2] - hw],  # Flange bottom-back
-        ])
-        for _ in range(4):
-            normals.append([0.0, 0.0, -1.0])
-
-        indices.extend([back_start, back_start + 1, back_start + 2])
-        indices.extend([back_start, back_start + 2, back_start + 3])
-
-        # Front wall (+Z side)
-        front_start = len(vertices)
-        vertices.extend([
-            curl_bottom[-1],  # Curl bottom-front
-            curl_top[-1],     # Curl top-front
-            [x_end, p.center[1] + hh, p.center[2] + hw],  # Flange top-front
-            [x_end, p.center[1] - hh, p.center[2] + hw],  # Flange bottom-front
-        ])
-        for _ in range(4):
-            normals.append([0.0, 0.0, 1.0])
-
-        indices.extend([front_start, front_start + 2, front_start + 1])
-        indices.extend([front_start, front_start + 3, front_start + 2])
-
-        # Flange end cap (rectangular face for connector)
-        indices.extend([flange_start, flange_start + 1, flange_start + 2])
-        indices.extend([flange_start, flange_start + 2, flange_start + 3])
+        
+        # Flange front face (annular - outer rectangle minus inner opening)
+        # Add inner rectangle vertices for the opening
+        inner_start = len(vertices)
+        inner_verts = [
+            [x_end + flange_thickness, y_center - hh, z_center - hw],
+            [x_end + flange_thickness, y_center - hh, z_center + hw],
+            [x_end + flange_thickness, y_center + hh, z_center + hw],
+            [x_end + flange_thickness, y_center + hh, z_center - hw],
+        ]
+        
+        for v in inner_verts:
+            vertices.append(v)
+            normals.append([1.0, 0.0, 0.0])
+        
+        # Front face of flange (4 trapezoids around the opening)
+        # Bottom strip
+        indices.extend([flange_start + 4, flange_start + 5, inner_start + 1])
+        indices.extend([flange_start + 4, inner_start + 1, inner_start + 0])
+        # Top strip
+        indices.extend([inner_start + 3, inner_start + 2, flange_start + 6])
+        indices.extend([inner_start + 3, flange_start + 6, flange_start + 7])
+        # Left strip (-Z)
+        indices.extend([flange_start + 4, inner_start + 0, inner_start + 3])
+        indices.extend([flange_start + 4, inner_start + 3, flange_start + 7])
+        # Right strip (+Z)
+        indices.extend([inner_start + 1, flange_start + 5, flange_start + 6])
+        indices.extend([inner_start + 1, flange_start + 6, inner_start + 2])
+        
+        # Outer edges of flange
+        # Bottom
+        indices.extend([flange_start + 0, flange_start + 4, flange_start + 5])
+        indices.extend([flange_start + 0, flange_start + 5, flange_start + 1])
+        # Top
+        indices.extend([flange_start + 2, flange_start + 6, flange_start + 7])
+        indices.extend([flange_start + 2, flange_start + 7, flange_start + 3])
+        # Left (-Z)
+        indices.extend([flange_start + 0, flange_start + 3, flange_start + 7])
+        indices.extend([flange_start + 0, flange_start + 7, flange_start + 4])
+        # Right (+Z)
+        indices.extend([flange_start + 1, flange_start + 5, flange_start + 6])
+        indices.extend([flange_start + 1, flange_start + 6, flange_start + 2])
 
     def _generate_motor(self, vertices: List, indices: List, normals: List):
         """
@@ -1797,8 +2003,8 @@ class CentrifugalBlower:
         Get connection ports for the blower.
 
         Ports:
-        - 'inlet': Axial inlet (inlet eye) - air enters here
-        - 'outlet': Scroll outlet (rectangular) - air exits here
+        - 'inlet': Axial inlet (inlet eye) - air enters here from -Z side
+        - 'outlet': Scroll outlet (rectangular) - air exits here toward +X direction
 
         Returns:
             Dictionary of port name to ConnectionPort
@@ -1816,10 +2022,27 @@ class CentrifugalBlower:
         inlet_z = p.center[2] - scroll_half_width - inlet_bell_length
         inlet_pos = (p.center[0], p.center[1], inlet_z)
 
-        # Outlet port: at scroll outlet, facing +X (standard scroll orientation)
-        # Position at center of outlet
+        # Outlet port: at end of scroll outlet casing, facing +X
+        # The outlet casing extends from the scroll outer edge toward +X
+        # Position matches _generate_scroll_outlet_casing and _generate_outlet geometry:
+        #   x_start = center[0] + r_scroll (at scroll outer edge)
+        #   casing_length = outlet_height * 2.0
+        #   flange_thickness = 0.015
+        #   x_end = x_start + casing_length + flange_thickness (at flange face)
         scroll_r = p.scroll_inner_radius * p.scroll_expansion
-        outlet_pos = (p.center[0] + scroll_r, p.center[1], p.center[2])
+        
+        # Outlet casing dimensions - must match _generate_scroll_outlet_casing
+        casing_height = p.outlet_height if p.outlet_height else scroll_half_width * 2 * 0.8
+        casing_width = p.outlet_width if p.outlet_width else scroll_half_width * 2
+        casing_length = p.outlet_height * 2.0
+        flange_thickness = 0.015  # Must match _generate_outlet
+        
+        x_start = p.center[0] + scroll_r
+        outlet_x_end = x_start + casing_length + flange_thickness
+        outlet_y_center = p.center[1]  # Centered vertically on scroll axis
+        outlet_z_center = p.center[2]  # Centered axially
+        
+        outlet_pos = (outlet_x_end, outlet_y_center, outlet_z_center)
 
         return {
             'inlet': ConnectionPort(
@@ -1833,9 +2056,9 @@ class CentrifugalBlower:
             'outlet': ConnectionPort(
                 position=outlet_pos,
                 direction=(1.0, 0.0, 0.0),  # Air exits toward +X
-                diameter=np.sqrt(p.outlet_width * p.outlet_height * 4 / PI),  # Equivalent diameter
-                width=p.outlet_width,
-                height=p.outlet_height,
+                diameter=np.sqrt(casing_width * casing_height * 4 / PI),  # Equivalent diameter
+                width=casing_width,
+                height=casing_height,
                 port_type=PortType.RECTANGULAR,
                 name="blower_outlet",
                 compatible_types=[PortType.RECTANGULAR, PortType.CIRCULAR, PortType.FLANGED],
