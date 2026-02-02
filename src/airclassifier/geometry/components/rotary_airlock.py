@@ -406,7 +406,7 @@ class RotaryAirlock:
     def _generate_inlet_outlet(self, vertices: List, indices: List, normals: List):
         """
         Generate inlet and outlet with saddle joints connecting to housing.
-        
+
         Real rotary airlock design:
         - Inlet on TOP (+Y) where material falls in
         - Outlet on BOTTOM (-Y) where material exits
@@ -414,9 +414,9 @@ class RotaryAirlock:
         - Flanged necks for bolted connections
         """
         p = self.params
-        
+
         # Neck length from housing surface to flange face
-        neck_length = p.housing_thickness * 4
+        neck_length = p.housing_thickness * 4.0
         
         # Inlet (top, +Y for z-axis rotation)
         self._add_saddle_neck(vertices, indices, normals,
@@ -448,7 +448,7 @@ class RotaryAirlock:
         neck_radius = diameter / 2
         r_housing = p.housing_outer_radius
         sign = 1 if is_inlet else -1
-        
+
         # Saddle dimensions - base sits on housing curve
         saddle_height = p.housing_thickness * 1.5  # Height of saddle transition
         
@@ -660,10 +660,11 @@ class RotaryAirlock:
         flange_thickness = p.housing_thickness
         
         start_idx = len(vertices)
-        
+
         if p.axis == "z":
-            y_flange = p.center[1] + sign * (r_housing + neck_length + flange_thickness)
-            
+            # Flange sits at the end of the neck (no gap)
+            y_flange = p.center[1] + sign * (r_housing + neck_length)
+
             # Inner ring (at neck diameter - this is the visible opening)
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
@@ -671,7 +672,7 @@ class RotaryAirlock:
                 z = p.center[2] + inner_radius * np.sin(theta)
                 vertices.append([x, y_flange, z])
                 normals.append([0.0, sign, 0.0])  # Face outward
-                
+
             # Outer ring (flange edge)
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
@@ -679,34 +680,36 @@ class RotaryAirlock:
                 z = p.center[2] + outer_radius * np.sin(theta)
                 vertices.append([x, y_flange, z])
                 normals.append([0.0, sign, 0.0])  # Face outward
-                
+
         elif p.axis == "y":
-            z_flange = p.center[2] + sign * (r_housing + neck_length + flange_thickness)
-            
+            # Flange sits at the end of the neck (no gap)
+            z_flange = p.center[2] + sign * (r_housing + neck_length)
+
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
                 x = p.center[0] + inner_radius * np.cos(theta)
                 y = p.center[1] + inner_radius * np.sin(theta)
                 vertices.append([x, y, z_flange])
                 normals.append([0.0, 0.0, sign])
-                
+
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
                 x = p.center[0] + outer_radius * np.cos(theta)
                 y = p.center[1] + outer_radius * np.sin(theta)
                 vertices.append([x, y, z_flange])
                 normals.append([0.0, 0.0, sign])
-                
+
         else:  # x-axis
-            y_flange = p.center[1] + sign * (r_housing + neck_length + flange_thickness)
-            
+            # Flange sits at the end of the neck (no gap)
+            y_flange = p.center[1] + sign * (r_housing + neck_length)
+
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
                 x = p.center[0] + inner_radius * np.cos(theta)
                 z = p.center[2] + inner_radius * np.sin(theta)
                 vertices.append([x, y_flange, z])
                 normals.append([0.0, sign, 0.0])
-                
+
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
                 x = p.center[0] + outer_radius * np.cos(theta)
@@ -796,14 +799,13 @@ class RotaryAirlock:
         """
         p = self.params
         r = p.housing_outer_radius
-        
+
         # Dimensions must match _add_saddle_neck
         saddle_height = p.housing_thickness * 1.5  # Height of saddle transition
-        neck_length = p.housing_thickness * 4       # Length of cylindrical neck
-        flange_thickness = p.housing_thickness      # Flange thickness
-        
-        # Total extension from housing center to flange face
-        total_extension = r + saddle_height + neck_length + flange_thickness
+        neck_length = p.housing_thickness * 4.0    # Length of cylindrical neck
+
+        # Total extension from housing center to flange face (flange sits at neck end)
+        total_extension = r + saddle_height + neck_length
         
         if p.axis == "z":
             # For z-axis rotation: inlet at +Y, outlet at -Y

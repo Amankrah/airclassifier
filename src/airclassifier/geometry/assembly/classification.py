@@ -218,6 +218,15 @@ class ClassificationSystemAssembly:
         # ============================================================
         # Venturi creates vertical upward flow for particle entrainment
         # air_inlet at bottom (Y=0), outlet at top (Y=total_length)
+        #
+        # COORDINATE SYSTEM:
+        # - X+: From air filter toward deagglomerator (horizontal)
+        # - Y+: Vertical (upward toward bag filter top outlet)
+        # - Z+: Distance away from classification system (toward feed)
+        #
+        # SOLIDS INLET CONFIGURATION:
+        # - Angular position: π/2 (90°) puts inlet on +Z side (facing feed system)
+        # - Entry angle: 15° tilts inlet upward to receive 15-degree descending shaft
         throat_d = p.venturi_inlet_diameter * p.venturi_throat_ratio
         venturi_params = VenturiEducatorParams(
             inlet_diameter=p.venturi_inlet_diameter,
@@ -226,8 +235,9 @@ class ClassificationSystemAssembly:
             convergent_angle=np.radians(12),
             divergent_angle=np.radians(5),
             solids_inlet_diameter=throat_d * 0.8,
-            solids_inlet_angle=np.radians(90), # Reduced angle for lower Z connection point
+            solids_inlet_angle=np.radians(15),  # 15° tilt upward to match feed shaft angle
             solids_inlet_position=throat_d * 0.3,
+            solids_inlet_angular_position=np.pi / 2,  # π/2 = +Z side (facing feed system)
             center=(0.0, 0.0, 0.0),  # Origin at air_inlet
             axis="y"  # Vertical axis for upward flow
         )

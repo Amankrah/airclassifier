@@ -167,21 +167,102 @@ class CompleteClassifierAssembly:
         self._subsystems['classification_offset'] = (cx, cy, class_z)
     
     def _build_feed_system(self):
-        """Build the feed system (hopper + airlock + screw + deagglomerator)."""
+        """
+        Build the feed system (hopper + airlock + screw + deagglomerator).
+        
+        COORDINATE SYSTEM:
+        - X+: From air filter toward deagglomerator (horizontal)
+        - Y+: Vertical (upward toward bag filter top outlet)
+        - Z+: Distance away from classification system (depth)
+        
+        Positioning the feed at 15-degree angle:
+        - Z_distance: How far the feed is from the classification system
+        - Y_rise: Vertical elevation = Z_distance × tan(15°)
+        - This creates a 15-degree downward slope from feed to venturi
+        
+        The feed outlet faces toward the venturi solids_inlet and they are
+        connected with an angled shaft duct at 15 degrees from horizontal.
+        """
         from .feed_system import create_standard_feed_system
         
         p = self.params
-        fx, fy, fz = p.feed_position
         
-        # Position feed system elevated
-        if p.include_support_structure:
-            feed_z = fz + p.frame_height + 1.0
-        else:
-            feed_z = fz + 1.0
-        
+        # Create feed system first to get its dimensions
         feed = create_standard_feed_system(device="cpu")
         self._subsystems['feed_system'] = feed
-        self._subsystems['feed_system_offset'] = (fx, fy, feed_z)
+        
+        # Get classification system's venturi position for alignment
+        classification = self._subsystems.get('classification')
+        class_offset = np.array(self._subsystems.get('classification_offset', (0, 0, 0)))
+        
+        if classification is not None and hasattr(classification, 'venturi'):
+            # Get venturi's solids_inlet position
+            venturi = classification.venturi
+            class_positions = classification.get_component_positions()
+            venturi_pos = np.array(class_positions['venturi']) + class_offset
+            
+            solids_port = venturi.ports['solids_inlet']
+            solids_inlet_world = venturi_pos + np.array(solids_port.position)
+            
+            # Calculate feed position based on 15-degree angle
+            angle_deg = 15.0
+            angle_rad = np.radians(angle_deg)
+            
+            # Get feed system outlet position relative to feed origin
+            feed_positions = feed.get_component_positions()
+            deagg_local_pos = np.array(feed_positions['deagglomerator'])
+            deagg_outlet = feed.deagglomerator.ports['outlet']
+            outlet_offset = deagg_local_pos + np.array(deagg_outlet.position)
+            
+            # Target position (venturi solids_inlet)
+            target_x, target_y, target_z = solids_inlet_world
+            
+            # ============================================================
+            # Position feed at 15-degree angle from venturi solids_inlet
+            # 
+            # Z_distance: Horizontal distance away from classification system
+            # Y_rise: Vertical elevation = Z_distance × tan(15°)
+            # 
+            # The feed is positioned:
+            # - At same X as target (aligned along X axis)
+            # - Above target in Y (elevated)
+            # - Away from target in Z (positive Z, away from classifier)
+            # ============================================================
+            
+            # Horizontal distance in Z (away from classification system)
+            z_distance = 1.0  # meters - distance from classifier in Z direction
+            
+            # Vertical rise (Y) based on 15-degree angle
+            # Y_rise = Z_distance × tan(15°)
+            y_rise = z_distance * np.tan(angle_rad)  # ~0.27m for 1.0m Z distance
+            
+            # Add extra clearance for elbows and duct routing
+            elbow_clearance = 0.2  # clearance for elbow turns
+            
+            # Feed outlet desired world position:
+            # - Same X as target
+            # - Above target in Y by the calculated rise + clearance
+            # - Away from target in +Z direction
+            feed_outlet_target_x = target_x
+            feed_outlet_target_y = target_y + y_rise + elbow_clearance
+            feed_outlet_target_z = target_z + z_distance
+            
+            # Calculate feed system origin position
+            # (subtract outlet offset from desired outlet position)
+            feed_x = feed_outlet_target_x - outlet_offset[0]
+            feed_y = feed_outlet_target_y - outlet_offset[1]
+            feed_z = feed_outlet_target_z - outlet_offset[2]
+            
+        else:
+            # Fallback to default position if classification not available
+            fx, fy, fz = p.feed_position
+            if p.include_support_structure:
+                feed_z = fz + p.frame_height + 1.0
+            else:
+                feed_z = fz + 1.0
+            feed_x, feed_y = fx, fy
+        
+        self._subsystems['feed_system_offset'] = (feed_x, feed_y, feed_z)
     
     def _build_air_system(self):
         """Build the air system (blower + filter + damper)."""
@@ -192,7 +273,9 @@ class CompleteClassifierAssembly:
         
         air = create_standard_air_system(device="cpu")
         self._subsystems['air_system'] = air
-        self._subsystems['air_system_offset'] = (ax, ay, az + 0.5)
+        # Move air system toward +Z (toward classifier/feeder) for proper elbow alignment
+        # The Z offset ensures the second elbow output aligns with target_z for the vertical duct
+        self._subsystems['air_system_offset'] = (ax, ay, az + 0.6)
     
     def _build_ductwork(self):
         """
@@ -390,8 +473,9 @@ class CompleteClassifierAssembly:
         e3_inlet_y = e3_outlet_y - R
         
         # Duct3 goes from e2_outlet_y to e3_inlet_y in +Y direction
+        # Route at target_z level for alignment with venturi
         d3_len = max(e3_inlet_y - (e2_outlet_y + gap) - gap, 0.1)
-        d3_pos = (e1_outlet_x, e2_outlet_y + gap, e2_outlet_z)
+        d3_pos = (e1_outlet_x, e2_outlet_y + gap, target_z)
 
         duct3 = RoundDuct(RoundDuctParams(
             diameter=duct_d, length=d3_len, wall_thickness=0.002,
@@ -402,7 +486,7 @@ class CompleteClassifierAssembly:
         d3_end_y = e2_outlet_y + gap + d3_len
 
         # Step 6: Elbow3 - turn from +Y to -X
-        e3_inlet = (e1_outlet_x, d3_end_y + gap, e2_outlet_z)
+        e3_inlet = (e1_outlet_x, d3_end_y + gap, target_z)
         e3_outlet_x = e1_outlet_x - R
         e3_outlet_y_actual = e3_inlet[1] + R
 
@@ -413,9 +497,19 @@ class CompleteClassifierAssembly:
         ))
         self._duct_connections.append((elbow3, e3_inlet))
 
-        # Step 7: Horizontal duct in -X direction toward e4_inlet_x
-        d4_len_actual = max(e3_outlet_x - gap - (e4_inlet_x + gap), 0.05)
-        d4_pos = (e3_outlet_x - gap, e3_outlet_y_actual, e2_outlet_z)
+        # Step 7: Horizontal duct in -X direction toward elbow4 (aligned with venturi)
+        # CRITICAL: elbow4 must be positioned so its outlet aligns with target_x, target_z
+        # Elbow4 turns -X to +Y: outlet_x = inlet_x - R, outlet_y = inlet_y + R
+        # We want outlet at (target_x, ?, target_z)
+        # So elbow4 inlet_x = target_x + R
+        
+        e4_inlet_x_aligned = target_x + R
+        e4_inlet_y_aligned = e3_outlet_y_actual
+        e4_inlet_z_aligned = target_z  # Align with target Z
+        
+        # Calculate duct4 length to reach the aligned elbow4 position
+        d4_len_actual = max(e3_outlet_x - gap - (e4_inlet_x_aligned + gap), 0.05)
+        d4_pos = (e3_outlet_x - gap, e3_outlet_y_actual, target_z)  # Route at target_z
 
         duct4 = RoundDuct(RoundDuctParams(
             diameter=duct_d, length=d4_len_actual, wall_thickness=0.002,
@@ -426,10 +520,10 @@ class CompleteClassifierAssembly:
         d4_end_x = e3_outlet_x - gap - d4_len_actual
 
         # Step 8: Elbow4 - turn from -X to +Y (final approach)
-        e4_inlet_actual = (d4_end_x - gap, e3_outlet_y_actual, e2_outlet_z)
-        e4_outlet_x_actual = e4_inlet_actual[0] - R
+        e4_inlet_actual = (e4_inlet_x_aligned, e4_inlet_y_aligned, e4_inlet_z_aligned)
+        e4_outlet_x_actual = target_x  # Now properly aligned with venturi
         e4_outlet_y_actual = e3_outlet_y_actual + R
-
+        
         elbow4 = DuctElbow(DuctElbowParams(
             diameter=duct_d, bend_radius=R, angle=90.0, wall_thickness=0.002,
             flanged=True, center=(0, 0, 0),
@@ -442,7 +536,7 @@ class CompleteClassifierAssembly:
         d5_len_actual = max(trans_inlet_y - gap - (e4_outlet_y_actual + gap), 0.02)
         
         if d5_len_actual > 0.02:
-            d5_pos = (e4_outlet_x_actual, e4_outlet_y_actual + gap, e2_outlet_z)
+            d5_pos = (target_x, e4_outlet_y_actual + gap, target_z)
             duct5 = RoundDuct(RoundDuctParams(
                 diameter=duct_d, length=d5_len_actual, wall_thickness=0.002,
                 direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
@@ -453,26 +547,36 @@ class CompleteClassifierAssembly:
             trans_pos_y = e4_outlet_y_actual + gap
 
         # Step 10: Transition to venturi diameter
-        # CRITICAL: Position at target_x, target_z so outlet aligns with venturi
+        # Position at target_x, target_z so outlet aligns with venturi air inlet
         trans = Transition(TransitionParams(
             transition_type="round_to_round",
             inlet_dimensions=(duct_d,), outlet_dimensions=(venturi_air_d,),
             length=trans_len, concentric=True, wall_thickness=0.002,
             direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
-        # Place transition at target X and Z, with outlet reaching target Y
+        # Place transition aligned with venturi air inlet
         self._duct_connections.append((trans, (target_x, trans_pos_y, target_z)))
 
     def _build_feed_to_solids_inlet(self, venturi, venturi_pos: np.ndarray):
         """
-        Build gravity chute from Feed System outlet to Venturi solids_inlet.
+        Build direct angled shaft duct from Feed System outlet to Venturi solids_inlet.
 
-        The venturi solids_inlet is positioned at the outer end of the tangential
-        inlet tube. For a vertical venturi (axis='y'), the solids_inlet extends
-        in the +X/+Z direction for gravity feed.
-
-        TARGET-ALIGNED routing: Work backwards from solids_inlet to ensure
-        the chute terminates exactly at the connection port.
+        COORDINATE SYSTEM:
+        - X+: From air filter toward deagglomerator (horizontal)
+        - Y+: Vertical (upward toward bag filter top outlet)
+        - Z+: Distance away from classification system (depth)
+        
+        FEED POSITION:
+        - Feed is at +Z (away from classifier, positive Z)
+        - Feed is elevated in Y (above venturi)
+        - Feed outlet points -Y (downward from deagglomerator)
+        
+        SHAFT DUCT PATH (15-degree angle):
+        - Shaft goes from feed toward venturi
+        - Direction: -Z (toward classifier) with -Y component (descending)
+        - Angle: 15 degrees below horizontal
+        
+        Path: Feed outlet (-Y) -> Elbow (turn to -Z) -> Angled shaft (15°) -> Venturi inlet
         """
         from ..components.ductwork import RoundDuct, RoundDuctParams, DuctElbow, DuctElbowParams
         from ..components.transitions import Transition, TransitionParams
@@ -490,132 +594,177 @@ class CompleteClassifierAssembly:
         feed_outlet_world = feed_offset + deagg_local_pos + np.array(deagg_outlet.position)
         feed_outlet_d = deagg_outlet.diameter
 
-        # Get venturi solids inlet position and direction (at outer end of inlet tube)
+        # Get venturi solids inlet position and direction
         solids_port = venturi.ports['solids_inlet']
         solids_inlet_world = venturi_pos + np.array(solids_port.position)
         solids_inlet_d = solids_port.diameter
         solids_inlet_dir = np.array(solids_port.direction)
 
-        # Feed coordinates
+        # Coordinates
         feed_x, feed_y, feed_z = feed_outlet_world
         target_x, target_y, target_z = solids_inlet_world
 
-        # Chute dimensions - sized for gravity feed
-        chute_d = max(min(feed_outlet_d * 0.6, solids_inlet_d * 1.5), 0.035)
-        chute_R = chute_d * 1.5  # Bend radius for smooth flow
-        trans_len = 0.08
-
         # ============================================================
-        # TARGET-ALIGNED routing for 90° vertical solids inlet
-        # The solids inlet tube points straight up (+Z), so the feed
-        # approaches from above and drops down to connect.
+        # ANGLED SHAFT AT 15 DEGREES
         # 
-        # Route: deagglomerator -> horizontal to above target -> drop down
+        # Feed is at (feed_x, feed_y, feed_z) - high Y, high Z
+        # Target is at (target_x, target_y, target_z) - lower Y, lower Z
+        # 
+        # Shaft direction: -Z (toward classifier) with -Y (descending)
+        # The 15-degree angle is measured from horizontal (Z axis)
         # ============================================================
 
-        # Step F1: Short duct from deagglomerator in -Y direction
-        f1_len = 0.08
-        f1_pos = (feed_x, feed_y - gap, feed_z)
+        # Shaft parameters
+        shaft_angle_deg = 15.0
+        shaft_angle_rad = np.radians(shaft_angle_deg)
+        
+        shaft_d = max(min(feed_outlet_d * 0.5, solids_inlet_d * 1.5), 0.035)
+        elbow_R = shaft_d * 1.2
+        trans_len = 0.05
 
-        feed_duct1 = RoundDuct(RoundDuctParams(
-            diameter=chute_d, length=f1_len, wall_thickness=0.002,
+        # Shaft direction unit vector:
+        # - Primary direction: -Z (toward classifier, horizontal)
+        # - Vertical component: -Y (descending) at 15 degrees
+        # cos(15°) is the horizontal component (Z), sin(15°) is vertical (Y)
+        cos_a = np.cos(shaft_angle_rad)
+        sin_a = np.sin(shaft_angle_rad)
+        
+        # Shaft goes toward -Z (classifier) and descends in -Y
+        shaft_dir = np.array([0.0, -sin_a, -cos_a])
+        shaft_dir = shaft_dir / np.linalg.norm(shaft_dir)
+        
+        # ============================================================
+        # Calculate target position and required drop
+        # The shaft must reach the venturi solids_inlet position
+        # ============================================================
+        
+        # Calculate how much we need to drop in Y to reach the inlet
+        # The solids_inlet is at target_y, we start near feed_y
+        # We need to drop from feed outlet level to slightly above target
+        
+        # Target: where the shaft should end (at solids_inlet)
+        # The shaft approaches at 15 degrees, so we need to account for that
+        
+        # Z distance from feed to target
+        z_distance = feed_z - target_z
+        
+        # For a 15-degree descent over z_distance:
+        # Y drop from shaft = z_distance * tan(15°)
+        shaft_y_drop = z_distance * np.tan(shaft_angle_rad)
+        
+        # Required Y position where shaft starts (after elbows)
+        # shaft_start_y - shaft_y_drop = target_y (approximately)
+        # So shaft_start_y = target_y + shaft_y_drop
+        # Add extra drop offset to ensure shaft end aligns with inlet
+        extra_drop = 0.07# Additional drop to properly meet the inlet
+        required_shaft_start_y = target_y + shaft_y_drop - extra_drop
+        
+        # ============================================================
+        # Step 1: Short stub from deagglomerator outlet (-Y direction)
+        # ============================================================
+        stub_len = 0.04
+        stub_pos = (feed_x, feed_y - gap, feed_z)
+        
+        stub_duct = RoundDuct(RoundDuctParams(
+            diameter=shaft_d, length=stub_len, wall_thickness=0.002,
             direction=(0.0, -1.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
-        self._duct_connections.append((feed_duct1, f1_pos))
-
-        f_curr_y = feed_y - gap - f1_len
-
-        # Step F2: Elbow - turn from -Y to -X (toward target X position)
-        fe1_inlet = (feed_x, f_curr_y - gap, feed_z)
-
-        feed_elbow1 = DuctElbow(DuctElbowParams(
-            diameter=chute_d, bend_radius=chute_R, angle=90.0, wall_thickness=0.002,
+        self._duct_connections.append((stub_duct, stub_pos))
+        
+        stub_end_y = feed_y - gap - stub_len
+        
+        # ============================================================
+        # Step 2: Calculate vertical drop needed
+        # ============================================================
+        
+        # After first elbow, we'll be at stub_end_y - gap - elbow_R
+        # We need to drop further to reach required_shaft_start_y
+        after_first_elbow_y = stub_end_y - gap - elbow_R
+        
+        # Total drop needed from current position to shaft start
+        # Add elbow_R for the second elbow that turns toward -Z
+        drop_needed = after_first_elbow_y - required_shaft_start_y - elbow_R - gap * 2
+        drop_needed = max(drop_needed, 0.05)  # Minimum drop
+        
+        # ============================================================
+        # Step 3: Extended elbow + vertical drop
+        # First elbow: -Y continues down, then add drop duct, then second elbow
+        # ============================================================
+        
+        # Keep going -Y with a longer drop before turning
+        # Vertical drop duct
+        drop_pos = (feed_x, stub_end_y - gap, feed_z)
+        
+        drop_duct = RoundDuct(RoundDuctParams(
+            diameter=shaft_d, length=drop_needed, wall_thickness=0.002,
+            direction=(0.0, -1.0, 0.0), center=(0, 0, 0), flanged=True,
+        ))
+        self._duct_connections.append((drop_duct, drop_pos))
+        
+        drop_end_y = stub_end_y - gap - drop_needed
+        
+        # ============================================================
+        # Step 4: Elbow - turn from -Y to -Z (toward classifier)
+        # ============================================================
+        e1_pos = (feed_x, drop_end_y - gap, feed_z)
+        
+        elbow1 = DuctElbow(DuctElbowParams(
+            diameter=shaft_d, bend_radius=elbow_R, angle=90.0, wall_thickness=0.002,
             flanged=True, center=(0, 0, 0),
-            inlet_direction=(0.0, -1.0, 0.0), rotation_axis=(0.0, 0.0, -1.0),  # -Z for -Y→-X
+            inlet_direction=(0.0, -1.0, 0.0),
+            rotation_axis=(-1.0, 0.0, 0.0),  # -X axis: -Y turns to -Z
         ))
-        self._duct_connections.append((feed_elbow1, fe1_inlet))
-
-        fe1_outlet_x = feed_x - chute_R
-        fe1_outlet_y = f_curr_y - gap - chute_R
-
-        # Step F3: Horizontal duct in -X direction to get above target X
-        # We want to end up directly above the solids inlet (at target_x, target_y)
-        h1_len = max(fe1_outlet_x - gap - (target_x + chute_R + gap), 0.1)
-        f2_pos = (fe1_outlet_x - gap, fe1_outlet_y, feed_z)
-
-        feed_duct2 = RoundDuct(RoundDuctParams(
-            diameter=chute_d, length=h1_len, wall_thickness=0.002,
-            direction=(-1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
-        ))
-        self._duct_connections.append((feed_duct2, f2_pos))
-
-        f_curr_x = fe1_outlet_x - gap - h1_len
-
-        # Step F4: Elbow - turn from -X to +Y (toward target Y position)
-        fe2_inlet = (f_curr_x - gap, fe1_outlet_y, feed_z)
-
-        feed_elbow2 = DuctElbow(DuctElbowParams(
-            diameter=chute_d, bend_radius=chute_R, angle=90.0, wall_thickness=0.002,
-            flanged=True, center=(0, 0, 0),
-            inlet_direction=(-1.0, 0.0, 0.0), rotation_axis=(0.0, 0.0, 1.0),  # +Z for -X→+Y
-        ))
-        self._duct_connections.append((feed_elbow2, fe2_inlet))
-
-        fe2_outlet_x = f_curr_x - gap - chute_R
-        fe2_outlet_y = fe1_outlet_y + chute_R
-
-        # Step F5: Horizontal duct in +Y to get to target Y position
-        h2_len = max(target_y - (fe2_outlet_y + gap + chute_R), 0.05)
-        f3_pos = (fe2_outlet_x, fe2_outlet_y + gap, feed_z)
-
-        if h2_len > 0.05:
-            feed_duct3 = RoundDuct(RoundDuctParams(
-                diameter=chute_d, length=h2_len, wall_thickness=0.002,
-                direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
+        self._duct_connections.append((elbow1, e1_pos))
+        
+        # After elbow1: now going -Z direction (toward classifier)
+        e1_out_y = drop_end_y - gap - elbow_R
+        e1_out_z = feed_z - elbow_R
+        
+        # ============================================================
+        # Step 5: Angled shaft duct at 15 degrees
+        # Goes from elbow outlet toward venturi solids_inlet
+        # Direction: -Z (toward classifier) with -Y descent at 15 degrees
+        # ============================================================
+        
+        shaft_start = np.array([feed_x, e1_out_y - gap, e1_out_z - gap])
+        
+        # Calculate shaft length based on Z distance to target
+        z_travel = e1_out_z - gap - target_z - trans_len
+        
+        # For 15-degree angle: Z_travel = shaft_len * cos(15°)
+        if z_travel > 0.05:
+            shaft_len = z_travel / cos_a
+            
+            shaft_dir_tuple = tuple(shaft_dir)
+            
+            shaft_duct = RoundDuct(RoundDuctParams(
+                diameter=shaft_d, length=shaft_len, wall_thickness=0.002,
+                direction=shaft_dir_tuple, center=(0, 0, 0), flanged=True,
             ))
-            self._duct_connections.append((feed_duct3, f3_pos))
-            f_curr_y = fe2_outlet_y + gap + h2_len
+            self._duct_connections.append((shaft_duct, tuple(shaft_start)))
+            
+            # Shaft end position
+            shaft_end = shaft_start + shaft_dir * shaft_len
+            shaft_end_y = shaft_end[1]
+            shaft_end_z = shaft_end[2]
         else:
-            f_curr_y = fe2_outlet_y
-
-        # Step F6: Elbow - turn from +Y to -Z (drop down toward target)
-        fe3_inlet = (fe2_outlet_x, f_curr_y + gap, feed_z)
-
-        feed_elbow3 = DuctElbow(DuctElbowParams(
-            diameter=chute_d, bend_radius=chute_R, angle=90.0, wall_thickness=0.002,
-            flanged=True, center=(0, 0, 0),
-            inlet_direction=(0.0, 1.0, 0.0), rotation_axis=(1.0, 0.0, 0.0),  # +X for +Y→-Z
-        ))
-        self._duct_connections.append((feed_elbow3, fe3_inlet))
-
-        fe3_outlet_y = f_curr_y + gap + chute_R
-        fe3_outlet_z = feed_z - chute_R
-
-        # Step F7: Vertical drop duct in -Z direction to reach target Z
-        drop_len = max(fe3_outlet_z - gap - (target_z + trans_len), 0.1)
-        f4_pos = (fe2_outlet_x, fe3_outlet_y, fe3_outlet_z - gap)
-
-        feed_duct4 = RoundDuct(RoundDuctParams(
-            diameter=chute_d, length=drop_len, wall_thickness=0.002,
-            direction=(0.0, 0.0, -1.0), center=(0, 0, 0), flanged=True,
-        ))
-        self._duct_connections.append((feed_duct4, f4_pos))
-
-        f_curr_z = fe3_outlet_z - gap - drop_len
-
-        # Step F8: Transition positioned to connect at target
-        # The transition outlet should be at target position (solids_inlet)
-        # For 90° inlet, the target is at the TOP of the vertical inlet tube
+            shaft_end_y = shaft_start[1]
+            shaft_end_z = shaft_start[2]
+        
+        # ============================================================
+        # Step 6: Transition to venturi solids_inlet
+        # ============================================================
+        
         trans = Transition(TransitionParams(
             transition_type="round_to_round",
-            inlet_dimensions=(chute_d,), outlet_dimensions=(solids_inlet_d,),
+            inlet_dimensions=(shaft_d,), outlet_dimensions=(solids_inlet_d,),
             length=trans_len, concentric=True, wall_thickness=0.002,
-            direction=(0.0, 0.0, -1.0), center=(0, 0, 0), flanged=True,
+            direction=tuple(shaft_dir), center=(0, 0, 0), flanged=True,
         ))
-        # Position transition so outlet is at target Z
-        # Use the X, Y from the vertical drop duct
-        trans_start_z = target_z + trans_len
-        self._duct_connections.append((trans, (target_x, target_y, trans_start_z)))
+        
+        # Position transition to connect to solids_inlet
+        trans_pos = (target_x, shaft_end_y - gap, shaft_end_z - gap)
+        self._duct_connections.append((trans, trans_pos))
 
     def _build_feed_to_venturi_connection_UNUSED(self, venturi, venturi_pos: np.ndarray):
         """

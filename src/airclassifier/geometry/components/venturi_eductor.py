@@ -35,8 +35,12 @@ class VenturiEducatorParams:
 
     # Solids inlet
     solids_inlet_diameter: float # [m] Particle feed inlet diameter
-    solids_inlet_angle: float    # [rad] Angle of solids entry (from horizontal)
+    solids_inlet_angle: float    # [rad] Angle of solids entry from radial (tilt angle)
     solids_inlet_position: float # [m] Distance from throat start to solids entry
+    
+    # Angular position of solids inlet around the venturi axis
+    # For axis='y': 0=+X side, π/2=+Z side, π=-X side, 3π/2=-Z side
+    solids_inlet_angular_position: float = 0.0  # [rad] Default: +X side
 
     # Section lengths (if not specified, calculated from angles)
     throat_length: float = None  # [m] Length of throat section
@@ -333,8 +337,19 @@ class VenturiEducator:
         """
         Generate solids inlet tube for vertical venturi (axis='y').
         
-        The inlet extends from +X direction toward the throat.
-        Entry angle tilts the tube so particles can flow down via gravity.
+        COORDINATE SYSTEM (for axis='y'):
+        - X+: Horizontal (from air filter toward deagglomerator)
+        - Y+: Vertical (upward, venturi axis direction)
+        - Z+: Horizontal (away from classification system, toward feed)
+        
+        The inlet tube extends radially outward from the venturi at the
+        angular position specified by solids_inlet_angular_position:
+        - angular_pos=0 → inlet on +X side
+        - angular_pos=π/2 → inlet on +Z side (toward feed system)
+        - angular_pos=π → inlet on -X side
+        - angular_pos=3π/2 → inlet on -Z side
+        
+        Entry angle tilts the tube upward/downward for gravity feed alignment.
         """
         p = self.params
         start_idx = len(vertices)
@@ -342,26 +357,33 @@ class VenturiEducator:
         # Y position along venturi
         y_center = p.center[1] + axial_pos
         
-        # Tube axis direction (from outer end toward main body)
-        # Points inward (-X) and slightly downward (-Z) for gravity feed
+        # Angular position around venturi (where inlet is located)
+        angular_pos = getattr(p, 'solids_inlet_angular_position', 0.0)
+        cos_ang = np.cos(angular_pos)  # X component
+        sin_ang = np.sin(angular_pos)  # Z component
+        
+        # Entry angle tilts the tube upward (+Y) for receiving angled feed
         cos_a = np.cos(entry_angle)
         sin_a = np.sin(entry_angle)
         
-        # Tube direction: primarily +X with upward Z component
-        # (so particles flow DOWN into the venturi from above)
-        tube_dir = np.array([cos_a, 0.0, sin_a])
+        # Tube direction: extends radially outward at angular_pos, 
+        # with upward tilt based on entry_angle
+        # Radial direction (in X-Z plane): (cos_ang, 0, sin_ang)
+        # Tilt: reduce radial component by cos_a, add Y component sin_a
+        tube_dir = np.array([cos_ang * cos_a, sin_a, sin_ang * cos_a])
         tube_dir = tube_dir / np.linalg.norm(tube_dir)
         
-        # Starting point at main body surface
-        junction_x = p.center[0] + r_main
-        junction_z = p.center[2]
+        # Starting point at main body surface (at angular position)
+        junction_x = p.center[0] + r_main * cos_ang
+        junction_z = p.center[2] + r_main * sin_ang
         
         # Create local coordinate system for tube cross-section
         # tube_dir is axial, need two perpendicular vectors
         up = np.array([0.0, 1.0, 0.0])  # Y is up
         tangent = np.cross(tube_dir, up)
         if np.linalg.norm(tangent) < 0.01:
-            tangent = np.array([0.0, 0.0, 1.0])
+            # tube_dir is nearly vertical, use different reference
+            tangent = np.array([-sin_ang, 0.0, cos_ang])  # perpendicular in X-Z plane
         tangent = tangent / np.linalg.norm(tangent)
         binormal = np.cross(tangent, tube_dir)
         binormal = binormal / np.linalg.norm(binormal)
@@ -724,6 +746,11 @@ class VenturiEducator:
         cos_a = np.cos(entry_angle)
         sin_a = np.sin(entry_angle)
         
+        # Angular position around venturi axis
+        angular_pos = getattr(p, 'solids_inlet_angular_position', 0.0)
+        cos_ang = np.cos(angular_pos)
+        sin_ang = np.sin(angular_pos)
+        
         if p.axis == "x":
             # Horizontal venturi - solids inlet extends in Y-Z plane
             solids_pos = (
@@ -736,16 +763,26 @@ class VenturiEducator:
             solids_dir = (0.0, cos_a / norm, sin_a / norm)
             
         elif p.axis == "y":
-            # Vertical venturi - air from -Y, solids from +X/+Z direction
-            # Tube extends in +X direction with upward +Z angle for gravity feed
+            # Vertical venturi - air from -Y, outlet to +Y
+            # Solids inlet extends radially at angular_pos with entry_angle tilt
+            # 
+            # COORDINATE SYSTEM:
+            # - X+: Horizontal (toward deagglomerator)
+            # - Y+: Vertical (upward, venturi axis)
+            # - Z+: Horizontal (away from classifier, toward feed)
+            # 
+            # Tube direction: radial outward at angular_pos, tilted up by entry_angle
+            tube_dir = np.array([cos_ang * cos_a, sin_a, sin_ang * cos_a])
+            tube_dir = tube_dir / np.linalg.norm(tube_dir)
+            
+            # Position: starts at venturi surface, extends along tube_dir
             solids_pos = (
-                p.center[0] + r_main + tube_length * cos_a,
-                p.center[1] + axial_pos,
-                p.center[2] + tube_length * sin_a
+                p.center[0] + r_main * cos_ang + tube_length * tube_dir[0],
+                p.center[1] + axial_pos + tube_length * tube_dir[1],
+                p.center[2] + r_main * sin_ang + tube_length * tube_dir[2]
             )
-            # Direction points outward (+X, +Z) toward feed source
-            norm = np.sqrt(cos_a**2 + sin_a**2)
-            solids_dir = (cos_a / norm, 0.0, sin_a / norm)
+            # Direction points outward along tube axis (toward feed source)
+            solids_dir = tuple(tube_dir)
             
         else:  # axis == "z"
             # Flow along Z - solids inlet extends in X-Y plane
@@ -793,7 +830,9 @@ class VenturiEducator:
 
 def create_standard_venturi_eductor(
     inlet_diameter: float = 0.1,
-    throat_ratio: float = 0.5
+    throat_ratio: float = 0.5,
+    solids_inlet_angular_position: float = PI / 2,  # Default: +Z side for feed from +Z
+    solids_inlet_angle: float = None,  # Tilt angle (default: 15 degrees)
 ) -> VenturiEducator:
     """
     Create a standard venturi eductor with typical proportions.
@@ -801,11 +840,20 @@ def create_standard_venturi_eductor(
     Args:
         inlet_diameter: Inlet diameter [m]
         throat_ratio: Throat to inlet diameter ratio (0.3-0.6 typical)
+        solids_inlet_angular_position: Angular position around venturi axis [rad]
+            - 0 = +X side
+            - π/2 = +Z side (default, toward feed system)
+            - π = -X side
+            - 3π/2 = -Z side
+        solids_inlet_angle: Tilt angle of inlet tube [rad] (default: 15 degrees)
 
     Returns:
         VenturiEducator instance
     """
     throat_d = inlet_diameter * throat_ratio
+    
+    if solids_inlet_angle is None:
+        solids_inlet_angle = np.radians(15)  # 15° default for angled feed shaft
 
     params = VenturiEducatorParams(
         inlet_diameter=inlet_diameter,
@@ -814,8 +862,9 @@ def create_standard_venturi_eductor(
         convergent_angle=np.radians(12),       # 12° half-angle
         divergent_angle=np.radians(5),         # 5° half-angle for good recovery
         solids_inlet_diameter=throat_d * 0.8,
-        solids_inlet_angle=np.radians(90),     # 90° entry - lower Z for better feed alignment
+        solids_inlet_angle=solids_inlet_angle,
         solids_inlet_position=throat_d * 0.3,  # Just into throat
+        solids_inlet_angular_position=solids_inlet_angular_position,
     )
 
     return VenturiEducator(params)

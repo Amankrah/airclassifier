@@ -22,7 +22,21 @@ from ..connection_ports import ConnectionPort, PortType
 
 @dataclass
 class ScrewFeederParams:
-    """Parameters for screw feeder / auger conveyor."""
+    """
+    Parameters for screw feeder / auger conveyor.
+    
+    DYNAMIC PROPORTIONAL SIZING:
+    The inlet and outlet diameters are direct parameters that should be set
+    to match the connected components (airlock outlet and de-agglomerator inlet).
+    This ensures proper geometric fit in the assembly.
+    
+    Connection points:
+    - inlet_diameter: Set to match upstream component (e.g., airlock outlet)
+    - outlet_diameter: Set to match downstream component (e.g., deagg inlet)
+    
+    The neck geometry is sized proportionally to create visible, properly
+    aligned connection points for material flow.
+    """
 
     # Screw geometry
     screw_diameter: float        # [m] Screw/auger outer diameter
@@ -34,10 +48,9 @@ class ScrewFeederParams:
     trough_length: float         # [m] Length of trough
     trough_clearance: float      # [m] Gap between screw OD and trough
 
-    # Inlet/outlet
-    inlet_length: float          # [m] Inlet opening length (along trough)
-    inlet_width: float           # [m] Inlet opening width
-    outlet_diameter: float       # [m] Outlet diameter
+    # Inlet/outlet - DIRECT DIAMETERS for proper connection sizing
+    inlet_diameter: float        # [m] Inlet port diameter (match to airlock outlet)
+    outlet_diameter: float       # [m] Outlet port diameter (match to deagg inlet)
 
     # Variable pitch option
     variable_pitch: bool = False  # Use variable pitch for uniform withdrawal
@@ -92,12 +105,25 @@ class ScrewFeederParams:
 class ScrewFeeder:
     """
     Screw feeder / auger conveyor for powder dosing.
+    
+    ENCLOSED TUBE DESIGN for industrial powder handling:
+    - Fully sealed cylindrical housing prevents particle escape
+    - Suitable for food/pharma hygiene requirements
+    - Allows pressurized or vacuum operation
+    - Dust-tight construction
 
     Components:
-    - U-shaped trough
+    - Fully enclosed cylindrical tube housing
     - Helical screw with central shaft
-    - Inlet hopper connection
-    - Outlet discharge
+    - End caps with shaft bearing holes
+    - Flanged inlet neck (top, receives from airlock)
+    - Flanged outlet neck (bottom, discharges to deagglomerator)
+
+    Material Flow:
+        AIRLOCK → [INLET FLANGE] → ENCLOSED TUBE → [OUTLET FLANGE] → DEAGGLOMERATOR
+                         ↓                                ↓
+                   Material enters              Screw conveys →
+                   from top                     Material exits bottom
 
     Coordinate system:
     - Origin at center of inlet
@@ -147,7 +173,19 @@ class ScrewFeeder:
         return self._vertices, self._indices, self._normals
 
     def _generate_trough(self, vertices: List, indices: List, normals: List):
-        """Generate U-shaped trough."""
+        """
+        Generate FULLY ENCLOSED cylindrical tube housing for the screw.
+        
+        Real industrial screw feeders use a sealed tube design to:
+        - Prevent particle escape/contamination
+        - Contain dust
+        - Allow pressurized/vacuum operation
+        - Meet food/pharma hygiene standards
+        
+        The tube has openings only at:
+        - Inlet (top, near start) - receives material from airlock
+        - Outlet (bottom, at end) - discharges to deagglomerator
+        """
         p = self.params
         n_radial = p.resolution_radial
         n_axial = p.resolution_axial
@@ -155,103 +193,126 @@ class ScrewFeeder:
         start_idx = len(vertices)
         r = p.trough_radius
         wall_thickness = 0.003  # 3mm walls
+        outer_r = r + wall_thickness
 
-        # Trough is a half-cylinder (bottom) plus side walls
-        # Generate outer surface of half-cylinder
+        # Generate FULL cylindrical tube (360 degrees, fully enclosed)
         for i in range(n_axial + 1):
             t_axial = i / n_axial
             axial_pos = t_axial * p.trough_length
 
-            for j in range(n_radial // 2 + 1):
-                # Half circle from -90 to +90 degrees (bottom half)
-                theta = PI / 2 + (j / (n_radial // 2)) * PI
+            for j in range(n_radial):
+                # Full circle (0 to 360 degrees)
+                theta = (j / n_radial) * TWO_PI
 
                 if p.axis == "x":
                     x = p.center[0] + axial_pos
-                    y = p.center[1] + (r + wall_thickness) * np.sin(theta)
-                    z = p.center[2] + (r + wall_thickness) * np.cos(theta)
+                    y = p.center[1] + outer_r * np.sin(theta)
+                    z = p.center[2] + outer_r * np.cos(theta)
                     nx, ny, nz = 0.0, np.sin(theta), np.cos(theta)
                 elif p.axis == "y":
-                    x = p.center[0] + (r + wall_thickness) * np.cos(theta)
+                    x = p.center[0] + outer_r * np.cos(theta)
                     y = p.center[1] + axial_pos
-                    z = p.center[2] + (r + wall_thickness) * np.sin(theta)
+                    z = p.center[2] + outer_r * np.sin(theta)
                     nx, ny, nz = np.cos(theta), 0.0, np.sin(theta)
                 else:  # z-axis
-                    x = p.center[0] + (r + wall_thickness) * np.cos(theta)
-                    y = p.center[1] + (r + wall_thickness) * np.sin(theta)
+                    x = p.center[0] + outer_r * np.cos(theta)
+                    y = p.center[1] + outer_r * np.sin(theta)
                     z = p.center[2] + axial_pos
                     nx, ny, nz = np.cos(theta), np.sin(theta), 0.0
 
                 vertices.append([x, y, z])
                 normals.append([nx, ny, nz])
 
-        # Generate triangles for trough
-        n_circ = n_radial // 2 + 1
+        # Generate triangles for tube
         for i in range(n_axial):
-            for j in range(n_circ - 1):
-                v0 = start_idx + i * n_circ + j
-                v1 = start_idx + i * n_circ + j + 1
-                v2 = start_idx + (i + 1) * n_circ + j + 1
-                v3 = start_idx + (i + 1) * n_circ + j
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = start_idx + i * n_radial + j
+                v1 = start_idx + i * n_radial + j_next
+                v2 = start_idx + (i + 1) * n_radial + j_next
+                v3 = start_idx + (i + 1) * n_radial + j
 
                 indices.extend([v0, v1, v2])
                 indices.extend([v0, v2, v3])
 
-        # Add side walls (vertical extensions above the half-cylinder)
-        wall_height = p.screw_radius * 0.5
-        self._add_trough_walls(vertices, indices, normals, wall_height)
+        # Add end caps (with holes for shaft bearings)
+        self._add_end_caps(vertices, indices, normals, outer_r)
 
-    def _add_trough_walls(self, vertices: List, indices: List, normals: List,
-                          wall_height: float):
-        """Add vertical side walls to trough."""
+    def _add_end_caps(self, vertices: List, indices: List, normals: List,
+                      outer_r: float):
+        """
+        Add end caps to the tube with bearing holes for the shaft.
+        
+        Each end has an annular cap (ring) with a center hole for the shaft
+        bearing/seal assembly.
+        """
         p = self.params
-        n_axial = p.resolution_axial
-
-        r = p.trough_radius
-        wall_thickness = 0.003
-
-        for side in [-1, 1]:
-            start_idx = len(vertices)
-
-            for i in range(n_axial + 1):
-                t_axial = i / n_axial
-                axial_pos = t_axial * p.trough_length
-
-                # Bottom of wall (at trough edge)
-                # Top of wall
-                for h_idx, height in enumerate([0, wall_height]):
-                    if p.axis == "x":
-                        x = p.center[0] + axial_pos
-                        y = p.center[1] + height
-                        z = p.center[2] + side * (r + wall_thickness)
-                        nx, ny, nz = 0.0, 0.0, side
-                    elif p.axis == "y":
-                        x = p.center[0] + side * (r + wall_thickness)
-                        y = p.center[1] + axial_pos
-                        z = p.center[2] + height
-                        nx, ny, nz = side, 0.0, 0.0
-                    else:
-                        x = p.center[0] + side * (r + wall_thickness)
-                        y = p.center[1] + height
-                        z = p.center[2] + axial_pos
-                        nx, ny, nz = side, 0.0, 0.0
-
-                    vertices.append([x, y, z])
-                    normals.append([nx, ny, nz])
-
-            # Triangles for this wall
-            for i in range(n_axial):
-                v0 = start_idx + i * 2
-                v1 = start_idx + i * 2 + 1
-                v2 = start_idx + (i + 1) * 2 + 1
-                v3 = start_idx + (i + 1) * 2
-
-                if side > 0:
-                    indices.extend([v0, v1, v2])
-                    indices.extend([v0, v2, v3])
-                else:
-                    indices.extend([v0, v2, v1])
-                    indices.extend([v0, v3, v2])
+        n_radial = p.resolution_radial
+        bearing_r = p.shaft_radius * 1.5  # Bearing housing radius
+        
+        # Front cap (at x=0 for x-axis)
+        front_cap_start = len(vertices)
+        
+        if p.axis == "x":
+            x_front = p.center[0]
+            x_back = p.center[0] + p.trough_length
+            
+            # Front cap - outer ring
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                y = p.center[1] + outer_r * np.sin(theta)
+                z = p.center[2] + outer_r * np.cos(theta)
+                vertices.append([x_front, y, z])
+                normals.append([-1.0, 0.0, 0.0])
+            
+            # Front cap - inner ring (bearing hole)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                y = p.center[1] + bearing_r * np.sin(theta)
+                z = p.center[2] + bearing_r * np.cos(theta)
+                vertices.append([x_front, y, z])
+                normals.append([-1.0, 0.0, 0.0])
+            
+            # Front cap triangles (annular ring)
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v_outer = front_cap_start + j
+                v_outer_next = front_cap_start + j_next
+                v_inner = front_cap_start + n_radial + j
+                v_inner_next = front_cap_start + n_radial + j_next
+                
+                indices.extend([v_outer, v_inner, v_outer_next])
+                indices.extend([v_outer_next, v_inner, v_inner_next])
+            
+            # Back cap
+            back_cap_start = len(vertices)
+            
+            # Back cap - outer ring
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                y = p.center[1] + outer_r * np.sin(theta)
+                z = p.center[2] + outer_r * np.cos(theta)
+                vertices.append([x_back, y, z])
+                normals.append([1.0, 0.0, 0.0])
+            
+            # Back cap - inner ring (bearing hole)
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                y = p.center[1] + bearing_r * np.sin(theta)
+                z = p.center[2] + bearing_r * np.cos(theta)
+                vertices.append([x_back, y, z])
+                normals.append([1.0, 0.0, 0.0])
+            
+            # Back cap triangles
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v_outer = back_cap_start + j
+                v_outer_next = back_cap_start + j_next
+                v_inner = back_cap_start + n_radial + j
+                v_inner_next = back_cap_start + n_radial + j_next
+                
+                indices.extend([v_outer, v_outer_next, v_inner])
+                indices.extend([v_outer_next, v_inner_next, v_inner])
 
     def _generate_screw(self, vertices: List, indices: List, normals: List):
         """Generate helical screw with shaft."""
@@ -369,149 +430,343 @@ class ScrewFeeder:
             indices.extend([v0, v2, v3])
 
     def _generate_inlet(self, vertices: List, indices: List, normals: List):
-        """Generate circular inlet neck for material from airlock."""
-        p = self.params
-        n_radial = max(16, p.resolution_radial // 2)
+        """
+        Generate flanged inlet neck on TOP of enclosed tube with saddle joint.
 
-        start_idx = len(vertices)
-        
-        # Circular inlet diameter sized to match airlock outlet
-        inlet_diameter = min(p.inlet_width, p.inlet_length) * 0.8
-        r = inlet_diameter / 2
-        neck_height = inlet_diameter * 0.5  # Height of inlet neck
-        flange_radius = r * 1.3  # Flange is larger than neck
+        The inlet uses a saddle joint that curves around the cylindrical tube:
+        - Saddle base follows the tube curvature
+        - Transitions to circular neck
+        - Ends with flange for connection to rotary airlock
+
+        DYNAMIC PROPORTIONAL SIZING:
+        The inlet diameter is set directly from params.inlet_diameter to
+        match the upstream component (airlock outlet).
+        """
+        p = self.params
+        n_radial = max(20, p.resolution_radial)
+        n_transition = 4  # Segments for saddle-to-neck transition
+
+        # Use direct inlet diameter from params (matches airlock outlet)
+        neck_radius = p.inlet_diameter / 2
+        r_tube = p.trough_radius + 0.003  # Tube outer radius
+
+        # Saddle and neck dimensions
+        saddle_height = 0.010  # Height of saddle transition
+        neck_length = p.inlet_diameter * 0.4  # Neck length
+        flange_thickness = 0.008  # 8mm flange
 
         if p.axis == "x":
-            # Inlet at start of trough, pointing up (+Y)
-            x_center = p.center[0] + p.inlet_length / 2
-            y_base = p.center[1] + p.trough_radius
-            y_top = y_base + neck_height
+            # Inlet positioned at 15% of trough length from start
+            x_center = p.center[0] + p.trough_length * 0.15
             z_center = p.center[2]
 
-            # Bottom ring (at trough)
+            # === 1. SADDLE BASE (sits on tube curve) ===
+            saddle_start = len(vertices)
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
-                x = x_center + r * np.cos(theta)
-                z = z_center + r * np.sin(theta)
-                vertices.append([x, y_base, z])
-                normals.append([np.cos(theta), 0.0, np.sin(theta)])
-            
-            # Top ring (connection point)
+                # Position in XZ plane (neck cross-section)
+                x_local = neck_radius * np.cos(theta)
+                z_local = neck_radius * np.sin(theta)
+
+                # Saddle base follows the tube curve
+                y_offset = np.sqrt(max(0, r_tube**2 - z_local**2))
+                y = p.center[1] + y_offset
+
+                x = x_center + x_local
+                z = z_center + z_local
+
+                vertices.append([x, y, z])
+                # Normal points along saddle surface
+                norm_len = np.sqrt(x_local**2 + y_offset**2)
+                if norm_len > 0.001:
+                    normals.append([x_local/norm_len * 0.3, y_offset/norm_len, 0.0])
+                else:
+                    normals.append([0.0, 1.0, 0.0])
+
+            # === 2. TRANSITION RINGS (saddle to circular) ===
+            for t in range(1, n_transition + 1):
+                blend = t / n_transition
+
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    x_local = neck_radius * np.cos(theta)
+                    z_local = neck_radius * np.sin(theta)
+
+                    # Blend from saddle curve to flat circle
+                    y_saddle = np.sqrt(max(0, r_tube**2 - z_local**2))
+                    y_flat = r_tube + saddle_height * blend
+                    y = p.center[1] + (y_saddle * (1 - blend) + y_flat * blend)
+
+                    x = x_center + x_local
+                    z = z_center + z_local
+
+                    vertices.append([x, y, z])
+                    normals.append([np.cos(theta), 0.0, np.sin(theta)])
+
+            # === 3. CYLINDRICAL NECK ===
+            y_neck_start = p.center[1] + r_tube + saddle_height
+            y_neck_end = y_neck_start + neck_length
+
+            neck_start = len(vertices)
+            # Start ring
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
-                x = x_center + r * np.cos(theta)
-                z = z_center + r * np.sin(theta)
-                vertices.append([x, y_top, z])
+                x = x_center + neck_radius * np.cos(theta)
+                z = z_center + neck_radius * np.sin(theta)
+                vertices.append([x, y_neck_start, z])
                 normals.append([np.cos(theta), 0.0, np.sin(theta)])
-            
-            # Flange ring at top
+
+            # End ring
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + neck_radius * np.cos(theta)
+                z = z_center + neck_radius * np.sin(theta)
+                vertices.append([x, y_neck_end, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+
+            # === 4. FLANGE ===
             flange_start = len(vertices)
+            flange_radius = neck_radius * 1.3
+            y_flange = y_neck_end
+
+            # Flange inner ring
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + neck_radius * np.cos(theta)
+                z = z_center + neck_radius * np.sin(theta)
+                vertices.append([x, y_flange, z])
+                normals.append([0.0, 1.0, 0.0])
+
+            # Flange outer ring
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
                 x = x_center + flange_radius * np.cos(theta)
                 z = z_center + flange_radius * np.sin(theta)
-                vertices.append([x, y_top, z])
+                vertices.append([x, y_flange, z])
                 normals.append([0.0, 1.0, 0.0])
-                
-        else:
-            # Simplified for other axes
-            for _ in range(n_radial * 3):
-                vertices.append([p.center[0], p.center[1], p.center[2]])
-                normals.append([0.0, 1.0, 0.0])
-            flange_start = start_idx + n_radial * 2
 
-        # Neck cylinder triangles
-        for j in range(n_radial):
-            j_next = (j + 1) % n_radial
-            v0 = start_idx + j
-            v1 = start_idx + j_next
-            v2 = start_idx + n_radial + j_next
-            v3 = start_idx + n_radial + j
+            # === GENERATE TRIANGLES ===
+            # Saddle to first transition ring
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = saddle_start + j
+                v1 = saddle_start + j_next
+                v2 = saddle_start + n_radial + j_next
+                v3 = saddle_start + n_radial + j
+                indices.extend([v0, v1, v2])
+                indices.extend([v0, v2, v3])
 
-            indices.extend([v0, v1, v2])
-            indices.extend([v0, v2, v3])
-        
-        # Flange face (annular ring from neck to flange)
-        for j in range(n_radial):
-            j_next = (j + 1) % n_radial
-            v0 = start_idx + n_radial + j
-            v1 = start_idx + n_radial + j_next
-            v2 = flange_start + j_next
-            v3 = flange_start + j
+            # Between transition rings
+            for t in range(1, n_transition):
+                for j in range(n_radial):
+                    j_next = (j + 1) % n_radial
+                    base = saddle_start + t * n_radial
+                    v0 = base + j
+                    v1 = base + j_next
+                    v2 = base + n_radial + j_next
+                    v3 = base + n_radial + j
+                    indices.extend([v0, v1, v2])
+                    indices.extend([v0, v2, v3])
 
-            indices.extend([v0, v1, v2])
-            indices.extend([v0, v2, v3])
+            # Last transition to neck start
+            trans_last = saddle_start + n_transition * n_radial
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = trans_last + j
+                v1 = trans_last + j_next
+                v2 = neck_start + j_next
+                v3 = neck_start + j
+                indices.extend([v0, v1, v2])
+                indices.extend([v0, v2, v3])
+
+            # Neck cylinder
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = neck_start + j
+                v1 = neck_start + j_next
+                v2 = neck_start + n_radial + j_next
+                v3 = neck_start + n_radial + j
+                indices.extend([v0, v1, v2])
+                indices.extend([v0, v2, v3])
+
+            # Flange face (annular ring)
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v_inner = flange_start + j
+                v_inner_next = flange_start + j_next
+                v_outer = flange_start + n_radial + j
+                v_outer_next = flange_start + n_radial + j_next
+                indices.extend([v_inner, v_inner_next, v_outer_next])
+                indices.extend([v_inner, v_outer_next, v_outer])
 
     def _generate_outlet(self, vertices: List, indices: List, normals: List):
-        """Generate circular outlet neck for discharge to deagglomerator."""
+        """
+        Generate flanged outlet neck on BOTTOM of enclosed tube with saddle joint.
+
+        The outlet uses a saddle joint that curves around the cylindrical tube:
+        - Saddle base follows the tube curvature (bottom)
+        - Transitions to circular neck
+        - Ends with flange for connection to deagglomerator
+
+        DYNAMIC PROPORTIONAL SIZING:
+        The outlet diameter is set directly from params.outlet_diameter to
+        match the downstream component (de-agglomerator inlet).
+        """
         p = self.params
-        n_radial = max(16, p.resolution_radial // 2)
+        n_radial = max(20, p.resolution_radial)
+        n_transition = 4  # Segments for saddle-to-neck transition
 
-        start_idx = len(vertices)
-        r = p.outlet_diameter / 2
-        outlet_length = p.outlet_diameter * 0.6  # Neck length
-        flange_radius = r * 1.3  # Flange larger than neck
+        neck_radius = p.outlet_diameter / 2
+        r_tube = p.trough_radius + 0.003  # Tube outer radius
 
-        # Outlet at end of trough, pointing down (-Y)
+        # Saddle and neck dimensions
+        saddle_height = 0.010  # Height of saddle transition
+        neck_length = p.outlet_diameter * 0.4  # Neck length
+        flange_thickness = 0.008  # 8mm flange
+
+        # Outlet at 85% of trough length (near end where material accumulates)
         if p.axis == "x":
-            x_center = p.center[0] + p.trough_length
-            y_base = p.center[1] - p.trough_radius
-            y_bottom = y_base - outlet_length
+            x_center = p.center[0] + p.trough_length * 0.85
             z_center = p.center[2]
 
-            # Top ring (at trough bottom)
+            # === 1. SADDLE BASE (sits on tube curve, bottom) ===
+            saddle_start = len(vertices)
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
-                x = x_center + r * np.cos(theta)
-                z = z_center + r * np.sin(theta)
-                vertices.append([x, y_base, z])
-                normals.append([np.cos(theta), 0.0, np.sin(theta)])
-            
-            # Bottom ring (outlet end)
+                # Position in XZ plane (neck cross-section)
+                x_local = neck_radius * np.cos(theta)
+                z_local = neck_radius * np.sin(theta)
+
+                # Saddle base follows the tube curve (bottom side)
+                y_offset = np.sqrt(max(0, r_tube**2 - z_local**2))
+                y = p.center[1] - y_offset  # Negative for bottom
+
+                x = x_center + x_local
+                z = z_center + z_local
+
+                vertices.append([x, y, z])
+                # Normal points along saddle surface
+                norm_len = np.sqrt(x_local**2 + y_offset**2)
+                if norm_len > 0.001:
+                    normals.append([x_local/norm_len * 0.3, -y_offset/norm_len, 0.0])
+                else:
+                    normals.append([0.0, -1.0, 0.0])
+
+            # === 2. TRANSITION RINGS (saddle to circular) ===
+            for t in range(1, n_transition + 1):
+                blend = t / n_transition
+
+                for j in range(n_radial):
+                    theta = (j / n_radial) * TWO_PI
+                    x_local = neck_radius * np.cos(theta)
+                    z_local = neck_radius * np.sin(theta)
+
+                    # Blend from saddle curve to flat circle
+                    y_saddle = np.sqrt(max(0, r_tube**2 - z_local**2))
+                    y_flat = r_tube + saddle_height * blend
+                    y = p.center[1] - (y_saddle * (1 - blend) + y_flat * blend)
+
+                    x = x_center + x_local
+                    z = z_center + z_local
+
+                    vertices.append([x, y, z])
+                    normals.append([np.cos(theta), 0.0, np.sin(theta)])
+
+            # === 3. CYLINDRICAL NECK ===
+            y_neck_start = p.center[1] - r_tube - saddle_height
+            y_neck_end = y_neck_start - neck_length
+
+            neck_start = len(vertices)
+            # Start ring
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
-                x = x_center + r * np.cos(theta)
-                z = z_center + r * np.sin(theta)
-                vertices.append([x, y_bottom, z])
+                x = x_center + neck_radius * np.cos(theta)
+                z = z_center + neck_radius * np.sin(theta)
+                vertices.append([x, y_neck_start, z])
                 normals.append([np.cos(theta), 0.0, np.sin(theta)])
-            
-            # Flange ring at bottom
+
+            # End ring
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + neck_radius * np.cos(theta)
+                z = z_center + neck_radius * np.sin(theta)
+                vertices.append([x, y_neck_end, z])
+                normals.append([np.cos(theta), 0.0, np.sin(theta)])
+
+            # === 4. FLANGE ===
             flange_start = len(vertices)
+            flange_radius = neck_radius * 1.3
+            y_flange = y_neck_end
+
+            # Flange inner ring
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = x_center + neck_radius * np.cos(theta)
+                z = z_center + neck_radius * np.sin(theta)
+                vertices.append([x, y_flange, z])
+                normals.append([0.0, -1.0, 0.0])
+
+            # Flange outer ring
             for j in range(n_radial):
                 theta = (j / n_radial) * TWO_PI
                 x = x_center + flange_radius * np.cos(theta)
                 z = z_center + flange_radius * np.sin(theta)
-                vertices.append([x, y_bottom, z])
+                vertices.append([x, y_flange, z])
                 normals.append([0.0, -1.0, 0.0])
-                
-        else:
-            # Simplified for other axes
-            for _ in range(n_radial * 3):
-                vertices.append([p.center[0], p.center[1], p.center[2]])
-                normals.append([0.0, -1.0, 0.0])
-            flange_start = start_idx + n_radial * 2
 
-        # Neck cylinder triangles
-        for j in range(n_radial):
-            j_next = (j + 1) % n_radial
-            v0 = start_idx + j
-            v1 = start_idx + j_next
-            v2 = start_idx + n_radial + j_next
-            v3 = start_idx + n_radial + j
+            # === GENERATE TRIANGLES ===
+            # Saddle to first transition ring (reversed winding for bottom)
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = saddle_start + j
+                v1 = saddle_start + j_next
+                v2 = saddle_start + n_radial + j_next
+                v3 = saddle_start + n_radial + j
+                indices.extend([v0, v2, v1])
+                indices.extend([v0, v3, v2])
 
-            indices.extend([v0, v1, v2])
-            indices.extend([v0, v2, v3])
-        
-        # Flange face (annular ring)
-        for j in range(n_radial):
-            j_next = (j + 1) % n_radial
-            v0 = start_idx + n_radial + j
-            v1 = start_idx + n_radial + j_next
-            v2 = flange_start + j_next
-            v3 = flange_start + j
+            # Between transition rings
+            for t in range(1, n_transition):
+                for j in range(n_radial):
+                    j_next = (j + 1) % n_radial
+                    base = saddle_start + t * n_radial
+                    v0 = base + j
+                    v1 = base + j_next
+                    v2 = base + n_radial + j_next
+                    v3 = base + n_radial + j
+                    indices.extend([v0, v2, v1])
+                    indices.extend([v0, v3, v2])
 
-            indices.extend([v0, v2, v1])  # Reversed for facing down
-            indices.extend([v0, v3, v2])
+            # Last transition to neck start
+            trans_last = saddle_start + n_transition * n_radial
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = trans_last + j
+                v1 = trans_last + j_next
+                v2 = neck_start + j_next
+                v3 = neck_start + j
+                indices.extend([v0, v2, v1])
+                indices.extend([v0, v3, v2])
+
+            # Neck cylinder
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v0 = neck_start + j
+                v1 = neck_start + j_next
+                v2 = neck_start + n_radial + j_next
+                v3 = neck_start + n_radial + j
+                indices.extend([v0, v2, v1])
+                indices.extend([v0, v3, v2])
+
+            # Flange face (annular ring, facing down)
+            for j in range(n_radial):
+                j_next = (j + 1) % n_radial
+                v_inner = flange_start + j
+                v_inner_next = flange_start + j_next
+                v_outer = flange_start + n_radial + j
+                v_outer_next = flange_start + n_radial + j_next
+                indices.extend([v_inner, v_outer_next, v_inner_next])
+                indices.extend([v_inner, v_outer, v_outer_next])
 
     def get_feed_rate(self, rpm: float = None, bulk_density: float = 500.0) -> float:
         """
@@ -569,56 +824,69 @@ class ScrewFeeder:
     def ports(self) -> Dict[str, ConnectionPort]:
         """
         Get connection ports for this component.
-        
+
         The port positions represent the ACTUAL CONNECTION SURFACES where
         components physically meet (at flange faces).
-        
+
+        ENCLOSED TUBE CONNECTION POINTS with SADDLE JOINTS:
+        - Material enters through TOP (inlet) from rotary airlock
+        - Material exits through BOTTOM (outlet) to deagglomerator
+        - Both connections use saddle joints that curve around the tube
+        - Flanged ends for dust-tight sealing
+
+        DYNAMIC PROPORTIONAL SIZING:
+        - inlet_diameter: Direct from params, matches airlock outlet
+        - outlet_diameter: Direct from params, matches deagg inlet
+        - Port positions match the geometry in _generate_inlet/_generate_outlet
+
         Returns:
             Dictionary of port name to ConnectionPort:
-            - 'inlet': Top inlet for material from airlock (circular)
-            - 'outlet': Discharge outlet at end of trough (circular)
+            - 'inlet': Top inlet flange (from airlock)
+            - 'outlet': Bottom outlet flange (to deagglomerator)
         """
         p = self.params
-        
-        # Circular inlet diameter (must match _generate_inlet)
-        inlet_diameter = min(p.inlet_width, p.inlet_length) * 0.8
-        inlet_neck_height = inlet_diameter * 0.5
-        
-        # Inlet is at start of trough, pointing up
-        inlet_top_y = p.trough_radius + inlet_neck_height
-        
-        # Outlet at end of trough (must match _generate_outlet)
-        outlet_neck_length = p.outlet_diameter * 0.6
-        outlet_bottom_y = -p.trough_radius - outlet_neck_length
-        
+
+        # Dimensions must match _generate_inlet/_generate_outlet
+        r_tube = p.trough_radius + 0.003
+        saddle_height = 0.010
+        inlet_neck_length = p.inlet_diameter * 0.4
+        outlet_neck_length = p.outlet_diameter * 0.4
+
+        # Inlet position: saddle + neck from tube surface
+        inlet_top_y = r_tube + saddle_height + inlet_neck_length
+
+        # Outlet position: saddle + neck from tube surface (bottom)
+        outlet_bottom_y = -(r_tube + saddle_height + outlet_neck_length)
+
         if p.axis == "x":
-            # Inlet centered at start of trough
-            inlet_x = p.inlet_length / 2
+            # Inlet at 15% of trough length (matches geometry)
+            inlet_x = p.trough_length * 0.15
             inlet_pos = (inlet_x, inlet_top_y, 0.0)
             inlet_dir = (0.0, 1.0, 0.0)  # Points up
-            
-            # Outlet at end of trough
-            outlet_pos = (p.trough_length, outlet_bottom_y, 0.0)
+
+            # Outlet at 85% of trough length (matches geometry)
+            outlet_x = p.trough_length * 0.85
+            outlet_pos = (outlet_x, outlet_bottom_y, 0.0)
             outlet_dir = (0.0, -1.0, 0.0)  # Points down
         elif p.axis == "y":
-            inlet_pos = (inlet_top_y, p.inlet_length / 2, 0.0)
+            inlet_pos = (inlet_top_y, p.trough_length * 0.15, 0.0)
             inlet_dir = (1.0, 0.0, 0.0)
-            outlet_pos = (outlet_bottom_y, p.trough_length, 0.0)
+            outlet_pos = (outlet_bottom_y, p.trough_length * 0.85, 0.0)
             outlet_dir = (-1.0, 0.0, 0.0)
         else:  # z-axis
-            inlet_pos = (0.0, inlet_top_y, p.inlet_length / 2)
+            inlet_pos = (0.0, inlet_top_y, p.trough_length * 0.15)
             inlet_dir = (0.0, 1.0, 0.0)
-            outlet_pos = (0.0, outlet_bottom_y, p.trough_length)
+            outlet_pos = (0.0, outlet_bottom_y, p.trough_length * 0.85)
             outlet_dir = (0.0, -1.0, 0.0)
-        
+
         return {
             'inlet': ConnectionPort(
                 position=inlet_pos,
                 direction=inlet_dir,
-                diameter=inlet_diameter,
+                diameter=p.inlet_diameter,
                 port_type=PortType.FLANGED,
                 name="feeder_inlet",
-                flange_diameter=inlet_diameter * 1.3,
+                flange_diameter=p.inlet_diameter * 1.3,
                 compatible_types=[PortType.CIRCULAR, PortType.GRAVITY, PortType.FLANGED],
             ),
             'outlet': ConnectionPort(
@@ -636,15 +904,24 @@ class ScrewFeeder:
 def create_standard_screw_feeder(
     screw_diameter: float = 0.10,
     feed_rate_kg_h: float = 500,
-    bulk_density: float = 500
+    bulk_density: float = 500,
+    inlet_diameter: float = None,
+    outlet_diameter: float = None,
 ) -> ScrewFeeder:
     """
     Create a standard screw feeder sized for given feed rate.
+    
+    DYNAMIC PROPORTIONAL SIZING:
+    The inlet and outlet diameters can be specified directly to match
+    the connected components (airlock outlet and de-agglomerator inlet).
+    If not specified, defaults are calculated proportional to screw diameter.
 
     Args:
         screw_diameter: Screw diameter [m]
         feed_rate_kg_h: Target feed rate [kg/h]
         bulk_density: Material bulk density [kg/m^3]
+        inlet_diameter: Inlet port diameter [m] (default: screw_diameter * 1.2)
+        outlet_diameter: Outlet port diameter [m] (default: screw_diameter * 0.8)
 
     Returns:
         ScrewFeeder instance
@@ -657,13 +934,14 @@ def create_standard_screw_feeder(
     rpm = 30
     fill_level = 0.30
 
-    # Q = pi/4 * (D^2 - d^2) * p * n * fill * 60 * rho
-    D = screw_diameter
-    d = shaft_diameter
-    vol_rate_needed = feed_rate_kg_h / bulk_density  # m3/h
-
-    # Length doesn't directly affect capacity, but we size for ~3 pitches
+    # Length sized for ~3 pitches (standard)
     trough_length = screw_pitch * 3
+    
+    # Default inlet/outlet diameters if not specified
+    if inlet_diameter is None:
+        inlet_diameter = screw_diameter * 1.2
+    if outlet_diameter is None:
+        outlet_diameter = screw_diameter * 0.8
 
     params = ScrewFeederParams(
         screw_diameter=screw_diameter,
@@ -672,9 +950,8 @@ def create_standard_screw_feeder(
         flight_thickness=0.003,
         trough_length=trough_length,
         trough_clearance=0.003,
-        inlet_length=screw_diameter * 1.5,
-        inlet_width=screw_diameter * 1.2,
-        outlet_diameter=screw_diameter * 0.8,
+        inlet_diameter=inlet_diameter,
+        outlet_diameter=outlet_diameter,
         rpm=rpm,
         fill_level=fill_level,
     )

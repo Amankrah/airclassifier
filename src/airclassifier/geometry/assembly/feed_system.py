@@ -90,13 +90,13 @@ MATERIAL FLOW PATH
     │                        SCREW FEEDER                                 │
     │  ┌─────────────────────────────────────────────────────────────┐   │
     │  │                                                             │   │
-    │  │    INLET (from airlock)                                     │   │
+    │  │    INLET FLANGE (from airlock)                              │   │
     │  │         │                                                   │   │
     │  │         ▼                                                   │   │
     │  │   ╔═══════════════════════════════════════════════════╗    │   │
-    │  │   ║                   U-TROUGH                        ║    │   │
+    │  │   ║         FULLY ENCLOSED CYLINDRICAL TUBE           ║    │   │
     │  │   ║   ┌─────────────────────────────────────────┐    ║    │   │
-    │  │   ║   │  ╭──╮   ╭──╮   ╭──╮   ╭──╮   ╭──╮     │ ══►║    │   │
+    │  │   ║   │  ╭──╮   ╭──╮   ╭──╮   ╭──╮   ╭──╮     │    ║    │   │
     │  │   ║   │  │  │   │  │   │  │   │  │   │  │     │    ║    │   │
     │  │   ║   │  ╰──╯   ╰──╯   ╰──╯   ╰──╯   ╰──╯     │    ║    │   │
     │  │   ║   │        HELICAL SCREW FLIGHTS           │    ║    │   │
@@ -105,13 +105,15 @@ MATERIAL FLOW PATH
     │  │   ╚══════════════════════════════════════════════╤══╝    │   │
     │  │                                                   │       │   │
     │  │   Function: Controlled volumetric feed rate      ▼       │   │
+    │  │   - ENCLOSED TUBE (dust-tight, no particle escape)       │   │
     │  │   - Screw diameter: 100mm                    OUTLET      │   │
-    │  │   - Pitch: 80mm (0.8 × diameter)         (to deagg)      │   │
-    │  │   - Target rate: 500 kg/h                                │   │
+    │  │   - Pitch: 80mm (0.8 × diameter)            FLANGE       │   │
+    │  │   - Target rate: 500 kg/h                   (to deagg)   │   │
     │  └─────────────────────────────────────────────────────────────┘   │
     │                            │                                        │
     │                 ┌──────────┴──────────┐                             │
-    │                 │ TRANSITION CONNECTOR │                            │
+    │                 │ FLANGED TRANSITION  │  ← Conical if diameters    │
+    │                 │   (dust-tight)      │    differ, with flanges    │
     │                 └──────────┬──────────┘                             │
     └────────────────────────────┼────────────────────────────────────────┘
                                  │
@@ -389,15 +391,15 @@ class FeedSystemParams:
     airlock_rotor_diameter: float = 0.20  # [m] Rotor diameter
 
     # Screw feeder parameters
-    feeder_screw_diameter: float = 0.10   # [m] Screw diameter
+    feeder_screw_diameter: float = 0.10 # [m] Screw diameter
     feeder_target_rate_kg_h: float = 500  # [kg/h] Target mass flow rate
 
     # De-agglomerator parameters
     deagg_rotor_diameter: float = 0.20    # [m] Rotor diameter
-    deagg_screen_aperture: float = 0.002  # [m] Screen mesh size (2mm)
+    deagg_screen_aperture: float = 0.001 # [m] Screen mesh size (1mm)
 
     # Layout parameters
-    component_spacing: float = 0.005      # [m] Gap between flanges (5mm)
+    component_spacing: float = 0.002      # [m] Gap between flanges (2mm - tight fit)
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # System origin
 
     # Material properties
@@ -523,7 +525,15 @@ class FeedSystemAssembly:
         self._mesh_built = False
 
     def _create_components(self):
-        """Create all system components with proper port-to-port positioning."""
+        """
+        Create all system components with proper port-to-port positioning.
+        
+        DYNAMIC PROPORTIONAL SIZING (like classification.py):
+        1. Calculate port diameters based on connected components
+        2. Calculate transition lengths FIRST based on diameter changes
+        3. Position components with proper gaps for transitions
+        4. Create transitions that exactly fill the gaps
+        """
         # Lazy imports to avoid circular dependency
         from ..components import (
             create_standard_feed_hopper,
@@ -533,29 +543,45 @@ class FeedSystemAssembly:
         )
 
         p = self.params
-        gap = p.component_spacing  # Small gap for flanged connections (default 5mm)
+        flange_gap = p.component_spacing  # Small gap for flange gaskets (5mm)
+        
+        # ============================================================
+        # HELPER: Calculate transition length based on diameter change
+        # ============================================================
+        def calc_transition_length(d_in: float, d_out: float, min_length: float = 0.05) -> float:
+            """
+            Calculate proper transition length for smooth flow.
+            Uses max 12° half-angle for expansion/contraction.
+            """
+            max_half_angle = np.radians(12)  # 12° max half-angle
+            d_diff = abs(d_in - d_out)
+            
+            if d_diff > 0.001:
+                # Conical transition - length based on angle
+                length = (d_diff / 2) / np.tan(max_half_angle)
+                return max(length, min_length)
+            else:
+                # Same diameter - minimum visible length
+                return min_length
 
-        # 1. Feed Hopper (top of system) - positioned first as reference
-        # The hopper's local coordinate system has:
-        #   - Origin at center of discharge opening (Y=0)
-        #   - Mesh extends from Y=0 (discharge) to Y=total_height (top)
+        # ============================================================
+        # 1. FEED HOPPER (top of system) - positioned first as reference
+        # ============================================================
         self.hopper = create_standard_feed_hopper(
             capacity_kg=p.hopper_capacity_kg,
             bulk_density=p.bulk_density,
             discharge_diameter=p.hopper_discharge_diameter
         )
         
-        # Position hopper at system center
-        # The hopper's discharge ring extends below Y=0 by (bottom_diameter * 0.2)
-        # We position so the TOP of the system is at a reasonable height
         self._hopper_position = (
             p.center[0], 
-            p.center[1],  # Hopper origin (discharge center) at system center
+            p.center[1],
             p.center[2]
         )
 
-        # 2. Rotary Airlock - connect DIRECTLY to hopper discharge
-        # Size the airlock inlet to match hopper discharge
+        # ============================================================
+        # 2. ROTARY AIRLOCK - below hopper
+        # ============================================================
         from ..components import RotaryAirlockParams, RotaryAirlock
         
         airlock_params = RotaryAirlockParams(
@@ -564,60 +590,82 @@ class FeedSystemAssembly:
             num_vanes=8,
             vane_thickness=0.005,
             vane_tip_clearance=0.0003,
-            # Match inlet to hopper discharge diameter
             inlet_diameter=p.hopper_discharge_diameter,
-            # Match outlet to feeder inlet (slightly smaller)
             outlet_diameter=p.hopper_discharge_diameter * 0.9,
         )
         self.airlock = RotaryAirlock(airlock_params)
         
-        # Calculate alignment: hopper discharge port -> airlock inlet port
-        # The ports represent the actual mating surfaces
+        # Transition 1: Hopper discharge -> Airlock inlet
+        # Both same diameter, use minimum length
+        trans1_length = calc_transition_length(
+            p.hopper_discharge_diameter,
+            p.hopper_discharge_diameter,
+            min_length=0.015  # 15mm minimum - tight cylindrical connection
+        )
+        gap1 = flange_gap + trans1_length + flange_gap
+        
         alignment = calculate_alignment(
             source_port=self.hopper.ports['discharge'],
             target_port=self.airlock.ports['inlet'],
             source_position=self._hopper_position,
-            gap=gap,
+            gap=gap1,
             align_directions=True
         )
         self._airlock_position = tuple(alignment.position_offset)
 
-        # 3. Screw Feeder - connect DIRECTLY to airlock outlet
-        # Size inlet to match airlock outlet
+        # ============================================================
+        # 3. SCREW FEEDER - below airlock
+        # ============================================================
         from ..components import ScrewFeederParams, ScrewFeeder
-        
-        # Airlock outlet diameter determines feeder inlet size
-        airlock_outlet_dia = airlock_params.outlet_diameter
-        # Feeder outlet should match deagglomerator inlet
-        feeder_outlet_dia = p.deagg_rotor_diameter * 0.4  # Typical deagg inlet size
-        
+
+        # Calculate feeder tube geometry first to properly size inlet
         screw_pitch = p.feeder_screw_diameter * 0.8
+        trough_clearance = 0.003
+        wall_thickness = 0.003
+        feeder_trough_radius = p.feeder_screw_diameter / 2 + trough_clearance
+        feeder_tube_outer_radius = feeder_trough_radius + wall_thickness
+
+        # CRITICAL: Inlet diameter must fit ON TOP of the tube, not larger than tube
+        # Maximum inlet = ~80% of tube diameter for proper visual fit
+        max_inlet_dia = feeder_tube_outer_radius * 2 * 0.75
+        feeder_inlet_dia = min(airlock_params.outlet_diameter, max_inlet_dia)
+
+        # Outlet diameter for deagglomerator connection
+        feeder_outlet_dia = p.deagg_rotor_diameter * 0.4
+
         feeder_params = ScrewFeederParams(
             screw_diameter=p.feeder_screw_diameter,
             shaft_diameter=p.feeder_screw_diameter * 0.3,
             screw_pitch=screw_pitch,
             flight_thickness=0.003,
             trough_length=screw_pitch * 3,
-            trough_clearance=0.003,
-            # Size inlet to match airlock outlet
-            inlet_length=airlock_outlet_dia * 1.2,
-            inlet_width=airlock_outlet_dia * 1.0,
-            # Size outlet to match deagglomerator inlet
+            trough_clearance=trough_clearance,
+            inlet_diameter=feeder_inlet_dia,
             outlet_diameter=feeder_outlet_dia,
         )
         self.feeder = ScrewFeeder(feeder_params)
         
-        # Calculate alignment: airlock outlet -> feeder inlet
+        # Transition 2: Airlock outlet -> Feeder inlet
+        # CONICAL REDUCER: airlock outlet (larger) to feeder inlet (smaller)
+        trans2_length = calc_transition_length(
+            airlock_params.outlet_diameter,
+            feeder_inlet_dia,
+            min_length=0.025  # 25mm minimum - tight conical reducer
+        )
+        gap2 = flange_gap + trans2_length + flange_gap
+        
         alignment = calculate_alignment(
             source_port=self.airlock.ports['outlet'],
             target_port=self.feeder.ports['inlet'],
             source_position=self._airlock_position,
-            gap=gap,
+            gap=gap2,
             align_directions=True
         )
         self._feeder_position = tuple(alignment.position_offset)
 
-        # 4. De-agglomerator - connect DIRECTLY to feeder outlet
+        # ============================================================
+        # 4. DE-AGGLOMERATOR - below screw feeder
+        # ============================================================
         from ..components import DeagglomeratorParams, Deagglomerator
         
         deagg_params = DeagglomeratorParams(
@@ -633,115 +681,149 @@ class FeedSystemAssembly:
             screen_diameter=p.deagg_rotor_diameter * 1.1,
             screen_aperture=p.deagg_screen_aperture,
             screen_open_area=0.40,
-            # Size inlet to match feeder outlet
             inlet_diameter=feeder_outlet_dia,
-            # Outlet can be slightly larger
             outlet_diameter=feeder_outlet_dia * 1.2,
         )
         self.deagglomerator = Deagglomerator(deagg_params)
         
-        # Calculate alignment: feeder outlet -> deagglomerator inlet
+        # Transition 3: Feeder outlet -> Deagglomerator inlet
+        # Same diameter - short cylindrical connection
+        trans3_length = calc_transition_length(
+            feeder_outlet_dia,
+            feeder_outlet_dia,  # Same - deagg inlet matches feeder outlet
+            min_length=0.020  # 20mm minimum - tight connection
+        )
+        gap3 = flange_gap + trans3_length + flange_gap
+        
         alignment = calculate_alignment(
             source_port=self.feeder.ports['outlet'],
             target_port=self.deagglomerator.ports['inlet'],
             source_position=self._feeder_position,
-            gap=gap,
+            gap=gap3,
             align_directions=True
         )
         self._deagglomerator_position = tuple(alignment.position_offset)
         
-        # 5. Create transition connectors for dust-tight sealing
-        # These bridge the gaps between components to prevent particle escape
-        self._create_transition_connectors(gap)
-
-    def _create_transition_connectors(self, gap: float):
-        """
-        Create transition connectors between all component connections.
+        # Store transition lengths for connector creation
+        self._transition_lengths = {
+            'hopper_to_airlock': trans1_length,
+            'airlock_to_feeder': trans2_length,
+            'feeder_to_deagglomerator': trans3_length,
+        }
         
-        In real industrial systems, these sealed pipe sections prevent
-        particle escape during material transfer between equipment.
+        # 5. Create transition connectors that exactly fill the gaps
+        self._create_transition_connectors(flange_gap)
+
+    def _create_transition_connectors(self, flange_gap: float):
         """
-        from ..components.transition_connector import (
-            TransitionConnector, TransitionConnectorParams
-        )
+        Create proper flanged transition connectors between all component connections.
+        
+        INDUSTRIAL DESIGN - DYNAMIC PROPORTIONAL SIZING:
+        Transitions are created with pre-calculated lengths from _create_components
+        to exactly fill the gaps between components.
+        
+        Each transition:
+        1. Uses the pre-calculated length that accounts for diameter changes
+        2. Handles diameter differences with CONICAL transitions
+        3. Provides flanged ends for bolted, dust-tight connections
+        4. Follows the port direction for proper 3D orientation
+        
+        CONNECTION CHAIN:
+        HOPPER → [Transition] → AIRLOCK → [Transition] → FEEDER → [Transition] → DEAGGLOMERATOR
+        """
+        from ..components.transitions import Transition, TransitionParams
         
         self._transition_connectors = []
         
-        # 1. Hopper -> Airlock connector
-        hopper_outlet = self.hopper.ports['discharge']
-        airlock_inlet = self.airlock.ports['inlet']
+        def create_transition_connector(
+            source_port, source_position,
+            target_port, target_position,
+            name: str,
+            transition_length: float
+        ):
+            """
+            Create a transition connector with the specified length.
+            
+            The transition starts at the source port (offset by flange_gap)
+            and extends for the pre-calculated transition_length.
+            """
+            # Calculate world positions of ports
+            source_world = np.array([
+                source_position[i] + source_port.position[i] for i in range(3)
+            ])
+            target_world = np.array([
+                target_position[i] + target_port.position[i] for i in range(3)
+            ])
+            
+            # Get port diameters
+            d_source = source_port.diameter
+            d_target = target_port.diameter
+            
+            # Direction from source to target (normalized)
+            connection_vec = target_world - source_world
+            actual_distance = np.linalg.norm(connection_vec)
+            
+            if actual_distance > 0.001:
+                direction = tuple(connection_vec / actual_distance)
+            else:
+                # Default to -Y direction (downward)
+                direction = (0.0, -1.0, 0.0)
+            
+            # Transition starts after flange_gap from source port
+            dir_array = np.array(direction)
+            transition_start = source_world + dir_array * flange_gap
+            
+            # Create transition with proper orientation and sizing
+            transition_params = TransitionParams(
+                transition_type="round_to_round",
+                inlet_dimensions=(d_source,),
+                outlet_dimensions=(d_target,),
+                length=transition_length,
+                direction=direction,
+                center=tuple(transition_start),
+                concentric=True,
+                flanged=True,
+                flange_width=0.015,  # 15mm flange
+                flange_thickness=0.006,  # 6mm flange
+                wall_thickness=0.003,  # 3mm wall
+            )
+            
+            transition = Transition(transition_params)
+            
+            return (transition, tuple(transition_start), name)
         
-        # Position at midpoint between the two ports
-        hopper_outlet_world = tuple(
-            self._hopper_position[i] + hopper_outlet.position[i] for i in range(3)
+        # ============================================================
+        # 1. HOPPER → AIRLOCK Transition
+        # ============================================================
+        trans1 = create_transition_connector(
+            self.hopper.ports['discharge'], self._hopper_position,
+            self.airlock.ports['inlet'], self._airlock_position,
+            "hopper_to_airlock",
+            self._transition_lengths['hopper_to_airlock']
         )
-        airlock_inlet_world = tuple(
-            self._airlock_position[i] + airlock_inlet.position[i] for i in range(3)
+        self._transition_connectors.append(trans1)
+        
+        # ============================================================
+        # 2. AIRLOCK → SCREW FEEDER Transition  
+        # ============================================================
+        trans2 = create_transition_connector(
+            self.airlock.ports['outlet'], self._airlock_position,
+            self.feeder.ports['inlet'], self._feeder_position,
+            "airlock_to_feeder",
+            self._transition_lengths['airlock_to_feeder']
         )
+        self._transition_connectors.append(trans2)
         
-        connector1_center = tuple(
-            (hopper_outlet_world[i] + airlock_inlet_world[i]) / 2 for i in range(3)
+        # ============================================================
+        # 3. SCREW FEEDER → DEAGGLOMERATOR Transition
+        # ============================================================
+        trans3 = create_transition_connector(
+            self.feeder.ports['outlet'], self._feeder_position,
+            self.deagglomerator.ports['inlet'], self._deagglomerator_position,
+            "feeder_to_deagglomerator",
+            self._transition_lengths['feeder_to_deagglomerator']
         )
-        connector1_length = abs(hopper_outlet_world[1] - airlock_inlet_world[1])
-        
-        if connector1_length > 0.001:  # Only create if there's a gap
-            connector1 = TransitionConnector(TransitionConnectorParams(
-                inlet_diameter=hopper_outlet.diameter,
-                outlet_diameter=airlock_inlet.diameter,
-                length=connector1_length,
-                center=(0, 0, 0),  # Will be offset when adding to mesh
-            ))
-            self._transition_connectors.append((connector1, connector1_center))
-        
-        # 2. Airlock -> Feeder connector
-        airlock_outlet = self.airlock.ports['outlet']
-        feeder_inlet = self.feeder.ports['inlet']
-        
-        airlock_outlet_world = tuple(
-            self._airlock_position[i] + airlock_outlet.position[i] for i in range(3)
-        )
-        feeder_inlet_world = tuple(
-            self._feeder_position[i] + feeder_inlet.position[i] for i in range(3)
-        )
-        
-        connector2_center = tuple(
-            (airlock_outlet_world[i] + feeder_inlet_world[i]) / 2 for i in range(3)
-        )
-        connector2_length = abs(airlock_outlet_world[1] - feeder_inlet_world[1])
-        
-        if connector2_length > 0.001:
-            connector2 = TransitionConnector(TransitionConnectorParams(
-                inlet_diameter=airlock_outlet.diameter,
-                outlet_diameter=feeder_inlet.diameter,
-                length=connector2_length,
-                center=(0, 0, 0),
-            ))
-            self._transition_connectors.append((connector2, connector2_center))
-        
-        # 3. Feeder -> Deagglomerator connector
-        feeder_outlet = self.feeder.ports['outlet']
-        deagg_inlet = self.deagglomerator.ports['inlet']
-        
-        feeder_outlet_world = tuple(
-            self._feeder_position[i] + feeder_outlet.position[i] for i in range(3)
-        )
-        deagg_inlet_world = tuple(
-            self._deagglomerator_position[i] + deagg_inlet.position[i] for i in range(3)
-        )
-        
-        connector3_center = tuple(
-            (feeder_outlet_world[i] + deagg_inlet_world[i]) / 2 for i in range(3)
-        )
-        connector3_length = abs(feeder_outlet_world[1] - deagg_inlet_world[1])
-        
-        if connector3_length > 0.001:
-            connector3 = TransitionConnector(TransitionConnectorParams(
-                inlet_diameter=feeder_outlet.diameter,
-                outlet_diameter=deagg_inlet.diameter,
-                length=connector3_length,
-                center=(0, 0, 0),
-            ))
-            self._transition_connectors.append((connector3, connector3_center))
+        self._transition_connectors.append(trans3)
 
     def build_mesh(self) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -773,9 +855,13 @@ class FeedSystemAssembly:
         add_component_mesh(self.feeder, self._feeder_position)
         add_component_mesh(self.deagglomerator, self._deagglomerator_position)
         
-        # Add transition connectors for dust-tight sealing
-        for connector, position in self._transition_connectors:
-            add_component_mesh(connector, position)
+        # Add flanged transition connectors for dust-tight sealing
+        # Format: (transition, position, name)
+        for connector_data in self._transition_connectors:
+            connector = connector_data[0]
+            # Position is already baked into the Transition center parameter
+            # so we use (0, 0, 0) offset
+            add_component_mesh(connector, (0.0, 0.0, 0.0))
 
         self._combined_vertices = np.vstack(all_vertices).astype(np.float32)
         self._combined_indices = np.concatenate(all_indices).astype(np.int32)
@@ -957,6 +1043,51 @@ class FeedSystemAssembly:
             n_verts = len(self._combined_vertices)
             n_tris = len(self._combined_indices) // 3
             print(f"Total mesh:    {n_verts} vertices, {n_tris} triangles")
+        print("=" * 60)
+
+    def print_transition_report(self):
+        """
+        Print detailed report of all transition connectors.
+        
+        Shows the flanged transitions that seal each connection point.
+        DYNAMIC PROPORTIONAL SIZING is used for all transitions.
+        """
+        print("\n" + "=" * 60)
+        print("TRANSITION CONNECTORS (Flanged, Dust-Tight)")
+        print("=" * 60)
+        
+        if not self._transition_connectors:
+            print("No transitions created yet.")
+            return
+        
+        for i, (transition, position, name) in enumerate(self._transition_connectors, 1):
+            params = transition.params
+            d_in = params.inlet_dimensions[0]
+            d_out = params.outlet_dimensions[0]
+            d_diff = abs(d_in - d_out)
+            
+            print(f"\n{i}. {name.upper().replace('_', ' → ')}")
+            print(f"   Inlet diameter:  {d_in * 1000:.1f} mm")
+            print(f"   Outlet diameter: {d_out * 1000:.1f} mm")
+            print(f"   Length:          {params.length * 1000:.1f} mm")
+            print(f"   Direction:       ({params.direction[0]:.2f}, {params.direction[1]:.2f}, {params.direction[2]:.2f})")
+            print(f"   Flanged:         {params.flanged}")
+            
+            if d_diff > 0.001:  # Diameters differ
+                # Calculate actual half-angle
+                half_angle = np.degrees(np.arctan((d_diff / 2) / params.length))
+                if d_in > d_out:
+                    print(f"   Type:            CONICAL REDUCER ({half_angle:.1f}° half-angle)")
+                else:
+                    print(f"   Type:            CONICAL EXPANDER ({half_angle:.1f}° half-angle)")
+            else:
+                print(f"   Type:            CYLINDRICAL (same diameter)")
+        
+        print("\n" + "-" * 60)
+        print("All connections use DYNAMIC PROPORTIONAL SIZING:")
+        print("  - Conical transitions for diameter changes")
+        print("  - Max 12° half-angle for smooth flow")
+        print("  - Flanged ends for dust-tight sealing")
         print("=" * 60)
 
     @property

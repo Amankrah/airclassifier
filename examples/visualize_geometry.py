@@ -3,17 +3,27 @@
 Geometry Visualization Example Script
 
 This script demonstrates how to visualize air classifier geometries:
-- Individual components (cyclone, hopper, etc.)
+- Individual components with --color (color-coded) or --mesh (wireframe) modes
 - Assembled systems (feed, air, classification)
-- Complete classifier system with duct connections
+- Complete core system with duct connections
 
-Run modes:
-    python examples/visualize_geometry.py              # Interactive menu
-    python examples/visualize_geometry.py --component  # Single component
+Individual Component Modes:
+    python examples/visualize_geometry.py --cyclone --color    # Cyclone with colors
+    python examples/visualize_geometry.py --cyclone --mesh     # Cyclone wireframe
+    python examples/visualize_geometry.py --multicyclone --color
+    python examples/visualize_geometry.py --blower --mesh
+    python examples/visualize_geometry.py --deagglomerator --color
+    python examples/visualize_geometry.py --hopper --mesh
+    python examples/visualize_geometry.py --airlock --color
+    python examples/visualize_geometry.py --zigzag --mesh
+
+Assembly Modes:
     python examples/visualize_geometry.py --feed       # Feed system assembly
     python examples/visualize_geometry.py --air        # Air system assembly
-    python examples/visualize_geometry.py --complete   # Complete system
-    python examples/visualize_geometry.py --core       # Core with 3 duct connections
+    python examples/visualize_geometry.py --classification  # Classification system
+
+System Modes:
+    python examples/visualize_geometry.py --core       # Core system (3 duct connections)
     python examples/visualize_geometry.py --pilot      # Pilot-scale system
     python examples/visualize_geometry.py --production # Production-scale system
     python examples/visualize_geometry.py --export     # Export all to STL files
@@ -39,42 +49,116 @@ from airclassifier.visualization import (
     PYVISTA_AVAILABLE,
 )
 
+# Component colors
+COMPONENT_COLORS = {
+    'cyclone': '#4A90D9',       # Blue
+    'multicyclone': '#E74C3C',  # Red
+    'blower': '#27AE60',        # Green
+    'deagglomerator': '#9B59B6', # Purple
+    'hopper': '#F0AD4E',        # Orange
+    'airlock': '#3498DB',       # Light Blue
+    'zigzag': '#2ECC71',        # Emerald
+    'venturi': '#1ABC9C',       # Teal
+    'bagfilter': '#F39C12',     # Yellow-Orange
+}
+
 
 def check_dependencies():
     """Check and report available visualization backends."""
     print("=" * 60)
     print("VISUALIZATION BACKEND STATUS")
     print("=" * 60)
-    
+
     if PYVISTA_AVAILABLE:
         print("[OK] PyVista available - High-quality 3D rendering enabled")
     else:
         print("[!] PyVista not installed - Using matplotlib fallback")
         print("    Install with: pip install pyvista")
-    
+
     try:
         import warp as wp
         print("[OK] NVIDIA Warp available - GPU acceleration enabled")
     except ImportError:
         print("[!] NVIDIA Warp not installed - CPU mode only")
         print("    Install with: pip install warp-lang")
-    
+
     print("=" * 60)
     print()
 
 
-def visualize_single_component():
-    """Visualize a single geometry component."""
+def render_component(component, name: str, color: str, use_mesh: bool = False, use_color: bool = True):
+    """
+    Render a single component with color or mesh mode.
+
+    Args:
+        component: The geometry component to render
+        name: Display name for the component
+        color: Color to use in color mode
+        use_mesh: If True, render as wireframe mesh
+        use_color: If True, render with solid colors (default)
+    """
+    import numpy as np
+
+    vertices, indices, normals = component.generate_mesh()
+
+    print(f"\nComponent: {name}")
+    print(f"  Vertices: {len(vertices):,}")
+    print(f"  Triangles: {len(indices)//3:,}")
+
+    if PYVISTA_AVAILABLE:
+        import pyvista as pv
+
+        plotter = pv.Plotter()
+        plotter.set_background('white')
+
+        faces = np.hstack([[3] + list(face) for face in indices.reshape(-1, 3)])
+        mesh = pv.PolyData(vertices, faces)
+
+        if use_mesh:
+            # Wireframe mesh mode
+            plotter.add_mesh(mesh, style='wireframe', color='black',
+                           line_width=1, label=name)
+            plotter.add_title(f'{name} - Mesh View')
+        else:
+            # Color mode (solid with edges)
+            plotter.add_mesh(mesh, color=color, opacity=0.85,
+                           show_edges=True, edge_color='gray',
+                           label=name)
+            plotter.add_title(f'{name} - Color View')
+
+        plotter.add_axes()
+        plotter.add_legend(bcolor='white', face='circle')
+
+        print("\nOpening visualization window...")
+        print("(Close the window to continue)")
+        plotter.show(interactive=True)
+
+        return {'success': True, 'message': f'{name} visualized with PyVista'}
+    else:
+        # Fallback to basic visualization
+        viz = GeometryVisualizer()
+        result = viz.visualize_component(
+            component,
+            name=name,
+            show=True,
+            opacity=0.8 if use_color else 0.3,
+            color=color,
+            title=f"{name} - {'Mesh' if use_mesh else 'Color'} View"
+        )
+        return result
+
+
+def visualize_cyclone(use_mesh: bool = False):
+    """Visualize a single cyclone body."""
     print("\n" + "=" * 60)
-    print("SINGLE COMPONENT VISUALIZATION")
+    print("CYCLONE BODY VISUALIZATION")
     print("=" * 60)
-    
+
     from airclassifier.geometry.components import (
         CycloneBody,
         CycloneBodyParams,
     )
-    
-    # Create a cyclone body component
+
     params = CycloneBodyParams(
         cylinder_diameter=0.3,
         cylinder_height=0.3,
@@ -82,39 +166,101 @@ def visualize_single_component():
         cone_tip_diameter=0.05,
     )
     cyclone = CycloneBody(params)
-    
-    print(f"Component: CycloneBody")
+
     print(f"  Cylinder: D={params.cylinder_diameter*1000:.0f}mm, H={params.cylinder_height*1000:.0f}mm")
     print(f"  Cone: H={params.cone_height*1000:.0f}mm, tip D={params.cone_tip_diameter*1000:.0f}mm")
-    print(f"  Vertices: {len(cyclone.vertices):,}")
-    print(f"  Triangles: {len(cyclone.indices)//3:,}")
-    
-    # Visualize
-    viz = GeometryVisualizer()
-    result = viz.visualize_component(
-        cyclone,
-        name="Cyclone Body",
-        show=True,
-        opacity=0.8,
-        color="#4A90D9",
-        title="Cyclone Body Component"
-    )
-    
+
+    result = render_component(cyclone, "Cyclone Body",
+                             COMPONENT_COLORS['cyclone'], use_mesh=use_mesh)
     print(f"\nResult: {result['message']}")
     return result
 
 
-def visualize_feed_hopper():
-    """Visualize a feed hopper component."""
+def visualize_multicyclone(use_mesh: bool = False):
+    """Visualize a multi-cyclone system."""
+    print("\n" + "=" * 60)
+    print("MULTI-CYCLONE SYSTEM VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.components.multi_cyclone import (
+        create_protein_separation_cyclones,
+    )
+
+    system = create_protein_separation_cyclones(
+        primary_diameter=0.4,
+        secondary_diameter=0.25,
+        tertiary_diameter=0.15
+    )
+
+    print("Multi-Cyclone System (3-stage protein separation):")
+    print("  - Primary cyclone: D=400mm (d50 ~ 40 um)")
+    print("  - Secondary cyclone: D=250mm (d50 ~ 20 um)")
+    print("  - Tertiary cyclone: D=150mm (d50 ~ 10 um)")
+
+    result = render_component(system, "Multi-Cyclone System",
+                             COMPONENT_COLORS['multicyclone'], use_mesh=use_mesh)
+    print(f"\nResult: {result['message']}")
+    return result
+
+
+def visualize_blower(use_mesh: bool = False):
+    """Visualize a centrifugal blower."""
+    print("\n" + "=" * 60)
+    print("CENTRIFUGAL BLOWER VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.components.centrifugal_blower import (
+        create_standard_centrifugal_blower,
+    )
+
+    blower = create_standard_centrifugal_blower(flow_rate=3000, pressure_rise=5000)
+
+    print("Centrifugal Blower:")
+    print(f"  Flow rate: 3000 m³/h")
+    print(f"  Pressure rise: 5000 Pa")
+    print(f"  Impeller: {blower.params.num_blades} backward-curved blades")
+
+    result = render_component(blower, "Centrifugal Blower",
+                             COMPONENT_COLORS['blower'], use_mesh=use_mesh)
+    print(f"\nResult: {result['message']}")
+    return result
+
+
+def visualize_deagglomerator(use_mesh: bool = False):
+    """Visualize a deagglomerator."""
+    print("\n" + "=" * 60)
+    print("DEAGGLOMERATOR VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.components.deagglomerator import (
+        create_standard_deagglomerator,
+    )
+
+    deagg = create_standard_deagglomerator(rotor_diameter=0.2, screen_aperture=0.002)
+
+    print("Deagglomerator (Pin Rotor + Screen):")
+    print(f"  Rotor diameter: 200mm")
+    print(f"  Pin rows: {deagg.params.num_pin_rows}")
+    print(f"  Pins per row: {deagg.params.pins_per_row}")
+    print(f"  Screen aperture: 2mm")
+
+    result = render_component(deagg, "Deagglomerator",
+                             COMPONENT_COLORS['deagglomerator'], use_mesh=use_mesh)
+    print(f"\nResult: {result['message']}")
+    return result
+
+
+def visualize_hopper(use_mesh: bool = False):
+    """Visualize a feed hopper."""
     print("\n" + "=" * 60)
     print("FEED HOPPER VISUALIZATION")
     print("=" * 60)
-    
+
     from airclassifier.geometry.components import (
         FeedHopper,
         FeedHopperParams,
     )
-    
+
     params = FeedHopperParams(
         top_diameter=0.6,
         bottom_diameter=0.15,
@@ -123,23 +269,63 @@ def visualize_feed_hopper():
         has_lid=True,
     )
     hopper = FeedHopper(params)
-    
-    print(f"Component: FeedHopper")
-    print(f"  Top D={params.top_diameter*1000:.0f}mm")
-    print(f"  Bottom D={params.bottom_diameter*1000:.0f}mm")
-    print(f"  Total height={params.total_height*1000:.0f}mm")
-    print(f"  Vertices: {len(hopper.vertices):,}")
-    
-    viz = GeometryVisualizer()
-    result = viz.visualize_component(
-        hopper,
-        name="Feed Hopper",
-        show=True,
-        opacity=0.7,
-        color="#F0AD4E",
-        title="Feed Hopper Component"
+
+    print("Feed Hopper (Conical Mass-Flow Design):")
+    print(f"  Top diameter: {params.top_diameter*1000:.0f}mm")
+    print(f"  Bottom diameter: {params.bottom_diameter*1000:.0f}mm")
+    print(f"  Total height: {params.total_height*1000:.0f}mm")
+    print(f"  Has lid: {params.has_lid}")
+
+    result = render_component(hopper, "Feed Hopper",
+                             COMPONENT_COLORS['hopper'], use_mesh=use_mesh)
+    print(f"\nResult: {result['message']}")
+    return result
+
+
+def visualize_airlock(use_mesh: bool = False):
+    """Visualize a rotary airlock."""
+    print("\n" + "=" * 60)
+    print("ROTARY AIRLOCK VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.components.rotary_airlock import (
+        create_standard_rotary_airlock,
     )
-    
+
+    airlock = create_standard_rotary_airlock(rotor_diameter=0.2, capacity_m3_h=5.0)
+
+    print("Rotary Airlock (Pressure Seal):")
+    print(f"  Rotor diameter: 200mm")
+    print(f"  Number of vanes: {airlock.params.num_vanes}")
+    print(f"  RPM: {airlock.params.rpm}")
+    print(f"  Capacity: 5.0 m³/h")
+
+    result = render_component(airlock, "Rotary Airlock",
+                             COMPONENT_COLORS['airlock'], use_mesh=use_mesh)
+    print(f"\nResult: {result['message']}")
+    return result
+
+
+def visualize_zigzag(use_mesh: bool = False):
+    """Visualize a zigzag classifier."""
+    print("\n" + "=" * 60)
+    print("ZIGZAG CLASSIFIER VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.components.zigzag_classifier import (
+        create_standard_zigzag_classifier,
+    )
+
+    classifier = create_standard_zigzag_classifier(channel_width=0.15, num_stages=5)
+
+    print("Zigzag Classifier (Gravity Counter-Current):")
+    print(f"  Channel width: 150mm")
+    print(f"  Number of stages: 5")
+    print(f"  Feed stage: middle (stage 3)")
+    print(f"  Separation: fines (top) / coarse (bottom)")
+
+    result = render_component(classifier, "Zigzag Classifier",
+                             COMPONENT_COLORS['zigzag'], use_mesh=use_mesh)
     print(f"\nResult: {result['message']}")
     return result
 
@@ -149,22 +335,24 @@ def visualize_feed_system_assembly():
     print("\n" + "=" * 60)
     print("FEED SYSTEM ASSEMBLY VISUALIZATION")
     print("=" * 60)
-    
+
     from airclassifier.geometry.assembly import create_standard_feed_system
-    
+
     feed = create_standard_feed_system()
     vertices, indices = feed.build_mesh()
-    
+
     print("Feed System Assembly includes:")
-    print("  - Feed Hopper")
-    print("  - Rotary Airlock")
-    print("  - Screw Feeder")
-    print("  - De-agglomerator")
+    print("  - Feed Hopper (conical mass-flow design)")
+    print("  - Rotary Airlock (8-vane pressure seal)")
+    print("  - Screw Feeder (ENCLOSED TUBE - dust-tight)")
+    print("  - De-agglomerator (pin rotor + screen)")
+    print("  - Flanged Transitions (sealed connections)")
     print(f"\nTotal mesh: {len(vertices):,} vertices, {len(indices)//3:,} triangles")
-    
-    # Print summary
+
+    # Print summary and transition report
     feed.print_summary()
-    
+    feed.print_transition_report()
+
     viz = GeometryVisualizer()
     request = VisualizationRequest(
         target_type="assembly",
@@ -172,11 +360,11 @@ def visualize_feed_system_assembly():
         show=True,
         opacity=0.8,
         show_edges=True,
-        title="Feed System Assembly",
+        title="Feed System Assembly (Enclosed Design)",
         show_labels=True,
     )
     result = viz.render(request)
-    
+
     print(f"\nResult: {result['message']}")
     return result
 
@@ -186,20 +374,20 @@ def visualize_air_system_assembly():
     print("\n" + "=" * 60)
     print("AIR SYSTEM ASSEMBLY VISUALIZATION")
     print("=" * 60)
-    
+
     from airclassifier.geometry.assembly import create_standard_air_system
-    
+
     air = create_standard_air_system()
     vertices, indices = air.build_mesh()
-    
+
     print("Air System Assembly includes:")
     print("  - Inlet Air Filter")
     print("  - Centrifugal Blower")
     print("  - Flow Damper")
     print(f"\nTotal mesh: {len(vertices):,} vertices, {len(indices)//3:,} triangles")
-    
+
     air.print_summary()
-    
+
     viz = GeometryVisualizer()
     result = viz.visualize_assembly(
         air,
@@ -209,7 +397,7 @@ def visualize_air_system_assembly():
         color="#5CB85C",
         title="Air System Assembly"
     )
-    
+
     print(f"\nResult: {result['message']}")
     return result
 
@@ -221,7 +409,6 @@ def visualize_classification_system():
     print("=" * 60)
 
     from airclassifier.geometry.assembly.classification import create_standard_classification_system
-    from airclassifier.geometry.components.ductwork import RoundDuct
     import numpy as np
 
     try:
@@ -337,79 +524,7 @@ def visualize_classification_system():
         return {'success': False, 'message': f'Error: {e}'}
 
 
-def visualize_complete_system():
-    """Visualize the complete classifier system."""
-    print("\n" + "=" * 60)
-    print("COMPLETE CLASSIFIER SYSTEM VISUALIZATION")
-    print("=" * 60)
-    
-    from airclassifier.geometry.assembly import create_complete_classifier_system
-    
-    system = create_complete_classifier_system(
-        throughput_kg_h=500,
-        cut_size_um=20
-    )
-    
-    # Print comprehensive summary
-    system.print_summary()
-    print()
-    system.print_bill_of_materials()
-    
-    # Visualize
-    viz = GeometryVisualizer()
-    request = VisualizationRequest(
-        target_type="complete_system",
-        complete_system=system,
-        show=True,
-        opacity=0.8,
-        show_edges=True,
-        show_labels=True,
-        show_bounds=True,
-        show_axes=True,
-        title="Complete Air Classifier System (500 kg/h)",
-        camera_position="iso",
-    )
-    result = viz.render(request)
-    
-    print(f"\nResult: {result['message']}")
-    return result
-
-
-def visualize_pilot_scale():
-    """Visualize a pilot-scale system."""
-    print("\n" + "=" * 60)
-    print("PILOT-SCALE SYSTEM VISUALIZATION")
-    print("=" * 60)
-    
-    from airclassifier.geometry.assembly import create_pilot_scale_system
-    
-    pilot = create_pilot_scale_system(throughput_kg_h=100)
-    pilot.print_summary()
-    
-    result = quick_render(pilot, show=True)
-    
-    print(f"\nResult: {result['message']}")
-    return result
-
-
-def visualize_production_scale():
-    """Visualize a production-scale system."""
-    print("\n" + "=" * 60)
-    print("PRODUCTION-SCALE SYSTEM VISUALIZATION")
-    print("=" * 60)
-    
-    from airclassifier.geometry.assembly import create_production_scale_system
-    
-    production = create_production_scale_system(throughput_kg_h=2000)
-    production.print_summary()
-    
-    result = quick_render(production, show=True)
-    
-    print(f"\nResult: {result['message']}")
-    return result
-
-
-def visualize_core_connections():
+def visualize_core_system():
     """
     Visualize the core system with all three duct connections.
 
@@ -419,7 +534,7 @@ def visualize_core_connections():
     3. Bag Filter -> Exhaust (Silencer)
     """
     print("\n" + "=" * 60)
-    print("CORE CONNECTIONS VISUALIZATION")
+    print("CORE SYSTEM VISUALIZATION")
     print("=" * 60)
     print("Focus: 3 Main Ductwork Connections")
     print("  1. Air System -> Venturi (air_inlet)")
@@ -428,6 +543,7 @@ def visualize_core_connections():
     print("=" * 60)
 
     from airclassifier.geometry.assembly import create_core_connections_system
+    import numpy as np
 
     system = create_core_connections_system()
 
@@ -436,10 +552,9 @@ def visualize_core_connections():
     print()
     system.print_bill_of_materials()
 
-    # Use PyVista directly for better control over rendering (like classification viz)
+    # Use PyVista directly for better control over rendering
     try:
         import pyvista as pv
-        import numpy as np
 
         # Colors for different subsystems
         colors = {
@@ -533,33 +648,71 @@ def visualize_core_connections():
     return result
 
 
+def visualize_pilot_scale():
+    """Visualize a pilot-scale system."""
+    print("\n" + "=" * 60)
+    print("PILOT-SCALE SYSTEM VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.assembly import create_pilot_scale_system
+
+    pilot = create_pilot_scale_system(throughput_kg_h=100)
+    pilot.print_summary()
+
+    result = quick_render(pilot, show=True)
+
+    print(f"\nResult: {result['message']}")
+    return result
+
+
+def visualize_production_scale():
+    """Visualize a production-scale system."""
+    print("\n" + "=" * 60)
+    print("PRODUCTION-SCALE SYSTEM VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.assembly import create_production_scale_system
+
+    production = create_production_scale_system(throughput_kg_h=2000)
+    production.print_summary()
+
+    result = quick_render(production, show=True)
+
+    print(f"\nResult: {result['message']}")
+    return result
+
+
 def export_all_geometries(output_dir: str = "geometry_exports"):
     """Export all geometries to files."""
     print("\n" + "=" * 60)
     print(f"EXPORTING ALL GEOMETRIES TO: {output_dir}/")
     print("=" * 60)
-    
-    import os
+
     os.makedirs(output_dir, exist_ok=True)
-    
+
     from airclassifier.geometry.assembly import (
         create_standard_feed_system,
         create_standard_air_system,
-        create_complete_classifier_system,
         create_pilot_scale_system,
         create_production_scale_system,
+        create_core_connections_system,
     )
     from airclassifier.geometry.assembly.classification import create_standard_classification_system
     from airclassifier.geometry.components import (
         CycloneBody, CycloneBodyParams,
         FeedHopper, FeedHopperParams,
     )
-    
+    from airclassifier.geometry.components.multi_cyclone import create_protein_separation_cyclones
+    from airclassifier.geometry.components.centrifugal_blower import create_standard_centrifugal_blower
+    from airclassifier.geometry.components.deagglomerator import create_standard_deagglomerator
+    from airclassifier.geometry.components.rotary_airlock import create_standard_rotary_airlock
+    from airclassifier.geometry.components.zigzag_classifier import create_standard_zigzag_classifier
+
     viz = GeometryVisualizer()
     exported_files = []
-    
-    # Export cyclone body
-    print("\n[1/7] Exporting Cyclone Body...")
+
+    # Export individual components
+    print("\n[1/10] Exporting Cyclone Body...")
     cyclone = CycloneBody(CycloneBodyParams(
         cylinder_diameter=0.3, cylinder_height=0.3,
         cone_height=0.5, cone_tip_diameter=0.05
@@ -568,9 +721,29 @@ def export_all_geometries(output_dir: str = "geometry_exports"):
     viz.export_to_stl(cyclone, path)
     exported_files.append(path)
     print(f"       Saved: {path}")
-    
-    # Export feed hopper
-    print("\n[2/7] Exporting Feed Hopper...")
+
+    print("\n[2/10] Exporting Multi-Cyclone System...")
+    multicyclone = create_protein_separation_cyclones()
+    path = os.path.join(output_dir, "multi_cyclone_system.stl")
+    viz.export_to_stl(multicyclone, path)
+    exported_files.append(path)
+    print(f"       Saved: {path}")
+
+    print("\n[3/10] Exporting Centrifugal Blower...")
+    blower = create_standard_centrifugal_blower()
+    path = os.path.join(output_dir, "centrifugal_blower.stl")
+    viz.export_to_stl(blower, path)
+    exported_files.append(path)
+    print(f"       Saved: {path}")
+
+    print("\n[4/10] Exporting Deagglomerator...")
+    deagg = create_standard_deagglomerator()
+    path = os.path.join(output_dir, "deagglomerator.stl")
+    viz.export_to_stl(deagg, path)
+    exported_files.append(path)
+    print(f"       Saved: {path}")
+
+    print("\n[5/10] Exporting Feed Hopper...")
     hopper = FeedHopper(FeedHopperParams(
         top_diameter=0.6, bottom_diameter=0.15,
         cylindrical_height=0.3, conical_height=0.5
@@ -579,96 +752,99 @@ def export_all_geometries(output_dir: str = "geometry_exports"):
     viz.export_to_stl(hopper, path)
     exported_files.append(path)
     print(f"       Saved: {path}")
-    
-    # Export feed system
-    print("\n[3/7] Exporting Feed System Assembly...")
+
+    print("\n[6/10] Exporting Rotary Airlock...")
+    airlock = create_standard_rotary_airlock()
+    path = os.path.join(output_dir, "rotary_airlock.stl")
+    viz.export_to_stl(airlock, path)
+    exported_files.append(path)
+    print(f"       Saved: {path}")
+
+    print("\n[7/10] Exporting Zigzag Classifier...")
+    zigzag = create_standard_zigzag_classifier()
+    path = os.path.join(output_dir, "zigzag_classifier.stl")
+    viz.export_to_stl(zigzag, path)
+    exported_files.append(path)
+    print(f"       Saved: {path}")
+
+    # Export assemblies
+    print("\n[8/10] Exporting Feed System Assembly...")
     feed = create_standard_feed_system()
     path = os.path.join(output_dir, "feed_system_assembly.stl")
     viz.export_to_stl(feed, path)
     exported_files.append(path)
     print(f"       Saved: {path}")
-    
-    # Export air system
-    print("\n[4/7] Exporting Air System Assembly...")
-    air = create_standard_air_system()
-    path = os.path.join(output_dir, "air_system_assembly.stl")
-    viz.export_to_stl(air, path)
-    exported_files.append(path)
-    print(f"       Saved: {path}")
-    
-    # Export classification system
-    print("\n[5/7] Exporting Classification System Assembly...")
+
+    print("\n[9/10] Exporting Classification System Assembly...")
     classification = create_standard_classification_system()
     path = os.path.join(output_dir, "classification_system_assembly.stl")
     viz.export_to_stl(classification, path)
     exported_files.append(path)
     print(f"       Saved: {path}")
-    
-    # Export pilot scale
-    print("\n[6/7] Exporting Pilot-Scale System...")
-    pilot = create_pilot_scale_system()
-    path = os.path.join(output_dir, "pilot_scale_system.stl")
-    viz.export_to_stl(pilot, path)
+
+    print("\n[10/10] Exporting Core System...")
+    core = create_core_connections_system()
+    path = os.path.join(output_dir, "core_system.stl")
+    viz.export_to_stl(core, path)
     exported_files.append(path)
     print(f"       Saved: {path}")
-    
-    # Export complete system
-    print("\n[7/7] Exporting Complete Production System...")
-    complete = create_complete_classifier_system()
-    path = os.path.join(output_dir, "complete_system.stl")
-    viz.export_to_stl(complete, path)
-    exported_files.append(path)
-    print(f"       Saved: {path}")
-    
+
     # Also save screenshot if PyVista available
     if PYVISTA_AVAILABLE:
-        print("\n[Bonus] Saving System Screenshot...")
+        print("\n[Bonus] Saving Core System Screenshot...")
         request = VisualizationRequest(
             target_type="complete_system",
-            complete_system=complete,
+            complete_system=core,
             show=False,
-            save_path=os.path.join(output_dir, "complete_system.png"),
+            save_path=os.path.join(output_dir, "core_system.png"),
             window_size=(1920, 1080),
         )
         viz.render(request)
-        exported_files.append(os.path.join(output_dir, "complete_system.png"))
-        print(f"       Saved: {os.path.join(output_dir, 'complete_system.png')}")
-    
+        exported_files.append(os.path.join(output_dir, "core_system.png"))
+        print(f"       Saved: {os.path.join(output_dir, 'core_system.png')}")
+
     print("\n" + "=" * 60)
     print("EXPORT COMPLETE")
     print("=" * 60)
     print(f"Total files exported: {len(exported_files)}")
     for f in exported_files:
         print(f"  - {f}")
-    
+
     return exported_files
 
 
 def interactive_menu():
     """Run interactive menu for visualization selection."""
     check_dependencies()
-    
+
     while True:
         print("\n" + "=" * 60)
         print("AIR CLASSIFIER GEOMETRY VISUALIZER")
         print("=" * 60)
-        print("\nSelect visualization:")
-        print("  1. Single Component - Cyclone Body")
-        print("  2. Single Component - Feed Hopper")
-        print("  3. Assembly - Feed System")
-        print("  4. Assembly - Air System")
-        print("  5. Assembly - Classification System")
-        print("  6. Complete System (Standard 500 kg/h)")
-        print("  7. Core Connections (3 Duct Connections)")
-        print("  8. Pilot-Scale System (100 kg/h)")
-        print("  9. Production-Scale System (2000 kg/h)")
+        print("\nIndividual Components (C=Color, M=Mesh):")
+        print("  1C/1M. Cyclone Body")
+        print("  2C/2M. Multi-Cyclone System")
+        print("  3C/3M. Centrifugal Blower")
+        print("  4C/4M. Deagglomerator")
+        print("  5C/5M. Feed Hopper")
+        print("  6C/6M. Rotary Airlock")
+        print("  7C/7M. Zigzag Classifier")
+        print("\nAssemblies:")
+        print("  F. Feed System Assembly")
+        print("  A. Air System Assembly")
+        print("  S. Classification System Assembly")
+        print("\nComplete Systems:")
+        print("  C. Core System (3 Duct Connections)")
+        print("  P. Pilot-Scale System (100 kg/h)")
+        print("  R. Production-Scale System (2000 kg/h)")
+        print("\nOther:")
         print("  E. Export All to Files")
-        print("  A. Run All Visualizations")
+        print("  X. Run All Visualizations")
         print("  0. Exit")
         print()
 
         try:
-            choice = input("Enter choice (0-9, E, A): ").strip().upper()
+            choice = input("Enter choice: ").strip().upper()
         except KeyboardInterrupt:
             print("\nExiting...")
             break
@@ -676,40 +852,82 @@ def interactive_menu():
         if choice == "0":
             print("Goodbye!")
             break
-        elif choice == "1":
-            visualize_single_component()
-        elif choice == "2":
-            visualize_feed_hopper()
-        elif choice == "3":
+        # Individual components - Color mode
+        elif choice == "1C":
+            visualize_cyclone(use_mesh=False)
+        elif choice == "2C":
+            visualize_multicyclone(use_mesh=False)
+        elif choice == "3C":
+            visualize_blower(use_mesh=False)
+        elif choice == "4C":
+            visualize_deagglomerator(use_mesh=False)
+        elif choice == "5C":
+            visualize_hopper(use_mesh=False)
+        elif choice == "6C":
+            visualize_airlock(use_mesh=False)
+        elif choice == "7C":
+            visualize_zigzag(use_mesh=False)
+        # Individual components - Mesh mode
+        elif choice == "1M":
+            visualize_cyclone(use_mesh=True)
+        elif choice == "2M":
+            visualize_multicyclone(use_mesh=True)
+        elif choice == "3M":
+            visualize_blower(use_mesh=True)
+        elif choice == "4M":
+            visualize_deagglomerator(use_mesh=True)
+        elif choice == "5M":
+            visualize_hopper(use_mesh=True)
+        elif choice == "6M":
+            visualize_airlock(use_mesh=True)
+        elif choice == "7M":
+            visualize_zigzag(use_mesh=True)
+        # Assemblies
+        elif choice == "F":
             visualize_feed_system_assembly()
-        elif choice == "4":
+        elif choice == "A":
             visualize_air_system_assembly()
-        elif choice == "5":
+        elif choice == "S":
             visualize_classification_system()
-        elif choice == "6":
-            visualize_complete_system()
-        elif choice == "7":
-            visualize_core_connections()
-        elif choice == "8":
+        # Complete systems
+        elif choice == "C":
+            visualize_core_system()
+        elif choice == "P":
             visualize_pilot_scale()
-        elif choice == "9":
+        elif choice == "R":
             visualize_production_scale()
+        # Other
         elif choice == "E":
             export_all_geometries()
-        elif choice == "A":
+        elif choice == "X":
             run_all_visualizations()
         else:
-            print("Invalid choice. Please enter 0-9, E, or A.")
+            print("Invalid choice. Please try again.")
 
 
 def run_all_visualizations():
     """Run all visualizations in sequence."""
     print("\nRunning all visualizations...")
 
-    visualize_single_component()
+    visualize_cyclone(use_mesh=False)
     input("\nPress Enter to continue to next visualization...")
 
-    visualize_feed_hopper()
+    visualize_multicyclone(use_mesh=False)
+    input("\nPress Enter to continue to next visualization...")
+
+    visualize_blower(use_mesh=False)
+    input("\nPress Enter to continue to next visualization...")
+
+    visualize_deagglomerator(use_mesh=False)
+    input("\nPress Enter to continue to next visualization...")
+
+    visualize_hopper(use_mesh=False)
+    input("\nPress Enter to continue to next visualization...")
+
+    visualize_airlock(use_mesh=False)
+    input("\nPress Enter to continue to next visualization...")
+
+    visualize_zigzag(use_mesh=False)
     input("\nPress Enter to continue to next visualization...")
 
     visualize_feed_system_assembly()
@@ -721,10 +939,7 @@ def run_all_visualizations():
     visualize_classification_system()
     input("\nPress Enter to continue to next visualization...")
 
-    visualize_complete_system()
-    input("\nPress Enter to continue to next visualization...")
-
-    visualize_core_connections()
+    visualize_core_system()
 
     print("\n" + "=" * 60)
     print("ALL VISUALIZATIONS COMPLETE")
@@ -738,108 +953,206 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python visualize_geometry.py              # Interactive menu
-  python visualize_geometry.py --component  # Single component
-  python visualize_geometry.py --feed       # Feed system assembly
-  python visualize_geometry.py --complete   # Complete system
-  python visualize_geometry.py --core       # Core with 3 duct connections
-  python visualize_geometry.py --export     # Export all to STL files
+  # Interactive menu
+  python visualize_geometry.py
+
+  # Individual components with rendering mode
+  python visualize_geometry.py --cyclone --color
+  python visualize_geometry.py --cyclone --mesh
+  python visualize_geometry.py --multicyclone --color
+  python visualize_geometry.py --blower --mesh
+  python visualize_geometry.py --deagglomerator --color
+  python visualize_geometry.py --hopper --mesh
+  python visualize_geometry.py --airlock --color
+  python visualize_geometry.py --zigzag --mesh
+
+  # Assemblies
+  python visualize_geometry.py --feed
+  python visualize_geometry.py --air
+  python visualize_geometry.py --classification
+
+  # Complete systems
+  python visualize_geometry.py --core
+  python visualize_geometry.py --pilot
+  python visualize_geometry.py --production
+
+  # Export and run all
+  python visualize_geometry.py --export
+  python visualize_geometry.py --all
         """
     )
-    
-    parser.add_argument(
-        "--component", "-c",
+
+    # Individual component options
+    component_group = parser.add_argument_group('Individual Components')
+    component_group.add_argument(
+        "--cyclone",
         action="store_true",
-        help="Visualize single component (cyclone body)"
+        help="Visualize single cyclone body"
     )
-    parser.add_argument(
+    component_group.add_argument(
+        "--multicyclone",
+        action="store_true",
+        help="Visualize multi-cyclone system (3-stage)"
+    )
+    component_group.add_argument(
+        "--blower",
+        action="store_true",
+        help="Visualize centrifugal blower"
+    )
+    component_group.add_argument(
+        "--deagglomerator",
+        action="store_true",
+        help="Visualize deagglomerator (pin rotor + screen)"
+    )
+    component_group.add_argument(
+        "--hopper",
+        action="store_true",
+        help="Visualize feed hopper"
+    )
+    component_group.add_argument(
+        "--airlock",
+        action="store_true",
+        help="Visualize rotary airlock"
+    )
+    component_group.add_argument(
+        "--zigzag",
+        action="store_true",
+        help="Visualize zigzag classifier"
+    )
+
+    # Rendering mode options
+    render_group = parser.add_argument_group('Rendering Mode (for individual components)')
+    render_mode = render_group.add_mutually_exclusive_group()
+    render_mode.add_argument(
+        "--color",
+        action="store_true",
+        help="Render with solid colors (default)"
+    )
+    render_mode.add_argument(
+        "--mesh",
+        action="store_true",
+        help="Render as wireframe mesh"
+    )
+
+    # Assembly options
+    assembly_group = parser.add_argument_group('Assemblies')
+    assembly_group.add_argument(
         "--feed", "-f",
         action="store_true",
         help="Visualize feed system assembly"
     )
-    parser.add_argument(
+    assembly_group.add_argument(
         "--air",
         action="store_true",
         help="Visualize air system assembly"
     )
-    parser.add_argument(
+    assembly_group.add_argument(
         "--classification", "-cls",
         action="store_true",
         help="Visualize classification system assembly"
     )
-    parser.add_argument(
-        "--complete", "-s",
-        action="store_true",
-        help="Visualize complete classifier system"
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Run all visualizations"
-    )
-    parser.add_argument(
-        "--export", "-e",
-        action="store_true",
-        help="Export all geometries to STL files"
-    )
-    parser.add_argument(
-        "--output", "-o",
-        default="geometry_exports",
-        help="Output directory for exports (default: geometry_exports)"
-    )
-    parser.add_argument(
-        "--pilot",
-        action="store_true",
-        help="Visualize pilot-scale system"
-    )
-    parser.add_argument(
-        "--production",
-        action="store_true",
-        help="Visualize production-scale system"
-    )
-    parser.add_argument(
+
+    # System options
+    system_group = parser.add_argument_group('Complete Systems')
+    system_group.add_argument(
         "--core",
         action="store_true",
         help="Visualize core system with 3 duct connections"
     )
-    
+    system_group.add_argument(
+        "--pilot",
+        action="store_true",
+        help="Visualize pilot-scale system (100 kg/h)"
+    )
+    system_group.add_argument(
+        "--production",
+        action="store_true",
+        help="Visualize production-scale system (2000 kg/h)"
+    )
+
+    # Other options
+    other_group = parser.add_argument_group('Other')
+    other_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all visualizations"
+    )
+    other_group.add_argument(
+        "--export", "-e",
+        action="store_true",
+        help="Export all geometries to STL files"
+    )
+    other_group.add_argument(
+        "--output", "-o",
+        default="geometry_exports",
+        help="Output directory for exports (default: geometry_exports)"
+    )
+
     args = parser.parse_args()
-    
-    # If no specific option, run interactive menu
-    if not any([args.component, args.feed, args.air, args.classification,
-                args.complete, args.all, args.export, args.pilot, args.production, args.core]):
+
+    # Determine if any visualization was requested
+    has_component = any([args.cyclone, args.multicyclone, args.blower,
+                        args.deagglomerator, args.hopper, args.airlock, args.zigzag])
+    has_assembly = any([args.feed, args.air, args.classification])
+    has_system = any([args.core, args.pilot, args.production])
+    has_other = any([args.all, args.export])
+
+    # If nothing specified, run interactive menu
+    if not any([has_component, has_assembly, has_system, has_other]):
         interactive_menu()
         return
-    
+
     check_dependencies()
-    
-    if args.component:
-        visualize_single_component()
-    
+
+    # Determine mesh mode (default is color)
+    use_mesh = args.mesh
+
+    # Individual components
+    if args.cyclone:
+        visualize_cyclone(use_mesh=use_mesh)
+
+    if args.multicyclone:
+        visualize_multicyclone(use_mesh=use_mesh)
+
+    if args.blower:
+        visualize_blower(use_mesh=use_mesh)
+
+    if args.deagglomerator:
+        visualize_deagglomerator(use_mesh=use_mesh)
+
+    if args.hopper:
+        visualize_hopper(use_mesh=use_mesh)
+
+    if args.airlock:
+        visualize_airlock(use_mesh=use_mesh)
+
+    if args.zigzag:
+        visualize_zigzag(use_mesh=use_mesh)
+
+    # Assemblies
     if args.feed:
         visualize_feed_system_assembly()
-    
+
     if args.air:
         visualize_air_system_assembly()
-    
+
     if args.classification:
         visualize_classification_system()
-    
-    if args.complete:
-        visualize_complete_system()
-    
+
+    # Systems
+    if args.core:
+        visualize_core_system()
+
     if args.pilot:
         visualize_pilot_scale()
-    
+
     if args.production:
         visualize_production_scale()
-    
-    if args.core:
-        visualize_core_connections()
-    
+
+    # Other
     if args.all:
         run_all_visualizations()
-    
+
     if args.export:
         export_all_geometries(args.output)
 
