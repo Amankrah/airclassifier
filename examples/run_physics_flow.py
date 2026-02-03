@@ -462,34 +462,57 @@ def main():
             diameters = simulator.get_diameters()
             
             if len(positions) > 0:
-                # Remove old actor
-                if particle_actor is not None:
+                # Keep only finite points to avoid VTK degenerate geometry (e.g. Bad plane coordinate system)
+                finite = np.isfinite(positions).all(axis=1)
+                if np.any(finite):
+                    positions = np.asarray(positions[finite], dtype=np.float64)
+                    n_show = len(positions)
+                    velocities_all = simulator.state.velocities.numpy()
+                    n_orig = len(finite)
+                    if len(velocities_all) >= n_orig:
+                        velocities = np.asarray(velocities_all[:n_orig][finite], dtype=np.float64)
+                    else:
+                        velocities = np.zeros((n_show, 3), dtype=np.float64)
+                    diameters = np.asarray(diameters[finite], dtype=np.float64) if len(diameters) == n_orig else diameters[:n_show]
+                else:
+                    positions = np.zeros((0, 3))
+                    velocities = np.zeros((0, 3))
+                    diameters = np.zeros(0)
+                    n_show = 0
+                
+                if n_show > 0:
+                    # Create particle point cloud with velocity coloring
+                    speeds = np.linalg.norm(velocities, axis=1)
+                    
+                    particle_mesh = pv.PolyData(positions)
+                    particle_mesh['velocity'] = speeds
+                    
+                    # Point size based on particle diameter
+                    particle_dia_mm = float(np.mean(diameters)) * 1000
+                    point_size = max(8, min(20, int(particle_dia_mm / 2.5)))
+                    
                     try:
-                        plotter.remove_actor(particle_actor)
-                    except:
-                        pass
-                
-                # Create particle point cloud with velocity coloring
-                velocities = simulator.state.velocities.numpy()[:len(positions)]
-                speeds = np.linalg.norm(velocities, axis=1)
-                
-                particle_mesh = pv.PolyData(positions)
-                particle_mesh['velocity'] = speeds
-                
-                # Point size based on particle diameter
-                particle_dia_mm = diameters.mean() * 1000
-                point_size = max(8, min(20, int(particle_dia_mm / 2.5)))
-                
-                particle_actor = plotter.add_mesh(
-                    particle_mesh,
-                    scalars='velocity',
-                    cmap='YlOrBr',  # Brown/tan for flour-like appearance
-                    point_size=point_size,
-                    render_points_as_spheres=True,
-                    opacity=0.85,
-                    clim=[0, 2.0],
-                    show_scalar_bar=False,
-                )
+                        new_actor = plotter.add_mesh(
+                            particle_mesh,
+                            scalars='velocity',
+                            cmap='YlOrBr',  # Brown/tan for flour-like appearance
+                            point_size=point_size,
+                            render_points_as_spheres=True,
+                            opacity=0.85,
+                            clim=[0, 2.0],
+                            show_scalar_bar=False,
+                        )
+                        if particle_actor is not None:
+                            try:
+                                plotter.remove_actor(particle_actor)
+                            except Exception:
+                                pass
+                        particle_actor = new_actor
+                    except Exception as e:
+                        # VTK can raise e.g. "Bad plane coordinate system" with degenerate data; keep previous frame
+                        if "plane" not in str(e).lower() and "PlaneSource" not in str(type(e).__name__):
+                            raise
+                        pass  # keep previous particle_actor
             
             # ============================================
             # UPDATE INFO TEXT

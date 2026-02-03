@@ -106,6 +106,10 @@ class ComponentGeometry:
     axis_vector: np.ndarray = None  # Unit vector along rotation axis
     radial_plane: str = ''          # Plane for radial containment ('xy', 'xz', 'yz')
 
+    # Component-specific (feeder: screw pitch; deagglomerator: rotor radius)
+    screw_pitch: float = 0.0        # [m] Screw pitch (feeder conveying)
+    rotor_radius: float = 0.0      # [m] Rotor radius (deagglomerator tangential velocity)
+
 
 @dataclass
 class ConnectionPath:
@@ -283,9 +287,8 @@ def extract_geometry(assembly: FeedSystemAssembly) -> Dict[str, ComponentGeometr
         outlet_pos=feeder_pos + np.array(feeder_ports['outlet'].position),
         outlet_dir=np.array(feeder_ports['outlet'].direction),
         outlet_diameter=feeder_ports['outlet'].diameter,
+        screw_pitch=feeder.params.screw_pitch,
     )
-    # Store screw pitch for conveying calculation
-    geometry['feeder'].screw_pitch = feeder.params.screw_pitch
     
     # =========================================================================
     # DEAGGLOMERATOR GEOMETRY
@@ -305,9 +308,8 @@ def extract_geometry(assembly: FeedSystemAssembly) -> Dict[str, ComponentGeometr
         outlet_pos=deagg_pos + np.array(deagg_ports['outlet'].position),
         outlet_dir=np.array(deagg_ports['outlet'].direction),
         outlet_diameter=deagg_ports['outlet'].diameter,
+        rotor_radius=deagg.params.rotor_radius,
     )
-    # Store rotor radius for tangential velocity calculation
-    geometry['deagglomerator'].rotor_radius = deagg.params.rotor_radius
     
     # =========================================================================
     # CONNECTION PATHS (computed from actual port positions)
@@ -520,102 +522,6 @@ def reflect_velocity_inelastic(
     v_tangent_new = v_tangent * (1.0 - friction)
     
     return v_normal_new + v_tangent_new
-
-
-# =============================================================================
-# WARP COLLISION FUNCTIONS
-# =============================================================================
-
-@wp.func
-def sdf_cylinder_y_axis(
-    pos: wp.vec3,
-    center: wp.vec3,
-    radius: float,
-    half_height: float
-) -> float:
-    """
-    Signed distance function for cylinder aligned with Y axis.
-    Negative inside, positive outside.
-    """
-    # Radial distance in XZ plane
-    dx = pos[0] - center[0]
-    dz = pos[2] - center[2]
-    r = wp.sqrt(dx * dx + dz * dz)
-    
-    # Axial distance
-    dy = pos[1] - center[1]
-    
-    # Distance to cylindrical surface
-    dist_radial = r - radius
-    
-    # Distance to end caps
-    dist_top = dy - half_height
-    dist_bottom = -half_height - dy
-    
-    # Combined SDF (max of all constraints)
-    # Inside: all distances negative
-    # Outside: at least one positive
-    return wp.max(wp.max(dist_radial, dist_top), dist_bottom)
-
-
-@wp.func
-def sdf_cylinder_x_axis(
-    pos: wp.vec3,
-    center: wp.vec3,
-    radius: float,
-    half_length: float
-) -> float:
-    """
-    Signed distance function for cylinder aligned with X axis (horizontal).
-    Negative inside, positive outside.
-    """
-    # Radial distance in YZ plane
-    dy = pos[1] - center[1]
-    dz = pos[2] - center[2]
-    r = wp.sqrt(dy * dy + dz * dz)
-    
-    # Axial distance
-    dx = pos[0] - center[0]
-    
-    dist_radial = r - radius
-    dist_end_pos = dx - half_length
-    dist_end_neg = -half_length - dx
-    
-    return wp.max(wp.max(dist_radial, dist_end_pos), dist_end_neg)
-
-
-@wp.func
-def sdf_cone_y_axis(
-    pos: wp.vec3,
-    apex: wp.vec3,
-    top_radius: float,
-    bottom_radius: float,
-    height: float
-) -> float:
-    """
-    Signed distance function for truncated cone (frustum) with Y axis.
-    apex is at the top (smaller radius), cone expands downward.
-    """
-    # Position relative to apex
-    dy = apex[1] - pos[1]  # Distance below apex
-    dx = pos[0] - apex[0]
-    dz = pos[2] - apex[2]
-    r = wp.sqrt(dx * dx + dz * dz)
-    
-    # Clamp to cone height
-    t = wp.clamp(dy / height, 0.0, 1.0)
-    
-    # Radius at this height (linear interpolation)
-    r_at_height = top_radius + t * (bottom_radius - top_radius)
-    
-    # Distance to cone surface
-    dist_radial = r - r_at_height
-    
-    # Distance to end caps
-    dist_top = -dy  # Above apex
-    dist_bottom = dy - height  # Below base
-    
-    return wp.max(wp.max(dist_radial, dist_top), dist_bottom)
 
 
 # =============================================================================
@@ -891,7 +797,7 @@ def physics_flow_kernel(
                 tan_accel = tan_accel * (30.0 / tan_accel_mag)
             accel = accel + tan_accel
         
-        # Cylindrical housing wall collision (radial in XZ)
+        # Cylindrical housing wall collision (radial in XZ; Y-up vertical cylinder)
         if r_xz + particle_radius > airlock_radius:
             if r_xz > 1.0e-6:
                 normal = wp.vec3(-px / r_xz, 0.0, -pz / r_xz)
@@ -899,12 +805,7 @@ def physics_flow_kernel(
                 pos = pos + normal * push
                 vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # Axial containment (Z direction for rotor length)
-        if wp.abs(pz) + particle_radius > airlock_half_length:
-            sign_z = 1.0 if pz > 0.0 else -1.0
-            normal = wp.vec3(0.0, 0.0, -sign_z)
-            pos = wp.vec3(pos[0], pos[1], airlock_center[2] + sign_z * (airlock_half_length - particle_radius - 0.001))
-            vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        # Axial extent is along Y; enforced by inlet/outlet Y below (no Z clamping for Y-up vertical)
         
         # Top (inlet) containment - use actual inlet Y position
         # Use generous radius to match transition checks
@@ -1310,16 +1211,13 @@ def physics_flow_kernel(
         outlet_r = trans2_start_radius + particle_radius
         in_outlet = (pos[1] < airlock_outlet_y + outlet_r * 0.5) and (r_xz < outlet_r)
         
-        # Radial containment (cylinder wall in XZ) - allow inlet/outlet openings
+        # Radial containment (cylinder wall in XZ; Y-up vertical) - allow inlet/outlet openings
         if r_xz > airlock_radius - particle_radius and r_xz > 1.0e-6:
             if not in_inlet and not in_outlet:
                 scale = (airlock_radius - particle_radius - 0.001) / r_xz
                 pos = wp.vec3(airlock_center[0] + px * scale, pos[1], airlock_center[2] + pz * scale)
         
-        # Axial containment (Z - rotor length direction)
-        if wp.abs(pz) > airlock_half_length - particle_radius:
-            sign_z = 1.0 if pz > 0.0 else -1.0
-            pos = wp.vec3(pos[0], pos[1], airlock_center[2] + sign_z * (airlock_half_length - particle_radius - 0.001))
+        # Axial extent is along Y only; enforced by Y bounds below (no Z clamping for Y-up vertical)
         
         # Y bounds - use actual inlet/outlet positions
         # Top: inlet Y position
