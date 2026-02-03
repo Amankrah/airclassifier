@@ -266,93 +266,116 @@ def main():
     print("-" * 70)
     
     total_steps = int(args.time / args.dt)
-    output_interval = max(1, total_steps // 50)  # ~50 status updates
+    print_interval = max(1, total_steps // 20)  # ~20 console updates
+    
+    # Animation timing - use wall clock for smooth visuals
+    target_fps = 30
+    frame_interval = 1.0 / target_fps
+    steps_per_frame = max(1, int(frame_interval / args.dt))
     
     # Start the system
     simulator.start_system()
     print("  [System starting]")
     
     start_time = time.time()
+    last_wall_time = time.time()
+    last_print_step = -print_interval
     
-    for step in range(total_steps):
-        # Step simulation
-        simulator.step()
+    step = 0
+    while step < total_steps:
+        # Run multiple simulation steps per visual frame
+        frame_steps = min(steps_per_frame, total_steps - step)
+        for _ in range(frame_steps):
+            simulator.step()
+            step += 1
         
-        # Status output
-        if step % output_interval == 0 or step == total_steps - 1:
-            results = simulator.get_results()
+        # Get current state
+        results = simulator.get_results()
+        phase = results['phase']
+        rpm = results['blower_rpm']
+        flow = results['volume_flow_rate_m3_h']
+        pressure = results['pressure_rise_Pa']
+        power = results['shaft_power_kW']
+        efficiency = results['efficiency'] * 100
+        dampers = results['damper_positions']
+        
+        # Console output at intervals
+        if step - last_print_step >= print_interval or step >= total_steps:
+            last_print_step = step
             progress = 100.0 * step / total_steps
-            
-            phase = results['phase']
-            rpm = results['blower_rpm']
-            flow = results['volume_flow_rate_m3_h']
-            pressure = results['pressure_rise_Pa']
-            power = results['shaft_power_kW']
-            efficiency = results['efficiency'] * 100
-            dampers = results['damper_positions']
-            
             print(f"  [{progress:5.1f}%] t={results['time']:5.2f}s | "
-                  f"{phase:8s} RPM:{rpm:4.0f} Q:{flow:5.0f}m³/h "
-                  f"P:{pressure:5.0f}Pa W:{power:4.1f}kW η:{efficiency:4.1f}% "
+                  f"{phase:8s} RPM:{rpm:4.0f} Q:{flow:5.0f}m3/h "
+                  f"P:{pressure:5.0f}Pa W:{power:4.1f}kW n:{efficiency:4.1f}% "
                   f"D1:{dampers[0]*100:3.0f}% D2:{dampers[1]*100:3.0f}%")
+        
+        # Update visualization every frame
+        if plotter is not None:
+            # Calculate wall-clock dt for smooth animation
+            current_wall_time = time.time()
+            wall_dt = current_wall_time - last_wall_time
+            last_wall_time = current_wall_time
+            wall_dt = min(wall_dt, 0.1)  # Clamp to avoid jumps
             
-            # Update visualization
-            if plotter is not None:
-                # Compute frame time: time elapsed since last visualization update
-                frame_dt = output_interval * config.dt
+            # ============================================
+            # ANIMATE BLOWER COMPONENTS (BELT DRIVE SYSTEM)
+            # Uses wall_dt for smooth animation independent of sim speed
+            # ============================================
+            if 'impeller' in animated_actors:
+                data = animated_actors['impeller']
+                blower = data['component']
                 
-                # ============================================
-                # ANIMATE BLOWER COMPONENTS (BELT DRIVE SYSTEM)
-                # Motor pulley -> belt -> driven pulley -> impeller (same shaft)
-                # ============================================
-                if 'impeller' in animated_actors:
-                    data = animated_actors['impeller']
-                    component = data['component']
+                # Update rotation angles based on current RPM and wall time
+                if rpm > 0:
+                    blower.update_animation(wall_dt, rpm)
+                
+                # Update impeller mesh
+                v_imp, _, _ = blower.get_impeller_mesh()
+                v_imp = v_imp + data['position']
+                data['mesh'].points[:] = v_imp
+                data['mesh'].Modified()
+            
+            # Update driven pulley (same speed as impeller)
+            if 'driven_pulley' in animated_actors:
+                data = animated_actors['driven_pulley']
+                blower = data['component']
+                
+                v_driven, _, _ = blower.get_driven_pulley_mesh()
+                v_driven = v_driven + data['position']
+                data['mesh'].points[:] = v_driven
+                data['mesh'].Modified()
+            
+            # Update motor pulley (faster by pulley ratio)
+            if 'motor_pulley' in animated_actors:
+                data = animated_actors['motor_pulley']
+                blower = data['component']
+                
+                v_motor, _, _ = blower.get_motor_pulley_mesh()
+                v_motor = v_motor + data['position']
+                data['mesh'].points[:] = v_motor
+                data['mesh'].Modified()
+            
+            # ============================================
+            # ANIMATE DAMPER BLADES
+            # Dampers open/close based on simulation state
+            # ============================================
+            for idx, target_pos in enumerate(dampers):
+                key = f'damper_{idx}'
+                if key in animated_actors:
+                    data = animated_actors[key]
+                    damper = data['component']
                     
-                    # Update rotation angles based on current RPM
-                    # This updates internal angles for impeller and motor
-                    component.update_animation(frame_dt, rpm)
+                    # Use damper's animation method if available
+                    if hasattr(damper, 'update_animation'):
+                        damper.update_animation(wall_dt, target_pos, transition_time=1.0)
+                        current_pos = damper.get_blade_position() if hasattr(damper, 'get_blade_position') else target_pos
+                    else:
+                        current_pos = target_pos
                     
-                    # Get rotated impeller mesh and update points
-                    v_imp, _, _ = component.get_impeller_mesh()
-                    v_imp = v_imp + data['position']
-                    data['mesh'].points[:] = v_imp
+                    # Update blade mesh
+                    v_blade, _, _ = damper.get_blade_mesh(current_pos)
+                    v_blade = v_blade + data['position']
+                    data['mesh'].points[:] = v_blade
                     data['mesh'].Modified()
-                
-                # Animate driven pulley (same rotation as impeller - same shaft)
-                if 'driven_pulley' in animated_actors:
-                    data = animated_actors['driven_pulley']
-                    component = data['component']
-                    
-                    v_driven, _, _ = component.get_driven_pulley_mesh()
-                    v_driven = v_driven + data['position']
-                    data['mesh'].points[:] = v_driven
-                    data['mesh'].Modified()
-                
-                # Animate motor pulley (faster rotation by pulley_ratio)
-                if 'motor_pulley' in animated_actors:
-                    data = animated_actors['motor_pulley']
-                    component = data['component']
-                    
-                    v_motor, _, _ = component.get_motor_pulley_mesh()
-                    v_motor = v_motor + data['position']
-                    data['mesh'].points[:] = v_motor
-                    data['mesh'].Modified()
-                
-                # ============================================
-                # ANIMATE DAMPER BLADES (rotate based on position)
-                # ============================================
-                for idx, damper_pos in enumerate(dampers):
-                    key = f'damper_{idx}'
-                    if key in animated_actors:
-                        data = animated_actors[key]
-                        component = data['component']
-                        
-                        # Get blade mesh at current position (0=closed, 1=open)
-                        v_blade, _, _ = component.get_blade_mesh(damper_pos)
-                        v_blade = v_blade + data['position']
-                        data['mesh'].points[:] = v_blade
-                        data['mesh'].Modified()
                 
                 # ============================================
                 # UPDATE TRACER PARTICLES
@@ -415,11 +438,14 @@ def main():
                 plotter.add_text(info_text, position='upper_left', font_size=10,
                                 color='black', name='sim_info')
                 plotter.update()
+                
+                # Small delay to control frame rate
+                time.sleep(0.001)
     
     elapsed = time.time() - start_time
     
     print("-" * 70)
-    print("SIMULATION COMPLETE")
+    print("SIMULATION COMPLETE - SHUTTING DOWN")
     print("-" * 70)
     print(f"  Wall time:       {elapsed:.1f} s")
     print(f"  Sim time:        {simulator.state.time:.2f} s")
@@ -440,6 +466,125 @@ def main():
     for segment in simulator.get_duct_segment_data():
         print(f"  {segment['name']:20s}: {segment['pressure_drop']:.1f} Pa "
               f"(v={segment['velocity']:.1f} m/s, Re={segment['reynolds']:.0f})")
+    
+    # ============================================
+    # SHUTDOWN SEQUENCE - Close dampers, slow motor
+    # ============================================
+    if plotter is not None and animated_actors:
+        print("\n  Shutting down system...")
+        shutdown_time = 3.0  # 3 second shutdown
+        shutdown_start = time.time()
+        
+        final_rpm = results['blower_rpm']
+        
+        while time.time() - shutdown_start < shutdown_time:
+            shutdown_elapsed = time.time() - shutdown_start
+            shutdown_progress = shutdown_elapsed / shutdown_time
+            
+            # Close dampers gradually (1.0 -> 0.0)
+            damper_position = 1.0 - shutdown_progress
+            
+            # Slow down motor/impeller
+            current_rpm = final_rpm * (1.0 - shutdown_progress)
+            
+            # Update blower animation
+            if 'impeller' in animated_actors:
+                data = animated_actors['impeller']
+                blower = data['component']
+                
+                if current_rpm > 0:
+                    blower.update_animation(0.03, current_rpm)
+                
+                v_imp, _, _ = blower.get_impeller_mesh()
+                v_imp = v_imp + data['position']
+                data['mesh'].points[:] = v_imp
+                data['mesh'].Modified()
+            
+            if 'driven_pulley' in animated_actors:
+                data = animated_actors['driven_pulley']
+                blower = data['component']
+                v_driven, _, _ = blower.get_driven_pulley_mesh()
+                v_driven = v_driven + data['position']
+                data['mesh'].points[:] = v_driven
+                data['mesh'].Modified()
+            
+            if 'motor_pulley' in animated_actors:
+                data = animated_actors['motor_pulley']
+                blower = data['component']
+                v_motor, _, _ = blower.get_motor_pulley_mesh()
+                v_motor = v_motor + data['position']
+                data['mesh'].points[:] = v_motor
+                data['mesh'].Modified()
+            
+            # Close dampers
+            for idx in range(2):
+                key = f'damper_{idx}'
+                if key in animated_actors:
+                    data = animated_actors[key]
+                    damper = data['component']
+                    
+                    # Use animation method if available
+                    if hasattr(damper, 'update_animation'):
+                        damper.update_animation(0.03, damper_position, transition_time=0.5)
+                        current_pos = damper.get_blade_position() if hasattr(damper, 'get_blade_position') else damper_position
+                    else:
+                        current_pos = damper_position
+                    
+                    v_blade, _, _ = damper.get_blade_mesh(current_pos)
+                    v_blade = v_blade + data['position']
+                    data['mesh'].points[:] = v_blade
+                    data['mesh'].Modified()
+            
+            # Update info text
+            shutdown_text = (
+                f"AIR FLOW - SHUTTING DOWN\n"
+                f"\n"
+                f"Impeller: {current_rpm:.0f} RPM\n"
+                f"Motor: {current_rpm * 2.0:.0f} RPM\n"
+                f"\n"
+                f"Damper 1: {damper_position*100:.0f}%\n"
+                f"Damper 2: {damper_position*100:.0f}%\n"
+                f"\n"
+                f"Shutdown: {shutdown_progress*100:.0f}%"
+            )
+            plotter.add_text(shutdown_text, position='upper_left', font_size=10,
+                           color='black', name='sim_info')
+            plotter.update()
+            time.sleep(0.03)
+        
+        # Final state - dampers fully closed
+        for idx in range(2):
+            key = f'damper_{idx}'
+            if key in animated_actors:
+                data = animated_actors[key]
+                damper = data['component']
+                
+                if hasattr(damper, 'set_blade_position'):
+                    damper.set_blade_position(0.0)
+                
+                v_blade, _, _ = damper.get_blade_mesh(0.0)
+                v_blade = v_blade + data['position']
+                data['mesh'].points[:] = v_blade
+                data['mesh'].Modified()
+        
+        print("  System shutdown complete. Dampers closed.")
+        
+        # Final display
+        final_text = (
+            f"AIR FLOW - COMPLETE\n"
+            f"\n"
+            f"System: OFF\n"
+            f"Dampers: CLOSED\n"
+            f"\n"
+            f"Run Summary:\n"
+            f"  Energy: {results['total_energy_kWh']:.3f} kWh\n"
+            f"  Flow: {results['volume_flow_rate_m3_h']:.0f} m3/h\n"
+            f"\n"
+            f"(Close window to exit)"
+        )
+        plotter.add_text(final_text, position='upper_left', font_size=10,
+                        color='black', name='sim_info')
+        plotter.update()
     
     print("=" * 70)
     

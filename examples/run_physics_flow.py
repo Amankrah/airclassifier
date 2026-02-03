@@ -319,10 +319,17 @@ def main():
     print("-" * 70)
     
     total_steps = int(args.time / args.dt)
-    output_interval = max(1, total_steps // 100)  # ~100 status updates
+    print_interval = max(1, total_steps // 20)  # ~20 console updates
+    
+    # Animation timing - use wall clock for smooth visuals
+    target_fps = 30
+    frame_interval = 1.0 / target_fps
+    steps_per_frame = max(1, int(frame_interval / args.dt))
     
     # Start simulation
     start_time = time.time()
+    last_wall_time = time.time()
+    last_print_step = -print_interval
     discharge_started = False
     
     if args.pouring:
@@ -330,23 +337,29 @@ def main():
         simulator.start_simulation()
         print("  [Starting pouring sequence]")
     
-    for step in range(total_steps):
-        # For non-pouring mode, start discharge after 0.5s
-        if not args.pouring and simulator.state.time >= 0.5:
-            if not discharge_started:
-                simulator.start_discharge()
-                discharge_started = True
-                print("  [Discharge opened]")
+    step = 0
+    while step < total_steps:
+        # Run multiple simulation steps per visual frame
+        frame_steps = min(steps_per_frame, total_steps - step)
+        for _ in range(frame_steps):
+            # For non-pouring mode, start discharge after 0.5s
+            if not args.pouring and simulator.state.time >= 0.5:
+                if not discharge_started:
+                    simulator.start_discharge()
+                    discharge_started = True
+                    print("  [Discharge opened]")
+            
+            simulator.step()
+            step += 1
         
-        # Step simulation
-        simulator.step()
+        # Get current state
+        counts = simulator.get_zone_counts()
         
-        # Status output
-        if step % output_interval == 0 or step == total_steps - 1:
-            counts = simulator.get_zone_counts()
+        # Console output at intervals
+        if step - last_print_step >= print_interval or step >= total_steps:
+            last_print_step = step
             progress = 100.0 * step / total_steps
             
-            # Build status line
             status = f"  [{progress:5.1f}%] t={simulator.state.time:5.2f}s"
             
             if args.pouring:
@@ -354,153 +367,159 @@ def main():
                 lid_angle = simulator.state.lid_angle
                 poured = simulator.state.particles_poured
                 total = simulator.state.total_particles_to_pour
-                status += f" | {phase:9s} lid:{lid_angle:3.0f}° poured:{poured:4d}/{total}"
+                status += f" | {phase:9s} lid:{lid_angle:3.0f} poured:{poured:4d}/{total}"
             
             status += f" | H:{counts['hopper']:4d} A:{counts['airlock']:3d} "
             status += f"F:{counts['feeder']:3d} D:{counts['deagg']:4d} "
             status += f"E:{counts['exited']:4d} I:{counts['inactive']:4d}"
             print(status)
+        
+        # Update visualization every frame
+        if plotter is not None:
+            # Calculate wall-clock dt for smooth animation
+            current_wall_time = time.time()
+            wall_dt = current_wall_time - last_wall_time
+            last_wall_time = current_wall_time
+            wall_dt = min(wall_dt, 0.1)  # Clamp to avoid jumps
             
-            # Update visualization
-            if plotter is not None:
-                # ============================================
-                # ANIMATE LID
-                # ============================================
-                if 'lid' in animated_actors:
-                    lid_data = animated_actors['lid']
-                    current_angle = simulator.state.lid_angle
-                    
-                    if abs(current_angle - lid_data['current_angle']) > 0.1:
-                        angle_rad = np.radians(current_angle)
-                        hinge_pos = lid_data['hinge_position']
-                        axis = np.array([0.0, 0.0, 1.0])
-                        
-                        rotated = rotate_points_around_axis(
-                            lid_data['original_points'],
-                            hinge_pos,
-                            axis,
-                            angle_rad
-                        )
-                        
-                        lid_data['mesh'].points[:] = rotated
-                        lid_data['mesh'].Modified()
-                        lid_data['current_angle'] = current_angle
+            # ============================================
+            # ANIMATE LID (using simulation state)
+            # ============================================
+            if 'lid' in animated_actors:
+                lid_data = animated_actors['lid']
+                current_angle = simulator.state.lid_angle
                 
-                # ============================================
-                # ANIMATE ROTATING COMPONENTS
-                # ============================================
-                # Only animate when discharge is open (flowing phase)
-                if simulator._discharge_open == 1:
-                    frame_dt = config.dt * output_interval
+                if abs(current_angle - lid_data['current_angle']) > 0.1:
+                    angle_rad = np.radians(current_angle)
+                    hinge_pos = lid_data['hinge_position']
+                    axis = np.array([0.0, 0.0, 1.0])
                     
-                    # Airlock rotor
-                    if 'airlock_rotor' in animated_actors:
-                        data = animated_actors['airlock_rotor']
-                        component = data['component']
-                        component.update_rotation(frame_dt, config.airlock_rpm)
-                        angle = component.get_rotor_angle()
-                        
-                        v_rot, _, _ = component.get_rotor_mesh(angle)
-                        v_rot = v_rot + data['position']
-                        data['mesh'].points[:] = v_rot
-                        data['mesh'].Modified()
-                    
-                    # Screw feeder
-                    if 'feeder_screw' in animated_actors:
-                        data = animated_actors['feeder_screw']
-                        component = data['component']
-                        component.update_rotation(frame_dt, config.feeder_rpm)
-                        angle = component.get_screw_angle()
-                        
-                        v_rot, _, _ = component.get_screw_mesh(angle)
-                        v_rot = v_rot + data['position']
-                        data['mesh'].points[:] = v_rot
-                        data['mesh'].Modified()
-                    
-                    # Deagglomerator rotor (high speed!)
-                    if 'deagg_rotor' in animated_actors:
-                        data = animated_actors['deagg_rotor']
-                        component = data['component']
-                        component.update_rotation(frame_dt, config.deagg_rpm)
-                        angle = component.get_rotor_angle()
-                        
-                        v_rot, _, _ = component.get_rotor_mesh(angle)
-                        v_rot = v_rot + data['position']
-                        data['mesh'].points[:] = v_rot
-                        data['mesh'].Modified()
-                
-                # ============================================
-                # UPDATE PARTICLES
-                # ============================================
-                positions = simulator.get_positions()
-                diameters = simulator.get_diameters()
-                
-                if len(positions) > 0:
-                    # Remove old actor
-                    if particle_actor is not None:
-                        try:
-                            plotter.remove_actor(particle_actor)
-                        except:
-                            pass
-                    
-                    # Create particle point cloud with velocity coloring
-                    velocities = simulator.state.velocities.numpy()[:len(positions)]
-                    speeds = np.linalg.norm(velocities, axis=1)
-                    
-                    particle_mesh = pv.PolyData(positions)
-                    particle_mesh['velocity'] = speeds
-                    
-                    # Point size based on particle diameter
-                    particle_dia_mm = diameters.mean() * 1000
-                    point_size = max(8, min(20, int(particle_dia_mm / 2.5)))
-                    
-                    particle_actor = plotter.add_mesh(
-                        particle_mesh,
-                        scalars='velocity',
-                        cmap='YlOrBr',  # Brown/tan for flour-like appearance
-                        point_size=point_size,
-                        render_points_as_spheres=True,
-                        opacity=0.85,
-                        clim=[0, 2.0],
-                        show_scalar_bar=False,
+                    rotated = rotate_points_around_axis(
+                        lid_data['original_points'],
+                        hinge_pos,
+                        axis,
+                        angle_rad
                     )
+                    
+                    lid_data['mesh'].points[:] = rotated
+                    lid_data['mesh'].Modified()
+                    lid_data['current_angle'] = current_angle
+            
+            # ============================================
+            # ANIMATE ROTATING COMPONENTS
+            # Uses wall_dt for smooth animation
+            # Only animate when discharge is open (flowing phase)
+            # ============================================
+            if simulator._discharge_open == 1:
+                # Airlock rotor
+                if 'airlock_rotor' in animated_actors:
+                    data = animated_actors['airlock_rotor']
+                    component = data['component']
+                    component.update_rotation(wall_dt, config.airlock_rpm)
+                    angle = component.get_rotor_angle()
+                    
+                    v_rot, _, _ = component.get_rotor_mesh(angle)
+                    v_rot = v_rot + data['position']
+                    data['mesh'].points[:] = v_rot
+                    data['mesh'].Modified()
                 
-                # ============================================
-                # UPDATE INFO TEXT
-                # ============================================
-                # Determine phase for display
-                if args.pouring:
-                    phase_name = simulator.state.phase.value.upper()
-                    lid_angle = simulator.state.lid_angle
-                    poured = simulator.state.particles_poured
-                    total = simulator.state.total_particles_to_pour
-                    info_text = (
-                        f"PHYSICS-BASED FEED FLOW\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"Phase: {phase_name}\n"
-                        f"Lid: {lid_angle:.0f}°\n"
-                        f"Poured: {poured:,}/{total:,}\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"H:{counts['hopper']:4d} A:{counts['airlock']:3d}\n"
-                        f"F:{counts['feeder']:3d} D:{counts['deagg']:4d}\n"
-                        f"E:{counts['exited']:4d} I:{counts['inactive']:4d}\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"t = {simulator.state.time:.2f}s"
-                    )
-                else:
-                    info_text = (
-                        f"PHYSICS-BASED FEED FLOW\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"H:{counts['hopper']:4d} A:{counts['airlock']:3d}\n"
-                        f"F:{counts['feeder']:3d} D:{counts['deagg']:4d}\n"
-                        f"E:{counts['exited']:4d} I:{counts['inactive']:4d}\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"t = {simulator.state.time:.2f}s"
-                    )
+                # Screw feeder
+                if 'feeder_screw' in animated_actors:
+                    data = animated_actors['feeder_screw']
+                    component = data['component']
+                    component.update_rotation(wall_dt, config.feeder_rpm)
+                    angle = component.get_screw_angle()
+                    
+                    v_rot, _, _ = component.get_screw_mesh(angle)
+                    v_rot = v_rot + data['position']
+                    data['mesh'].points[:] = v_rot
+                    data['mesh'].Modified()
                 
-                plotter.add_text(info_text, position='upper_left', font_size=10, 
-                                color='black', name='sim_info')
-                plotter.update()
+                # Deagglomerator rotor (high speed!)
+                if 'deagg_rotor' in animated_actors:
+                    data = animated_actors['deagg_rotor']
+                    component = data['component']
+                    component.update_rotation(wall_dt, config.deagg_rpm)
+                    angle = component.get_rotor_angle()
+                    
+                    v_rot, _, _ = component.get_rotor_mesh(angle)
+                    v_rot = v_rot + data['position']
+                    data['mesh'].points[:] = v_rot
+                    data['mesh'].Modified()
+            
+            # ============================================
+            # UPDATE PARTICLES
+            # ============================================
+            positions = simulator.get_positions()
+            diameters = simulator.get_diameters()
+            
+            if len(positions) > 0:
+                # Remove old actor
+                if particle_actor is not None:
+                    try:
+                        plotter.remove_actor(particle_actor)
+                    except:
+                        pass
+                
+                # Create particle point cloud with velocity coloring
+                velocities = simulator.state.velocities.numpy()[:len(positions)]
+                speeds = np.linalg.norm(velocities, axis=1)
+                
+                particle_mesh = pv.PolyData(positions)
+                particle_mesh['velocity'] = speeds
+                
+                # Point size based on particle diameter
+                particle_dia_mm = diameters.mean() * 1000
+                point_size = max(8, min(20, int(particle_dia_mm / 2.5)))
+                
+                particle_actor = plotter.add_mesh(
+                    particle_mesh,
+                    scalars='velocity',
+                    cmap='YlOrBr',  # Brown/tan for flour-like appearance
+                    point_size=point_size,
+                    render_points_as_spheres=True,
+                    opacity=0.85,
+                    clim=[0, 2.0],
+                    show_scalar_bar=False,
+                )
+            
+            # ============================================
+            # UPDATE INFO TEXT
+            # ============================================
+            if args.pouring:
+                phase_name = simulator.state.phase.value.upper()
+                lid_angle = simulator.state.lid_angle
+                poured = simulator.state.particles_poured
+                total = simulator.state.total_particles_to_pour
+                info_text = (
+                    f"PHYSICS-BASED FEED FLOW\n"
+                    f"Phase: {phase_name}\n"
+                    f"Lid: {lid_angle:.0f}\n"
+                    f"Poured: {poured:,}/{total:,}\n"
+                    f"\n"
+                    f"H:{counts['hopper']:4d} A:{counts['airlock']:3d}\n"
+                    f"F:{counts['feeder']:3d} D:{counts['deagg']:4d}\n"
+                    f"E:{counts['exited']:4d} I:{counts['inactive']:4d}\n"
+                    f"\n"
+                    f"t = {simulator.state.time:.2f}s"
+                )
+            else:
+                info_text = (
+                    f"PHYSICS-BASED FEED FLOW\n"
+                    f"\n"
+                    f"H:{counts['hopper']:4d} A:{counts['airlock']:3d}\n"
+                    f"F:{counts['feeder']:3d} D:{counts['deagg']:4d}\n"
+                    f"E:{counts['exited']:4d} I:{counts['inactive']:4d}\n"
+                    f"\n"
+                    f"t = {simulator.state.time:.2f}s"
+                )
+            
+            plotter.add_text(info_text, position='upper_left', font_size=10, 
+                            color='black', name='sim_info')
+            plotter.update()
+            
+            # Small delay to control frame rate
+            time.sleep(0.001)
     
     elapsed = time.time() - start_time
     
