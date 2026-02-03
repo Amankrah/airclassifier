@@ -193,7 +193,7 @@ class ScrewFeeder:
         - Allow pressurized/vacuum operation
         - Meet food/pharma hygiene standards
         
-        The tube has openings only at:
+        The tube has PHYSICAL OPENINGS at:
         - Inlet (top, near start) - receives material from airlock
         - Outlet (bottom, at end) - discharges to deagglomerator
         """
@@ -205,6 +205,21 @@ class ScrewFeeder:
         r = p.trough_radius
         wall_thickness = 0.003  # 3mm walls
         outer_r = r + wall_thickness
+
+        # Calculate angular extent of inlet/outlet openings
+        inlet_half_angle = np.arcsin(min(p.inlet_diameter / 2 / outer_r, 0.95))
+        outlet_half_angle = np.arcsin(min(p.outlet_diameter / 2 / outer_r, 0.95))
+        
+        # For axis "x": inlet at Y+ (theta=PI/2), outlet at Y- (theta=3*PI/2)
+        inlet_center_theta = PI / 2      # Top (Y+)
+        outlet_center_theta = 3 * PI / 2  # Bottom (Y-)
+        
+        # Axial positions of openings (normalized 0-1 along trough)
+        # Inlet near start, outlet near end
+        inlet_axial_center = 0.15  # 15% from start
+        outlet_axial_center = 0.85  # 85% from start (near end)
+        inlet_axial_half = (p.inlet_diameter / 2) / p.trough_length
+        outlet_axial_half = (p.outlet_diameter / 2) / p.trough_length
 
         # Generate FULL cylindrical tube (360 degrees, fully enclosed)
         for i in range(n_axial + 1):
@@ -234,17 +249,43 @@ class ScrewFeeder:
                 vertices.append([x, y, z])
                 normals.append([nx, ny, nz])
 
-        # Generate triangles for tube
+        # Generate triangles for tube, skipping inlet and outlet openings
         for i in range(n_axial):
+            t_mid = (i + 0.5) / n_axial  # Midpoint of this axial segment
+            
             for j in range(n_radial):
-                j_next = (j + 1) % n_radial
-                v0 = start_idx + i * n_radial + j
-                v1 = start_idx + i * n_radial + j_next
-                v2 = start_idx + (i + 1) * n_radial + j_next
-                v3 = start_idx + (i + 1) * n_radial + j
+                theta_mid = ((j + 0.5) / n_radial) * TWO_PI
+                
+                skip_triangle = False
+                
+                if p.axis == "x":
+                    # Check inlet opening (top, near start)
+                    in_inlet_axial = abs(t_mid - inlet_axial_center) < inlet_axial_half
+                    if in_inlet_axial:
+                        angle_to_inlet = abs(theta_mid - inlet_center_theta)
+                        if angle_to_inlet > PI:
+                            angle_to_inlet = TWO_PI - angle_to_inlet
+                        if angle_to_inlet < inlet_half_angle:
+                            skip_triangle = True
+                    
+                    # Check outlet opening (bottom, near end)
+                    in_outlet_axial = abs(t_mid - outlet_axial_center) < outlet_axial_half
+                    if in_outlet_axial:
+                        angle_to_outlet = abs(theta_mid - outlet_center_theta)
+                        if angle_to_outlet > PI:
+                            angle_to_outlet = TWO_PI - angle_to_outlet
+                        if angle_to_outlet < outlet_half_angle:
+                            skip_triangle = True
+                
+                if not skip_triangle:
+                    j_next = (j + 1) % n_radial
+                    v0 = start_idx + i * n_radial + j
+                    v1 = start_idx + i * n_radial + j_next
+                    v2 = start_idx + (i + 1) * n_radial + j_next
+                    v3 = start_idx + (i + 1) * n_radial + j
 
-                indices.extend([v0, v1, v2])
-                indices.extend([v0, v2, v3])
+                    indices.extend([v0, v1, v2])
+                    indices.extend([v0, v2, v3])
 
         # Add end caps (with holes for shaft bearings)
         self._add_end_caps(vertices, indices, normals, outer_r)

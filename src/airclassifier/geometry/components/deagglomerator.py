@@ -166,7 +166,7 @@ class Deagglomerator:
         return self._vertices, self._indices, self._normals
 
     def _generate_housing(self, vertices: List, indices: List, normals: List):
-        """Generate cylindrical housing."""
+        """Generate cylindrical housing with openings for inlet and outlet."""
         p = self.params
         n_radial = p.resolution_radial
         n_axial = p.resolution_axial
@@ -175,6 +175,20 @@ class Deagglomerator:
         r = p.housing_radius
         half_length = p.housing_length / 2
         wall_thickness = 0.005
+
+        # Calculate angular extent of inlet/outlet openings
+        # Opening half-angle: sin(theta) = opening_radius / housing_radius
+        inlet_half_angle = np.arcsin(min(p.inlet_diameter / 2 / r, 0.95))
+        outlet_half_angle = np.arcsin(min(p.outlet_diameter / 2 / r, 0.95))
+        
+        # For axis "x": inlet at Y+ (theta=PI/2), outlet at Y- (theta=3*PI/2)
+        # theta=0 is at Z+, theta increases counterclockwise when viewed from +X
+        inlet_center_theta = PI / 2      # Top (Y+)
+        outlet_center_theta = 3 * PI / 2  # Bottom (Y-)
+        
+        # Axial extent of openings (center section of housing)
+        # Openings are only in the middle portion, not at the end caps
+        axial_opening_half = p.inlet_diameter / 2  # Half-width of opening along axis
 
         # Outer surface of housing
         for i in range(n_axial + 1):
@@ -203,17 +217,44 @@ class Deagglomerator:
                 vertices.append([x, y, z])
                 normals.append([nx, ny, nz])
 
-        # Generate triangles
+        # Generate triangles, skipping inlet and outlet openings
         for i in range(n_axial):
+            t_mid = (i + 0.5) / n_axial
+            axial_pos_mid = -half_length + t_mid * p.housing_length
+            
+            # Check if this axial segment is in the opening region
+            in_axial_opening = abs(axial_pos_mid) < axial_opening_half
+            
             for j in range(n_radial):
-                j_next = (j + 1) % n_radial
-                v0 = start_idx + i * n_radial + j
-                v1 = start_idx + i * n_radial + j_next
-                v2 = start_idx + (i + 1) * n_radial + j_next
-                v3 = start_idx + (i + 1) * n_radial + j
+                theta_mid = ((j + 0.5) / n_radial) * TWO_PI
+                
+                # Check if this angular segment is in inlet or outlet opening
+                skip_triangle = False
+                
+                if in_axial_opening and p.axis == "x":
+                    # Check inlet opening (top, Y+)
+                    angle_to_inlet = abs(theta_mid - inlet_center_theta)
+                    if angle_to_inlet > PI:
+                        angle_to_inlet = TWO_PI - angle_to_inlet
+                    if angle_to_inlet < inlet_half_angle:
+                        skip_triangle = True
+                    
+                    # Check outlet opening (bottom, Y-)
+                    angle_to_outlet = abs(theta_mid - outlet_center_theta)
+                    if angle_to_outlet > PI:
+                        angle_to_outlet = TWO_PI - angle_to_outlet
+                    if angle_to_outlet < outlet_half_angle:
+                        skip_triangle = True
+                
+                if not skip_triangle:
+                    j_next = (j + 1) % n_radial
+                    v0 = start_idx + i * n_radial + j
+                    v1 = start_idx + i * n_radial + j_next
+                    v2 = start_idx + (i + 1) * n_radial + j_next
+                    v3 = start_idx + (i + 1) * n_radial + j
 
-                indices.extend([v0, v1, v2])
-                indices.extend([v0, v2, v3])
+                    indices.extend([v0, v1, v2])
+                    indices.extend([v0, v2, v3])
 
     def _generate_screen(self, vertices: List, indices: List, normals: List):
         """Generate perforated screen cylinder."""

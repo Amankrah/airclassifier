@@ -243,11 +243,16 @@ class AirSystemAssembly:
             blower_center_z
         )
 
+        # Elbow outlet position (after 90° bend)
+        elbow_outlet_x = elbow_inlet_x + elbow_bend_radius
+        elbow_outlet_z = elbow_inlet_z + elbow_bend_radius
+        
         # Store elbow parameters for duct creation
         self._elbow_params = {
             'diameter': elbow_diameter,
             'bend_radius': elbow_bend_radius,
             'inlet_pos': (elbow_inlet_x, filter_outlet_world[1], elbow_inlet_z),
+            'outlet_pos': (elbow_outlet_x, filter_outlet_world[1], elbow_outlet_z),
             'duct_horiz_length': duct_horiz_length,
             'duct_vert_length': duct_vert_length,
         }
@@ -279,6 +284,16 @@ class AirSystemAssembly:
         # Direct connection: blower outlet flange → transition (with flange rings) → duct → damper
         transition_length = 0.15  # 150mm rect-to-round transition piece
         duct_after_transition = 0.05  # 50mm round duct
+        
+        # Store transition parameters for physics simulation
+        self._transition_params = {
+            'length': transition_length,
+            'duct_after_length': duct_after_transition,
+        }
+        
+        # Store blower inlet/outlet world positions for physics simulation
+        self._blower_inlet_world = blower_inlet_world
+        self._blower_outlet_world = blower_outlet_flange_world
 
         # Start from actual outlet flange position (at top of scroll)
         # Path: blower flange → transition → duct → damper

@@ -39,21 +39,14 @@ from .simulation import (
     # Enums
     FlowMode,
     SystemState,
-    # System simulators
+    # Basic simulator
     AirSystemSimulator,
-    FeedSystemSimulator,
-    ClassificationSystemSimulator,
-    CompleteSystemSimulator,
-    # Configs
     AirSystemConfig,
-    FeedSystemConfig,
-    ClassificationConfig,
-    CompleteSystemConfig,
-    # Factory functions
-    create_air_system_simulator,
-    create_feed_system_simulator,
-    create_classification_simulator,
-    create_complete_system_simulator,
+    # Physics-based simulators
+    FeedFlowPhysicsSimulator,
+    FlowPhysicsConfig,
+    AirFlowPhysicsSimulator,
+    AirFlowPhysicsConfig,
 )
 
 # Sub-modules available for import
@@ -78,21 +71,14 @@ __all__ = [
     # Simulation - Enums
     "FlowMode",
     "SystemState",
-    # Simulation - System simulators
+    # Simulation - Basic
     "AirSystemSimulator",
-    "FeedSystemSimulator",
-    "ClassificationSystemSimulator",
-    "CompleteSystemSimulator",
-    # Simulation - Configs
     "AirSystemConfig",
-    "FeedSystemConfig",
-    "ClassificationConfig",
-    "CompleteSystemConfig",
-    # Simulation - Factory functions
-    "create_air_system_simulator",
-    "create_feed_system_simulator",
-    "create_classification_simulator",
-    "create_complete_system_simulator",
+    # Simulation - Physics-based
+    "FeedFlowPhysicsSimulator",
+    "FlowPhysicsConfig",
+    "AirFlowPhysicsSimulator",
+    "AirFlowPhysicsConfig",
     # Sub-modules
     "kinetics",
     "visualization",

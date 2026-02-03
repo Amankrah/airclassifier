@@ -1,19 +1,17 @@
 """
 Simulation module for air classifier systems.
 
-Provides system-level simulation for the complete air classifier:
+Provides physics-based simulation using actual geometry:
 
-Subsystem Simulators:
-- AirSystemSimulator: Blower, filter, and damper simulation
-- FeedSystemSimulator: Material handling (hopper, airlock, feeder, deagglomerator)
-- ClassificationSystemSimulator: Particle separation (venturi, zigzag, cyclones, bag filter)
+Physics-Based Simulators:
+- FeedFlowPhysicsSimulator: Material flow through feed system (hopper, airlock, feeder, deagglomerator)
+- AirFlowPhysicsSimulator: Air flow through air system (filter, blower, dampers)
 
-Complete System:
-- CompleteSystemSimulator: Full integrated simulation with all systems coupled
+Basic Simulators:
+- AirSystemSimulator: Simplified blower, filter, and damper simulation
 
-Flow Modes:
-- ANALYTICAL: Fast analytical flow models (Rankine vortex, etc.)
-- CFD: Full Navier-Stokes with CFD-DEM coupling
+Advanced:
+- CFDDEMCoupler: Full CFD-DEM coupling for detailed analysis
 """
 
 from .simulator import (
@@ -25,31 +23,10 @@ from .simulator import (
     BaseSimulationConfig,
     BaseSimulationState,
     
-    # Air System
+    # Air System (basic)
     AirSystemConfig,
     AirSystemState,
     AirSystemSimulator,
-    
-    # Feed System
-    FeedSystemConfig,
-    FeedSystemState,
-    FeedSystemSimulator,
-    
-    # Classification System
-    ClassificationConfig,
-    ClassificationState,
-    ClassificationSystemSimulator,
-    
-    # Complete System
-    CompleteSystemConfig,
-    CompleteSystemState,
-    CompleteSystemSimulator,
-    
-    # Factory functions
-    create_air_system_simulator,
-    create_feed_system_simulator,
-    create_classification_simulator,
-    create_complete_system_simulator,
 )
 
 from .cfd_dem_coupling import (
@@ -61,6 +38,32 @@ from .cfd_dem_coupling import (
     TurbulenceModelType,
 )
 
+from .feed_flow_physics import (
+    FeedFlowPhysicsSimulator,
+    FlowPhysicsConfig,
+    FlowPhysicsState,
+    FlowZone,
+    LidState,
+    SimulationPhase,
+    ComponentGeometry,
+    extract_geometry,
+    create_physics_flow_simulator,
+)
+
+from .air_flow_physics import (
+    AirFlowPhysicsSimulator,
+    AirFlowPhysicsConfig,
+    AirFlowPhysicsState,
+    BlowerState,
+    SystemPhase as AirSystemPhase,
+    BlowerGeometry,
+    FilterGeometry,
+    DamperGeometry,
+    DuctSegment,
+    extract_air_geometry,
+    create_air_flow_simulator,
+)
+
 __all__ = [
     # Enums
     "FlowMode",
@@ -70,29 +73,10 @@ __all__ = [
     "BaseSimulationConfig",
     "BaseSimulationState",
     
-    # Air System Simulator
+    # Air System Simulator (basic)
     "AirSystemConfig",
     "AirSystemState",
     "AirSystemSimulator",
-    "create_air_system_simulator",
-    
-    # Feed System Simulator
-    "FeedSystemConfig",
-    "FeedSystemState",
-    "FeedSystemSimulator",
-    "create_feed_system_simulator",
-    
-    # Classification System Simulator
-    "ClassificationConfig",
-    "ClassificationState",
-    "ClassificationSystemSimulator",
-    "create_classification_simulator",
-    
-    # Complete System Simulator
-    "CompleteSystemConfig",
-    "CompleteSystemState",
-    "CompleteSystemSimulator",
-    "create_complete_system_simulator",
     
     # CFD-DEM (advanced)
     "CFDDEMCoupler",
@@ -101,4 +85,28 @@ __all__ = [
     "CycloneCFDParams",
     "CouplingMode",
     "TurbulenceModelType",
+    
+    # Physics-based feed flow (geometry-driven)
+    "FeedFlowPhysicsSimulator",
+    "FlowPhysicsConfig",
+    "FlowPhysicsState",
+    "FlowZone",
+    "LidState",
+    "SimulationPhase",
+    "ComponentGeometry",
+    "extract_geometry",
+    "create_physics_flow_simulator",
+    
+    # Physics-based air flow (geometry-driven)
+    "AirFlowPhysicsSimulator",
+    "AirFlowPhysicsConfig",
+    "AirFlowPhysicsState",
+    "BlowerState",
+    "AirSystemPhase",
+    "BlowerGeometry",
+    "FilterGeometry",
+    "DamperGeometry",
+    "DuctSegment",
+    "extract_air_geometry",
+    "create_air_flow_simulator",
 ]

@@ -251,17 +251,45 @@ class RotaryAirlock:
                     vertices.append([x, y, z])
                     normals.append([0.0, np.cos(theta), np.sin(theta)])
 
-        # Generate triangles (excluding opening regions handled by saddle joints)
+        # Generate triangles, skipping inlet/outlet opening regions
         for i in range(n_axial):
+            t_mid = (i + 0.5) / n_axial
+            
             for j in range(n_radial):
-                j_next = (j + 1) % n_radial
-                v0 = start_idx + i * n_radial + j
-                v1 = start_idx + i * n_radial + j_next
-                v2 = start_idx + (i + 1) * n_radial + j_next
-                v3 = start_idx + (i + 1) * n_radial + j
+                theta_mid = ((j + 0.5) / n_radial) * TWO_PI
+                
+                skip_triangle = False
+                
+                if p.axis == "z":
+                    # Check if we're in the axial region of the openings
+                    z_mid = p.center[2] - half_length + t_mid * 2 * half_length
+                    z_from_center = abs(z_mid - p.center[2])
+                    in_opening_region = z_from_center < min(inlet_radius, outlet_radius, half_length * 0.8)
+                    
+                    if in_opening_region:
+                        # Check inlet opening (top, around PI/2)
+                        angle_to_inlet = abs(theta_mid - PI/2)
+                        if angle_to_inlet > PI:
+                            angle_to_inlet = TWO_PI - angle_to_inlet
+                        if angle_to_inlet < inlet_half_angle:
+                            skip_triangle = True
+                        
+                        # Check outlet opening (bottom, around 3*PI/2)
+                        angle_to_outlet = abs(theta_mid - 3*PI/2)
+                        if angle_to_outlet > PI:
+                            angle_to_outlet = TWO_PI - angle_to_outlet
+                        if angle_to_outlet < outlet_half_angle:
+                            skip_triangle = True
+                
+                if not skip_triangle:
+                    j_next = (j + 1) % n_radial
+                    v0 = start_idx + i * n_radial + j
+                    v1 = start_idx + i * n_radial + j_next
+                    v2 = start_idx + (i + 1) * n_radial + j_next
+                    v3 = start_idx + (i + 1) * n_radial + j
 
-                indices.extend([v0, v1, v2])
-                indices.extend([v0, v2, v3])
+                    indices.extend([v0, v1, v2])
+                    indices.extend([v0, v2, v3])
 
     def _generate_rotor(self, vertices: List, indices: List, normals: List):
         """Generate rotor with vanes."""
