@@ -160,7 +160,10 @@ class FlowPhysicsConfig:
     settling_time: float = 1.0            # [s] Time to wait for particles to settle
     
     # Visual particle sizing
-    visual_particle_diameter: float = 0.04  # [m] Display size (40mm visual particles)
+    # Particles must be smaller than smallest passage (Trans2 end = 84mm, Trans3 = 80mm)
+    # Rule of thumb: particle diameter < passage_diameter / 5 for free flow
+    # 80mm / 5 = 16mm, using 15mm for safety margin
+    visual_particle_diameter: float = 0.015  # [m] Display size (15mm visual particles)
 
 
 @dataclass
@@ -753,15 +756,22 @@ def physics_flow_kernel(
     # ZONE 0: HOPPER
     # =========================================================================
     if zone == 0:
-        # Position relative to hopper center (bottom of cone)
+        # Position relative to hopper center
+        # NOTE: hopper_center is at the base of the cone, but discharge port is BELOW it
+        # The actual discharge outlet is at hopper_outlet_y (which is trans1_start[1])
         local_y = pos[1] - hopper_center[1]
         local_x = pos[0] - hopper_center[0]
         local_z = pos[2] - hopper_center[2]
         r = wp.sqrt(local_x * local_x + local_z * local_z)
         
         # Compute wall radius at current height
-        if local_y < hopper_cone_height:
-            # In cone section
+        # For local_y >= 0: in the cone/cylinder section
+        # For local_y < 0: in the discharge tube (radius = hopper_outlet_radius)
+        if local_y < 0.0:
+            # Below cone apex - discharge tube region
+            wall_radius = hopper_outlet_radius
+        elif local_y < hopper_cone_height:
+            # In cone section - linear interpolation from bottom_radius to top_radius
             t = local_y / hopper_cone_height
             wall_radius = hopper_bottom_radius + t * (hopper_top_radius - hopper_bottom_radius)
         else:
@@ -776,12 +786,13 @@ def physics_flow_kernel(
             pos = pos + normal * (penetration + 0.001)
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # Bottom collision (cone apex) - only block if NOT in outlet and discharge closed
-        if local_y < particle_radius:
+        # Bottom collision - at the actual discharge outlet position (not at hopper_center!)
+        # The discharge is at hopper_outlet_y (trans1_start[1])
+        if pos[1] < hopper_outlet_y + particle_radius:
             if r > hopper_outlet_radius or discharge_open == 0:
-                # Hit bottom, not in outlet OR discharge is closed
+                # Hit discharge tube bottom, not in outlet opening OR discharge is closed
                 normal = wp.vec3(0.0, 1.0, 0.0)
-                pos = wp.vec3(pos[0], hopper_center[1] + particle_radius + 0.001, pos[2])
+                pos = wp.vec3(pos[0], hopper_outlet_y + particle_radius + 0.001, pos[2])
                 vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
         # Top boundary
@@ -794,9 +805,9 @@ def physics_flow_kernel(
         # TRANSITION: Through discharge -> enter transition connector (zone 10)
         if discharge_open == 1:
             # Check if particle has entered the transition zone
-            # Transition starts at hopper discharge (trans1_start)
-            # Use <= and slightly larger threshold to ensure particles cross
-            if pos[1] <= trans1_start[1] + particle_radius * 1.5 and r < hopper_outlet_radius:
+            # Transition starts at hopper discharge (trans1_start = hopper_outlet_y)
+            # Use slightly larger threshold to account for collision push-back
+            if pos[1] <= hopper_outlet_y + particle_radius * 2.0 and r < hopper_outlet_radius:
                 zones[tid] = 10  # Enter hopper->airlock transition
     
     # =========================================================================
@@ -1211,24 +1222,28 @@ def physics_flow_kernel(
         r = wp.sqrt(local_x * local_x + local_z * local_z)
         
         # Wall radius at current height
-        if local_y < hopper_cone_height:
-            t = wp.clamp(local_y / hopper_cone_height, 0.0, 1.0)
+        # For local_y < 0: in discharge tube region
+        # For local_y >= 0: in cone/cylinder
+        if local_y < 0.0:
+            wall_r = hopper_outlet_radius
+        elif local_y < hopper_cone_height:
+            t = local_y / hopper_cone_height
             wall_r = hopper_bottom_radius + t * (hopper_top_radius - hopper_bottom_radius)
         else:
             wall_r = hopper_top_radius
         
-        # Radial containment - but allow particles in outlet region to pass
-        in_outlet_region = (r < hopper_outlet_radius) and (local_y < particle_radius * 2.0)
-        if r > wall_r - particle_radius and r > 1.0e-6 and not in_outlet_region:
+        # Radial containment
+        if r > wall_r - particle_radius and r > 1.0e-6:
             scale = (wall_r - particle_radius - 0.001) / r
             pos = wp.vec3(hopper_center[0] + local_x * scale, pos[1], hopper_center[2] + local_z * scale)
         
-        # Vertical containment - bottom only blocks if discharge closed OR outside outlet
+        # Vertical containment - bottom is at hopper_outlet_y (not hopper_center!)
         total_h = hopper_cone_height + hopper_cylinder_height
-        if local_y < particle_radius:
-            # Only block if discharge is closed OR particle is outside outlet radius
+        # Bottom: block at hopper_outlet_y unless discharge open AND in outlet radius
+        if pos[1] < hopper_outlet_y + particle_radius:
             if discharge_open == 0 or r > hopper_outlet_radius:
-                pos = wp.vec3(pos[0], hopper_center[1] + particle_radius + 0.001, pos[2])
+                pos = wp.vec3(pos[0], hopper_outlet_y + particle_radius + 0.001, pos[2])
+        # Top
         if local_y > total_h - particle_radius:
             pos = wp.vec3(pos[0], hopper_center[1] + total_h - particle_radius - 0.001, pos[2])
     
@@ -1629,6 +1644,14 @@ class FeedFlowPhysicsSimulator:
         print(f"    Deagg omega:      {self.deagg_omega:.2f} rad/s ({cfg.deagg_rpm} RPM)")
         print(f"    Feeder v_axial:   {self.feeder_axial_speed*100:.1f} cm/s")
         
+        print(f"\n  Hopper Coordinate System:")
+        print(f"    Center Y:         {hopper_geo.center[1]*1000:.1f} mm (base of cone)")
+        print(f"    Top Y:            {self.hopper_top_y*1000:.1f} mm (hopper opening)")
+        print(f"    Outlet Y:         {self.hopper_outlet_y*1000:.1f} mm (discharge port)")
+        print(f"    Outlet radius:    {self.hopper_outlet_radius*1000:.1f} mm")
+        print(f"    Cone height:      {hopper_geo.cone_height*1000:.1f} mm")
+        print(f"    Cylinder height:  {hopper_geo.cylinder_height*1000:.1f} mm")
+        
         print(f"\n  Transition Connectors (from diagnose_feed_connectors.py):")
         print(f"    Trans 1: Hopper -> Airlock (cylindrical)")
         print(f"      Start Y:        {self.trans1_start[1]*1000:.1f} mm")
@@ -1668,6 +1691,30 @@ class FeedFlowPhysicsSimulator:
         print(f"    Radius:           {deagg_geo.radius*1000:.0f} mm")
         print(f"    Outlet Y:         {self.deagg_outlet_y*1000:.0f} mm")
         print(f"    Exit Y:           {self.exit_y*1000:.0f} mm")
+        
+        # =====================================================================
+        # PARTICLE SIZE VALIDATION
+        # Particles must be smaller than passages for free flow
+        # =====================================================================
+        smallest_passage = min(
+            self.trans1_radius * 2,      # Trans1 diameter
+            self.trans2_end_radius * 2,  # Trans2 outlet diameter (smallest)
+            self.trans3_radius * 2,      # Trans3 diameter
+        )
+        max_particle_diameter = smallest_passage / 5.0  # Rule: particle < passage/5
+        
+        particle_dia = cfg.visual_particle_diameter
+        print(f"\n  Particle Size Validation:")
+        print(f"    Smallest passage:       {smallest_passage*1000:.0f} mm diameter")
+        print(f"    Max particle (d/5):     {max_particle_diameter*1000:.1f} mm")
+        print(f"    Configured particle:    {particle_dia*1000:.1f} mm")
+        
+        if particle_dia > max_particle_diameter:
+            print(f"    WARNING: Particle diameter ({particle_dia*1000:.0f}mm) > max ({max_particle_diameter*1000:.0f}mm)")
+            print(f"             Particles may jam in narrow passages!")
+            print(f"             Recommend: --particle-dia {max_particle_diameter*1000:.0f} or smaller")
+        else:
+            print(f"    Status: OK (particle fits through passages)")
     
     def _allocate_arrays(self):
         """Allocate particle arrays on device."""
@@ -1699,8 +1746,8 @@ class FeedFlowPhysicsSimulator:
     def initialize_particles(
         self,
         num_particles: int,
-        mean_diameter: float = 0.04,
-        std_diameter: float = 0.005,
+        mean_diameter: float = 0.015,  # 15mm default (must be < smallest passage / 5)
+        std_diameter: float = 0.002,   # 2mm std dev
     ):
         """
         Initialize particles in the hopper.

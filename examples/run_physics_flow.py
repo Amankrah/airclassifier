@@ -78,6 +78,10 @@ def main():
         "--fill-percent", type=float, default=50,
         help="Hopper fill percentage (default: 50)"
     )
+    parser.add_argument(
+        "--particle-dia", type=float, default=15.0,
+        help="Particle diameter in mm (default: 15mm, must be < smallest passage/5)"
+    )
     
     args = parser.parse_args()
     
@@ -108,6 +112,9 @@ def main():
     assembly.print_summary()
     
     # Create physics config
+    # Convert particle diameter from mm to meters
+    particle_dia_m = args.particle_dia / 1000.0
+    
     print("\nConfiguring physics simulation...")
     config = FlowPhysicsConfig(
         dt=args.dt,
@@ -119,6 +126,7 @@ def main():
         device=args.device,
         enable_pouring=args.pouring,
         hopper_fill_percentage=args.fill_percent,
+        visual_particle_diameter=particle_dia_m,
     )
     
     # Create simulator
@@ -132,8 +140,8 @@ def main():
         print("\nInitializing particles in hopper...")
         simulator.initialize_particles(
             num_particles=args.particles,
-            mean_diameter=0.04,  # 40mm visual particles
-            std_diameter=0.005,
+            mean_diameter=particle_dia_m,
+            std_diameter=particle_dia_m * 0.1,  # 10% variation
         )
     
     # Visualization setup
