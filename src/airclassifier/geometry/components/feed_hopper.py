@@ -128,6 +128,14 @@ class FeedHopper:
         self._vertices = None
         self._indices = None
         self._normals = None
+        
+        # Cached separated meshes for animation
+        self._body_vertices = None
+        self._body_indices = None
+        self._body_normals = None
+        self._lid_vertices = None
+        self._lid_indices = None
+        self._lid_normals = None
 
     def generate_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -785,6 +793,150 @@ class FeedHopper:
         if self._normals is None:
             self.generate_mesh()
         return self._normals
+
+    # =========================================================================
+    # ANIMATION SUPPORT - Separate body and lid meshes
+    # =========================================================================
+    
+    def get_body_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get mesh for hopper body WITHOUT lid (for animation).
+        
+        Returns:
+            Tuple of (vertices, indices, normals) for body only
+        """
+        if self._body_vertices is None:
+            self._generate_separated_meshes()
+        return self._body_vertices, self._body_indices, self._body_normals
+    
+    def get_lid_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get mesh for lid with handle (for animation).
+        
+        The lid mesh includes:
+        - Inner skirt
+        - Outer flange
+        - Domed surface
+        - T-bar handle
+        - Hinge knuckles
+        
+        Returns:
+            Tuple of (vertices, indices, normals) for lid only
+        """
+        if self._lid_vertices is None:
+            self._generate_separated_meshes()
+        return self._lid_vertices, self._lid_indices, self._lid_normals
+    
+    def get_lid_hinge_position(self) -> Tuple[float, float, float]:
+        """
+        Get the hinge axis position for lid rotation.
+        
+        Returns:
+            (x, y, z) position of hinge axis
+        """
+        p = self.params
+        outer_flange_radius = p.top_radius * 1.08
+        y_rim = p.center[1] + p.conical_height + p.cylindrical_height
+        lid_thickness = p.lid_height * 0.4
+        
+        # Hinge is on -X side of lid, at the flange edge
+        hinge_x = p.center[0] - outer_flange_radius
+        hinge_y = y_rim + lid_thickness * 0.5
+        hinge_z = p.center[2]
+        
+        return (hinge_x, hinge_y, hinge_z)
+    
+    def _generate_separated_meshes(self):
+        """Generate separate meshes for body and lid (for animation)."""
+        p = self.params
+        n_radial = p.resolution_radial
+        n_axial = p.resolution_axial
+        
+        # ===== BODY MESH (no lid) =====
+        body_verts = []
+        body_indices = []
+        body_normals = []
+        
+        y_cone_bottom = p.center[1]
+        y_cone_top = p.center[1] + p.conical_height
+        y_cyl_top = y_cone_top + p.cylindrical_height
+        
+        # Generate conical section
+        cone_start = len(body_verts)
+        for i in range(n_axial + 1):
+            t = i / n_axial
+            y = y_cone_bottom + t * p.conical_height
+            r = p.bottom_radius + t * (p.top_radius - p.bottom_radius)
+            
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + r * np.cos(theta)
+                z = p.center[2] + r * np.sin(theta)
+                body_verts.append([x, y, z])
+                
+                cone_angle = np.arctan2(p.top_radius - p.bottom_radius, p.conical_height)
+                nx = np.cos(theta) * np.cos(cone_angle)
+                ny = np.sin(cone_angle)
+                nz = np.sin(theta) * np.cos(cone_angle)
+                body_normals.append([nx, ny, nz])
+        
+        for i in range(n_axial):
+            for j in range(n_radial):
+                v0 = cone_start + i * n_radial + j
+                v1 = cone_start + i * n_radial + (j + 1) % n_radial
+                v2 = cone_start + (i + 1) * n_radial + j
+                v3 = cone_start + (i + 1) * n_radial + (j + 1) % n_radial
+                body_indices.extend([v0, v1, v2])
+                body_indices.extend([v1, v3, v2])
+        
+        # Generate cylindrical section
+        cyl_start = len(body_verts)
+        for i in range(n_axial + 1):
+            t = i / n_axial
+            y = y_cone_top + t * p.cylindrical_height
+            
+            for j in range(n_radial):
+                theta = (j / n_radial) * TWO_PI
+                x = p.center[0] + p.top_radius * np.cos(theta)
+                z = p.center[2] + p.top_radius * np.sin(theta)
+                body_verts.append([x, y, z])
+                body_normals.append([np.cos(theta), 0.0, np.sin(theta)])
+        
+        for i in range(n_axial):
+            for j in range(n_radial):
+                v0 = cyl_start + i * n_radial + j
+                v1 = cyl_start + i * n_radial + (j + 1) % n_radial
+                v2 = cyl_start + (i + 1) * n_radial + j
+                v3 = cyl_start + (i + 1) * n_radial + (j + 1) % n_radial
+                body_indices.extend([v0, v1, v2])
+                body_indices.extend([v1, v3, v2])
+        
+        # Add hinge brackets on hopper (these stay with body)
+        self._add_hopper_hinge_brackets(body_verts, body_indices, body_normals, y_cyl_top)
+        
+        # Generate bottom discharge ring
+        self._add_discharge_ring(body_verts, body_indices, body_normals, y_cone_bottom)
+        
+        self._body_vertices = np.array(body_verts, dtype=np.float32)
+        self._body_indices = np.array(body_indices, dtype=np.int32)
+        self._body_normals = np.array(body_normals, dtype=np.float32)
+        
+        # ===== LID MESH (with handle) =====
+        if p.has_lid:
+            lid_verts = []
+            lid_indices = []
+            lid_normals = []
+            
+            self._add_lid(lid_verts, lid_indices, lid_normals, y_cyl_top)
+            
+            self._lid_vertices = np.array(lid_verts, dtype=np.float32)
+            self._lid_indices = np.array(lid_indices, dtype=np.int32)
+            self._lid_normals = np.array(lid_normals, dtype=np.float32)
+        else:
+            # No lid
+            self._lid_vertices = np.array([], dtype=np.float32).reshape(0, 3)
+            self._lid_indices = np.array([], dtype=np.int32)
+            self._lid_normals = np.array([], dtype=np.float32).reshape(0, 3)
 
     @property
     def ports(self) -> Dict[str, ConnectionPort]:

@@ -671,53 +671,56 @@ def run_feed_system_live():
     animated_actors = {}
     
     # ============================================
-    # BUILD HOPPER MESH (STATIC - body only, no lid)
+    # BUILD HOPPER BODY MESH (STATIC - no lid)
     # ============================================
     print("  Adding hopper body (static)...")
-    # We need to separate lid from hopper body for animation
-    # For now, add full hopper and we'll overlay animated lid
     hopper_offset = np.array(assembly._hopper_position)
-    v, i, _ = assembly.hopper.generate_mesh()
-    v = v + hopper_offset
-    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
-    hopper_mesh = pv.PolyData(v, faces)
+    
+    # Get body mesh WITHOUT lid (lid is animated separately)
+    v_body, i_body, _ = assembly.hopper.get_body_mesh()
+    v_body = v_body + hopper_offset
+    faces = np.hstack([[3] + list(face) for face in i_body.reshape(-1, 3)])
+    hopper_mesh = pv.PolyData(v_body, faces)
     plotter.add_mesh(hopper_mesh, color=COLORS['hopper'], label='Feed Hopper', opacity=0.7)
     
-    # Store hopper info for lid animation reference
+    # Store hopper info for reference
     hopper_params = assembly.hopper.params
-    hopper_top_y = hopper_offset[1] + hopper_params.total_height
-    hopper_top_radius = hopper_params.top_radius
-    lid_hinge_x = hopper_offset[0] - hopper_top_radius * 1.08
+    hopper_top_y = hopper_offset[1] + hopper_params.conical_height + hopper_params.cylindrical_height
     
     # ============================================
-    # CREATE ANIMATED LID MESH
+    # CREATE ANIMATED LID MESH (WITH HANDLE)
     # ============================================
-    print("  Creating animated lid...")
-    # Create a simple lid representation for animation
-    # Lid is a disc that rotates around hinge axis
-    lid_radius = hopper_top_radius * 1.08
-    lid_thickness = hopper_params.lid_height * 0.4
+    print("  Creating animated lid (with handle)...")
     
-    # Create lid disc mesh
-    lid_disc = pv.Disc(center=(hopper_offset[0], hopper_top_y + lid_thickness/2, hopper_offset[2]),
-                       inner=0, outer=lid_radius, normal=(0, 1, 0), r_res=1, c_res=32)
-    lid_disc_top = pv.Disc(center=(hopper_offset[0], hopper_top_y + lid_thickness, hopper_offset[2]),
-                           inner=0, outer=lid_radius, normal=(0, 1, 0), r_res=1, c_res=32)
+    # Get actual lid mesh with handle and hinges
+    v_lid, i_lid, _ = assembly.hopper.get_lid_mesh()
     
-    # Combine into single lid mesh
-    lid_mesh = lid_disc + lid_disc_top
-    
-    # Store original points for rotation
-    lid_original_points = lid_mesh.points.copy()
-    lid_actor = plotter.add_mesh(lid_mesh, color='#D4A574', label='Hopper Lid', opacity=0.95)
-    
-    animated_actors['lid'] = {
-        'mesh': lid_mesh,
-        'actor': lid_actor,
-        'original_points': lid_original_points,
-        'hinge_position': np.array([lid_hinge_x, hopper_top_y, hopper_offset[2]]),
-        'current_angle': 0.0,
-    }
+    if len(v_lid) > 0:
+        v_lid = v_lid + hopper_offset
+        faces = np.hstack([[3] + list(face) for face in i_lid.reshape(-1, 3)])
+        lid_mesh = pv.PolyData(v_lid, faces)
+        
+        # Get hinge position from hopper geometry
+        hinge_pos = assembly.hopper.get_lid_hinge_position()
+        hinge_world = np.array([
+            hinge_pos[0] + hopper_offset[0],
+            hinge_pos[1] + hopper_offset[1],
+            hinge_pos[2] + hopper_offset[2]
+        ])
+        
+        # Store original points for rotation
+        lid_original_points = lid_mesh.points.copy()
+        lid_actor = plotter.add_mesh(lid_mesh, color='#D4A574', label='Hopper Lid', opacity=0.95)
+        
+        animated_actors['lid'] = {
+            'mesh': lid_mesh,
+            'actor': lid_actor,
+            'original_points': lid_original_points,
+            'hinge_position': hinge_world,
+            'current_angle': 0.0,
+        }
+    else:
+        print("  (No lid on hopper)")
     
     # ============================================
     # ADD OTHER COMPONENTS (WITH ANIMATED ROTORS)
@@ -817,9 +820,9 @@ def run_feed_system_live():
     plotter.add_legend(bcolor='white', face='circle')
     plotter.add_axes()
     plotter.reset_camera()
-    plotter.camera.azimuth = -150
-    plotter.camera.elevation = 15
-    plotter.camera.zoom(1.2)
+    plotter.camera.azimuth = -170
+    plotter.camera.elevation = -20
+    plotter.camera.zoom(0.8)
     
     # ============================================
     # CREATE SIMULATOR WITH VOLUME-BASED SIZING

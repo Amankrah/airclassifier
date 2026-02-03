@@ -442,6 +442,7 @@ def granular_particle_update_kernel(
     cylinder_height: float,
     cone_height: float,
     discharge_open: int,  # 0 = closed, 1 = open
+    lid_closed: int,  # 1 = lid closed (block top), 0 = lid open
     # Physics parameters
     dt: float,
     gravity: float,
@@ -573,6 +574,26 @@ def granular_particle_update_kernel(
             new_pos = wp.vec3(new_pos[0], hopper_center[1] + min_y, new_pos[2])
             vel = wp.vec3(vel[0] * 0.3, 0.0, vel[2] * 0.3)
     
+    # ====== LID COLLISION (when lid is closed) ======
+    # Recalculate position
+    px = new_pos[0] - hopper_center[0]
+    py = new_pos[1] - hopper_center[1]
+    pz = new_pos[2] - hopper_center[2]
+    r = wp.sqrt(px * px + pz * pz)
+    
+    # Lid sits on top of hopper cylinder
+    lid_y = cone_height + cylinder_height
+    
+    if lid_closed == 1:
+        # When lid is closed, particles cannot go above the lid
+        if py > lid_y - radius:
+            # Only block if particle is within the hopper opening radius
+            if r < top_radius:
+                new_pos = wp.vec3(new_pos[0], hopper_center[1] + lid_y - radius - 0.001, new_pos[2])
+                # Bounce off lid
+                if vel[1] > 0.0:
+                    vel = wp.vec3(vel[0] * 0.8, -vel[1] * restitution, vel[2] * 0.8)
+    
     # ====== FLOOR COLLISION (safety) ======
     floor_y = hopper_center[1] - 0.3
     if new_pos[1] < floor_y + radius:
@@ -683,6 +704,7 @@ def continuous_flow_kernel(
     airlock_angle: float,  # Current rotation angle for metering
     # Feeder parameters
     feeder_inlet: wp.vec3,  # Inlet position (under airlock)
+    feeder_outlet: wp.vec3, # Outlet position (drops to deagg)
     feeder_axis: wp.vec3,   # Feeder direction (normalized)
     feeder_radius: float,
     feeder_length: float,
@@ -691,6 +713,7 @@ def continuous_flow_kernel(
     feeder_angle: float,    # Current screw rotation angle
     # Deagg parameters  
     deagg_center: wp.vec3,
+    deagg_inlet: wp.vec3,   # Inlet position (receives from feeder)
     deagg_radius: float,
     deagg_length: float,
     deagg_rpm: float,
@@ -769,167 +792,171 @@ def continuous_flow_kernel(
                 # Place at airlock inlet with downward velocity
                 vel = wp.vec3(vel[0] * 0.2, -0.5, vel[2] * 0.2)
     
-    # ===== ZONE 1: AIRLOCK (Rotational metering) =====
-    # Airlock: horizontal cylinder, rotor rotates around Z-axis
-    # - Housing has inlet hole at +Y (top), outlet hole at -Y (bottom)
-    # - Particles enter pocket at top, rotor carries them around, exit at bottom
-    # - Constrain X position (side walls), allow Y movement (through flow)
+    # ===== ZONE 1: AIRLOCK (Metered pass-through) =====
+    # Airlock meters material: vanes rotate and carry particles from inlet to outlet
+    # Flow rate determined by airlock RPM
     elif zone == 1:
         # Position relative to airlock center
         px = pos[0] - airlock_center[0]
         py = pos[1] - airlock_center[1]
         pz = pos[2] - airlock_center[2]
         
-        # Gravity pulls particles down through airlock
-        vel = vel + wp.vec3(0.0, -gravity * dt, 0.0)
+        # Strong gravity pulls particles through
+        vel = vel + wp.vec3(0.0, -gravity * dt * 2.5, 0.0)
         
-        # Rotational motion - vanes push particles tangentially
-        # Distance from rotation axis (Z)
-        r_from_axis = wp.sqrt(px * px + py * py)
+        # Vane rotation pushes particles through pockets
+        vane_push = airlock_omega * airlock_radius * 0.2
+        vel = vel + wp.vec3(vane_push * dt * 3.0, 0.0, 0.0)
         
-        if r_from_axis > 0.02:
-            # Tangent direction around Z axis
-            tang_x = -py / r_from_axis
-            tang_y = px / r_from_axis
-            
-            # Vanes carry particles with rotational velocity (scaled by distance from axis)
-            v_tangential = airlock_omega * r_from_axis * 0.7
-            
-            # Apply rotational push
-            vel = vel + wp.vec3(tang_x * v_tangential * dt * 10.0, tang_y * v_tangential * dt * 10.0, 0.0)
+        # HARD CONTAINMENT - cylindrical housing
+        # Radial containment in XZ plane (rotor rotates around Z)
+        r_xz = wp.sqrt(px * px + pz * pz)
+        if r_xz > airlock_radius * 0.8:
+            if r_xz > 0.01:
+                factor = airlock_radius * 0.75 / r_xz
+                pos = wp.vec3(airlock_center[0] + px * factor, pos[1], airlock_center[2] + pz * factor)
+                vel = wp.vec3(0.0, vel[1], 0.0)
         
-        # Constrain to airlock housing - only in X direction (side walls)
-        # Allow free movement in Y for through-flow
-        if wp.abs(px) > airlock_radius * 0.85:
-            # Push back from side walls
-            sign_x = 1.0 if px > 0.0 else -1.0
-            pos = wp.vec3(airlock_center[0] + sign_x * airlock_radius * 0.8, pos[1], pos[2])
-            if px * vel[0] > 0.0:  # Moving toward wall
-                vel = wp.vec3(-vel[0] * 0.3, vel[1], vel[2])
+        # Axial containment (Z direction - rotor length)
+        half_len = airlock_length * 0.5
+        if wp.abs(pz) > half_len * 0.85:
+            sign_z = 1.0 if pz > 0.0 else -1.0
+            pos = wp.vec3(pos[0], pos[1], airlock_center[2] + sign_z * half_len * 0.8)
+            vel = wp.vec3(vel[0], vel[1], 0.0)
         
-        # Constrain top (don't go back up through inlet once inside)
-        if py > airlock_radius * 0.9:
-            pos = wp.vec3(pos[0], airlock_center[1] + airlock_radius * 0.85, pos[2])
-            if vel[1] > 0.0:
-                vel = wp.vec3(vel[0], 0.0, vel[2])
+        # Top (inlet) - don't escape back up
+        if py > airlock_radius * 0.7:
+            pos = wp.vec3(pos[0], airlock_center[1] + airlock_radius * 0.65, pos[2])
+            vel = wp.vec3(vel[0], wp.min(vel[1], 0.0), vel[2])
         
-        # Axial containment along Z (rotor length)
-        half_len = airlock_length / 2.0
-        if pz < -half_len:
-            pos = wp.vec3(pos[0], pos[1], airlock_center[2] - half_len)
-        if pz > half_len:
-            pos = wp.vec3(pos[0], pos[1], airlock_center[2] + half_len)
-        
-        # Transition to feeder: particles exit at bottom of airlock (-Y direction)
-        if py < -airlock_radius * 0.7:
+        # TRANSITION to feeder at bottom outlet (below airlock)
+        if py < -airlock_radius * 0.5:
             zones[tid] = 2
-            # Place at feeder inlet with entry velocity
+            # Place at feeder inlet position with momentum towards outlet
             pos = wp.vec3(feeder_inlet[0], feeder_inlet[1], feeder_inlet[2])
-            vel = wp.vec3(feeder_axis[0] * 0.5, -0.2, feeder_axis[2] * 0.5)
+            vel = wp.vec3(0.5, -0.2, 0.0)  # Start moving along screw axis
     
-    # ===== ZONE 2: SCREW FEEDER (Axial push from helix) =====
+    # ===== ZONE 2: SCREW FEEDER (Axial conveying) =====
+    # Screw pushes particles along X axis at rate = pitch * RPM
+    # Outlet is at BOTTOM of tube (direction 0,-1,0 = straight DOWN to deagg)
     elif zone == 2:
-        # Calculate conveying velocity from screw
-        # V_axial = pitch * RPM / 60 (m/s)
-        axial_speed = feeder_pitch * feeder_rpm / 60.0
+        # Screw conveying velocity: V = pitch * RPM / 60
+        axial_speed = wp.max(feeder_pitch * feeder_rpm / 60.0, 0.15)  # At least 15 cm/s
         
-        # Position along feeder axis
-        dx = pos[0] - feeder_inlet[0]
-        dy = pos[1] - feeder_inlet[1]
-        dz = pos[2] - feeder_inlet[2]
+        # Tube center Y: midway between inlet top and outlet bottom, offset by neck lengths
+        # Inlet Y (-0.504) is TOP of inlet neck, outlet Y (-0.701) is BOTTOM of outlet neck
+        # Tube center is approximately: (inlet_y - neck) averaged with (outlet_y + neck)
+        # Simplified: use average minus adjustment
+        tube_center_y = (feeder_inlet[1] + feeder_outlet[1]) * 0.5  # approx -0.6
+        tube_center_z = feeder_inlet[2]  # Z is constant
         
-        # Project onto axis to get axial distance
-        axial_dist = dx * feeder_axis[0] + dy * feeder_axis[1] + dz * feeder_axis[2]
+        # Position along tube axis (X direction)
+        tube_x = pos[0] - feeder_inlet[0]
+        tube_length = feeder_outlet[0] - feeder_inlet[0]  # 0.168m
         
-        # Radial position (perpendicular to axis)
-        radial_x = dx - axial_dist * feeder_axis[0]
-        radial_y = dy - axial_dist * feeder_axis[1]
-        radial_z = dz - axial_dist * feeder_axis[2]
-        radial_r = wp.sqrt(radial_x * radial_x + radial_y * radial_y + radial_z * radial_z)
+        # Progress along tube (0 = at inlet X, 1 = at outlet X)
+        progress = tube_x / wp.max(wp.abs(tube_length), 0.01)
         
-        # Screw helix pushes particles axially
-        # Also adds some rotational motion (particles tumble)
-        tang_scale = 0.3 * feeder_omega * radial_r  # Tangential component
+        # Radial distance from tube center axis
+        radial_y = pos[1] - tube_center_y
+        radial_z = pos[2] - tube_center_z
+        radial_r = wp.sqrt(radial_y * radial_y + radial_z * radial_z)
         
-        # Main velocity is axial from screw
-        vel = wp.vec3(
-            feeder_axis[0] * axial_speed + radial_z * tang_scale * 0.1,
-            feeder_axis[1] * axial_speed - gravity * dt * 0.3,  # Reduced gravity (supported by trough)
-            feeder_axis[2] * axial_speed - radial_x * tang_scale * 0.1
-        )
+        # Near outlet region
+        near_outlet = progress > 0.6
+        at_outlet = progress > 0.85
         
-        # Constrain to tube
-        if radial_r > feeder_radius * 0.85:
-            if radial_r > 0.01:
-                factor = feeder_radius * 0.8 / radial_r
-                pos = wp.vec3(
-                    feeder_inlet[0] + axial_dist * feeder_axis[0] + radial_x * factor,
-                    feeder_inlet[1] + axial_dist * feeder_axis[1] + radial_y * factor,
-                    feeder_inlet[2] + axial_dist * feeder_axis[2] + radial_z * factor
-                )
+        # Screw pushes particles along X axis
+        if at_outlet:
+            # At outlet - strong gravity, minimal forward push
+            vel = wp.vec3(
+                0.05,  # Almost stop forward
+                -gravity * dt * 5.0,  # Very strong gravity to force drop
+                0.0
+            )
+        elif near_outlet:
+            vel = wp.vec3(
+                axial_speed * 0.8,  # Slow down approaching outlet
+                -gravity * dt * 2.0,  # Stronger gravity
+                0.0
+            )
+        else:
+            vel = wp.vec3(
+                axial_speed * 1.5,  # Push along X
+                -gravity * dt * 1.0,  # Normal gravity
+                0.0
+            )
         
-        # Transition when reaching feeder outlet
-        if axial_dist > feeder_length * 0.9:
+        # CONTAINMENT - tube walls
+        # At outlet, don't contain - let particles drop through
+        if not at_outlet:
+            if radial_r > feeder_radius * 0.7:
+                if radial_r > 0.01:
+                    factor = feeder_radius * 0.65 / radial_r
+                    pos = wp.vec3(pos[0], tube_center_y + radial_y * factor, tube_center_z + radial_z * factor)
+        
+        # Containment: Don't go past inlet (backwards)
+        if pos[0] < feeder_inlet[0]:
+            pos = wp.vec3(feeder_inlet[0] + 0.01, pos[1], pos[2])
+        
+        # Don't let particles go past the outlet X
+        if pos[0] > feeder_outlet[0] + 0.02:
+            pos = wp.vec3(feeder_outlet[0], pos[1], pos[2])
+        
+        # TRANSITION: When particle reaches outlet X position OR drops below outlet Y
+        # Outlet Y (-0.701) is the bottom of the outlet neck
+        if at_outlet or pos[1] < feeder_outlet[1] + 0.05:
+            # Particle at outlet - transition to deagglomerator
             zones[tid] = 3
-            # Enter deagglomerator from inlet
-            pos = wp.vec3(deagg_center[0] - deagg_length * 0.3, deagg_center[1] + deagg_radius * 0.3, deagg_center[2])
-            vel = wp.vec3(0.3, -0.3, 0.0)
+            # Place at deagglomerator inlet
+            pos = wp.vec3(deagg_inlet[0], deagg_inlet[1], deagg_inlet[2])
+            vel = wp.vec3(0.0, -1.0, 0.0)
     
-    # ===== ZONE 3: DEAGGLOMERATOR (High-speed impact + screen discharge) =====
+    # ===== ZONE 3: DEAGGLOMERATOR (High-speed pin rotor) =====
+    # Rotor spins at ~1500 RPM, particles pass through quickly
     elif zone == 3:
         # Position relative to deagg center
         px = pos[0] - deagg_center[0]
         py = pos[1] - deagg_center[1]
         pz = pos[2] - deagg_center[2]
         
-        # Radial distance in YZ plane (rotor rotates around X)
+        # Radial distance in YZ plane
         r_yz = wp.sqrt(py * py + pz * pz)
         
-        # High-speed rotational acceleration from pin impacts
-        if r_yz > 0.01:
-            # Tangent direction (around X axis)
+        # Light rotation effect (visual only)
+        if r_yz > 0.005:
             tang_y = -pz / r_yz
             tang_z = py / r_yz
-            
-            # High-speed tangential velocity from pins
-            v_tang = deagg_omega * r_yz * 0.6  # Pins impart angular momentum
-            
-            # Centrifugal force throws particles outward
-            centrifugal = deagg_omega * deagg_omega * r_yz * 0.3
-            
-            vel = wp.vec3(
-                vel[0] * 0.95,  # Some axial movement
-                tang_y * v_tang + py / r_yz * centrifugal * dt,
-                tang_z * v_tang + pz / r_yz * centrifugal * dt
-            )
+            v_tang = wp.min(deagg_omega * r_yz * 0.02, 0.5)
+            vel = wp.vec3(vel[0] * 0.9, vel[1] * 0.95 + tang_y * v_tang * 0.05, vel[2] * 0.95 + tang_z * v_tang * 0.05)
         
-        # Gravity
-        vel = vel + wp.vec3(0.0, -gravity * dt * 0.5, 0.0)
+        # VERY STRONG GRAVITY - particles fall straight through
+        vel = vel + wp.vec3(0.0, -gravity * dt * 5.0, 0.0)
         
-        # Constrain to screen (particles bounce inside until they exit through holes)
-        if r_yz > deagg_radius * 0.9:
-            if r_yz > 0.01:
-                factor = deagg_radius * 0.85 / r_yz
-                pos = wp.vec3(pos[0], deagg_center[1] + py * factor, deagg_center[2] + pz * factor)
-                # Bounce inward
-                radial_vel = (py * vel[1] + pz * vel[2]) / r_yz
-                if radial_vel > 0.0:
-                    vel = wp.vec3(vel[0], vel[1] - py / r_yz * radial_vel * 1.5, vel[2] - pz / r_yz * radial_vel * 1.5)
+        # Minimal containment - only prevent escape from sides
+        # Z containment (side walls)
+        if wp.abs(pz) > deagg_radius * 0.8:
+            sign_z = 1.0 if pz > 0.0 else -1.0
+            pos = wp.vec3(pos[0], pos[1], deagg_center[2] + sign_z * deagg_radius * 0.75)
         
-        # Axial containment
-        half_len = deagg_length / 2.0
-        if px < -half_len:
-            px = -half_len
-            pos = wp.vec3(deagg_center[0] + px, pos[1], pos[2])
-        if px > half_len:
-            px = half_len
-            pos = wp.vec3(deagg_center[0] + px, pos[1], pos[2])
+        # X containment (end caps)
+        half_len = deagg_length * 0.5
+        if wp.abs(px) > half_len * 0.8:
+            sign_x = 1.0 if px > 0.0 else -1.0
+            pos = wp.vec3(deagg_center[0] + sign_x * half_len * 0.75, pos[1], pos[2])
         
-        # Exit through bottom (screen discharge)
-        if py < -deagg_radius * 0.7:
+        # NO Y containment at bottom - let particles fall through!
+        # Only contain top
+        if py > deagg_radius * 0.4:
+            pos = wp.vec3(pos[0], deagg_center[1] + deagg_radius * 0.35, pos[2])
+            vel = wp.vec3(vel[0], wp.min(vel[1], 0.0), vel[2])
+        
+        # TRANSITION: Exit when below center (simple condition)
+        if py < 0.0:
             zones[tid] = 4
-            # Exit with angular momentum
-            vel = wp.vec3(vel[0] * 0.3, -1.0, vel[2] * 0.5)
+            # Place below deagglomerator outlet
+            pos = wp.vec3(deagg_center[0], deagg_center[1] - deagg_radius * 2.0, deagg_center[2])
+            vel = wp.vec3(0.0, -1.5, 0.0)
     
     # ===== ZONE 4: EXITED (Free fall after system) =====
     elif zone == 4:
@@ -1630,39 +1657,33 @@ class FeedSystemSimulator:
                 self.state.pouring_state = PouringState.SETTLING
                 self.state.settling_start_time = self.state.time
         
-        # ===== SETTLING PHASE - Wait for particles to settle inside hopper =====
+        # ===== SETTLING PHASE - Wait for particles to be inside hopper =====
         elif self.state.pouring_state == PouringState.SETTLING:
             settling_elapsed = self.state.time - self.state.settling_start_time
             
-            # Check settling state every 20 steps
-            if self.state.step % 20 == 0:
+            # Check settling state every 10 steps
+            if self.state.step % 10 == 0:
                 self._count_particles_inside_hopper()
-                avg_velocity = self._get_average_particle_velocity()
                 
                 # Update mass progressively during settling
                 if self.state.total_particles_to_pour > 0:
                     mass_per_particle = self.state.target_fill_mass_kg / self.state.total_particles_to_pour
                     self.state.hopper_mass_kg = self.state.particles_inside_hopper * mass_per_particle
                 
-                # Settling is complete when:
-                # 1. ALL particles are inside hopper (100%)
-                # 2. Average velocity is low (particles have settled)
-                # 3. Minimum settling time elapsed (give particles time to fall)
                 particles_inside_ratio = self.state.particles_inside_hopper / max(1, self.state.particles_poured)
-                velocity_settled = avg_velocity < 0.10  # Less than 10 cm/s average
-                min_time_elapsed = settling_elapsed >= 0.5  # At least 0.5s
-                max_time_elapsed = settling_elapsed >= self.config.settling_time * 5  # Safety timeout (longer)
+                min_time_elapsed = settling_elapsed >= 0.3  # At least 0.3s for particles to fall
+                max_time_elapsed = settling_elapsed >= 3.0  # Safety timeout
                 
-                # Close lid when ALL particles settled OR timeout
-                all_inside = particles_inside_ratio >= 0.99  # 99%+ inside (account for counting errors)
-                if (all_inside and velocity_settled and min_time_elapsed) or max_time_elapsed:
+                # Close lid when 100% inside OR timeout
+                all_inside = particles_inside_ratio >= 1.0  # 100% inside
+                if (all_inside and min_time_elapsed) or max_time_elapsed:
                     # Final count
                     self._count_particles_inside_hopper()
                     if self.state.total_particles_to_pour > 0:
                         mass_per_particle = self.state.target_fill_mass_kg / self.state.total_particles_to_pour
                         self.state.hopper_mass_kg = self.state.particles_inside_hopper * mass_per_particle
                     
-                    # Now close the lid
+                    # Close the lid immediately
                     self.close_lid()
                     self.state.pouring_state = PouringState.COMPLETED
         
@@ -1738,6 +1759,10 @@ class FeedSystemSimulator:
                 float(self.hopper_center[2])
             )
             
+            # Determine if lid is closed (blocks particles from escaping top)
+            # Lid is considered "closed" when angle is less than 10 degrees
+            lid_is_closed = 1 if self.state.lid_angle < 10.0 else 0
+            
             # Update particles with hopper collision using SDF
             wp.launch(
                 kernel=granular_particle_update_kernel,
@@ -1753,6 +1778,7 @@ class FeedSystemSimulator:
                     float(self.hopper_cylinder_height),
                     float(self.hopper_cone_height),
                     self._discharge_open,
+                    lid_is_closed,  # New: lid collision when closed
                     dt,
                     float(GRAVITY),
                     float(self.config.granular_restitution),
@@ -1800,11 +1826,16 @@ class FeedSystemSimulator:
                 feeder_angle = self.assembly.feeder.get_screw_angle()
                 deagg_angle = self.assembly.deagglomerator.get_rotor_angle()
                 
-                # Feeder inlet is below airlock outlet
-                feeder_inlet = (
-                    self.feeder_center[0],
-                    self.airlock_center[1] - self.airlock_radius,  # Below airlock
-                    self.feeder_center[2]
+                # Get actual geometric positions from assembly
+                # Feeder inlet: on top of tube at 15% along length
+                feeder_inlet_pos = self.feeder_inlet_pos
+                # Feeder outlet: on bottom of tube at 85% along length
+                feeder_outlet_pos = self.feeder_outlet_pos
+                # Deagglomerator inlet: top of deagg housing
+                deagg_inlet_pos = (
+                    self.deagg_center[0],
+                    self.deagg_center[1] + self.deagg_radius * 0.8,
+                    self.deagg_center[2]
                 )
                 
                 # Feeder axis direction (screw conveying direction)
@@ -1829,16 +1860,18 @@ class FeedSystemSimulator:
                         float(airlock_length),
                         float(self.state.airlock_rpm),
                         float(airlock_angle),
-                        # Feeder
-                        wp.vec3(float(feeder_inlet[0]), float(feeder_inlet[1]), float(feeder_inlet[2])),
+                        # Feeder (with actual inlet/outlet positions)
+                        wp.vec3(float(feeder_inlet_pos[0]), float(feeder_inlet_pos[1]), float(feeder_inlet_pos[2])),
+                        wp.vec3(float(feeder_outlet_pos[0]), float(feeder_outlet_pos[1]), float(feeder_outlet_pos[2])),
                         wp.vec3(float(feeder_axis[0]), float(feeder_axis[1]), float(feeder_axis[2])),
                         float(self.feeder_radius),
                         float(self.feeder_length),
                         float(self.state.feeder_rpm),
                         float(feeder_pitch),
                         float(feeder_angle),
-                        # Deagg
+                        # Deagg (with inlet position)
                         wp.vec3(float(self.deagg_center[0]), float(self.deagg_center[1]), float(self.deagg_center[2])),
+                        wp.vec3(float(deagg_inlet_pos[0]), float(deagg_inlet_pos[1]), float(deagg_inlet_pos[2])),
                         float(self.deagg_radius),
                         float(deagg_length),
                         float(self.state.deagg_rpm),
