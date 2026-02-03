@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Physics-Based Air Flow Simulation Example
-==========================================
+SPH Air Flow Simulation Example
+================================
 
-Demonstrates the physics-based air flow simulation through the air system:
-- Blower startup/shutdown ramp using fan affinity laws
-- Pressure drops calculated from geometry
-- Flow rate computed from operating point
-- Optional tracer particle visualization
+Demonstrates SPH (Smoothed Particle Hydrodynamics) air flow simulation:
+- Air represented as SPH particles with density and pressure
+- Pressure-driven flow from SPH equations of motion
+- Centrifugal acceleration in blower impeller region
+- Blower startup/shutdown with fan affinity laws
+- Boundary containment within actual duct geometry
 
 Usage:
     python examples/run_air_flow_physics.py --time 10
-    python examples/run_air_flow_physics.py --time 15 --rpm 2500 --visualize
+    python examples/run_air_flow_physics.py --time 15 --rpm 2500 --particles 2000 --visualize
 """
 
 import argparse
@@ -56,8 +57,8 @@ def parse_args():
         help="Enable 3D visualization with tracer particles"
     )
     parser.add_argument(
-        "--tracers", type=int, default=500,
-        help="Number of tracer particles (default: 500)"
+        "--particles", "-p", type=int, default=1000,
+        help="Number of SPH air particles (default: 1000)"
     )
     parser.add_argument(
         "--device", type=str, default="cuda",
@@ -71,8 +72,8 @@ def main():
     args = parse_args()
     
     print("=" * 70)
-    print("PHYSICS-BASED AIR FLOW SIMULATION")
-    print("  Using actual geometry - no magic numbers")
+    print("SPH AIR FLOW SIMULATION")
+    print("  Smoothed Particle Hydrodynamics for realistic air flow")
     print("=" * 70)
     
     # Import modules
@@ -97,26 +98,30 @@ def main():
     assembly.build_mesh()
     assembly.print_summary()
     
-    # Create physics config
-    print("\nConfiguring physics simulation...")
+    # Create physics config with SPH air particles
+    print("\nConfiguring SPH physics simulation...")
     config = AirFlowPhysicsConfig(
         dt=args.dt,
         total_time=args.time,
         target_rpm=args.rpm,
         ramp_time=2.0,
         damper_ramp_time=1.0,
-        enable_tracers=args.visualize,
-        num_tracers=args.tracers,
+        enable_sph=args.visualize,
+        num_particles=args.particles,
+        smoothing_length=0.04,      # 40mm SPH kernel radius
+        speed_of_sound=50.0,        # Artificial for stability
+        sph_viscosity=0.01,         # SPH viscosity coefficient
+        xsph_factor=0.1,            # Velocity smoothing
         device=args.device,
     )
     
     # Create simulator
     simulator = AirFlowPhysicsSimulator(assembly, config)
     
-    # Initialize tracers if enabled
+    # Initialize SPH air particles if enabled
     if args.visualize:
-        print("\nInitializing tracer particles...")
-        simulator.initialize_tracers()
+        print("\nInitializing SPH air particles...")
+        simulator.initialize_particles()
     
     # Visualization setup
     plotter = None
@@ -126,7 +131,7 @@ def main():
     if args.visualize and HAS_PYVISTA:
         print("\nSetting up 3D visualization...")
         pv.set_plot_theme("document")
-        plotter = pv.Plotter(title="Physics-Based Air Flow Simulation")
+        plotter = pv.Plotter(title="SPH Air Flow Simulation")
         plotter.set_background("white")
         plotter.camera.up = (0, 1, 0)
         
@@ -378,11 +383,12 @@ def main():
                     data['mesh'].Modified()
                 
                 # ============================================
-                # UPDATE TRACER PARTICLES
+                # UPDATE SPH AIR PARTICLES
                 # ============================================
-                if args.visualize and simulator.state.tracer_positions is not None:
-                    positions = simulator.get_tracer_positions()
-                    velocities = simulator.get_tracer_velocities()
+                if args.visualize and simulator.state.positions is not None:
+                    positions = simulator.get_particle_positions()
+                    velocities = simulator.get_particle_velocities()
+                    densities = simulator.get_particle_densities()
                     
                     if len(positions) > 0:
                         # Remove old actor
@@ -394,18 +400,20 @@ def main():
                         
                         # Create point cloud with velocity coloring
                         speeds = np.linalg.norm(velocities, axis=1)
-                        tracer_mesh = pv.PolyData(positions)
-                        tracer_mesh['velocity'] = speeds
+                        particle_mesh = pv.PolyData(positions)
+                        particle_mesh['velocity'] = speeds
+                        particle_mesh['density'] = densities
                         
                         tracer_actor = plotter.add_mesh(
-                            tracer_mesh,
+                            particle_mesh,
                             scalars='velocity',
                             cmap='coolwarm',
-                            point_size=6,
+                            point_size=8,
                             render_points_as_spheres=True,
-                            opacity=0.8,
+                            opacity=0.9,
                             clim=[0, max(speeds.max(), 1.0)],
-                            show_scalar_bar=False,
+                            show_scalar_bar=True,
+                            scalar_bar_args={'title': 'Velocity (m/s)', 'vertical': True},
                         )
                 
                 # ============================================
@@ -413,10 +421,12 @@ def main():
                 # ============================================
                 tip_speed = results.get('tip_speed', 0)
                 blower_state = results.get('blower_state', 'OFF')
+                max_vel = results.get('max_velocity', 0)
+                avg_density = results.get('avg_density', 1.225)
                 # Motor RPM is impeller RPM * pulley ratio (2.0)
                 motor_rpm = rpm * 2.0  # Belt drive ratio
                 info_text = (
-                    f"AIR FLOW SIMULATION\n"
+                    f"SPH AIR FLOW SIMULATION\n"
                     f"Phase: {phase.upper()}\n"
                     f"Blower: {blower_state}\n"
                     f"\n"
@@ -428,6 +438,9 @@ def main():
                     f"Pressure: {pressure:.0f} Pa\n"
                     f"Power: {power:.1f} kW\n"
                     f"Efficiency: {efficiency:.1f}%\n"
+                    f"\n"
+                    f"SPH Max Vel: {max_vel:.1f} m/s\n"
+                    f"SPH Density: {avg_density:.3f} kg/m3\n"
                     f"\n"
                     f"Damper 1: {dampers[0]*100:.0f}%\n"
                     f"Damper 2: {dampers[1]*100:.0f}%\n"

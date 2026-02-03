@@ -5,7 +5,8 @@ Provides physics-based simulation using actual geometry:
 
 Physics-Based Simulators:
 - FeedFlowPhysicsSimulator: Material flow through feed system (hopper, airlock, feeder, deagglomerator)
-- AirFlowPhysicsSimulator: Air flow through air system (filter, blower, dampers)
+- AirFlowPhysicsSimulator: SPH-based air flow through air system (filter, blower, dampers)
+  Uses Smoothed Particle Hydrodynamics for physically accurate air flow simulation
 
 Basic Simulators:
 - AirSystemSimulator: Simplified blower, filter, and damper simulation
@@ -97,7 +98,7 @@ __all__ = [
     "extract_geometry",
     "create_physics_flow_simulator",
     
-    # Physics-based air flow (geometry-driven)
+    # Physics-based air flow with SPH (geometry-driven, physically accurate)
     "AirFlowPhysicsSimulator",
     "AirFlowPhysicsConfig",
     "AirFlowPhysicsState",
