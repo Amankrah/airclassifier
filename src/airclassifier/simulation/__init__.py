@@ -65,6 +65,17 @@ from .air_flow_physics import (
     create_air_flow_simulator,
 )
 
+from .classification_flow_physics import (
+    ClassificationFlowConfig,
+    ClassificationFlowState,
+    SimulationPhase as ClassificationSimulationPhase,
+    Zone as ClassificationZone,
+    ComponentGeometry as ClassificationComponentGeometry,
+    ConnectionPath as ClassificationConnectionPath,
+    extract_geometry as extract_classification_geometry,
+    print_geometry_summary as print_classification_geometry_summary,
+)
+
 __all__ = [
     # Enums
     "FlowMode",
@@ -110,4 +121,14 @@ __all__ = [
     "DuctSegment",
     "extract_air_geometry",
     "create_air_flow_simulator",
+    
+    # Classification flow physics (geometry-driven)
+    "ClassificationFlowConfig",
+    "ClassificationFlowState",
+    "ClassificationSimulationPhase",
+    "ClassificationZone",
+    "ClassificationComponentGeometry",
+    "ClassificationConnectionPath",
+    "extract_classification_geometry",
+    "print_classification_geometry_summary",
 ]
