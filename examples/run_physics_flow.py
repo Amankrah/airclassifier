@@ -486,6 +486,11 @@ def main():
             # ============================================
             # UPDATE INFO TEXT
             # ============================================
+            # Get transition zone counts (will be 0 if not in kernel yet)
+            t_ha = counts.get('trans_hopper_airlock', 0)
+            t_af = counts.get('trans_airlock_feeder', 0)
+            t_fd = counts.get('trans_feeder_deagg', 0)
+            
             if args.pouring:
                 phase_name = simulator.state.phase.value.upper()
                 lid_angle = simulator.state.lid_angle
@@ -497,9 +502,14 @@ def main():
                     f"Lid: {lid_angle:.0f}\n"
                     f"Poured: {poured:,}/{total:,}\n"
                     f"\n"
-                    f"H:{counts['hopper']:4d} A:{counts['airlock']:3d}\n"
-                    f"F:{counts['feeder']:3d} D:{counts['deagg']:4d}\n"
-                    f"E:{counts['exited']:4d} I:{counts['inactive']:4d}\n"
+                    f"Hopper:  {counts['hopper']:4d}\n"
+                    f"  T1:    {t_ha:4d}\n"
+                    f"Airlock: {counts['airlock']:4d}\n"
+                    f"  T2:    {t_af:4d}\n"
+                    f"Feeder:  {counts['feeder']:4d}\n"
+                    f"  T3:    {t_fd:4d}\n"
+                    f"Deagg:   {counts['deagg']:4d}\n"
+                    f"Exited:  {counts['exited']:4d}\n"
                     f"\n"
                     f"t = {simulator.state.time:.2f}s"
                 )
@@ -507,9 +517,14 @@ def main():
                 info_text = (
                     f"PHYSICS-BASED FEED FLOW\n"
                     f"\n"
-                    f"H:{counts['hopper']:4d} A:{counts['airlock']:3d}\n"
-                    f"F:{counts['feeder']:3d} D:{counts['deagg']:4d}\n"
-                    f"E:{counts['exited']:4d} I:{counts['inactive']:4d}\n"
+                    f"Hopper:  {counts['hopper']:4d}\n"
+                    f"  T1:    {t_ha:4d}\n"
+                    f"Airlock: {counts['airlock']:4d}\n"
+                    f"  T2:    {t_af:4d}\n"
+                    f"Feeder:  {counts['feeder']:4d}\n"
+                    f"  T3:    {t_fd:4d}\n"
+                    f"Deagg:   {counts['deagg']:4d}\n"
+                    f"Exited:  {counts['exited']:4d}\n"
                     f"\n"
                     f"t = {simulator.state.time:.2f}s"
                 )
@@ -533,12 +548,15 @@ def main():
     
     counts = simulator.get_zone_counts()
     print(f"\nFinal particle distribution:")
-    print(f"  Hopper:      {counts['hopper']:5d}")
-    print(f"  Airlock:     {counts['airlock']:5d}")
-    print(f"  Feeder:      {counts['feeder']:5d}")
-    print(f"  Deagg:       {counts['deagg']:5d}")
-    print(f"  Exited:      {counts['exited']:5d}")
-    print(f"  Inactive:    {counts['inactive']:5d}")
+    print(f"  Hopper:               {counts['hopper']:5d}")
+    print(f"  Trans Hopper->Airlock:{counts.get('trans_hopper_airlock', 0):5d}")
+    print(f"  Airlock:              {counts['airlock']:5d}")
+    print(f"  Trans Airlock->Feeder:{counts.get('trans_airlock_feeder', 0):5d}")
+    print(f"  Feeder:               {counts['feeder']:5d}")
+    print(f"  Trans Feeder->Deagg:  {counts.get('trans_feeder_deagg', 0):5d}")
+    print(f"  Deagg:                {counts['deagg']:5d}")
+    print(f"  Exited:               {counts['exited']:5d}")
+    print(f"  Inactive:             {counts['inactive']:5d}")
     print("=" * 70)
     
     if plotter is not None:

@@ -55,6 +55,10 @@ class FlowZone(Enum):
     FEEDER = 2
     DEAGGLOMERATOR = 3
     EXITED = 4
+    # Transition zones (particles flow through these connectors)
+    TRANS_HOPPER_AIRLOCK = 10      # Cylindrical transition
+    TRANS_AIRLOCK_FEEDER = 11      # Conical reducer transition
+    TRANS_FEEDER_DEAGG = 12        # Cylindrical transition
 
 
 class LidState(Enum):
@@ -641,7 +645,7 @@ def physics_flow_kernel(
     airlock_half_length: float,
     airlock_inlet_y: float,
     airlock_outlet_y: float,
-    airlock_omega: float,  # rad/s = 2π * RPM / 60
+    airlock_omega: float,  # rad/s = 2*pi * RPM / 60
     
     # Feeder geometry
     feeder_center: wp.vec3,
@@ -666,6 +670,28 @@ def physics_flow_kernel(
     # Exit
     exit_y: float,
     
+    # =========================================================================
+    # TRANSITION CONNECTOR GEOMETRY (from diagnose_feed_connectors.py)
+    # =========================================================================
+    # Transition 1: Hopper -> Airlock (cylindrical, vertical -Y)
+    trans1_start: wp.vec3,         # Start position (hopper discharge port)
+    trans1_end: wp.vec3,           # End position (airlock inlet port)
+    trans1_radius: float,          # Transition radius (diameter/2)
+    trans1_length: float,          # Transition length
+    
+    # Transition 2: Airlock -> Feeder (conical reducer, vertical -Y)
+    trans2_start: wp.vec3,         # Start position (airlock outlet port)
+    trans2_end: wp.vec3,           # End position (feeder inlet port)
+    trans2_start_radius: float,    # Start radius (larger, at airlock outlet)
+    trans2_end_radius: float,      # End radius (smaller, at feeder inlet)
+    trans2_length: float,          # Transition length
+    
+    # Transition 3: Feeder -> Deagglomerator (cylindrical, vertical -Y)
+    trans3_start: wp.vec3,         # Start position (feeder outlet port)
+    trans3_end: wp.vec3,           # End position (deagg inlet port)
+    trans3_radius: float,          # Transition radius
+    trans3_length: float,          # Transition length
+    
     # Physics parameters
     dt: float,
     gravity: float,
@@ -683,6 +709,23 @@ def physics_flow_kernel(
     
     All transitions are based on geometric boundaries.
     All velocities computed from physics principles.
+    
+    Flow path with transitions (from diagnose_feed_connectors.py):
+        HOPPER (zone 0)
+            |
+        TRANS_HOPPER_AIRLOCK (zone 10) - 15mm cylindrical
+            |
+        AIRLOCK (zone 1)
+            |
+        TRANS_AIRLOCK_FEEDER (zone 11) - 120mm conical reducer (12 deg half-angle)
+            |
+        FEEDER (zone 2)
+            |
+        TRANS_FEEDER_DEAGG (zone 12) - 20mm cylindrical
+            |
+        DEAGGLOMERATOR (zone 3)
+            |
+        EXITED (zone 4)
     """
     tid = wp.tid()
     
@@ -733,10 +776,10 @@ def physics_flow_kernel(
             pos = pos + normal * (penetration + 0.001)
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # Bottom collision (cone apex)
+        # Bottom collision (cone apex) - only block if NOT in outlet and discharge closed
         if local_y < particle_radius:
-            if r > hopper_outlet_radius:
-                # Hit bottom, not in outlet
+            if r > hopper_outlet_radius or discharge_open == 0:
+                # Hit bottom, not in outlet OR discharge is closed
                 normal = wp.vec3(0.0, 1.0, 0.0)
                 pos = wp.vec3(pos[0], hopper_center[1] + particle_radius + 0.001, pos[2])
                 vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
@@ -748,21 +791,50 @@ def physics_flow_kernel(
             pos = wp.vec3(pos[0], hopper_center[1] + total_height - particle_radius - 0.001, pos[2])
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # TRANSITION: Through discharge when below outlet level and inside opening radius
-        # Uses actual outlet geometry - particle must be in the discharge opening
+        # TRANSITION: Through discharge -> enter transition connector (zone 10)
         if discharge_open == 1:
-            # Check if particle is within the discharge opening (circular hole at bottom)
-            # Outlet is at hopper_center + outlet offset, pointing down
-            outlet_center_y = hopper_center[1]  # Discharge is at the bottom of hopper
-            in_discharge_zone = (local_y < particle_radius) and (r < hopper_outlet_radius)
-            
-            if in_discharge_zone:
-                zones[tid] = 1
-                # Continue along the connection path direction (gravity-driven)
-                # Particle enters airlock at its inlet position
-                pos = wp.vec3(airlock_center[0], airlock_inlet_y + airlock_radius * 0.5, airlock_center[2])
-                # Preserve vertical velocity component
-                vel = wp.vec3(vel[0] * 0.3, vel[1], vel[2] * 0.3)
+            # Check if particle has entered the transition zone
+            # Transition starts at hopper discharge (trans1_start)
+            if pos[1] < trans1_start[1] + particle_radius and r < hopper_outlet_radius:
+                zones[tid] = 10  # Enter hopper->airlock transition
+    
+    # =========================================================================
+    # ZONE 10: TRANSITION - HOPPER -> AIRLOCK (cylindrical, vertical -Y)
+    # =========================================================================
+    elif zone == 10:
+        # Cylindrical transition connector from hopper to airlock
+        # Flow direction is -Y (downward)
+        
+        # Progress along transition (0 at start, 1 at end)
+        # trans1_start is at hopper discharge, trans1_end is at airlock inlet
+        progress = (trans1_start[1] - pos[1]) / (trans1_start[1] - trans1_end[1] + 0.001)
+        progress = wp.clamp(progress, 0.0, 1.0)
+        
+        # Radial distance from centerline (centerline is along Y axis at trans1_start X,Z)
+        center_x = trans1_start[0]
+        center_z = trans1_start[2]
+        dx = pos[0] - center_x
+        dz = pos[2] - center_z
+        r_xz = wp.sqrt(dx * dx + dz * dz)
+        
+        # Cylindrical containment
+        if r_xz + particle_radius > trans1_radius * 0.9:
+            if r_xz > 1.0e-6:
+                scale = (trans1_radius * 0.85 - particle_radius) / r_xz
+                pos = wp.vec3(center_x + dx * scale, pos[1], center_z + dz * scale)
+                # Reflect velocity
+                normal = wp.vec3(-dx / r_xz, 0.0, -dz / r_xz)
+                vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        
+        # Don't go back up into hopper
+        if pos[1] > trans1_start[1] - particle_radius:
+            pos = wp.vec3(pos[0], trans1_start[1] - particle_radius - 0.001, pos[2])
+            normal = wp.vec3(0.0, -1.0, 0.0)
+            vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        
+        # Transition to airlock when reaching end
+        if pos[1] < trans1_end[1] + particle_radius:
+            zones[tid] = 1  # Enter airlock
     
     # =========================================================================
     # ZONE 1: AIRLOCK
@@ -786,8 +858,13 @@ def physics_flow_kernel(
                 airlock_omega
             )
             # Couple particle to vane rotation (partial coupling)
-            coupling = 0.3  # 30% coupling to vane speed
-            accel = accel + (v_tan - vel) * coupling / dt
+            coupling = 0.2  # 20% coupling to vane speed
+            tan_accel = (v_tan - vel) * coupling / dt
+            # Clamp to prevent instability
+            tan_accel_mag = wp.length(tan_accel)
+            if tan_accel_mag > 50.0:
+                tan_accel = tan_accel * (50.0 / tan_accel_mag)
+            accel = accel + tan_accel
         
         # Cylindrical housing wall collision
         r_xz = wp.sqrt(px * px + pz * pz)
@@ -805,33 +882,77 @@ def physics_flow_kernel(
             pos = wp.vec3(pos[0], pos[1], airlock_center[2] + sign_z * (airlock_half_length - particle_radius - 0.001))
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # Top inlet containment
+        # Top inlet containment - only block if outside inlet opening
+        inlet_radius = trans1_radius * 0.9  # Inlet opening radius
         if py > airlock_radius - particle_radius:
+            # Check if NOT in inlet opening
+            if r_xz > inlet_radius:
+                normal = wp.vec3(0.0, -1.0, 0.0)
+                pos = wp.vec3(pos[0], airlock_center[1] + airlock_radius - particle_radius - 0.001, pos[2])
+                vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        
+        # TRANSITION: Through outlet at bottom -> enter transition connector (zone 11)
+        # Outlet is at the bottom of airlock
+        outlet_y_threshold = airlock_center[1] - airlock_radius + particle_radius
+        if pos[1] < outlet_y_threshold:
+            zones[tid] = 11  # Enter airlock->feeder transition
+    
+    # =========================================================================
+    # ZONE 11: TRANSITION - AIRLOCK -> FEEDER (conical reducer, vertical -Y)
+    # From diagnose: 120mm conical reducer with 12 deg half-angle
+    # =========================================================================
+    elif zone == 11:
+        # Conical reducer transition from airlock to feeder
+        # Flow direction is -Y (downward)
+        # Diameter reduces from trans2_start_radius to trans2_end_radius
+        
+        # Progress along transition (0 at start, 1 at end)
+        progress = (trans2_start[1] - pos[1]) / (trans2_start[1] - trans2_end[1] + 0.001)
+        progress = wp.clamp(progress, 0.0, 1.0)
+        
+        # Radius at current position (linear interpolation for conical section)
+        current_radius = trans2_start_radius + progress * (trans2_end_radius - trans2_start_radius)
+        
+        # Center position at this height (centerline may shift from airlock to feeder)
+        # Interpolate center position
+        center_x = trans2_start[0] + progress * (trans2_end[0] - trans2_start[0])
+        center_z = trans2_start[2] + progress * (trans2_end[2] - trans2_start[2])
+        
+        dx = pos[0] - center_x
+        dz = pos[2] - center_z
+        r_xz = wp.sqrt(dx * dx + dz * dz)
+        
+        # Conical containment
+        if r_xz + particle_radius > current_radius * 0.9:
+            if r_xz > 1.0e-6:
+                scale = (current_radius * 0.85 - particle_radius) / r_xz
+                pos = wp.vec3(center_x + dx * scale, pos[1], center_z + dz * scale)
+                # Compute wall normal (cone surface normal)
+                # For a cone, normal has both radial and axial components
+                cone_half_angle = wp.atan2(trans2_start_radius - trans2_end_radius, trans2_length)
+                wall_normal_y = -wp.sin(cone_half_angle)  # Slight upward component
+                wall_normal_r = wp.cos(cone_half_angle)   # Radial component
+                normal = wp.vec3(-dx / r_xz * wall_normal_r, wall_normal_y, -dz / r_xz * wall_normal_r)
+                vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        
+        # Don't go back up into airlock
+        if pos[1] > trans2_start[1] - particle_radius:
+            pos = wp.vec3(pos[0], trans2_start[1] - particle_radius - 0.001, pos[2])
             normal = wp.vec3(0.0, -1.0, 0.0)
-            pos = wp.vec3(pos[0], airlock_center[1] + airlock_radius - particle_radius - 0.001, pos[2])
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # TRANSITION: Through outlet at bottom
-        # Uses actual outlet port position - particle exits when below outlet
-        outlet_y_threshold = -airlock_radius + particle_radius
-        in_outlet_region = py < outlet_y_threshold
-        
-        if in_outlet_region:
-            zones[tid] = 2
-            # Particle enters feeder at its inlet position
-            # Feeder inlet is connected to airlock outlet via transition
-            # Give particle velocity along feeder axis
-            pos = wp.vec3(feeder_center[0] - feeder_half_length + particle_radius * 2.0, 
-                          feeder_center[1], 
-                          feeder_center[2])
-            # Initial velocity has component along feeder axis plus residual gravity
-            vel = wp.vec3(feeder_axial_speed * 0.3, vel[1] * 0.3, vel[2] * 0.3)
+        # Transition to feeder when reaching end
+        if pos[1] < trans2_end[1] + particle_radius:
+            zones[tid] = 2  # Enter screw feeder
+            # Give particle initial velocity along feeder axis
+            vel = wp.vec3(feeder_axial_speed * 0.3, vel[1] * 0.5, vel[2] * 0.5)
     
     # =========================================================================
     # ZONE 2: SCREW FEEDER
     # =========================================================================
     elif zone == 2:
         # Feeder is horizontal cylinder along X axis
+        # Inlet at -X end (top), outlet at +X end (bottom)
         px = pos[0] - feeder_center[0]
         py = pos[1] - feeder_center[1]
         pz = pos[2] - feeder_center[2]
@@ -841,55 +962,130 @@ def physics_flow_kernel(
         progress = (pos[0] - feeder_inlet_x) / feeder_length
         progress = wp.clamp(progress, 0.0, 1.0)
         
+        # Radial distance in YZ plane (perpendicular to screw axis)
+        r_yz = wp.sqrt(py * py + pz * pz)
+        
         # Screw conveying effect: impart axial velocity
-        # Conveying velocity = pitch × RPM / 60 (already computed as feeder_axial_speed)
+        # Conveying velocity = pitch x RPM / 60 (already computed as feeder_axial_speed)
         target_vx = feeder_axial_speed
         
-        # Rotational effect from screw
-        r_yz = wp.sqrt(py * py + pz * pz)
+        # Rotational effect from screw - gentler coupling
         if r_yz > 0.005:
             v_tan = compute_tangential_velocity(
                 pos, feeder_center,
                 wp.vec3(1.0, 0.0, 0.0),  # X axis
                 feeder_omega
             )
-            # Partial coupling to screw rotation
-            coupling = 0.2
-            accel = accel + (v_tan - vel) * coupling / dt
+            # Partial coupling to screw rotation (reduced to prevent instability)
+            coupling = 0.1
+            tan_accel = (v_tan - vel) * coupling / dt
+            # Clamp tangential acceleration to prevent overflow
+            tan_accel_mag = wp.length(tan_accel)
+            if tan_accel_mag > 50.0:
+                tan_accel = tan_accel * (50.0 / tan_accel_mag)
+            accel = accel + tan_accel
         
-        # Apply axial conveying force
-        ax_force = (target_vx - vel[0]) * 2.0 / dt  # Proportional control
+        # Apply axial conveying force (gentler, clamped)
+        vel_error = target_vx - vel[0]
+        ax_force = vel_error * 5.0  # Reduced gain for stability
+        ax_force = wp.clamp(ax_force, -20.0, 20.0)  # Clamp acceleration
         accel = accel + wp.vec3(ax_force, 0.0, 0.0)
         
-        # Tube wall collision (radial in YZ)
+        # Define outlet region at +X end of feeder
+        # Outlet is at the bottom of the trough at the discharge end
+        # In a real screw feeder, material drops off the end into the outlet
+        outlet_region_start_x = feeder_half_length - trans3_radius * 3.0
+        outlet_radius = trans3_radius * 1.0  # Full outlet size
+        in_outlet_region = (px > outlet_region_start_x) and (wp.abs(pz) < outlet_radius)
+        
+        # Inlet region at -X end
+        inlet_radius = trans2_end_radius * 0.9
+        in_inlet_region = (px < -feeder_half_length + inlet_radius * 2.0) and (py > 0.0)
+        
+        # At the outlet end, reduce screw rotation coupling - particles should drop
+        if in_outlet_region and progress > 0.8:
+            # Near outlet - let particles settle and fall through
+            # Add slight downward bias to help particles reach outlet
+            accel = accel + wp.vec3(0.0, -2.0, 0.0)  # Extra gravity toward outlet
+        
+        # Tube wall collision (radial in YZ) - with outlet opening at bottom
         if r_yz + particle_radius > feeder_radius:
-            if r_yz > 1.0e-6:
-                normal_y = -py / r_yz
-                normal_z = -pz / r_yz
-                normal = wp.vec3(0.0, normal_y, normal_z)
-                push = r_yz + particle_radius - feeder_radius + 0.001
-                pos = pos + normal * push
+            # Check if particle is in the outlet opening (lower half at +X end)
+            # Outlet opening is larger - lower 60% of the tube at outlet region
+            in_outlet_opening = in_outlet_region and (py < feeder_radius * 0.2)
+            
+            if not in_inlet_region and not in_outlet_opening:
+                if r_yz > 1.0e-6:
+                    normal_y = -py / r_yz
+                    normal_z = -pz / r_yz
+                    normal = wp.vec3(0.0, normal_y, normal_z)
+                    push = r_yz + particle_radius - feeder_radius + 0.001
+                    pos = pos + normal * push
+                    vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        
+        # Inlet end cap - block only outside inlet opening
+        if px < -feeder_half_length + particle_radius:
+            if py < 0.0 or r_yz > inlet_radius:
+                normal = wp.vec3(1.0, 0.0, 0.0)
+                pos = wp.vec3(feeder_center[0] - feeder_half_length + particle_radius + 0.001, pos[1], pos[2])
                 vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # Inlet end cap
-        if px < -feeder_half_length + particle_radius:
-            normal = wp.vec3(1.0, 0.0, 0.0)
-            pos = wp.vec3(feeder_center[0] - feeder_half_length + particle_radius + 0.001, pos[1], pos[2])
-            vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        # Outlet end cap - only block upper half (lower half is outlet)
+        if px > feeder_half_length - particle_radius:
+            # Allow passage through outlet opening (lower 60% of tube)
+            in_outlet_hole = (py < feeder_radius * 0.2) and (wp.abs(pz) < outlet_radius)
+            if not in_outlet_hole:
+                normal = wp.vec3(-1.0, 0.0, 0.0)
+                pos = wp.vec3(feeder_center[0] + feeder_half_length - particle_radius - 0.001, pos[1], pos[2])
+                vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # TRANSITION: At outlet end - uses actual outlet port geometry
-        # Particle exits when it reaches the outlet end of the feeder
-        at_outlet = px > feeder_half_length - particle_radius
+        # TRANSITION: Exit through outlet at bottom of +X end
+        # Particle exits when at outlet end and in lower portion of tube
+        # More relaxed condition - if particle is in outlet region and below center, it exits
+        at_outlet = in_outlet_region and (py < -feeder_radius * 0.3)
         
         if at_outlet:
-            zones[tid] = 3
-            # Particle enters deagglomerator at its inlet position (top of cylinder)
-            # The transition path goes from feeder outlet to deagg inlet
-            pos = wp.vec3(deagg_center[0], 
-                          deagg_center[1] + deagg_radius * 0.7,  # Near top, inside housing
-                          deagg_center[2])
-            # Velocity directed into deagglomerator with some axial component
-            vel = wp.vec3(vel[0] * 0.2, -wp.abs(vel[1]) - 0.3, vel[2] * 0.2)
+            zones[tid] = 12  # Enter feeder->deagg transition
+            # Give initial downward velocity toward deagglomerator
+            vel = wp.vec3(vel[0] * 0.1, wp.min(vel[1], -0.5), vel[2] * 0.1)
+    
+    # =========================================================================
+    # ZONE 12: TRANSITION - FEEDER -> DEAGGLOMERATOR (cylindrical, vertical -Y)
+    # From diagnose: 20mm cylindrical transition
+    # =========================================================================
+    elif zone == 12:
+        # Cylindrical transition from feeder outlet to deagglomerator inlet
+        # Flow direction is -Y (downward)
+        
+        # Progress along transition (0 at start, 1 at end)
+        progress = (trans3_start[1] - pos[1]) / (trans3_start[1] - trans3_end[1] + 0.001)
+        progress = wp.clamp(progress, 0.0, 1.0)
+        
+        # Centerline position
+        center_x = trans3_start[0] + progress * (trans3_end[0] - trans3_start[0])
+        center_z = trans3_start[2] + progress * (trans3_end[2] - trans3_start[2])
+        
+        dx = pos[0] - center_x
+        dz = pos[2] - center_z
+        r_xz = wp.sqrt(dx * dx + dz * dz)
+        
+        # Cylindrical containment
+        if r_xz + particle_radius > trans3_radius * 0.9:
+            if r_xz > 1.0e-6:
+                scale = (trans3_radius * 0.85 - particle_radius) / r_xz
+                pos = wp.vec3(center_x + dx * scale, pos[1], center_z + dz * scale)
+                normal = wp.vec3(-dx / r_xz, 0.0, -dz / r_xz)
+                vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        
+        # Don't go back up into feeder
+        if pos[1] > trans3_start[1] - particle_radius:
+            pos = wp.vec3(pos[0], trans3_start[1] - particle_radius - 0.001, pos[2])
+            normal = wp.vec3(0.0, -1.0, 0.0)
+            vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+        
+        # Transition to deagglomerator when reaching end
+        if pos[1] < trans3_end[1] + particle_radius:
+            zones[tid] = 3  # Enter deagglomerator
     
     # =========================================================================
     # ZONE 3: DEAGGLOMERATOR
@@ -905,29 +1101,37 @@ def physics_flow_kernel(
         r_yz = wp.sqrt(py * py + pz * pz)
         
         # High-speed rotor rotation effect
+        # Deagglomerator has high-speed rotor that imparts tangential velocity
         if r_yz > 0.005 and r_yz < deagg_rotor_radius:
-            # Inside rotor region - strong tangential coupling
+            # Inside rotor region - tangential coupling
             v_tan = compute_tangential_velocity(
                 pos, deagg_center,
                 wp.vec3(1.0, 0.0, 0.0),  # X axis
                 deagg_omega
             )
-            # Strong coupling near rotor
-            coupling = 0.5 * (1.0 - r_yz / deagg_rotor_radius)
-            accel = accel + (v_tan - vel) * coupling / dt
+            # Coupling decreases toward center, capped for stability
+            coupling = 0.3 * (1.0 - r_yz / deagg_rotor_radius)
+            tan_accel = (v_tan - vel) * coupling / dt
+            # Clamp to prevent instability from high RPM
+            tan_accel_mag = wp.length(tan_accel)
+            if tan_accel_mag > 100.0:
+                tan_accel = tan_accel * (100.0 / tan_accel_mag)
+            accel = accel + tan_accel
         
         # Outlet opening parameters:
         # The outlet is at the bottom of the cylinder (Y-)
         # Opening starts at Y = center - radius (bottom of cylinder)
-        # We allow particles to exit if they're in the outlet region
         outlet_opening_threshold = -deagg_radius + deagg_outlet_radius
         
         # Check if particle is in the outlet region (bottom of cylinder, within outlet diameter)
-        # Outlet opening is circular, centered at (center_x, center_y - radius, center_z)
         in_outlet_region = (py < outlet_opening_threshold) and (wp.abs(pz) < deagg_outlet_radius)
         
-        # Housing wall collision - only apply if NOT in outlet region
-        if r_yz + particle_radius > deagg_radius and not in_outlet_region:
+        # Inlet region at top (where transition connects)
+        inlet_radius = trans3_radius * 0.9
+        in_inlet_region = (py > deagg_radius - inlet_radius) and (wp.abs(pz) < inlet_radius)
+        
+        # Housing wall collision - only apply if NOT in inlet/outlet region
+        if r_yz + particle_radius > deagg_radius and not in_outlet_region and not in_inlet_region:
             if r_yz > 1.0e-6:
                 normal_y = -py / r_yz
                 normal_z = -pz / r_yz
@@ -943,8 +1147,8 @@ def physics_flow_kernel(
             pos = wp.vec3(deagg_center[0] + sign_x * (deagg_half_length - particle_radius - 0.001), pos[1], pos[2])
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # Inlet containment (top)
-        if py > deagg_radius * 0.8:
+        # Inlet containment (top) - don't block inlet opening
+        if py > deagg_radius * 0.8 and not in_inlet_region:
             normal = wp.vec3(0.0, -1.0, 0.0)
             pos = wp.vec3(pos[0], deagg_center[1] + deagg_radius * 0.75, pos[2])
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
@@ -974,9 +1178,23 @@ def physics_flow_kernel(
                 is_active[tid] = 0
     
     # =========================================================================
-    # INTEGRATION: Semi-implicit Euler
+    # INTEGRATION: Semi-implicit Euler with velocity clamping
     # =========================================================================
+    
+    # Clamp acceleration to prevent numerical instability
+    accel_mag = wp.length(accel)
+    max_accel = 500.0  # m/s^2 (about 50g)
+    if accel_mag > max_accel:
+        accel = accel * (max_accel / accel_mag)
+    
     vel = vel + accel * dt
+    
+    # Clamp velocity to prevent overflow
+    vel_mag = wp.length(vel)
+    max_vel = 20.0  # m/s (reasonable max for powder flow)
+    if vel_mag > max_vel:
+        vel = vel * (max_vel / vel_mag)
+    
     pos = pos + vel * dt
     
     # Write back
@@ -1182,6 +1400,7 @@ class FeedFlowPhysicsSimulator:
         
         # =====================================================================
         # CONNECTION PATH GEOMETRY (computed from port positions)
+        # These are the transition connectors from diagnose_feed_connectors.py
         # =====================================================================
         connections = self.geometry.get('connections', {})
         
@@ -1190,11 +1409,61 @@ class FeedFlowPhysicsSimulator:
         self.conn_airlock_feeder = connections.get('airlock_to_feeder', {})
         self.conn_feeder_deagg = connections.get('feeder_to_deagg', {})
         
+        # =====================================================================
+        # TRANSITION CONNECTOR GEOMETRY (for kernel parameters)
+        # From diagnose_feed_connectors.py:
+        #   Hopper->Airlock: 15mm cylindrical, vertical -Y
+        #   Airlock->Feeder: 120mm conical reducer (12 deg), vertical -Y
+        #   Feeder->Deagg: 20mm cylindrical, vertical -Y
+        # =====================================================================
+        
+        # Transition 1: Hopper -> Airlock (cylindrical)
+        conn1 = self.conn_hopper_airlock
+        self.trans1_start = hopper_geo.outlet_pos.copy()
+        self.trans1_end = airlock_geo.inlet_pos.copy()
+        self.trans1_radius = conn1.get('start_diameter', hopper_geo.outlet_diameter) / 2.0
+        self.trans1_length = conn1.get('length', 0.015)  # 15mm default
+        
+        # Transition 2: Airlock -> Feeder (conical reducer)
+        conn2 = self.conn_airlock_feeder
+        self.trans2_start = airlock_geo.outlet_pos.copy()
+        self.trans2_end = feeder_geo.inlet_pos.copy()
+        self.trans2_start_radius = conn2.get('start_diameter', airlock_geo.outlet_diameter) / 2.0
+        self.trans2_end_radius = conn2.get('end_diameter', feeder_geo.inlet_diameter) / 2.0
+        self.trans2_length = conn2.get('length', 0.120)  # 120mm default
+        
+        # Transition 3: Feeder -> Deagglomerator (cylindrical)
+        conn3 = self.conn_feeder_deagg
+        self.trans3_start = feeder_geo.outlet_pos.copy()
+        self.trans3_end = deagg_geo.inlet_pos.copy()
+        self.trans3_radius = conn3.get('start_diameter', feeder_geo.outlet_diameter) / 2.0
+        self.trans3_length = conn3.get('length', 0.020)  # 20mm default
+        
         print(f"\n  Physics Parameters (computed from geometry):")
-        print(f"    Airlock ω:        {self.airlock_omega:.2f} rad/s ({cfg.airlock_rpm} RPM)")
-        print(f"    Feeder ω:         {self.feeder_omega:.2f} rad/s ({cfg.feeder_rpm} RPM)")
-        print(f"    Deagg ω:          {self.deagg_omega:.2f} rad/s ({cfg.deagg_rpm} RPM)")
+        print(f"    Airlock omega:    {self.airlock_omega:.2f} rad/s ({cfg.airlock_rpm} RPM)")
+        print(f"    Feeder omega:     {self.feeder_omega:.2f} rad/s ({cfg.feeder_rpm} RPM)")
+        print(f"    Deagg omega:      {self.deagg_omega:.2f} rad/s ({cfg.deagg_rpm} RPM)")
         print(f"    Feeder v_axial:   {self.feeder_axial_speed*100:.1f} cm/s")
+        
+        print(f"\n  Transition Connectors (from diagnose_feed_connectors.py):")
+        print(f"    Trans 1: Hopper -> Airlock (cylindrical)")
+        print(f"      Start Y:        {self.trans1_start[1]*1000:.1f} mm")
+        print(f"      End Y:          {self.trans1_end[1]*1000:.1f} mm")
+        print(f"      Radius:         {self.trans1_radius*1000:.1f} mm")
+        print(f"      Length:         {self.trans1_length*1000:.1f} mm")
+        
+        print(f"    Trans 2: Airlock -> Feeder (conical reducer)")
+        print(f"      Start Y:        {self.trans2_start[1]*1000:.1f} mm")
+        print(f"      End Y:          {self.trans2_end[1]*1000:.1f} mm")
+        print(f"      Start radius:   {self.trans2_start_radius*1000:.1f} mm")
+        print(f"      End radius:     {self.trans2_end_radius*1000:.1f} mm")
+        print(f"      Length:         {self.trans2_length*1000:.1f} mm")
+        
+        print(f"    Trans 3: Feeder -> Deagg (cylindrical)")
+        print(f"      Start Y:        {self.trans3_start[1]*1000:.1f} mm")
+        print(f"      End Y:          {self.trans3_end[1]*1000:.1f} mm")
+        print(f"      Radius:         {self.trans3_radius*1000:.1f} mm")
+        print(f"      Length:         {self.trans3_length*1000:.1f} mm")
         
         print(f"\n  Connection Paths (from port geometry):")
         for name, conn in connections.items():
@@ -1203,13 +1472,13 @@ class FeedFlowPhysicsSimulator:
             print(f"    {name}:")
             print(f"      Length:         {conn['length']*1000:.0f} mm")
             print(f"      Direction:      ({direction[0]:.2f}, {direction[1]:.2f}, {direction[2]:.2f})")
-            print(f"      Angle from XZ:  {angle_y:.1f}°")
-            print(f"      Diameters:      {conn['start_diameter']*1000:.0f} → {conn['end_diameter']*1000:.0f} mm")
+            print(f"      Angle from XZ:  {angle_y:.1f} deg")
+            print(f"      Diameters:      {conn['start_diameter']*1000:.0f} -> {conn['end_diameter']*1000:.0f} mm")
         print(f"\n  Calculated Flow Rates:")
         print(f"    Airlock Q:        {self.state.airlock_volumetric_rate*3600*1000:.1f} L/h")
-        print(f"    Airlock ṁ:        {self.state.airlock_mass_rate*3600:.0f} kg/h")
+        print(f"    Airlock m_dot:    {self.state.airlock_mass_rate*3600:.0f} kg/h")
         print(f"    Feeder Q:         {self.state.feeder_volumetric_rate*3600*1000:.1f} L/h")
-        print(f"    Feeder ṁ:         {self.state.feeder_mass_rate*3600:.0f} kg/h")
+        print(f"    Feeder m_dot:     {self.state.feeder_mass_rate*3600:.0f} kg/h")
         print(f"\n  Deagglomerator Geometry:")
         print(f"    Center Y:         {deagg_geo.center[1]*1000:.0f} mm")
         print(f"    Radius:           {deagg_geo.radius*1000:.0f} mm")
@@ -1617,6 +1886,26 @@ class FeedFlowPhysicsSimulator:
                 float(self.deagg_outlet_diameter / 2.0),  # Outlet radius
                 # Exit
                 float(self.exit_y),
+                # =========================================================
+                # TRANSITION CONNECTOR GEOMETRY
+                # =========================================================
+                # Transition 1: Hopper -> Airlock (cylindrical)
+                wp.vec3(*self.trans1_start),
+                wp.vec3(*self.trans1_end),
+                float(self.trans1_radius),
+                float(self.trans1_length),
+                # Transition 2: Airlock -> Feeder (conical reducer)
+                wp.vec3(*self.trans2_start),
+                wp.vec3(*self.trans2_end),
+                float(self.trans2_start_radius),
+                float(self.trans2_end_radius),
+                float(self.trans2_length),
+                # Transition 3: Feeder -> Deagg (cylindrical)
+                wp.vec3(*self.trans3_start),
+                wp.vec3(*self.trans3_end),
+                float(self.trans3_radius),
+                float(self.trans3_length),
+                # =========================================================
                 # Physics
                 float(dt),
                 float(GRAVITY),
@@ -1661,7 +1950,7 @@ class FeedFlowPhysicsSimulator:
         self.state.step += 1
     
     def get_zone_counts(self) -> Dict[str, int]:
-        """Get particle counts by zone."""
+        """Get particle counts by zone, including transition zones."""
         zones = self.state.zones.numpy()[:self.state.particles_active]
         is_active = self.state.is_active.numpy()[:self.state.particles_active]
         
@@ -1670,8 +1959,11 @@ class FeedFlowPhysicsSimulator:
         
         return {
             'hopper': int(np.sum(active_zones == 0)),
+            'trans_hopper_airlock': int(np.sum(active_zones == 10)),
             'airlock': int(np.sum(active_zones == 1)),
+            'trans_airlock_feeder': int(np.sum(active_zones == 11)),
             'feeder': int(np.sum(active_zones == 2)),
+            'trans_feeder_deagg': int(np.sum(active_zones == 12)),
             'deagg': int(np.sum(active_zones == 3)),
             'exited': int(np.sum(active_zones == 4)),
             'inactive': int(np.sum(is_active == 0)),
