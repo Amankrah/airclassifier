@@ -795,7 +795,8 @@ def physics_flow_kernel(
         if discharge_open == 1:
             # Check if particle has entered the transition zone
             # Transition starts at hopper discharge (trans1_start)
-            if pos[1] < trans1_start[1] + particle_radius and r < hopper_outlet_radius:
+            # Use <= and slightly larger threshold to ensure particles cross
+            if pos[1] <= trans1_start[1] + particle_radius * 1.5 and r < hopper_outlet_radius:
                 zones[tid] = 10  # Enter hopper->airlock transition
     
     # =========================================================================
@@ -833,7 +834,7 @@ def physics_flow_kernel(
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
         # Transition to airlock when reaching end
-        if pos[1] < trans1_end[1] + particle_radius:
+        if pos[1] <= trans1_end[1] + particle_radius:
             zones[tid] = 1  # Enter airlock
     
     # =========================================================================
@@ -893,8 +894,8 @@ def physics_flow_kernel(
         
         # TRANSITION: Through outlet at bottom -> enter transition connector (zone 11)
         # Outlet is at the bottom of airlock
-        outlet_y_threshold = airlock_center[1] - airlock_radius + particle_radius
-        if pos[1] < outlet_y_threshold:
+        outlet_y_threshold = airlock_center[1] - airlock_radius + particle_radius * 1.5
+        if pos[1] <= outlet_y_threshold:
             zones[tid] = 11  # Enter airlock->feeder transition
     
     # =========================================================================
@@ -942,7 +943,7 @@ def physics_flow_kernel(
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
         # Transition to feeder when reaching end
-        if pos[1] < trans2_end[1] + particle_radius:
+        if pos[1] <= trans2_end[1] + particle_radius:
             zones[tid] = 2  # Enter screw feeder
             # Give particle initial velocity along feeder axis
             vel = wp.vec3(feeder_axial_speed * 0.3, vel[1] * 0.5, vel[2] * 0.5)
@@ -1084,7 +1085,7 @@ def physics_flow_kernel(
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
         # Transition to deagglomerator when reaching end
-        if pos[1] < trans3_end[1] + particle_radius:
+        if pos[1] <= trans3_end[1] + particle_radius:
             zones[tid] = 3  # Enter deagglomerator
     
     # =========================================================================
@@ -1197,9 +1198,192 @@ def physics_flow_kernel(
     
     pos = pos + vel * dt
     
+    # =========================================================================
+    # POST-INTEGRATION CONTAINMENT - Enforce particles stay within zone walls
+    # This is critical to prevent particles escaping through walls
+    # =========================================================================
+    
+    # Zone 0: Hopper containment
+    if zone == 0:
+        local_y = pos[1] - hopper_center[1]
+        local_x = pos[0] - hopper_center[0]
+        local_z = pos[2] - hopper_center[2]
+        r = wp.sqrt(local_x * local_x + local_z * local_z)
+        
+        # Wall radius at current height
+        if local_y < hopper_cone_height:
+            t = wp.clamp(local_y / hopper_cone_height, 0.0, 1.0)
+            wall_r = hopper_bottom_radius + t * (hopper_top_radius - hopper_bottom_radius)
+        else:
+            wall_r = hopper_top_radius
+        
+        # Radial containment - but allow particles in outlet region to pass
+        in_outlet_region = (r < hopper_outlet_radius) and (local_y < particle_radius * 2.0)
+        if r > wall_r - particle_radius and r > 1.0e-6 and not in_outlet_region:
+            scale = (wall_r - particle_radius - 0.001) / r
+            pos = wp.vec3(hopper_center[0] + local_x * scale, pos[1], hopper_center[2] + local_z * scale)
+        
+        # Vertical containment - bottom only blocks if discharge closed OR outside outlet
+        total_h = hopper_cone_height + hopper_cylinder_height
+        if local_y < particle_radius:
+            # Only block if discharge is closed OR particle is outside outlet radius
+            if discharge_open == 0 or r > hopper_outlet_radius:
+                pos = wp.vec3(pos[0], hopper_center[1] + particle_radius + 0.001, pos[2])
+        if local_y > total_h - particle_radius:
+            pos = wp.vec3(pos[0], hopper_center[1] + total_h - particle_radius - 0.001, pos[2])
+    
+    # Zone 10: Trans hopper->airlock containment (cylinder along Y)
+    elif zone == 10:
+        center_x = trans1_start[0]
+        center_z = trans1_start[2]
+        dx = pos[0] - center_x
+        dz = pos[2] - center_z
+        r = wp.sqrt(dx * dx + dz * dz)
+        
+        if r > trans1_radius - particle_radius and r > 1.0e-6:
+            scale = (trans1_radius - particle_radius - 0.001) / r
+            pos = wp.vec3(center_x + dx * scale, pos[1], center_z + dz * scale)
+        
+        # Y bounds
+        if pos[1] > trans1_start[1]:
+            pos = wp.vec3(pos[0], trans1_start[1] - 0.001, pos[2])
+        if pos[1] < trans1_end[1]:
+            pos = wp.vec3(pos[0], trans1_end[1] + 0.001, pos[2])
+    
+    # Zone 1: Airlock containment (vertical cylinder - housing axis along Y, rotor rotates around Z)
+    elif zone == 1:
+        px = pos[0] - airlock_center[0]
+        py = pos[1] - airlock_center[1]
+        pz = pos[2] - airlock_center[2]
+        r_xz = wp.sqrt(px * px + pz * pz)  # Distance from Y axis (vertical) in XZ plane
+        
+        # Inlet opening at top (where trans1 connects)
+        inlet_r = trans1_radius * 0.95
+        in_inlet = (py > airlock_radius - inlet_r) and (r_xz < inlet_r)
+        
+        # Outlet opening at bottom (where trans2 connects)
+        outlet_r = trans2_start_radius * 0.95
+        in_outlet = (py < -airlock_radius + outlet_r) and (r_xz < outlet_r)
+        
+        # Radial containment (cylinder wall in XZ) - allow inlet/outlet openings
+        if r_xz > airlock_radius - particle_radius and r_xz > 1.0e-6:
+            if not in_inlet and not in_outlet:
+                scale = (airlock_radius - particle_radius - 0.001) / r_xz
+                pos = wp.vec3(airlock_center[0] + px * scale, pos[1], airlock_center[2] + pz * scale)
+        
+        # Axial containment (Z - rotor length direction)
+        if wp.abs(pz) > airlock_half_length - particle_radius:
+            sign_z = 1.0 if pz > 0.0 else -1.0
+            pos = wp.vec3(pos[0], pos[1], airlock_center[2] + sign_z * (airlock_half_length - particle_radius - 0.001))
+        
+        # Y bounds - inlet at top (with opening), outlet at bottom (with opening)
+        if py > airlock_radius - particle_radius and not in_inlet:
+            pos = wp.vec3(pos[0], airlock_center[1] + airlock_radius - particle_radius - 0.001, pos[2])
+        # Don't block bottom - let particles exit to zone 11
+    
+    # Zone 11: Trans airlock->feeder containment (cone along Y)
+    elif zone == 11:
+        progress = (trans2_start[1] - pos[1]) / (trans2_start[1] - trans2_end[1] + 0.001)
+        progress = wp.clamp(progress, 0.0, 1.0)
+        current_r = trans2_start_radius + progress * (trans2_end_radius - trans2_start_radius)
+        
+        center_x = trans2_start[0] + progress * (trans2_end[0] - trans2_start[0])
+        center_z = trans2_start[2] + progress * (trans2_end[2] - trans2_start[2])
+        dx = pos[0] - center_x
+        dz = pos[2] - center_z
+        r = wp.sqrt(dx * dx + dz * dz)
+        
+        if r > current_r - particle_radius and r > 1.0e-6:
+            scale = (current_r - particle_radius - 0.001) / r
+            pos = wp.vec3(center_x + dx * scale, pos[1], center_z + dz * scale)
+        
+        # Y bounds
+        if pos[1] > trans2_start[1]:
+            pos = wp.vec3(pos[0], trans2_start[1] - 0.001, pos[2])
+        if pos[1] < trans2_end[1]:
+            pos = wp.vec3(pos[0], trans2_end[1] + 0.001, pos[2])
+    
+    # Zone 2: Feeder containment (cylinder along X)
+    elif zone == 2:
+        px = pos[0] - feeder_center[0]
+        py = pos[1] - feeder_center[1]
+        pz = pos[2] - feeder_center[2]
+        r_yz = wp.sqrt(py * py + pz * pz)
+        
+        # Radial containment (only apply if not at outlet opening)
+        outlet_region = (px > feeder_half_length - trans3_radius * 3.0)
+        in_outlet = outlet_region and (py < feeder_radius * 0.2) and (wp.abs(pz) < trans3_radius)
+        
+        if r_yz > feeder_radius - particle_radius and r_yz > 1.0e-6 and not in_outlet:
+            scale = (feeder_radius - particle_radius - 0.001) / r_yz
+            pos = wp.vec3(pos[0], feeder_center[1] + py * scale, feeder_center[2] + pz * scale)
+        
+        # Axial containment (X) - with openings at inlet and outlet
+        if px < -feeder_half_length + particle_radius:
+            # Only block if not in inlet opening
+            if py < 0.0:
+                pos = wp.vec3(feeder_center[0] - feeder_half_length + particle_radius + 0.001, pos[1], pos[2])
+        if px > feeder_half_length - particle_radius:
+            # Only block if not in outlet opening
+            if not in_outlet:
+                pos = wp.vec3(feeder_center[0] + feeder_half_length - particle_radius - 0.001, pos[1], pos[2])
+    
+    # Zone 12: Trans feeder->deagg containment (cylinder along Y)
+    elif zone == 12:
+        progress = (trans3_start[1] - pos[1]) / (trans3_start[1] - trans3_end[1] + 0.001)
+        progress = wp.clamp(progress, 0.0, 1.0)
+        
+        center_x = trans3_start[0] + progress * (trans3_end[0] - trans3_start[0])
+        center_z = trans3_start[2] + progress * (trans3_end[2] - trans3_start[2])
+        dx = pos[0] - center_x
+        dz = pos[2] - center_z
+        r = wp.sqrt(dx * dx + dz * dz)
+        
+        if r > trans3_radius - particle_radius and r > 1.0e-6:
+            scale = (trans3_radius - particle_radius - 0.001) / r
+            pos = wp.vec3(center_x + dx * scale, pos[1], center_z + dz * scale)
+        
+        # Y bounds
+        if pos[1] > trans3_start[1]:
+            pos = wp.vec3(pos[0], trans3_start[1] - 0.001, pos[2])
+        if pos[1] < trans3_end[1]:
+            pos = wp.vec3(pos[0], trans3_end[1] + 0.001, pos[2])
+    
+    # Zone 3: Deagglomerator containment (cylinder along X)
+    elif zone == 3:
+        px = pos[0] - deagg_center[0]
+        py = pos[1] - deagg_center[1]
+        pz = pos[2] - deagg_center[2]
+        r_yz = wp.sqrt(py * py + pz * pz)
+        
+        # Inlet region at top
+        inlet_r = trans3_radius * 0.9
+        in_inlet = (py > deagg_radius - inlet_r) and (wp.abs(pz) < inlet_r)
+        
+        # Outlet region at bottom
+        outlet_r = deagg_outlet_radius
+        in_outlet = (py < -deagg_radius + outlet_r) and (wp.abs(pz) < outlet_r)
+        
+        # Radial containment (with openings)
+        if r_yz > deagg_radius - particle_radius and r_yz > 1.0e-6:
+            if not in_inlet and not in_outlet:
+                scale = (deagg_radius - particle_radius - 0.001) / r_yz
+                pos = wp.vec3(pos[0], deagg_center[1] + py * scale, deagg_center[2] + pz * scale)
+        
+        # Axial containment (X)
+        if wp.abs(px) > deagg_half_length - particle_radius:
+            sign_x = 1.0 if px > 0.0 else -1.0
+            pos = wp.vec3(deagg_center[0] + sign_x * (deagg_half_length - particle_radius - 0.001), pos[1], pos[2])
+    
+    # Zone 4: Exited - floor containment only
+    elif zone == 4:
+        if pos[1] < exit_y + particle_radius:
+            pos = wp.vec3(pos[0], exit_y + particle_radius + 0.001, pos[2])
+    
     # Write back
     positions[tid] = pos
     velocities[tid] = vel
+    zones[tid] = zone
 
 
 # =============================================================================

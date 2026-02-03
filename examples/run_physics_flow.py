@@ -302,7 +302,7 @@ def main():
         plotter.reset_camera()
         plotter.camera.azimuth = -170
         plotter.camera.elevation = -20
-        plotter.camera.zoom(0.8)
+        plotter.camera.zoom(0.6)
         plotter.show(interactive_update=True, auto_close=False)
     
     # Run simulation
