@@ -556,3 +556,294 @@ def particle_mass(diameter: float, density: float) -> float:
 def particle_projected_area(diameter: float) -> float:
     """Calculate particle projected area (sphere)."""
     return (3.141592653589793 / 4.0) * diameter * diameter
+
+
+# =============================================================================
+# SHARED FLUID CONFIGURATION
+# =============================================================================
+
+@dataclass
+class FluidConfig:
+    """
+    Fluid properties configuration for particle physics simulations.
+    
+    Reusable across feed, air, and classification systems.
+    Default values are for air at 20°C, 1 atm.
+    """
+    density: float = 1.204           # [kg/m³] Fluid density
+    dynamic_viscosity: float = 1.825e-5  # [Pa·s] Dynamic viscosity
+    
+    @property
+    def kinematic_viscosity(self) -> float:
+        """Kinematic viscosity [m²/s]."""
+        return self.dynamic_viscosity / self.density
+    
+    @classmethod
+    def air_at_stp(cls) -> "FluidConfig":
+        """Air at standard temperature and pressure (20°C, 1 atm)."""
+        return cls(
+            density=1.204,
+            dynamic_viscosity=1.825e-5,
+        )
+    
+    @classmethod
+    def air_at_temperature(cls, T_celsius: float, P_Pa: float = 101325.0) -> "FluidConfig":
+        """
+        Air properties at specified temperature and pressure.
+        
+        Args:
+            T_celsius: Temperature in Celsius
+            P_Pa: Pressure in Pascals (default: 1 atm)
+        """
+        T_K = T_celsius + 273.15
+        R = 287.05  # Specific gas constant for air [J/(kg·K)]
+        
+        # Density from ideal gas law
+        density = P_Pa / (R * T_K)
+        
+        # Viscosity from Sutherland's formula
+        T_ref = 291.15  # Reference temperature [K]
+        mu_ref = 1.827e-5  # Reference viscosity [Pa·s]
+        S = 120.0  # Sutherland constant [K]
+        viscosity = mu_ref * (T_K / T_ref) ** 1.5 * (T_ref + S) / (T_K + S)
+        
+        return cls(density=density, dynamic_viscosity=viscosity)
+
+
+# =============================================================================
+# SHARED SIMULATION CONFIGURATION
+# =============================================================================
+
+@dataclass
+class ParticlePhysicsConfig:
+    """
+    Shared particle physics configuration.
+    
+    Used by feed_flow_physics, air_flow_physics, and classification_flow_physics.
+    """
+    # Particle properties
+    particle_density: float = 1450.0     # [kg/m³] Default flour-like material
+    sphericity: float = 0.75             # [-] Shape factor (0.5-1.0)
+    
+    # Collision parameters
+    restitution: float = 0.3             # [-] Coefficient of restitution (0-1)
+    friction: float = 0.4                # [-] Friction coefficient
+    
+    # Fluid properties
+    fluid: FluidConfig = None
+    
+    # Physics toggles
+    include_gravity: bool = True
+    include_drag: bool = True
+    include_buoyancy: bool = True
+    include_turbulent_dispersion: bool = False
+    turbulent_intensity: float = 0.15    # [-] Turbulence intensity (0-0.3)
+    
+    # Numerical parameters
+    dt: float = 0.001                    # [s] Time step
+    max_velocity: float = 100.0          # [m/s] Velocity clamp
+    
+    def __post_init__(self):
+        if self.fluid is None:
+            self.fluid = FluidConfig.air_at_stp()
+    
+    @classmethod
+    def for_feed_system(cls) -> "ParticlePhysicsConfig":
+        """Configuration optimized for feed system (gravity flow)."""
+        return cls(
+            particle_density=1450.0,
+            sphericity=0.70,
+            restitution=0.3,
+            friction=0.5,
+            include_gravity=True,
+            include_drag=True,
+            include_turbulent_dispersion=False,
+            dt=0.005,  # Larger dt for slower flows
+        )
+    
+    @classmethod
+    def for_classification_system(cls) -> "ParticlePhysicsConfig":
+        """Configuration optimized for classification system (air transport)."""
+        return cls(
+            particle_density=1450.0,
+            sphericity=0.75,
+            restitution=0.3,
+            friction=0.4,
+            include_gravity=True,
+            include_drag=True,
+            include_turbulent_dispersion=True,
+            turbulent_intensity=0.15,
+            dt=0.001,  # Smaller dt for high velocity flows
+        )
+    
+    @classmethod
+    def for_cyclone_separation(cls) -> "ParticlePhysicsConfig":
+        """Configuration optimized for cyclone separation (swirling flow)."""
+        return cls(
+            particle_density=1450.0,
+            sphericity=0.75,
+            restitution=0.3,
+            friction=0.4,
+            include_gravity=True,
+            include_drag=True,
+            include_turbulent_dispersion=True,
+            turbulent_intensity=0.10,
+            dt=0.0005,  # Very small dt for high centrifugal accelerations
+        )
+
+
+# =============================================================================
+# PARTICLE POPULATION FACTORY FUNCTIONS
+# =============================================================================
+
+def create_particle_population(
+    material: ParticleMaterial,
+    num_particles: int,
+    seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Create a particle population with realistic size distribution.
+    
+    Args:
+        material: ParticleMaterial defining density and size distribution
+        num_particles: Number of particles to create
+        seed: Random seed for reproducibility
+        
+    Returns:
+        Tuple of (diameters, densities, sphericities) arrays
+    """
+    diameters = material.sample_diameters(num_particles, seed=seed)
+    densities = np.full(num_particles, material.density, dtype=np.float32)
+    sphericities = np.full(num_particles, material.sphericity, dtype=np.float32)
+    
+    return diameters, densities, sphericities
+
+
+def create_bimodal_population(
+    material_fine: ParticleMaterial,
+    material_coarse: ParticleMaterial,
+    num_particles: int,
+    fine_fraction: float = 0.3,
+    seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Create a bimodal particle population (e.g., protein + starch).
+    
+    Args:
+        material_fine: Material for fine particles (e.g., protein)
+        material_coarse: Material for coarse particles (e.g., starch)
+        num_particles: Total number of particles
+        fine_fraction: Fraction of fine particles (0-1)
+        seed: Random seed
+        
+    Returns:
+        Tuple of (diameters, densities, sphericities, types) arrays
+        types: 0 = fine (protein), 1 = coarse (starch)
+    """
+    rng = np.random.default_rng(seed)
+    
+    n_fine = int(num_particles * fine_fraction)
+    n_coarse = num_particles - n_fine
+    
+    # Sample diameters
+    d_fine = material_fine.sample_diameters(n_fine, seed=seed)
+    d_coarse = material_coarse.sample_diameters(n_coarse, seed=seed + 1)
+    
+    diameters = np.concatenate([d_fine, d_coarse]).astype(np.float32)
+    
+    # Densities
+    densities = np.concatenate([
+        np.full(n_fine, material_fine.density),
+        np.full(n_coarse, material_coarse.density),
+    ]).astype(np.float32)
+    
+    # Sphericities
+    sphericities = np.concatenate([
+        np.full(n_fine, material_fine.sphericity),
+        np.full(n_coarse, material_coarse.sphericity),
+    ]).astype(np.float32)
+    
+    # Types
+    types = np.concatenate([
+        np.zeros(n_fine, dtype=np.int32),
+        np.ones(n_coarse, dtype=np.int32),
+    ])
+    
+    # Shuffle
+    indices = rng.permutation(num_particles)
+    return (
+        diameters[indices],
+        densities[indices], 
+        sphericities[indices],
+        types[indices],
+    )
+
+
+def create_whole_flour_population(
+    source: str = "yellow_pea",
+    num_particles: int = 1000,
+    seed: int = 42,
+) -> Tuple[ParticleMaterial, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Create a realistic whole flour population with protein, starch, and fiber.
+    
+    Args:
+        source: Source material ("yellow_pea", "faba_bean", "oat")
+        num_particles: Total number of particles
+        seed: Random seed
+        
+    Returns:
+        Tuple of (material, diameters, densities, sphericities, types)
+        types: 0 = protein, 1 = starch, 2 = fiber
+    """
+    rng = np.random.default_rng(seed)
+    
+    # Create material fractions
+    protein = ParticleMaterial.create_food_powder(source, "protein")
+    starch = ParticleMaterial.create_food_powder(source, "starch")
+    fiber = ParticleMaterial.create_food_powder(source, "fiber" if source != "oat" else "bran")
+    whole = ParticleMaterial.create_food_powder(source, "whole")
+    
+    # Typical composition fractions
+    f_protein = 0.25  # 25% protein
+    f_starch = 0.55   # 55% starch
+    f_fiber = 0.20    # 20% fiber
+    
+    n_protein = int(num_particles * f_protein)
+    n_starch = int(num_particles * f_starch)
+    n_fiber = num_particles - n_protein - n_starch
+    
+    # Sample diameters for each fraction
+    d_protein = protein.sample_diameters(n_protein, seed=seed)
+    d_starch = starch.sample_diameters(n_starch, seed=seed + 1)
+    d_fiber = fiber.sample_diameters(n_fiber, seed=seed + 2)
+    
+    diameters = np.concatenate([d_protein, d_starch, d_fiber]).astype(np.float32)
+    
+    densities = np.concatenate([
+        np.full(n_protein, protein.density),
+        np.full(n_starch, starch.density),
+        np.full(n_fiber, fiber.density),
+    ]).astype(np.float32)
+    
+    sphericities = np.concatenate([
+        np.full(n_protein, protein.sphericity),
+        np.full(n_starch, starch.sphericity),
+        np.full(n_fiber, fiber.sphericity),
+    ]).astype(np.float32)
+    
+    types = np.concatenate([
+        np.zeros(n_protein, dtype=np.int32),
+        np.ones(n_starch, dtype=np.int32),
+        np.full(n_fiber, 2, dtype=np.int32),
+    ])
+    
+    # Shuffle
+    indices = rng.permutation(num_particles)
+    return (
+        whole,
+        diameters[indices],
+        densities[indices],
+        sphericities[indices],
+        types[indices],
+    )

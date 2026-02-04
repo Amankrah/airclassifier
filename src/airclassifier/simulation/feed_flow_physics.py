@@ -18,6 +18,11 @@ Physics Principles:
 
 Geometry:
     All dimensions imported directly from FeedSystemAssembly
+
+Integration with Classification System:
+    Particles exiting through the deagglomerator outlet can be transferred
+    to the ClassificationFlowPhysicsSimulator via the venturi solids inlet.
+    Use get_exited_particles() to retrieve particle data for transfer.
 """
 
 from dataclasses import dataclass, field
@@ -28,6 +33,20 @@ import warp as wp
 
 from ..geometry.assembly.feed_system import FeedSystemAssembly, FeedSystemParams
 from ..utils.constants import GRAVITY, PI, TWO_PI, AirProperties
+
+# Import reusable particle modules
+from ..particles import (
+    # Material and configuration
+    ParticleMaterial,
+    FluidConfig,
+    ParticlePhysicsConfig,
+    # Population factories
+    create_particle_population,
+    create_whole_flour_population,
+    # Warp functions (reusable in kernels)
+    particle_volume,
+    particle_mass,
+)
 
 
 # =============================================================================
@@ -126,18 +145,24 @@ class ConnectionPath:
 
 @dataclass
 class FlowPhysicsConfig:
-    """Configuration for physics-based flow simulation."""
+    """
+    Configuration for physics-based flow simulation.
+    
+    Supports both manual configuration and automatic setup from
+    ParticleMaterial and FluidConfig for consistency with classification physics.
+    """
     
     # Time stepping
     dt: float = 0.005               # Time step [s] - smaller for stability
     total_time: float = 20.0        # Total simulation time [s]
     
-    # Particle properties
+    # Particle properties (can be overridden by ParticleMaterial)
     particle_density: float = DEFAULT_PARTICLE_DENSITY
     restitution: float = DEFAULT_RESTITUTION
     friction: float = DEFAULT_FRICTION
+    sphericity: float = 0.75        # [-] Particle shape factor
     
-    # Fluid properties
+    # Fluid properties (can be overridden by FluidConfig)
     air_density: float = RHO_AIR
     air_viscosity: float = MU_AIR
     
@@ -168,6 +193,78 @@ class FlowPhysicsConfig:
     # Rule of thumb: particle diameter < passage_diameter / 5 for free flow
     # 80mm / 5 = 16mm, using 15mm for safety margin
     visual_particle_diameter: float = 0.015  # [m] Display size (15mm visual particles)
+    
+    # Material configuration (optional - for realistic food powders)
+    material: Optional[ParticleMaterial] = None
+    fluid_config: Optional[FluidConfig] = None
+    
+    def __post_init__(self):
+        """Apply material and fluid configurations if provided."""
+        if self.fluid_config is not None:
+            self.air_density = self.fluid_config.density
+            self.air_viscosity = self.fluid_config.dynamic_viscosity
+        
+        if self.material is not None:
+            self.particle_density = self.material.density
+            self.sphericity = self.material.sphericity
+            self.restitution = self.material.properties.restitution_coefficient
+            self.friction = self.material.properties.friction_coefficient
+    
+    @classmethod
+    def from_particle_physics_config(
+        cls,
+        physics_config: ParticlePhysicsConfig,
+        **kwargs
+    ) -> "FlowPhysicsConfig":
+        """
+        Create FlowPhysicsConfig from a shared ParticlePhysicsConfig.
+        
+        This ensures consistency between feed and classification simulations.
+        
+        Args:
+            physics_config: Shared particle physics configuration
+            **kwargs: Additional FlowPhysicsConfig parameters
+            
+        Returns:
+            Configured FlowPhysicsConfig instance
+        """
+        return cls(
+            dt=physics_config.dt,
+            particle_density=physics_config.particle_density,
+            restitution=physics_config.restitution,
+            friction=physics_config.friction,
+            sphericity=physics_config.sphericity,
+            air_density=physics_config.fluid.density,
+            air_viscosity=physics_config.fluid.dynamic_viscosity,
+            **kwargs
+        )
+    
+    @classmethod
+    def for_food_powder(
+        cls,
+        source: str = "yellow_pea",
+        fraction: str = "whole",
+        **kwargs
+    ) -> "FlowPhysicsConfig":
+        """
+        Create configuration for a specific food powder material.
+        
+        Args:
+            source: Material source ("yellow_pea", "faba_bean", "oat")
+            fraction: Fraction type ("whole", "protein", "starch", "fiber")
+            **kwargs: Additional configuration parameters
+            
+        Returns:
+            Configured FlowPhysicsConfig instance
+        """
+        material = ParticleMaterial.create_food_powder(source, fraction)
+        fluid = FluidConfig.air_at_stp()
+        
+        return cls(
+            material=material,
+            fluid_config=fluid,
+            **kwargs
+        )
 
 
 @dataclass
@@ -183,6 +280,8 @@ class FlowPhysicsState:
     masses: Optional[wp.array] = None
     zones: Optional[wp.array] = None
     is_active: Optional[wp.array] = None
+    particle_types: Optional[wp.array] = None  # 0=protein, 1=starch, 2=fiber
+    densities: Optional[wp.array] = None       # Per-particle density (for mixtures)
     
     # Counts
     particles_active: int = 0
@@ -2167,10 +2266,310 @@ class FeedFlowPhysicsSimulator:
     def get_diameters(self) -> np.ndarray:
         """Get particle diameters."""
         return self.state.diameters.numpy()[:self.state.particles_active]
+    
+    # =========================================================================
+    # PARTICLE MATERIAL INTEGRATION
+    # =========================================================================
+    
+    def initialize_particles_from_material(
+        self,
+        material: ParticleMaterial,
+        num_particles: int = None,
+        seed: int = 42,
+    ):
+        """
+        Initialize particles using a ParticleMaterial for realistic size distribution.
+        
+        This method uses the material's size distribution to create particles
+        with proper sizes for the specified food powder.
+        
+        Args:
+            material: ParticleMaterial instance (e.g., from create_food_powder)
+            num_particles: Number of particles (default: config.num_particles)
+            seed: Random seed for reproducibility
+        """
+        n = min(num_particles or self.config.num_particles, self.config.num_particles)
+        
+        # Sample diameters from material distribution
+        diameters = material.sample_diameters(n, seed=seed)
+        
+        # Scale to visual particle size while preserving relative distribution
+        # This maintains the size ratios between protein/starch/fiber
+        median_sampled = np.median(diameters)
+        scale = self.config.visual_particle_diameter / median_sampled
+        diameters = (diameters * scale).astype(np.float32)
+        
+        # Clamp to valid range
+        min_dia = self.config.visual_particle_diameter * 0.3
+        max_dia = self.config.visual_particle_diameter * 2.0
+        diameters = np.clip(diameters, min_dia, max_dia)
+        
+        # Generate hopper positions
+        hopper_geo = self.geometry['hopper']
+        rng = np.random.default_rng(seed)
+        
+        positions = np.zeros((n, 3), dtype=np.float32)
+        velocities = np.zeros((n, 3), dtype=np.float32)
+        
+        for i in range(n):
+            total_h = hopper_geo.cone_height + hopper_geo.cylinder_height
+            h = rng.uniform(0.1 * total_h, 0.9 * total_h)
+            
+            if h < hopper_geo.cone_height:
+                t = h / hopper_geo.cone_height
+                r_max = hopper_geo.bottom_radius + t * (hopper_geo.top_radius - hopper_geo.bottom_radius)
+            else:
+                r_max = hopper_geo.top_radius
+            
+            r = np.sqrt(rng.random()) * r_max * 0.9
+            theta = rng.uniform(0, TWO_PI)
+            
+            positions[i, 0] = hopper_geo.center[0] + r * np.cos(theta)
+            positions[i, 1] = hopper_geo.center[1] + h
+            positions[i, 2] = hopper_geo.center[2] + r * np.sin(theta)
+        
+        # Compute masses using material density
+        masses = material.density * (PI / 6.0) * diameters ** 3
+        
+        # All particles start in hopper (zone 0), active
+        zones = np.zeros(n, dtype=np.int32)
+        is_active = np.ones(n, dtype=np.int32)
+        
+        # Copy to device
+        wp.copy(self.state.positions, wp.array(positions, dtype=wp.vec3, device=self.device))
+        wp.copy(self.state.velocities, wp.array(velocities, dtype=wp.vec3, device=self.device))
+        wp.copy(self.state.diameters, wp.array(diameters, dtype=float, device=self.device))
+        wp.copy(self.state.masses, wp.array(masses, dtype=float, device=self.device))
+        wp.copy(self.state.zones, wp.array(zones, dtype=wp.int32, device=self.device))
+        wp.copy(self.state.is_active, wp.array(is_active, dtype=wp.int32, device=self.device))
+        
+        self.state.particles_active = n
+        
+        print(f"  Initialized {n} particles from {material.properties.name}")
+        print(f"    Material density: {material.density:.0f} kg/m^3")
+        print(f"    Diameter range: {diameters.min()*1000:.2f} - {diameters.max()*1000:.2f} mm")
+        print(f"    Total mass: {masses.sum():.2f} kg")
+    
+    def initialize_whole_flour_population(
+        self,
+        source: str = "yellow_pea",
+        num_particles: int = None,
+        seed: int = 42,
+    ):
+        """
+        Initialize particles with a realistic whole flour composition.
+        
+        Creates a mixture of protein, starch, and fiber particles with
+        proper size distributions for the specified flour source.
+        
+        Args:
+            source: Flour source ("yellow_pea", "faba_bean", "oat")
+            num_particles: Number of particles (default: config.num_particles)
+            seed: Random seed
+        """
+        n = min(num_particles or self.config.num_particles, self.config.num_particles)
+        
+        # Use factory function to create population
+        material, diameters, densities, sphericities, types = create_whole_flour_population(
+            source=source,
+            num_particles=n,
+            seed=seed,
+        )
+        
+        # Scale diameters to visual particle size
+        median_sampled = np.median(diameters)
+        scale = self.config.visual_particle_diameter / median_sampled
+        diameters = (diameters * scale).astype(np.float32)
+        
+        # Clamp to valid range
+        min_dia = self.config.visual_particle_diameter * 0.3
+        max_dia = self.config.visual_particle_diameter * 2.0
+        diameters = np.clip(diameters, min_dia, max_dia)
+        
+        # Generate hopper positions
+        hopper_geo = self.geometry['hopper']
+        rng = np.random.default_rng(seed + 100)
+        
+        positions = np.zeros((n, 3), dtype=np.float32)
+        velocities = np.zeros((n, 3), dtype=np.float32)
+        
+        for i in range(n):
+            total_h = hopper_geo.cone_height + hopper_geo.cylinder_height
+            h = rng.uniform(0.1 * total_h, 0.9 * total_h)
+            
+            if h < hopper_geo.cone_height:
+                t = h / hopper_geo.cone_height
+                r_max = hopper_geo.bottom_radius + t * (hopper_geo.top_radius - hopper_geo.bottom_radius)
+            else:
+                r_max = hopper_geo.top_radius
+            
+            r = np.sqrt(rng.random()) * r_max * 0.9
+            theta = rng.uniform(0, TWO_PI)
+            
+            positions[i, 0] = hopper_geo.center[0] + r * np.cos(theta)
+            positions[i, 1] = hopper_geo.center[1] + h
+            positions[i, 2] = hopper_geo.center[2] + r * np.sin(theta)
+        
+        # Compute masses
+        masses = densities * (PI / 6.0) * diameters ** 3
+        
+        # All particles start in hopper (zone 0), active
+        zones = np.zeros(n, dtype=np.int32)
+        is_active = np.ones(n, dtype=np.int32)
+        
+        # Copy to device
+        wp.copy(self.state.positions, wp.array(positions, dtype=wp.vec3, device=self.device))
+        wp.copy(self.state.velocities, wp.array(velocities, dtype=wp.vec3, device=self.device))
+        wp.copy(self.state.diameters, wp.array(diameters, dtype=float, device=self.device))
+        wp.copy(self.state.masses, wp.array(masses, dtype=float, device=self.device))
+        wp.copy(self.state.zones, wp.array(zones, dtype=wp.int32, device=self.device))
+        wp.copy(self.state.is_active, wp.array(is_active, dtype=wp.int32, device=self.device))
+        
+        self.state.particles_active = n
+        
+        # Store particle types for tracking
+        self._particle_types = types
+        self._particle_densities = densities
+        
+        n_protein = np.sum(types == 0)
+        n_starch = np.sum(types == 1)
+        n_fiber = np.sum(types == 2)
+        
+        print(f"  Initialized {n} particles as {source} whole flour")
+        print(f"    Protein: {n_protein} ({100*n_protein/n:.0f}%)")
+        print(f"    Starch:  {n_starch} ({100*n_starch/n:.0f}%)")
+        print(f"    Fiber:   {n_fiber} ({100*n_fiber/n:.0f}%)")
+        print(f"    Total mass: {masses.sum():.2f} kg")
+    
+    # =========================================================================
+    # DATA EXPORT FOR CLASSIFICATION SYSTEM TRANSFER
+    # =========================================================================
+    
+    def get_exited_particles(self) -> Dict[str, np.ndarray]:
+        """
+        Get particles that have exited through the deagglomerator outlet.
+        
+        These particles are ready to be transferred to the classification
+        system via the venturi solids inlet.
+        
+        Returns:
+            Dictionary with:
+                - positions: Nx3 particle positions
+                - velocities: Nx3 particle velocities
+                - diameters: N particle diameters
+                - densities: N particle densities
+                - masses: N particle masses
+                - types: N particle types (0=protein, 1=starch, 2=fiber)
+                - count: Number of exited particles
+        """
+        zones = self.state.zones.numpy()[:self.state.particles_active]
+        is_active = self.state.is_active.numpy()[:self.state.particles_active]
+        
+        # Exited particles are in zone 4 and still active
+        exited_mask = (zones == 4) & (is_active == 1)
+        
+        positions = self.get_positions()[exited_mask]
+        velocities = self.get_velocities()[exited_mask]
+        diameters = self.get_diameters()[exited_mask]
+        masses = self.state.masses.numpy()[:self.state.particles_active][exited_mask]
+        
+        # Get densities and types if available
+        if hasattr(self, '_particle_densities'):
+            densities = self._particle_densities[:self.state.particles_active][exited_mask]
+        else:
+            densities = np.full(len(positions), self.config.particle_density, dtype=np.float32)
+        
+        if hasattr(self, '_particle_types'):
+            types = self._particle_types[:self.state.particles_active][exited_mask]
+        else:
+            types = np.zeros(len(positions), dtype=np.int32)
+        
+        return {
+            'positions': positions,
+            'velocities': velocities,
+            'diameters': diameters,
+            'densities': densities,
+            'masses': masses,
+            'types': types,
+            'count': len(positions),
+        }
+    
+    def get_outlet_position(self) -> np.ndarray:
+        """
+        Get the deagglomerator outlet position for connecting to classification system.
+        
+        This is the position where particles exit the feed system and should
+        enter the venturi solids inlet in the classification system.
+        
+        Returns:
+            3D position array [x, y, z] in meters
+        """
+        deagg_geo = self.geometry['deagglomerator']
+        return deagg_geo.outlet_pos.copy()
+    
+    def get_outlet_direction(self) -> np.ndarray:
+        """
+        Get the deagglomerator outlet direction (flow direction).
+        
+        Returns:
+            3D unit vector indicating flow direction at outlet
+        """
+        deagg_geo = self.geometry['deagglomerator']
+        return deagg_geo.outlet_dir.copy()
+    
+    def get_particle_data_for_transfer(self) -> Dict[str, Any]:
+        """
+        Get all particle data formatted for transfer to another simulation.
+        
+        This method prepares particle data for injection into the
+        classification system via ClassificationFlowPhysicsSimulator.
+        
+        Returns:
+            Dictionary with particle arrays and metadata suitable for
+            injection into another particle system.
+        """
+        exited = self.get_exited_particles()
+        
+        return {
+            # Particle data
+            'positions': exited['positions'],
+            'velocities': exited['velocities'],
+            'diameters': exited['diameters'],
+            'densities': exited['densities'],
+            'masses': exited['masses'],
+            'types': exited['types'],
+            'count': exited['count'],
+            # Connection info
+            'outlet_position': self.get_outlet_position(),
+            'outlet_direction': self.get_outlet_direction(),
+            # Metadata
+            'source': 'feed_system',
+            'time': self.state.time,
+        }
+    
+    def get_mass_flow_rate(self) -> float:
+        """
+        Calculate the current mass flow rate through the outlet.
+        
+        Returns:
+            Mass flow rate in kg/s
+        """
+        zones = self.state.zones.numpy()[:self.state.particles_active]
+        is_active = self.state.is_active.numpy()[:self.state.particles_active]
+        
+        # Count particles that exited in recent steps
+        exited_mask = (zones == 4) & (is_active == 1)
+        exited_masses = self.state.masses.numpy()[:self.state.particles_active][exited_mask]
+        
+        total_exited_mass = np.sum(exited_masses)
+        
+        if self.state.time > 0:
+            return total_exited_mass / self.state.time
+        return 0.0
 
 
 # =============================================================================
-# FACTORY FUNCTION
+# FACTORY FUNCTIONS
 # =============================================================================
 
 def create_physics_flow_simulator(
@@ -2215,5 +2614,78 @@ def create_physics_flow_simulator(
     
     # Create simulator
     simulator = FeedFlowPhysicsSimulator(assembly, config)
+    
+    return assembly, simulator
+
+
+def create_food_powder_flow_simulator(
+    source: str = "yellow_pea",
+    capacity_kg: float = 500,
+    feed_rate_kg_h: float = 500,
+    airlock_rpm: float = 20,
+    feeder_rpm: float = 60,
+    deagg_rpm: float = 1500,
+    num_particles: int = 5000,
+    device: str = "cuda",
+    initialize_particles: bool = True,
+) -> Tuple[FeedSystemAssembly, FeedFlowPhysicsSimulator]:
+    """
+    Create a feed system simulator configured for a specific food powder.
+    
+    This factory function creates a simulator with realistic material
+    properties for the specified food powder source.
+    
+    Args:
+        source: Food powder source ("yellow_pea", "faba_bean", "oat")
+        capacity_kg: Hopper capacity [kg]
+        feed_rate_kg_h: Target feed rate [kg/h]
+        airlock_rpm: Airlock rotation speed [RPM]
+        feeder_rpm: Screw feeder rotation speed [RPM]
+        deagg_rpm: Deagglomerator rotor speed [RPM]
+        num_particles: Number of simulation particles
+        device: Warp device ('cuda' or 'cpu')
+        initialize_particles: If True, initializes particles with whole flour composition
+        
+    Returns:
+        Tuple of (assembly, simulator)
+    
+    Example:
+        >>> assembly, sim = create_food_powder_flow_simulator(
+        ...     source="yellow_pea",
+        ...     num_particles=5000,
+        ... )
+        >>> sim.start_simulation()
+        >>> for _ in range(1000):
+        ...     sim.step()
+        >>> # Get particles for classification system
+        >>> transfer_data = sim.get_particle_data_for_transfer()
+    """
+    # Create assembly with geometry
+    params = FeedSystemParams(
+        hopper_capacity_kg=capacity_kg,
+        feeder_target_rate_kg_h=feed_rate_kg_h,
+    )
+    assembly = FeedSystemAssembly(params, device="cpu")
+    
+    # Create simulator config with food powder material
+    config = FlowPhysicsConfig.for_food_powder(
+        source=source,
+        fraction="whole",
+        airlock_rpm=airlock_rpm,
+        feeder_rpm=feeder_rpm,
+        deagg_rpm=deagg_rpm,
+        num_particles=num_particles,
+        device=device,
+    )
+    
+    # Create simulator
+    simulator = FeedFlowPhysicsSimulator(assembly, config)
+    
+    # Initialize with whole flour population
+    if initialize_particles:
+        simulator.initialize_whole_flour_population(
+            source=source,
+            num_particles=num_particles,
+        )
     
     return assembly, simulator

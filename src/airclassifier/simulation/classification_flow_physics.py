@@ -59,15 +59,15 @@ class ClassificationFlowConfig:
     """
     # Particle parameters
     num_particles: int = 5000
-    particle_density: float = 1450.0       # [kg/m³] Typical flour/starch
+    particle_density: float = 1450.0       # [kg/m3] Typical flour/starch
     visual_particle_diameter: float = 0.002  # [m] 2mm for visualization
     
     # Air properties
-    air_density: float = 1.2               # [kg/m³] At ~20°C, 1 atm
+    air_density: float = 1.2               # [kg/m3] At ~20°C, 1 atm
     air_viscosity: float = 1.81e-5         # [Pa·s] Dynamic viscosity
     
     # Air flow rate - determines all air velocities
-    air_flow_rate_m3s: float = 0.1         # [m³/s] Volumetric flow rate (360 m³/h)
+    air_flow_rate_m3s: float = 0.1         # [m3/s] Volumetric flow rate (360 m3/h)
     
     # Collision parameters
     restitution: float = 0.3               # Coefficient of restitution (inelastic)
@@ -1441,13 +1441,19 @@ if wp is not None:
         duct_venturi_zigzag_end: wp.vec3,
         duct_venturi_zigzag_radius: float,
         
-        duct_zigzag_cyclone_start: wp.vec3,
-        duct_zigzag_cyclone_end: wp.vec3,
+        # Zigzag to cyclone path (includes 90° elbow)
+        duct_zigzag_cyclone_start: wp.vec3,    # Fines outlet position
+        duct_zigzag_cyclone_end: wp.vec3,      # Cyclone inlet position
         duct_zigzag_cyclone_radius: float,
+        elbow_zigzag_cyclone_pos: wp.vec3,     # Position where elbow turns
+        elbow_zigzag_cyclone_bend_radius: float,
         
-        duct_cyclone_bag_start: wp.vec3,
-        duct_cyclone_bag_end: wp.vec3,
+        # Cyclone to bag filter path (includes 90° elbow)
+        duct_cyclone_bag_start: wp.vec3,       # Cyclone overflow position
+        duct_cyclone_bag_end: wp.vec3,         # Bag filter inlet position
         duct_cyclone_bag_radius: float,
+        elbow_cyclone_bag_pos: wp.vec3,        # Position where elbow turns
+        elbow_cyclone_bag_bend_radius: float,
         
         # =====================================================================
         # PHYSICS PARAMETERS
@@ -1484,16 +1490,16 @@ if wp is not None:
         
         2. ZIGZAG SEPARATION (counter-current)
            - Air flows UP at velocity v_air_zigzag
-           - Particles with v_terminal < v_air → rise → FINES (protein)
-           - Particles with v_terminal > v_air → fall → COARSE (starch)
+           - Particles with v_terminal < v_air -> rise -> FINES (protein)
+           - Particles with v_terminal > v_air -> fall -> COARSE (starch)
            - Cut size d50 = sqrt(18*mu*v_air / (g*(rho_p-rho_f)))
         
         3. CYCLONE SEPARATION (centrifugal)
            - Tangential inlet creates swirling flow
-           - Centrifugal force: F_c = m*v_tan²/r → pushes particles OUT
-           - Drag force: F_d → pushes particles IN (toward vortex finder)
-           - Large particles → wall → dust outlet
-           - Small particles → vortex finder → next stage
+           - Centrifugal force: F_c = m*v_tan²/r -> pushes particles OUT
+           - Drag force: F_d -> pushes particles IN (toward vortex finder)
+           - Large particles -> wall -> dust outlet
+           - Small particles -> vortex finder -> next stage
         
         4. BAG FILTER (inertial impaction)
            - Remaining fines captured on filter bags
@@ -1616,36 +1622,76 @@ if wp is not None:
                 zone = 10  # Enter duct to zigzag
         
         # =====================================================================
-        # ZONE 10: DUCT - VENTURI TO ZIGZAG
+        # ZONE 10: DUCT - VENTURI TO ZIGZAG (includes round-to-rect transition)
+        # From assembly:
+        #   RoundDuct: pos=(0, 0.322, 0) D=72mm, L=36mm (venturi outlet)
+        #   Transition: pos=(0, 0.363, 0) round D=72mm -> rect 120x200mm, L=301mm
+        #   -> Zigzag air_inlet at (0, 0.669, 0)
         # =====================================================================
         elif zone == 10:
-            # Cylindrical duct, flow direction is +Y (upward)
+            # Flow direction is +Y (upward)
+            # Cross-section transitions from circular to rectangular
             
-            # Progress along duct
-            duct_length = wp.length(duct_venturi_zigzag_end - duct_venturi_zigzag_start)
-            progress = (pos[1] - duct_venturi_zigzag_start[1]) / (duct_venturi_zigzag_end[1] - duct_venturi_zigzag_start[1] + 0.001)
+            # Progress along duct (0 = venturi outlet, 1 = zigzag inlet)
+            duct_dy = duct_venturi_zigzag_end[1] - duct_venturi_zigzag_start[1]
+            progress = (pos[1] - duct_venturi_zigzag_start[1]) / (duct_dy + 0.001)
             progress = wp.clamp(progress, 0.0, 1.0)
             
-            # Center at this height
+            # Center at this height (may shift slightly)
             center_x = duct_venturi_zigzag_start[0] + progress * (duct_venturi_zigzag_end[0] - duct_venturi_zigzag_start[0])
             center_z = duct_venturi_zigzag_start[2] + progress * (duct_venturi_zigzag_end[2] - duct_venturi_zigzag_start[2])
             
             dx = pos[0] - center_x
             dz = pos[2] - center_z
-            r = wp.sqrt(dx * dx + dz * dz)
             
-            # Air velocity (constant through duct)
+            # Air velocity (constant through duct, upward)
             v_air = wp.vec3(0.0, v_air_zigzag, 0.0)
             
-            # Radial containment
-            if r + particle_radius > duct_venturi_zigzag_radius:
-                if r > 1.0e-6:
-                    normal = wp.vec3(-dx / r, 0.0, -dz / r)
-                    push = r + particle_radius - duct_venturi_zigzag_radius + 0.001
-                    pos = pos + normal * push
-                    vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+            # Transition from circular to rectangular cross-section
+            # First ~10% is round duct, then transition to rectangular
+            if progress < 0.1:
+                # Circular section (D=72mm -> radius=36mm)
+                r = wp.sqrt(dx * dx + dz * dz)
+                local_radius = duct_venturi_zigzag_radius
+                
+                if r + particle_radius > local_radius:
+                    if r > 1.0e-6:
+                        normal = wp.vec3(-dx / r, 0.0, -dz / r)
+                        push = r + particle_radius - local_radius + 0.001
+                        pos = pos + normal * push
+                        vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+            else:
+                # Transition to rectangular (morphing from circle to rect)
+                # At end: 120mm x 200mm (half_w=60mm, half_d=100mm)
+                trans_progress = (progress - 0.1) / 0.9
+                trans_progress = wp.clamp(trans_progress, 0.0, 1.0)
+                
+                # Dimensions morph from circular to rectangular
+                # Start: radius ~36mm (equivalent to ~64mm sides)
+                # End: 120mm x 200mm (60mm x 100mm half-dimensions)
+                half_w = duct_venturi_zigzag_radius + trans_progress * (zigzag_channel_width / 2.0 - duct_venturi_zigzag_radius)
+                half_d = duct_venturi_zigzag_radius + trans_progress * (zigzag_channel_depth / 2.0 - duct_venturi_zigzag_radius)
+                
+                # Rectangular containment (with rounded corners early in transition)
+                corner_blend = 1.0 - trans_progress  # 1.0=circular, 0.0=rectangular
+                
+                # X walls
+                if dx + particle_radius > half_w:
+                    pos = wp.vec3(center_x + half_w - particle_radius - 0.001, pos[1], pos[2])
+                    vel = reflect_velocity_inelastic(vel, wp.vec3(-1.0, 0.0, 0.0), restitution, friction)
+                elif dx - particle_radius < -half_w:
+                    pos = wp.vec3(center_x - half_w + particle_radius + 0.001, pos[1], pos[2])
+                    vel = reflect_velocity_inelastic(vel, wp.vec3(1.0, 0.0, 0.0), restitution, friction)
+                
+                # Z walls
+                if dz + particle_radius > half_d:
+                    pos = wp.vec3(pos[0], pos[1], center_z + half_d - particle_radius - 0.001)
+                    vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 0.0, -1.0), restitution, friction)
+                elif dz - particle_radius < -half_d:
+                    pos = wp.vec3(pos[0], pos[1], center_z - half_d + particle_radius + 0.001)
+                    vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 0.0, 1.0), restitution, friction)
             
-            # Transition to zigzag
+            # Transition to zigzag when reaching inlet
             if pos[1] >= zigzag_inlet_y - particle_radius * 2.0:
                 zone = 20  # Enter zigzag
         
@@ -1658,8 +1704,8 @@ if wp is not None:
             # - Air flows upward at v_air_zigzag
             # - Gravity pulls particles down
             # - Terminal velocity determines fate:
-            #   v_t < v_air → particle rises (fines/protein)
-            #   v_t > v_air → particle falls (coarse/starch)
+            #   v_t < v_air -> particle rises (fines/protein)
+            #   v_t > v_air -> particle falls (coarse/starch)
             
             local_y = pos[1] - zigzag_center[1]
             local_x = pos[0] - zigzag_center[0]
@@ -1715,44 +1761,157 @@ if wp is not None:
             is_active[tid] = 0
         
         # =====================================================================
-        # ZONE 22/40: FINES PATH - ZIGZAG TO CYCLONE
+        # ZONE 22: FINES PATH - VERTICAL TRANSITION AFTER ZIGZAG
+        # From assembly: Zigzag fines at (0.104, 1.689, 0) -> Transition -> Elbow at (0.104, 1.849, 0)
         # =====================================================================
-        elif zone == 22 or zone == 40:
-            # Transition from zigzag fines outlet to cyclone duct
-            zone = 41  # Enter horizontal duct to cyclones
-        
-        # =====================================================================
-        # ZONE 41: DUCT - ZIGZAG TO CYCLONE (horizontal)
-        # =====================================================================
-        elif zone == 41:
-            # Horizontal duct toward primary cyclone inlet
+        elif zone == 22:
+            # Particle moving up from zigzag fines outlet toward elbow
+            # Vertical duct section: fines outlet -> elbow inlet
             
-            # Progress along duct
-            dx_duct = duct_zigzag_cyclone_end[0] - duct_zigzag_cyclone_start[0]
-            progress = (pos[0] - duct_zigzag_cyclone_start[0]) / (dx_duct + 0.001)
-            progress = wp.clamp(progress, 0.0, 1.0)
+            local_x = pos[0] - duct_zigzag_cyclone_start[0]
+            local_z = pos[2] - duct_zigzag_cyclone_start[2]
+            r = wp.sqrt(local_x * local_x + local_z * local_z)
             
-            # Center at this position
-            center_y = duct_zigzag_cyclone_start[1] + progress * (duct_zigzag_cyclone_end[1] - duct_zigzag_cyclone_start[1])
-            center_z = duct_zigzag_cyclone_start[2] + progress * (duct_zigzag_cyclone_end[2] - duct_zigzag_cyclone_start[2])
-            
-            dy = pos[1] - center_y
-            dz = pos[2] - center_z
-            r = wp.sqrt(dy * dy + dz * dz)
-            
-            # Air velocity (horizontal toward cyclone)
-            v_air = wp.vec3(v_air_cyclone_inlet, 0.0, 0.0)
+            # Air velocity is upward in this vertical section
+            v_air = wp.vec3(0.0, v_air_cyclone_inlet * 0.8, 0.0)
             
             # Radial containment
             if r + particle_radius > duct_zigzag_cyclone_radius:
                 if r > 1.0e-6:
-                    normal = wp.vec3(0.0, -dy / r, -dz / r)
+                    normal = wp.vec3(-local_x / r, 0.0, -local_z / r)
                     push = r + particle_radius - duct_zigzag_cyclone_radius + 0.001
                     pos = pos + normal * push
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
             
-            # Transition to primary cyclone
-            if pos[0] >= cyclone_primary_center[0] - cyclone_primary_radius - particle_radius * 2.0:
+            # Transition to elbow when reaching elbow height
+            if pos[1] >= elbow_zigzag_cyclone_pos[1] - particle_radius * 2.0:
+                zone = 40  # Enter elbow
+        
+        # =====================================================================
+        # ZONE 40: 90° ELBOW - ZIGZAG TO CYCLONE (turns from +Y to +X)
+        # From assembly: Elbow at (0.104, 1.849, 0) D=119.7mm, 90°, R=179.5mm
+        # =====================================================================
+        elif zone == 40:
+            # In 90° elbow turning from vertical (+Y) to horizontal (+X)
+            # Model as curved path with centripetal acceleration
+            
+            # Elbow center is offset from inlet by bend radius in X direction
+            elbow_center_x = elbow_zigzag_cyclone_pos[0] + elbow_zigzag_cyclone_bend_radius
+            elbow_center_y = elbow_zigzag_cyclone_pos[1]
+            elbow_center_z = elbow_zigzag_cyclone_pos[2]
+            
+            # Position relative to elbow center
+            dx = pos[0] - elbow_center_x
+            dy = pos[1] - elbow_center_y
+            
+            # Angle in elbow (0 = inlet from below, 90° = exit to right)
+            angle = wp.atan2(dy, -dx)  # Angle from -X axis
+            
+            # Air velocity follows the elbow curve
+            # Tangential direction changes through the elbow
+            v_tan_mag = v_air_cyclone_inlet
+            v_air = wp.vec3(
+                v_tan_mag * wp.sin(angle),   # X component
+                v_tan_mag * wp.cos(angle),   # Y component
+                0.0
+            )
+            
+            # Distance from elbow centerline
+            r_from_axis = wp.sqrt(dx * dx + dy * dy)
+            dz = pos[2] - elbow_center_z
+            
+            # Containment to elbow cross-section
+            # Check radial distance from bend path
+            r_deviation = wp.abs(r_from_axis - elbow_zigzag_cyclone_bend_radius)
+            cross_r = wp.sqrt(r_deviation * r_deviation + dz * dz)
+            
+            if cross_r + particle_radius > duct_zigzag_cyclone_radius:
+                if cross_r > 1.0e-6:
+                    # Push toward centerline
+                    normal_r = (r_from_axis - elbow_zigzag_cyclone_bend_radius) / (r_deviation + 1.0e-6)
+                    normal = wp.vec3(
+                        -normal_r * dx / (r_from_axis + 1.0e-6),
+                        -normal_r * dy / (r_from_axis + 1.0e-6),
+                        -dz / (cross_r + 1.0e-6)
+                    )
+                    push = cross_r + particle_radius - duct_zigzag_cyclone_radius + 0.001
+                    pos = pos + wp.normalize(normal) * push
+                    vel = reflect_velocity_inelastic(vel, wp.normalize(normal), restitution, friction)
+            
+            # Transition to horizontal duct when angle > ~80° (exiting elbow)
+            if angle > 1.4 or pos[0] > elbow_zigzag_cyclone_pos[0] + elbow_zigzag_cyclone_bend_radius * 0.7:
+                zone = 41  # Enter horizontal duct to cyclones
+        
+        # =====================================================================
+        # ZONE 41: DUCT - ZIGZAG TO CYCLONE (horizontal, includes round-to-rect transition)
+        # From assembly:
+        #   After elbow: RoundDuct at (0.288, 2.029, 0) D=119.7mm L=150mm
+        #   Then: Transition at (0.443, 2.029, 0) round D=119.7mm -> rect 150x75mm L=100mm
+        #   -> Cyclone inlet at (0.548, 2.029, 0) W=75mm H=150mm
+        # =====================================================================
+        elif zone == 41:
+            # Horizontal duct toward primary cyclone inlet
+            # Flow direction is +X
+            
+            # Progress along horizontal section (from elbow exit to cyclone inlet)
+            x_start = elbow_zigzag_cyclone_pos[0] + elbow_zigzag_cyclone_bend_radius
+            dx_duct = duct_zigzag_cyclone_end[0] - x_start
+            progress = (pos[0] - x_start) / (dx_duct + 0.001)
+            progress = wp.clamp(progress, 0.0, 1.0)
+            
+            # Center at this X position (Y is constant at cyclone inlet height)
+            center_y = duct_zigzag_cyclone_end[1]
+            center_z = duct_zigzag_cyclone_start[2] + progress * (duct_zigzag_cyclone_end[2] - duct_zigzag_cyclone_start[2])
+            
+            dy = pos[1] - center_y
+            dz = pos[2] - center_z
+            
+            # Air velocity (horizontal toward cyclone)
+            v_air = wp.vec3(v_air_cyclone_inlet, 0.0, 0.0)
+            
+            # Cross-section: Round duct -> Round-to-rect transition -> Rectangular inlet
+            # First ~60% is round (D=119.7mm), then transition to rect (75x150mm)
+            if progress < 0.6:
+                # Circular section
+                r = wp.sqrt(dy * dy + dz * dz)
+                
+                if r + particle_radius > duct_zigzag_cyclone_radius:
+                    if r > 1.0e-6:
+                        normal = wp.vec3(0.0, -dy / r, -dz / r)
+                        push = r + particle_radius - duct_zigzag_cyclone_radius + 0.001
+                        pos = pos + normal * push
+                        vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+            else:
+                # Transition to rectangular (morph from circle to rect)
+                trans_progress = (progress - 0.6) / 0.4
+                trans_progress = wp.clamp(trans_progress, 0.0, 1.0)
+                
+                # Cyclone inlet is 75mm (W) x 150mm (H) -> half_w=37.5mm, half_h=75mm
+                # Note: W is in Z direction (depth), H is in Y direction (height)
+                cyclone_inlet_half_w = 0.0375  # 37.5mm
+                cyclone_inlet_half_h = 0.075   # 75mm
+                
+                # Morph dimensions
+                half_y = duct_zigzag_cyclone_radius + trans_progress * (cyclone_inlet_half_h - duct_zigzag_cyclone_radius)
+                half_z = duct_zigzag_cyclone_radius + trans_progress * (cyclone_inlet_half_w - duct_zigzag_cyclone_radius)
+                
+                # Rectangular containment
+                if dy + particle_radius > half_y:
+                    pos = wp.vec3(pos[0], center_y + half_y - particle_radius - 0.001, pos[2])
+                    vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, -1.0, 0.0), restitution, friction)
+                elif dy - particle_radius < -half_y:
+                    pos = wp.vec3(pos[0], center_y - half_y + particle_radius + 0.001, pos[2])
+                    vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 1.0, 0.0), restitution, friction)
+                
+                if dz + particle_radius > half_z:
+                    pos = wp.vec3(pos[0], pos[1], center_z + half_z - particle_radius - 0.001)
+                    vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 0.0, -1.0), restitution, friction)
+                elif dz - particle_radius < -half_z:
+                    pos = wp.vec3(pos[0], pos[1], center_z - half_z + particle_radius + 0.001)
+                    vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 0.0, 1.0), restitution, friction)
+            
+            # Transition to primary cyclone when reaching inlet
+            if pos[0] >= duct_zigzag_cyclone_end[0] - particle_radius * 2.0:
                 zone = 50  # Enter primary cyclone
         
         # =====================================================================
@@ -1814,8 +1973,8 @@ if wp is not None:
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
             
             # SEPARATION DECISION:
-            # - Particle at wall AND below cylinder → dust outlet
-            # - Particle in core AND above certain height → vortex finder → next stage
+            # - Particle at wall AND below cylinder -> dust outlet
+            # - Particle in core AND above certain height -> vortex finder -> next stage
             
             at_wall = r > wall_r * 0.8
             in_core = r < cyclone_primary_vf_radius * 1.5
@@ -1944,36 +2103,101 @@ if wp is not None:
             is_active[tid] = 0
         
         # =====================================================================
-        # ZONE 60-61: CYCLONE TO BAG FILTER PATH
+        # ZONE 60: 90° ELBOW - CYCLONE OVERFLOW TO BAG FILTER (turns from +Y to +X)
+        # From assembly: Elbow at (2.148, 2.209, 0) D=60mm, 90°, R=90mm
         # =====================================================================
-        elif zone == 60 or zone == 61:
-            # Duct from tertiary cyclone overflow to bag filter
+        elif zone == 60:
+            # In 90° elbow turning from vertical (+Y) to horizontal (+X)
             
-            # Progress along duct
-            dx_duct = duct_cyclone_bag_end[0] - duct_cyclone_bag_start[0]
-            progress = (pos[0] - duct_cyclone_bag_start[0]) / (dx_duct + 0.001)
+            # Elbow center is offset from inlet by bend radius in X direction
+            elbow_center_x = elbow_cyclone_bag_pos[0] + elbow_cyclone_bag_bend_radius
+            elbow_center_y = elbow_cyclone_bag_pos[1]
+            elbow_center_z = elbow_cyclone_bag_pos[2]
+            
+            # Position relative to elbow center
+            dx = pos[0] - elbow_center_x
+            dy = pos[1] - elbow_center_y
+            
+            # Angle in elbow
+            angle = wp.atan2(dy, -dx)
+            
+            # Air velocity follows the elbow curve
+            v_tan_mag = v_air_cyclone_inlet * 0.5
+            v_air = wp.vec3(
+                v_tan_mag * wp.sin(angle),
+                v_tan_mag * wp.cos(angle),
+                0.0
+            )
+            
+            # Distance from elbow centerline
+            r_from_axis = wp.sqrt(dx * dx + dy * dy)
+            dz = pos[2] - elbow_center_z
+            
+            # Containment to elbow cross-section
+            r_deviation = wp.abs(r_from_axis - elbow_cyclone_bag_bend_radius)
+            cross_r = wp.sqrt(r_deviation * r_deviation + dz * dz)
+            
+            if cross_r + particle_radius > duct_cyclone_bag_radius:
+                if cross_r > 1.0e-6:
+                    normal_r = (r_from_axis - elbow_cyclone_bag_bend_radius) / (r_deviation + 1.0e-6)
+                    normal = wp.vec3(
+                        -normal_r * dx / (r_from_axis + 1.0e-6),
+                        -normal_r * dy / (r_from_axis + 1.0e-6),
+                        -dz / (cross_r + 1.0e-6)
+                    )
+                    push = cross_r + particle_radius - duct_cyclone_bag_radius + 0.001
+                    pos = pos + wp.normalize(normal) * push
+                    vel = reflect_velocity_inelastic(vel, wp.normalize(normal), restitution, friction)
+            
+            # Transition to horizontal duct when exiting elbow
+            if angle > 1.4 or pos[0] > elbow_cyclone_bag_pos[0] + elbow_cyclone_bag_bend_radius * 0.7:
+                zone = 61  # Enter horizontal duct to bag filter
+        
+        # =====================================================================
+        # ZONE 61: HORIZONTAL DUCT - CYCLONE TO BAG FILTER
+        # From assembly: Duct at (2.243, 2.299, 0) D=60mm L=100mm -> Expansion to D=300mm L=565mm
+        # =====================================================================
+        elif zone == 61:
+            # Horizontal duct from elbow exit toward bag filter inlet
+            # Includes expansion transition from 60mm to 300mm
+            
+            # Progress along horizontal duct (X direction)
+            dx_duct = duct_cyclone_bag_end[0] - elbow_cyclone_bag_pos[0] - elbow_cyclone_bag_bend_radius
+            x_start = elbow_cyclone_bag_pos[0] + elbow_cyclone_bag_bend_radius
+            progress = (pos[0] - x_start) / (dx_duct + 0.001)
             progress = wp.clamp(progress, 0.0, 1.0)
             
-            center_y = duct_cyclone_bag_start[1] + progress * (duct_cyclone_bag_end[1] - duct_cyclone_bag_start[1])
-            center_z = duct_cyclone_bag_start[2] + progress * (duct_cyclone_bag_end[2] - duct_cyclone_bag_start[2])
+            # Center at this X position (constant Y and Z for horizontal duct)
+            center_y = duct_cyclone_bag_end[1]  # Constant height
+            center_z = duct_cyclone_bag_end[2]
+            
+            # Radius expands from 60mm to 300mm through transition
+            # Small duct: D=60mm (0.03m radius) for first ~100mm
+            # Expansion: D grows to 300mm (0.15m radius) over ~565mm
+            if progress < 0.15:
+                local_radius = duct_cyclone_bag_radius
+            else:
+                # Linear expansion
+                expansion_progress = (progress - 0.15) / 0.85
+                local_radius = duct_cyclone_bag_radius + expansion_progress * (0.15 - duct_cyclone_bag_radius)
             
             dy = pos[1] - center_y
             dz = pos[2] - center_z
             r = wp.sqrt(dy * dy + dz * dz)
             
-            # Air velocity
+            # Air velocity (horizontal toward bag filter)
             v_air = wp.vec3(v_air_cyclone_inlet * 0.5, 0.0, 0.0)
             
-            # Radial containment
-            if r + particle_radius > duct_cyclone_bag_radius:
+            # Radial containment with expanding radius
+            if r + particle_radius > local_radius:
                 if r > 1.0e-6:
                     normal = wp.vec3(0.0, -dy / r, -dz / r)
-                    push = r + particle_radius - duct_cyclone_bag_radius + 0.001
+                    push = r + particle_radius - local_radius + 0.001
                     pos = pos + normal * push
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
             
-            # Transition to bag filter
-            if pos[0] >= bagfilter_center[0] - bagfilter_half_width - particle_radius * 2.0:
+            # Transition to bag filter when reaching inlet
+            if pos[0] >= duct_cyclone_bag_end[0] - particle_radius * 2.0:
                 zone = 70  # Enter bag filter
         
         # =====================================================================
@@ -2298,8 +2522,8 @@ if wp is not None:
         G(d) = fraction of particles of diameter d that report to fines
         
         For protein separation:
-        - Want G(d_protein) → high (protein goes to fines)
-        - Want G(d_starch) → low (starch goes to coarse)
+        - Want G(d_protein) -> high (protein goes to fines)
+        - Want G(d_starch) -> low (starch goes to coarse)
         
         This kernel bins particles by diameter and tracks where they went.
         """
@@ -2355,8 +2579,8 @@ class ClassificationFlowPhysicsSimulator:
        
     2. ZIGZAG CLASSIFICATION
        - Counter-current air flow (up) vs. gravity (down)
-       - Light particles (protein) rise → fines outlet
-       - Heavy particles (starch) fall → coarse outlet
+       - Light particles (protein) rise -> fines outlet
+       - Heavy particles (starch) fall -> coarse outlet
        
     3. CYCLONE SEPARATION (staged)
        - Primary: removes coarsest fines
@@ -2410,6 +2634,9 @@ class ClassificationFlowPhysicsSimulator:
         print(f"\n  ClassificationFlowPhysicsSimulator initialized")
         print(f"    Device: {self.device}")
         print(f"    Max particles: {self.config.num_particles}")
+        
+        # Store flag for detailed output (can be disabled for batch runs)
+        self._print_detailed_flow = True
     
     def _compute_derived_parameters(self):
         """Compute physics parameters from geometry and config."""
@@ -2427,10 +2654,12 @@ class ClassificationFlowPhysicsSimulator:
                 return default
             return val
         
-        def get_geo_center(component_name: str, default: list):
+        def get_geo_center(component_name: str, default):
             """Get center from geometry component."""
             comp = geo.get(component_name)
             if comp is None or comp.center is None:
+                if default is None:
+                    return None
                 return np.array(default)
             return np.array(comp.center)
         
@@ -2455,91 +2684,267 @@ class ClassificationFlowPhysicsSimulator:
         self.venturi_solids_inlet_radius = get_geo_attr('venturi', 'solids_inlet_diameter', 0.05) / 2.0
         
         # =====================================================================
-        # ZIGZAG GEOMETRY
+        # ZIGZAG GEOMETRY (using actual port positions from assembly)
+        # From assembly inspection:
+        #   Position: (0.000, 0.729, 0.000) m
+        #   air_inlet: pos=(0.000, 0.669, 0.000) dir=(0, -1, 0)
+        #   fines_outlet: pos=(0.104, 1.689, 0.000) dir=(0, 1, 0)
+        #   coarse_outlet: pos=(0.000, 0.633, 0.000) dir=(0, -1, 0)
+        #   Channel: 120mm x 200mm, 5 stages, total height 900mm
         # =====================================================================
         self.zigzag_center = get_geo_center('zigzag', [0, 0.5, 0])
-        self.zigzag_channel_width = get_geo_attr('zigzag', 'channel_width', 0.15)
-        self.zigzag_channel_depth = get_geo_attr('zigzag', 'channel_depth', 0.15)
-        self.zigzag_total_height = get_geo_attr('zigzag', 'total_height', 1.5)
+        self.zigzag_channel_width = get_geo_attr('zigzag', 'channel_width', 0.12)  # 120mm
+        self.zigzag_channel_depth = get_geo_attr('zigzag', 'channel_depth', 0.20)  # 200mm
+        self.zigzag_total_height = get_geo_attr('zigzag', 'total_height', 0.90)    # 900mm
         if self.zigzag_total_height == 0:
-            self.zigzag_total_height = get_geo_attr('zigzag', 'length', 1.5)
-        self.zigzag_num_stages = get_geo_attr('zigzag', 'num_stages', 12)
+            self.zigzag_total_height = get_geo_attr('zigzag', 'length', 0.90)
+        self.zigzag_num_stages = get_geo_attr('zigzag', 'num_stages', 5)  # 5 stages
         self.zigzag_stage_height = self.zigzag_total_height / max(1, self.zigzag_num_stages)
         
-        # Zigzag inlet/outlet positions
-        self.zigzag_inlet_y = self.zigzag_center[1] - self.zigzag_total_height / 2
-        self.zigzag_fines_outlet_y = self.zigzag_center[1] + self.zigzag_total_height / 2
-        self.zigzag_coarse_outlet_y = self.zigzag_inlet_y - 0.05  # Below inlet
+        # Zigzag inlet/outlet positions - USE ACTUAL PORT POSITIONS from geometry
+        # The inlet_pos and outlet_pos are world coordinates, not relative to center
+        zigzag_geo = geo.get('zigzag')
+        if zigzag_geo is not None:
+            # Use actual port Y positions from extracted geometry
+            if zigzag_geo.inlet_pos is not None:
+                self.zigzag_inlet_y = float(zigzag_geo.inlet_pos[1])
+            else:
+                self.zigzag_inlet_y = self.zigzag_center[1] - self.zigzag_total_height / 2
+            
+            if zigzag_geo.fines_outlet_pos is not None:
+                self.zigzag_fines_outlet_y = float(zigzag_geo.fines_outlet_pos[1])
+            else:
+                self.zigzag_fines_outlet_y = self.zigzag_center[1] + self.zigzag_total_height / 2
+            
+            if zigzag_geo.coarse_outlet_pos is not None:
+                self.zigzag_coarse_outlet_y = float(zigzag_geo.coarse_outlet_pos[1])
+            else:
+                self.zigzag_coarse_outlet_y = self.zigzag_inlet_y - 0.05
+        else:
+            # Fallback calculations
+            self.zigzag_inlet_y = self.zigzag_center[1] - self.zigzag_total_height / 2
+            self.zigzag_fines_outlet_y = self.zigzag_center[1] + self.zigzag_total_height / 2
+            self.zigzag_coarse_outlet_y = self.zigzag_inlet_y - 0.05
         
         # =====================================================================
-        # PRIMARY CYCLONE
+        # CYCLONE GEOMETRY (from cyclone_stages in extracted geometry)
+        # From assembly inspection:
+        #   multi_cyclone position: (1.423, 2.154, 0.000) m
+        #   Primary:   D=300mm, d50=40um, H=1200mm, dust at (0.788, 0.894, 0)
+        #   Secondary: D=200mm, d50=20um, H=800mm,  dust at (1.588, 1.314, 0)
+        #   Tertiary:  D=120mm, d50=10um, H=480mm,  dust at (2.148, 1.650, 0)
+        #   inlet:    pos=(0.548, 2.029, 0.000) dir=(-1, 0, 0) W=75mm H=150mm
+        #   overflow: pos=(2.148, 2.204, 0.000) dir=(0, 1, 0) D=60mm
         # =====================================================================
-        self.cyclone_primary_center = get_geo_center('cyclone_primary', [0.5, 0.5, 0])
-        self.cyclone_primary_radius = get_geo_attr('cyclone_primary', 'radius', 0.15)
-        if self.cyclone_primary_radius == 0:
-            self.cyclone_primary_radius = get_geo_attr('cyclone_primary', 'cylinder_diameter', 0.30) / 2.0
-        self.cyclone_primary_cylinder_height = get_geo_attr('cyclone_primary', 'cylinder_height', 0.3)
-        self.cyclone_primary_cone_height = get_geo_attr('cyclone_primary', 'cone_height', 0.4)
-        self.cyclone_primary_vf_radius = get_geo_attr('cyclone_primary', 'vortex_finder_diameter', self.cyclone_primary_radius * 0.8) / 2.0
-        self.cyclone_primary_dust_y = self.cyclone_primary_center[1] - self.cyclone_primary_cylinder_height - self.cyclone_primary_cone_height
+        cyclone_stages = geo.get('cyclone_stages', {})
+        multi_cyclone_center = get_geo_center('multi_cyclone', [1.423, 2.154, 0])
         
-        # =====================================================================
-        # SECONDARY CYCLONE (smaller)
-        # =====================================================================
-        self.cyclone_secondary_center = get_geo_center('cyclone_secondary', [0.8, 0.5, 0])
-        self.cyclone_secondary_radius = get_geo_attr('cyclone_secondary', 'radius', 0.12)
-        if self.cyclone_secondary_radius == 0:
-            self.cyclone_secondary_radius = get_geo_attr('cyclone_secondary', 'cylinder_diameter', 0.24) / 2.0
-        self.cyclone_secondary_cylinder_height = get_geo_attr('cyclone_secondary', 'cylinder_height', 0.25)
-        self.cyclone_secondary_cone_height = get_geo_attr('cyclone_secondary', 'cone_height', 0.35)
-        self.cyclone_secondary_vf_radius = get_geo_attr('cyclone_secondary', 'vortex_finder_diameter', self.cyclone_secondary_radius * 0.8) / 2.0
-        self.cyclone_secondary_dust_y = self.cyclone_secondary_center[1] - self.cyclone_secondary_cylinder_height - self.cyclone_secondary_cone_height
+        # Helper to get cyclone stage data
+        def get_cyclone_stage(stage_name: str, defaults: dict):
+            """Get cyclone stage parameters with fallbacks."""
+            stage = cyclone_stages.get(stage_name, {})
+            if stage:
+                return {
+                    'position': stage.get('position', defaults['position']),
+                    'diameter': stage.get('diameter', defaults['diameter']),
+                    'cylinder_height': stage.get('cylinder_height', defaults['cylinder_height']),
+                    'cone_height': stage.get('cone_height', defaults['cone_height']),
+                    'vortex_finder_diameter': stage.get('vortex_finder_diameter', defaults['vortex_finder_diameter']),
+                    'dust_outlet_pos': stage.get('dust_outlet_pos', defaults.get('dust_outlet_pos')),
+                }
+            return defaults
         
-        # =====================================================================
-        # TERTIARY CYCLONE (smallest)
-        # =====================================================================
-        self.cyclone_tertiary_center = get_geo_center('cyclone_tertiary', [1.1, 0.5, 0])
-        self.cyclone_tertiary_radius = get_geo_attr('cyclone_tertiary', 'radius', 0.10)
-        if self.cyclone_tertiary_radius == 0:
-            self.cyclone_tertiary_radius = get_geo_attr('cyclone_tertiary', 'cylinder_diameter', 0.20) / 2.0
-        self.cyclone_tertiary_cylinder_height = get_geo_attr('cyclone_tertiary', 'cylinder_height', 0.2)
-        self.cyclone_tertiary_cone_height = get_geo_attr('cyclone_tertiary', 'cone_height', 0.3)
-        self.cyclone_tertiary_vf_radius = get_geo_attr('cyclone_tertiary', 'vortex_finder_diameter', self.cyclone_tertiary_radius * 0.8) / 2.0
-        self.cyclone_tertiary_dust_y = self.cyclone_tertiary_center[1] - self.cyclone_tertiary_cylinder_height - self.cyclone_tertiary_cone_height
+        # PRIMARY CYCLONE (D=300mm)
+        primary_defaults = {
+            'position': multi_cyclone_center,
+            'diameter': 0.30,
+            'cylinder_height': 0.30,  # ~300mm cylinder
+            'cone_height': 0.90,      # ~900mm cone (total H=1200mm)
+            'vortex_finder_diameter': 0.12,
+        }
+        primary = get_cyclone_stage('primary', primary_defaults)
+        # FIX: Stage position is already in world coordinates if available from extract_geometry
+        # Don't add multi_cyclone_center again - the position is already world coords
+        if cyclone_stages and 'position' in cyclone_stages.get('primary', {}):
+            # Position from extract_geometry is relative to multi_cyclone, so add center
+            self.cyclone_primary_center = np.array(primary['position']) + multi_cyclone_center
+        else:
+            self.cyclone_primary_center = np.array(multi_cyclone_center)
+        self.cyclone_primary_radius = primary['diameter'] / 2.0
+        self.cyclone_primary_cylinder_height = primary['cylinder_height']
+        self.cyclone_primary_cone_height = primary['cone_height']
+        self.cyclone_primary_vf_radius = primary['vortex_finder_diameter'] / 2.0
+        dust_pos = primary.get('dust_outlet_pos')
+        if dust_pos is not None:
+            self.cyclone_primary_dust_y = float(dust_pos[1])
+        else:
+            self.cyclone_primary_dust_y = self.cyclone_primary_center[1] - self.cyclone_primary_cylinder_height - self.cyclone_primary_cone_height
+        
+        # SECONDARY CYCLONE (D=200mm)
+        secondary_defaults = {
+            'position': multi_cyclone_center + np.array([0.4, 0, 0]),  # Offset in +X
+            'diameter': 0.20,
+            'cylinder_height': 0.20,  # ~200mm cylinder
+            'cone_height': 0.60,      # ~600mm cone (total H=800mm)
+            'vortex_finder_diameter': 0.08,
+        }
+        secondary = get_cyclone_stage('secondary', secondary_defaults)
+        if cyclone_stages and 'position' in cyclone_stages.get('secondary', {}):
+            self.cyclone_secondary_center = np.array(secondary['position']) + multi_cyclone_center
+        else:
+            self.cyclone_secondary_center = np.array(multi_cyclone_center) + np.array([0.4, 0, 0])
+        self.cyclone_secondary_radius = secondary['diameter'] / 2.0
+        self.cyclone_secondary_cylinder_height = secondary['cylinder_height']
+        self.cyclone_secondary_cone_height = secondary['cone_height']
+        self.cyclone_secondary_vf_radius = secondary['vortex_finder_diameter'] / 2.0
+        dust_pos = secondary.get('dust_outlet_pos')
+        if dust_pos is not None:
+            self.cyclone_secondary_dust_y = float(dust_pos[1])
+        else:
+            self.cyclone_secondary_dust_y = self.cyclone_secondary_center[1] - self.cyclone_secondary_cylinder_height - self.cyclone_secondary_cone_height
+        
+        # TERTIARY CYCLONE (D=120mm)
+        tertiary_defaults = {
+            'position': multi_cyclone_center + np.array([0.725, 0, 0]),  # Further +X
+            'diameter': 0.12,
+            'cylinder_height': 0.12,  # ~120mm cylinder
+            'cone_height': 0.36,      # ~360mm cone (total H=480mm)
+            'vortex_finder_diameter': 0.05,
+        }
+        tertiary = get_cyclone_stage('tertiary', tertiary_defaults)
+        if cyclone_stages and 'position' in cyclone_stages.get('tertiary', {}):
+            self.cyclone_tertiary_center = np.array(tertiary['position']) + multi_cyclone_center
+        else:
+            self.cyclone_tertiary_center = np.array(multi_cyclone_center) + np.array([0.725, 0, 0])
+        self.cyclone_tertiary_radius = tertiary['diameter'] / 2.0
+        self.cyclone_tertiary_cylinder_height = tertiary['cylinder_height']
+        self.cyclone_tertiary_cone_height = tertiary['cone_height']
+        self.cyclone_tertiary_vf_radius = tertiary['vortex_finder_diameter'] / 2.0
+        dust_pos = tertiary.get('dust_outlet_pos')
+        if dust_pos is not None:
+            self.cyclone_tertiary_dust_y = float(dust_pos[1])
+        else:
+            self.cyclone_tertiary_dust_y = self.cyclone_tertiary_center[1] - self.cyclone_tertiary_cylinder_height - self.cyclone_tertiary_cone_height
         
         # =====================================================================
         # BAG FILTER
         # =====================================================================
-        self.bagfilter_center = get_geo_center('bagfilter', [1.5, 0.5, 0])
-        self.bagfilter_half_width = get_geo_attr('bagfilter', 'housing_width', 0.4) / 2
-        self.bagfilter_half_depth = get_geo_attr('bagfilter', 'housing_depth', 0.4) / 2
-        self.bagfilter_height = get_geo_attr('bagfilter', 'housing_height', 1.0)
+        # Try both 'bag_filter' and 'bagfilter' keys for compatibility
+        self.bagfilter_center = get_geo_center('bag_filter', None)
+        if self.bagfilter_center is None:
+            self.bagfilter_center = get_geo_center('bagfilter', [1.5, 0.5, 0])
+        
+        self.bagfilter_half_width = get_geo_attr('bag_filter', 'housing_width', None)
+        if self.bagfilter_half_width is None:
+            self.bagfilter_half_width = get_geo_attr('bagfilter', 'housing_width', 0.4)
+        self.bagfilter_half_width = self.bagfilter_half_width / 2
+        
+        self.bagfilter_half_depth = get_geo_attr('bag_filter', 'housing_depth', None)
+        if self.bagfilter_half_depth is None:
+            self.bagfilter_half_depth = get_geo_attr('bagfilter', 'housing_depth', 0.4)
+        self.bagfilter_half_depth = self.bagfilter_half_depth / 2
+        
+        self.bagfilter_height = get_geo_attr('bag_filter', 'housing_height', None)
+        if self.bagfilter_height is None:
+            self.bagfilter_height = get_geo_attr('bagfilter', 'housing_height', 1.0)
+        
         self.bagfilter_inlet_y = self.bagfilter_center[1]
         self.bagfilter_outlet_y = self.bagfilter_center[1] + self.bagfilter_height / 2
         self.bagfilter_dust_y = self.bagfilter_center[1] - self.bagfilter_height / 2
         
         # =====================================================================
-        # DUCT/CONNECTION GEOMETRY
+        # DUCT/CONNECTION GEOMETRY (using actual port positions)
         # =====================================================================
         connections = geo.get('connections', {})
         
+        # Get actual port positions from geometry for accurate particle flow
+        venturi_geo = geo.get('venturi')
+        zigzag_geo = geo.get('zigzag')
+        multi_cyclone_geo = geo.get('multi_cyclone')
+        bag_filter_geo = geo.get('bag_filter')
+        
         # Venturi to zigzag duct
+        # From assembly: Venturi outlet at Y=0.317m, Zigzag air_inlet at Y=0.669m
         conn_v_z = connections.get('venturi_to_zigzag', {})
-        self.duct_venturi_zigzag_start = np.array(conn_v_z.get('start', self.venturi_center + [0, self.venturi_total_length, 0]))
-        self.duct_venturi_zigzag_end = np.array(conn_v_z.get('end', [self.zigzag_center[0], self.zigzag_inlet_y, self.zigzag_center[2]]))
-        self.duct_venturi_zigzag_radius = conn_v_z.get('radius', 0.04)
         
-        # Zigzag to cyclone duct
+        # Use actual port positions if available (extract_geometry stores as 'start_pos'/'end_pos')
+        if 'start_pos' in conn_v_z:
+            self.duct_venturi_zigzag_start = np.array(conn_v_z['start_pos'])
+        else:
+            # Fallback: venturi outlet position
+            self.duct_venturi_zigzag_start = venturi_geo.outlet_pos if venturi_geo else self.venturi_center + np.array([0, self.venturi_total_length, 0])
+        
+        if 'end_pos' in conn_v_z:
+            self.duct_venturi_zigzag_end = np.array(conn_v_z['end_pos'])
+        else:
+            # Fallback: zigzag inlet position
+            self.duct_venturi_zigzag_end = zigzag_geo.inlet_pos if zigzag_geo else np.array([self.zigzag_center[0], self.zigzag_inlet_y, self.zigzag_center[2]])
+        
+        # Use actual outlet diameter / 2 as radius
+        if 'start_diameter' in conn_v_z:
+            self.duct_venturi_zigzag_radius = conn_v_z['start_diameter'] / 2.0
+        else:
+            self.duct_venturi_zigzag_radius = 0.036  # 72mm diameter / 2
+        
+        # Zigzag to cyclone path (includes 90° elbow!)
+        # From assembly: Fines outlet at (0.104, 1.689, 0) -> Elbow at (0.104, 1.849, 0) -> horizontal to cyclone inlet at (0.548, 2.029, 0)
         conn_z_c = connections.get('zigzag_to_cyclone', {})
-        self.duct_zigzag_cyclone_start = np.array(conn_z_c.get('start', [self.zigzag_center[0], self.zigzag_fines_outlet_y, self.zigzag_center[2]]))
-        self.duct_zigzag_cyclone_end = np.array(conn_z_c.get('end', self.cyclone_primary_center))
-        self.duct_zigzag_cyclone_radius = conn_z_c.get('radius', 0.04)
         
-        # Cyclone to bag filter duct
+        if 'start_pos' in conn_z_c:
+            self.duct_zigzag_cyclone_start = np.array(conn_z_c['start_pos'])
+        else:
+            self.duct_zigzag_cyclone_start = zigzag_geo.fines_outlet_pos if zigzag_geo else np.array([self.zigzag_center[0], self.zigzag_fines_outlet_y, self.zigzag_center[2]])
+        
+        if 'end_pos' in conn_z_c:
+            self.duct_zigzag_cyclone_end = np.array(conn_z_c['end_pos'])
+        else:
+            self.duct_zigzag_cyclone_end = multi_cyclone_geo.inlet_pos if multi_cyclone_geo else self.cyclone_primary_center
+        
+        # Compute elbow position (where vertical duct meets horizontal)
+        # From assembly: Elbow at (0.104, 1.849, 0) with R=179.5mm
+        # After elbow, horizontal duct is at Y=2.029m
+        self.elbow_zigzag_cyclone_pos = np.array([
+            self.duct_zigzag_cyclone_start[0],  # X same as fines outlet
+            self.duct_zigzag_cyclone_end[1],    # Y at cyclone inlet height
+            self.duct_zigzag_cyclone_start[2]   # Z same as fines outlet
+        ])
+        self.elbow_zigzag_cyclone_radius = 0.060  # ~120mm diameter / 2
+        self.elbow_zigzag_cyclone_bend_radius = 0.180  # 180mm bend radius
+        
+        # Use actual dimensions
+        if 'avg_radius' in conn_z_c:
+            self.duct_zigzag_cyclone_radius = conn_z_c['avg_radius']
+        else:
+            self.duct_zigzag_cyclone_radius = 0.060  # ~120mm diameter duct
+        
+        # Cyclone to bag filter path (also includes 90° elbow!)
+        # From assembly: Overflow at (2.148, 2.204, 0) -> Elbow at (2.148, 2.209, 0) -> horizontal to bag filter inlet at (2.918, 2.299, 0)
         conn_c_b = connections.get('cyclone_to_bagfilter', {})
-        self.duct_cyclone_bag_start = np.array(conn_c_b.get('start', self.cyclone_tertiary_center + [0, 0.1, 0]))
-        self.duct_cyclone_bag_end = np.array(conn_c_b.get('end', self.bagfilter_center))
-        self.duct_cyclone_bag_radius = conn_c_b.get('radius', 0.04)
+        
+        if 'start_pos' in conn_c_b:
+            self.duct_cyclone_bag_start = np.array(conn_c_b['start_pos'])
+        else:
+            self.duct_cyclone_bag_start = multi_cyclone_geo.outlet_pos if multi_cyclone_geo else self.cyclone_tertiary_center + np.array([0, 0.1, 0])
+        
+        if 'end_pos' in conn_c_b:
+            self.duct_cyclone_bag_end = np.array(conn_c_b['end_pos'])
+        else:
+            self.duct_cyclone_bag_end = bag_filter_geo.inlet_pos if bag_filter_geo else self.bagfilter_center
+        
+        # Elbow for cyclone to bag filter path
+        self.elbow_cyclone_bag_pos = np.array([
+            self.duct_cyclone_bag_start[0],  # X same as overflow
+            self.duct_cyclone_bag_end[1],    # Y at bag filter inlet height
+            self.duct_cyclone_bag_start[2]   # Z same as overflow
+        ])
+        self.elbow_cyclone_bag_radius = 0.030  # 60mm diameter / 2
+        self.elbow_cyclone_bag_bend_radius = 0.090  # 90mm bend radius
+        
+        # Use actual dimensions
+        if 'avg_radius' in conn_c_b:
+            self.duct_cyclone_bag_radius = conn_c_b['avg_radius']
+        else:
+            self.duct_cyclone_bag_radius = 0.030  # 60mm diameter initially, expands to 300mm
         
         # =====================================================================
         # AIR VELOCITIES
@@ -2593,27 +2998,39 @@ class ClassificationFlowPhysicsSimulator:
         self.system_max = np.max(all_centers, axis=0) + np.array([1.0, 2.0, 1.0])
         
         # =====================================================================
+        # STORE COMPUTED VALUES FOR DETAILED FLOW PRINTING
+        # =====================================================================
+        self._Q_air = Q_air
+        self._A_venturi_inlet = A_venturi_inlet
+        self._A_zigzag = A_zigzag
+        self._A_cyclone_inlet = A_cyclone_inlet
+        self._g = g
+        self._rho_p = rho_p
+        self._rho_f = rho_f
+        self._mu = mu
+        
+        # =====================================================================
         # PRINT SUMMARY
         # =====================================================================
         print(f"\n  Classification Physics Parameters:")
         print(f"\n    Air Flow:")
-        print(f"      Flow rate:       {Q_air * 3600:.0f} m³/h")
+        print(f"      Flow rate:       {Q_air * 3600:.0f} m3/h")
         print(f"      Venturi inlet:   {self.v_air_venturi_inlet:.1f} m/s")
         print(f"      Zigzag:          {self.v_air_zigzag:.2f} m/s")
         print(f"      Cyclone inlet:   {self.v_air_cyclone_inlet:.1f} m/s")
         
         print(f"\n    Cut Sizes (d50):")
-        print(f"      Zigzag:          {self.zigzag_d50 * 1e6:.1f} µm")
-        print(f"      Cyclone:         {self.cyclone_d50 * 1e6:.1f} µm")
+        print(f"      Zigzag:          {self.zigzag_d50 * 1e6:.1f} um")
+        print(f"      Cyclone:         {self.cyclone_d50 * 1e6:.1f} um")
         
         print(f"\n    For protein separation:")
-        print(f"      Protein:         ~10-30 µm (should go to fines)")
-        print(f"      Starch:          ~15-60 µm (should go to coarse)")
+        print(f"      Protein:         ~10-30 um (should go to fines)")
+        print(f"      Starch:          ~15-60 um (should go to coarse)")
         
         if self.zigzag_d50 * 1e6 < 15:
-            print(f"      Status: Zigzag d50 ({self.zigzag_d50*1e6:.1f}µm) < 15µm - good for protein recovery")
+            print(f"      Status: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) < 15um - good for protein recovery")
         else:
-            print(f"      WARNING: Zigzag d50 ({self.zigzag_d50*1e6:.1f}µm) > 15µm - may lose protein to coarse")
+            print(f"      WARNING: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) > 15um - may lose protein to coarse")
             print(f"               Consider increasing air velocity or reducing channel size")
     
     def _allocate_arrays(self):
@@ -2652,11 +3069,479 @@ class ClassificationFlowPhysicsSimulator:
         self._count_escaped = wp.zeros(1, dtype=wp.int32, device=self.device)
         self._count_active = wp.zeros(1, dtype=wp.int32, device=self.device)
     
+    def print_detailed_flow_path(self):
+        """
+        Print detailed material flow path with all underlying computed calculations.
+        
+        Shows exact coordinates, velocities, areas, Reynolds numbers, and 
+        separation physics for each flow segment.
+        """
+        print("\n" + "=" * 80)
+        print("DETAILED MATERIAL FLOW PATH - CLASSIFICATION SYSTEM")
+        print("=" * 80)
+        
+        Q = self._Q_air
+        rho_f = self._rho_f
+        rho_p = self._rho_p
+        mu = self._mu
+        g = self._g
+        
+        # Helper functions
+        def compute_Re_circular(v, D):
+            """Reynolds number for circular duct."""
+            return rho_f * v * D / mu
+        
+        def compute_Re_rectangular(v, W, H):
+            """Reynolds number for rectangular duct using hydraulic diameter."""
+            D_h = 4 * W * H / (2 * (W + H))
+            return rho_f * v * D_h / mu
+        
+        def terminal_velocity(d_p):
+            """Terminal velocity for Stokes regime."""
+            return (d_p ** 2 * (rho_p - rho_f) * g) / (18 * mu)
+        
+        def flow_regime(Re):
+            """Determine flow regime."""
+            if Re < 2300:
+                return "LAMINAR"
+            elif Re < 4000:
+                return "TRANSITIONAL"
+            else:
+                return "TURBULENT"
+        
+        segment_num = 0
+        
+        # =====================================================================
+        # SEGMENT 1: VENTURI EDUCTOR
+        # =====================================================================
+        segment_num += 1
+        print(f"\n{'-' * 80}")
+        print(f"SEGMENT {segment_num}: VENTURI EDUCTOR (Particle Entrainment)")
+        print(f"{'-' * 80}")
+        
+        print(f"\n  GEOMETRY:")
+        print(f"    Center position:     ({self.venturi_center[0]*1000:.1f}, {self.venturi_center[1]*1000:.1f}, {self.venturi_center[2]*1000:.1f}) mm")
+        print(f"    Inlet diameter:      {self.venturi_inlet_diameter*1000:.1f} mm")
+        print(f"    Throat diameter:     {self.venturi_throat_diameter*1000:.1f} mm")
+        print(f"    Outlet diameter:     {self.venturi_outlet_diameter*1000:.1f} mm")
+        print(f"    Total length:        {self.venturi_total_length*1000:.1f} mm")
+        print(f"    Throat region:       Y = {self.venturi_throat_start*1000:.1f} to {self.venturi_throat_end*1000:.1f} mm")
+        
+        print(f"\n  SOLIDS INLET (Feed entry point):")
+        print(f"    Position:            ({self.venturi_solids_inlet_pos[0]*1000:.1f}, {self.venturi_solids_inlet_pos[1]*1000:.1f}, {self.venturi_solids_inlet_pos[2]*1000:.1f}) mm")
+        print(f"    Diameter:            {self.venturi_solids_inlet_radius*2*1000:.1f} mm")
+        print(f"    Direction:           Angled into throat (Coanda effect)")
+        
+        print(f"\n  FLOW CALCULATIONS:")
+        A_inlet = np.pi * (self.venturi_inlet_diameter/2)**2
+        A_throat = np.pi * (self.venturi_throat_diameter/2)**2
+        A_outlet = np.pi * (self.venturi_outlet_diameter/2)**2
+        v_inlet = Q / A_inlet
+        v_throat = Q / A_throat
+        v_outlet = Q / A_outlet
+        
+        print(f"    Volumetric flow Q:   {Q*1000:.2f} L/s = {Q*3600:.0f} m3/h")
+        print(f"    Inlet  (A={A_inlet*1e4:.2f} cm2):  v = Q/A = {v_inlet:.2f} m/s")
+        print(f"    Throat (A={A_throat*1e4:.2f} cm2):  v = Q/A = {v_throat:.2f} m/s")
+        print(f"    Outlet (A={A_outlet*1e4:.2f} cm2):  v = Q/A = {v_outlet:.2f} m/s")
+        
+        Re_inlet = compute_Re_circular(v_inlet, self.venturi_inlet_diameter)
+        Re_throat = compute_Re_circular(v_throat, self.venturi_throat_diameter)
+        print(f"\n  REYNOLDS NUMBERS:")
+        print(f"    Re_inlet  = rho*v*D/mu = {Re_inlet:.0f} ({flow_regime(Re_inlet)})")
+        print(f"    Re_throat = rho*v*D/mu = {Re_throat:.0f} ({flow_regime(Re_throat)})")
+        
+        print(f"\n  BERNOULLI PRESSURE DROP AT THROAT:")
+        delta_P = 0.5 * rho_f * (v_throat**2 - v_inlet**2)
+        print(f"    dP = 0.5*rho*(v2_throat - v2_inlet)")
+        print(f"       = 0.5 x {rho_f} x ({v_throat:.2f}^2 - {v_inlet:.2f}^2)")
+        print(f"       = {delta_P:.1f} Pa = {delta_P/1000:.3f} kPa")
+        print(f"    This suction draws particles from solids inlet")
+        
+        print(f"\n  PARTICLE ENTRY (Zone 0 -> 1 -> 2):")
+        print(f"    Zone 0: Solids inlet -> entering throat")
+        print(f"    Zone 1: Throat region (high velocity entrainment)")
+        print(f"    Zone 2: Divergent section -> outlet")
+        print(f"    Exit at Y = {self.venturi_total_length*1000:.1f} mm -> Zone 10")
+        
+        # =====================================================================
+        # SEGMENT 2: VENTURI -> ZIGZAG DUCT
+        # =====================================================================
+        segment_num += 1
+        print(f"\n{'-' * 80}")
+        print(f"SEGMENT {segment_num}: DUCT - VENTURI TO ZIGZAG (Round -> Rectangular Transition)")
+        print(f"{'-' * 80}")
+        
+        print(f"\n  PATH COORDINATES:")
+        print(f"    Start (venturi outlet): ({self.duct_venturi_zigzag_start[0]*1000:.1f}, {self.duct_venturi_zigzag_start[1]*1000:.1f}, {self.duct_venturi_zigzag_start[2]*1000:.1f}) mm")
+        print(f"    End (zigzag inlet):     ({self.duct_venturi_zigzag_end[0]*1000:.1f}, {self.duct_venturi_zigzag_end[1]*1000:.1f}, {self.duct_venturi_zigzag_end[2]*1000:.1f}) mm")
+        
+        duct_length_vz = np.linalg.norm(self.duct_venturi_zigzag_end - self.duct_venturi_zigzag_start)
+        print(f"    Path length:            {duct_length_vz*1000:.1f} mm")
+        print(f"    Flow direction:         +Y (upward)")
+        
+        print(f"\n  CROSS-SECTION TRANSITION:")
+        print(f"    Start: Circular D = {self.duct_venturi_zigzag_radius*2*1000:.1f} mm (A = {np.pi*(self.duct_venturi_zigzag_radius)**2*1e4:.2f} cm2)")
+        print(f"    End:   Rectangular {self.zigzag_channel_width*1000:.0f} x {self.zigzag_channel_depth*1000:.0f} mm (A = {self._A_zigzag*1e4:.2f} cm2)")
+        
+        v_duct_start = Q / (np.pi * self.duct_venturi_zigzag_radius**2)
+        v_duct_end = Q / self._A_zigzag
+        print(f"\n  VELOCITY CHANGE (continuity):")
+        print(f"    Start: v = Q/A = {v_duct_start:.2f} m/s")
+        print(f"    End:   v = Q/A = {v_duct_end:.2f} m/s")
+        
+        print(f"\n  PARTICLE ZONE: Zone 10")
+        print(f"    Transition to Zone 20 at Y = {self.zigzag_inlet_y*1000:.1f} mm")
+        
+        # =====================================================================
+        # SEGMENT 3: ZIGZAG CLASSIFIER
+        # =====================================================================
+        segment_num += 1
+        print(f"\n{'-' * 80}")
+        print(f"SEGMENT {segment_num}: ZIGZAG CLASSIFIER (Primary Separation)")
+        print(f"{'-' * 80}")
+        
+        print(f"\n  GEOMETRY:")
+        print(f"    Center position:     ({self.zigzag_center[0]*1000:.1f}, {self.zigzag_center[1]*1000:.1f}, {self.zigzag_center[2]*1000:.1f}) mm")
+        print(f"    Channel width:       {self.zigzag_channel_width*1000:.0f} mm")
+        print(f"    Channel depth:       {self.zigzag_channel_depth*1000:.0f} mm")
+        print(f"    Number of stages:    {self.zigzag_num_stages}")
+        print(f"    Stage height:        {self.zigzag_stage_height*1000:.1f} mm")
+        print(f"    Total height:        {self.zigzag_total_height*1000:.0f} mm")
+        
+        print(f"\n  PORT POSITIONS (World Coordinates):")
+        print(f"    Air inlet (bottom):  Y = {self.zigzag_inlet_y*1000:.1f} mm, dir = (0, -1, 0)")
+        print(f"    Fines outlet (top):  Y = {self.zigzag_fines_outlet_y*1000:.1f} mm, dir = (0, +1, 0)")
+        print(f"    Coarse outlet:       Y = {self.zigzag_coarse_outlet_y*1000:.1f} mm, dir = (0, -1, 0)")
+        
+        print(f"\n  FLOW CALCULATIONS:")
+        print(f"    Cross-section A:     {self._A_zigzag*1e4:.2f} cm2 = {self._A_zigzag*1e6:.0f} mm2")
+        print(f"    Upward air velocity: v = Q/A = {self.v_air_zigzag:.3f} m/s")
+        
+        Re_zigzag = compute_Re_rectangular(self.v_air_zigzag, self.zigzag_channel_width, self.zigzag_channel_depth)
+        print(f"    Re (hydraulic):      {Re_zigzag:.0f} ({flow_regime(Re_zigzag)})")
+        
+        print(f"\n  SEPARATION PHYSICS (Counter-current classification):")
+        print(f"    Air flows UP at v_air = {self.v_air_zigzag:.3f} m/s")
+        print(f"    Gravity pulls DOWN at g = {g} m/s2")
+        print(f"    Particle terminal velocity: v_t = d^2*(rho_p-rho_f)*g / 18*mu")
+        print(f"    ")
+        print(f"    CUT SIZE CALCULATION (d50):")
+        print(f"      d50 = sqrt(18*mu*v_air / (g*(rho_p-rho_f)))")
+        print(f"          = sqrt(18 x {mu:.2e} x {self.v_air_zigzag:.3f} / ({g} x ({rho_p}-{rho_f})))")
+        print(f"          = sqrt({18*mu*self.v_air_zigzag:.6e} / {g*(rho_p-rho_f):.2f})")
+        print(f"          = {self.zigzag_d50*1e6:.1f} um")
+        
+        print(f"\n    PARTICLE FATE BY SIZE:")
+        for d_um in [10, 20, 30, 40, 50, 60]:
+            d_m = d_um * 1e-6
+            v_t = terminal_velocity(d_m)
+            fate = "FINES (protein)" if v_t < self.v_air_zigzag else "COARSE (starch)"
+            print(f"      d = {d_um:3d} um: v_t = {v_t*1000:.2f} mm/s {'<' if v_t < self.v_air_zigzag else '>'} v_air = {self.v_air_zigzag*1000:.2f} mm/s -> {fate}")
+        
+        print(f"\n  PARTICLE ZONES:")
+        print(f"    Zone 20: Entering zigzag from below")
+        print(f"    Zone 21: In zigzag stages (separation in progress)")
+        print(f"    Zone 22: Rising particles -> Fines outlet -> Zone 40")
+        print(f"    Zone 30: Falling particles -> Coarse outlet (COLLECTED)")
+        
+        # =====================================================================
+        # SEGMENT 4: ZIGZAG -> CYCLONE TRANSITION + ELBOW
+        # =====================================================================
+        segment_num += 1
+        print(f"\n{'-' * 80}")
+        print(f"SEGMENT {segment_num}: ZIGZAG -> CYCLONE PATH (Transition + 90° Elbow + Duct)")
+        print(f"{'-' * 80}")
+        
+        print(f"\n  PATH OVERVIEW:")
+        print(f"    Start: Zigzag fines outlet ({self.duct_zigzag_cyclone_start[0]*1000:.1f}, {self.duct_zigzag_cyclone_start[1]*1000:.1f}, {self.duct_zigzag_cyclone_start[2]*1000:.1f}) mm")
+        print(f"    Elbow: Turn point          ({self.elbow_zigzag_cyclone_pos[0]*1000:.1f}, {self.elbow_zigzag_cyclone_pos[1]*1000:.1f}, {self.elbow_zigzag_cyclone_pos[2]*1000:.1f}) mm")
+        print(f"    End:   Cyclone inlet       ({self.duct_zigzag_cyclone_end[0]*1000:.1f}, {self.duct_zigzag_cyclone_end[1]*1000:.1f}, {self.duct_zigzag_cyclone_end[2]*1000:.1f}) mm")
+        
+        vert_length = self.elbow_zigzag_cyclone_pos[1] - self.duct_zigzag_cyclone_start[1]
+        horiz_length = self.duct_zigzag_cyclone_end[0] - self.elbow_zigzag_cyclone_pos[0]
+        print(f"\n  SEGMENT LENGTHS:")
+        print(f"    Vertical (rect->round trans): {vert_length*1000:.1f} mm")
+        print(f"    90° Elbow (bend radius):     {self.elbow_zigzag_cyclone_bend_radius*1000:.1f} mm")
+        print(f"    Horizontal to cyclone:       {horiz_length*1000:.1f} mm")
+        
+        print(f"\n  CROSS-SECTION:")
+        print(f"    Duct diameter:   {self.duct_zigzag_cyclone_radius*2*1000:.1f} mm")
+        A_duct = np.pi * self.duct_zigzag_cyclone_radius**2
+        v_duct = Q / A_duct
+        print(f"    Area:            {A_duct*1e4:.2f} cm2")
+        print(f"    Velocity:        v = Q/A = {v_duct:.2f} m/s")
+        
+        print(f"\n  90° ELBOW PHYSICS:")
+        print(f"    Inlet direction:  +Y (upward)")
+        print(f"    Outlet direction: +X (horizontal)")
+        print(f"    Bend radius:      {self.elbow_zigzag_cyclone_bend_radius*1000:.1f} mm")
+        print(f"    Centripetal acc:  a = v^2/R = {v_duct**2/self.elbow_zigzag_cyclone_bend_radius:.1f} m/s2")
+        
+        print(f"\n  PARTICLE ZONES:")
+        print(f"    Zone 22: Vertical transition after zigzag fines outlet")
+        print(f"    Zone 40: In 90° elbow (turning from +Y to +X)")
+        print(f"    Zone 41: Horizontal duct to cyclone inlet")
+        print(f"    Transition to Zone 50 at X = {self.duct_zigzag_cyclone_end[0]*1000:.1f} mm")
+        
+        # =====================================================================
+        # SEGMENT 5: MULTI-CYCLONE SYSTEM
+        # =====================================================================
+        segment_num += 1
+        print(f"\n{'-' * 80}")
+        print(f"SEGMENT {segment_num}: MULTI-CYCLONE SYSTEM (Staged Centrifugal Separation)")
+        print(f"{'-' * 80}")
+        
+        print(f"\n  INLET:")
+        print(f"    Position:    ({self.duct_zigzag_cyclone_end[0]*1000:.1f}, {self.duct_zigzag_cyclone_end[1]*1000:.1f}, {self.duct_zigzag_cyclone_end[2]*1000:.1f}) mm")
+        print(f"    Direction:   (-1, 0, 0) - tangential entry")
+        print(f"    Inlet vel:   {self.v_air_cyclone_inlet:.1f} m/s")
+        
+        cyclones = [
+            ("PRIMARY", self.cyclone_primary_center, self.cyclone_primary_radius*2,
+             self.cyclone_primary_cylinder_height, self.cyclone_primary_cone_height,
+             self.cyclone_primary_vf_radius*2, self.cyclone_primary_dust_y, 50, 55, "SECONDARY"),
+            ("SECONDARY", self.cyclone_secondary_center, self.cyclone_secondary_radius*2,
+             self.cyclone_secondary_cylinder_height, self.cyclone_secondary_cone_height,
+             self.cyclone_secondary_vf_radius*2, self.cyclone_secondary_dust_y, 51, 56, "TERTIARY"),
+            ("TERTIARY", self.cyclone_tertiary_center, self.cyclone_tertiary_radius*2,
+             self.cyclone_tertiary_cylinder_height, self.cyclone_tertiary_cone_height,
+             self.cyclone_tertiary_vf_radius*2, self.cyclone_tertiary_dust_y, 52, 57, "BAG FILTER"),
+        ]
+        
+        for name, center, D, H_cyl, H_cone, D_vf, dust_y, zone_in, zone_dust, next_stage in cyclones:
+            print(f"\n  {name} CYCLONE:")
+            print(f"    Center:           ({center[0]*1000:.1f}, {center[1]*1000:.1f}, {center[2]*1000:.1f}) mm")
+            print(f"    Body diameter:    {D*1000:.0f} mm")
+            print(f"    Cylinder height:  {H_cyl*1000:.0f} mm")
+            print(f"    Cone height:      {H_cone*1000:.0f} mm")
+            print(f"    Vortex finder D:  {D_vf*1000:.0f} mm")
+            print(f"    Dust outlet Y:    {dust_y*1000:.1f} mm")
+            
+            # Cyclone separation physics
+            v_tan = self.v_air_cyclone_inlet * (0.8 if "SECONDARY" in name else 0.6 if "TERTIARY" in name else 1.0)
+            R = D / 2
+            omega = v_tan / R
+            print(f"\n    SEPARATION PHYSICS:")
+            print(f"      Tangential velocity: v_tan ~ {v_tan:.1f} m/s")
+            print(f"      Angular velocity:    w = v/R = {omega:.1f} rad/s")
+            print(f"      Centrifugal accel:   a_c = w^2*R = {omega**2*R:.0f} m/s2 ({omega**2*R/g:.0f}g)")
+            
+            print(f"\n    PARTICLE ZONES:")
+            print(f"      Zone {zone_in}: In cyclone body (swirling flow)")
+            print(f"      Zone {zone_dust}: Collected in dust outlet (heavy particles)")
+            print(f"      Light particles -> vortex finder -> {next_stage}")
+        
+        # =====================================================================
+        # SEGMENT 6: CYCLONE -> BAG FILTER PATH
+        # =====================================================================
+        segment_num += 1
+        print(f"\n{'-' * 80}")
+        print(f"SEGMENT {segment_num}: CYCLONE -> BAG FILTER PATH (90° Elbow + Expansion)")
+        print(f"{'-' * 80}")
+        
+        print(f"\n  PATH OVERVIEW:")
+        print(f"    Start: Cyclone overflow  ({self.duct_cyclone_bag_start[0]*1000:.1f}, {self.duct_cyclone_bag_start[1]*1000:.1f}, {self.duct_cyclone_bag_start[2]*1000:.1f}) mm")
+        print(f"    Elbow: Turn point        ({self.elbow_cyclone_bag_pos[0]*1000:.1f}, {self.elbow_cyclone_bag_pos[1]*1000:.1f}, {self.elbow_cyclone_bag_pos[2]*1000:.1f}) mm")
+        print(f"    End:   Bag filter inlet  ({self.duct_cyclone_bag_end[0]*1000:.1f}, {self.duct_cyclone_bag_end[1]*1000:.1f}, {self.duct_cyclone_bag_end[2]*1000:.1f}) mm")
+        
+        print(f"\n  DUCT DIMENSIONS:")
+        print(f"    Initial diameter:   {self.duct_cyclone_bag_radius*2*1000:.0f} mm (from overflow)")
+        print(f"    Elbow bend radius:  {self.elbow_cyclone_bag_bend_radius*1000:.0f} mm")
+        print(f"    Final diameter:     300 mm (bag filter inlet)")
+        
+        A_small = np.pi * self.duct_cyclone_bag_radius**2
+        A_large = np.pi * 0.15**2  # 300mm diameter
+        v_small = Q / A_small
+        v_large = Q / A_large
+        print(f"\n  EXPANSION TRANSITION:")
+        print(f"    Small duct: A = {A_small*1e4:.2f} cm2, v = {v_small:.2f} m/s")
+        print(f"    Large duct: A = {A_large*1e4:.2f} cm2, v = {v_large:.2f} m/s")
+        print(f"    Velocity ratio: {v_small/v_large:.1f}:1 (deceleration)")
+        
+        print(f"\n  PARTICLE ZONES:")
+        print(f"    Zone 60: In 90° elbow (turning from +Y to +X)")
+        print(f"    Zone 61: Horizontal duct with expansion")
+        print(f"    Transition to Zone 70 at X = {self.duct_cyclone_bag_end[0]*1000:.1f} mm")
+        
+        # =====================================================================
+        # SEGMENT 7: BAG FILTER
+        # =====================================================================
+        segment_num += 1
+        print(f"\n{'-' * 80}")
+        print(f"SEGMENT {segment_num}: BAG FILTER (Final Particle Capture)")
+        print(f"{'-' * 80}")
+        
+        print(f"\n  GEOMETRY:")
+        print(f"    Center position:     ({self.bagfilter_center[0]*1000:.1f}, {self.bagfilter_center[1]*1000:.1f}, {self.bagfilter_center[2]*1000:.1f}) mm")
+        print(f"    Housing half-width:  {self.bagfilter_half_width*1000:.0f} mm")
+        print(f"    Housing half-depth:  {self.bagfilter_half_depth*1000:.0f} mm")
+        print(f"    Housing height:      {self.bagfilter_height*1000:.0f} mm")
+        
+        print(f"\n  PORT POSITIONS:")
+        print(f"    Dirty air inlet:     Y = {self.bagfilter_inlet_y*1000:.1f} mm, dir = (-1, 0, 0)")
+        print(f"    Clean air outlet:    Y = {self.bagfilter_outlet_y*1000:.1f} mm, dir = (0, +1, 0)")
+        print(f"    Dust hopper:         Y = {self.bagfilter_dust_y*1000:.1f} mm, dir = (0, -1, 0)")
+        
+        print(f"\n  FILTRATION PHYSICS:")
+        A_bags = 2 * self.bagfilter_half_width * self.bagfilter_height  # Approximate filter area
+        v_filter = Q / A_bags
+        print(f"    Filter area (approx): {A_bags:.2f} m2")
+        print(f"    Face velocity:        {v_filter*100:.2f} cm/s = {v_filter*60:.1f} m/min")
+        print(f"    Air-to-cloth ratio:   {Q*60/A_bags:.2f} m3/min/m2")
+        
+        print(f"\n  PARTICLE CAPTURE MECHANISMS:")
+        print(f"    - Inertial impaction (large particles)")
+        print(f"    - Interception (medium particles)")
+        print(f"    - Diffusion (fine particles < 1um)")
+        print(f"    Expected efficiency: > 99.9%")
+        
+        print(f"\n  PARTICLE ZONES:")
+        print(f"    Zone 70: In bag filter (capture in progress)")
+        print(f"    Zone 75: Collected in dust hopper (COLLECTED)")
+        print(f"    Zone 80: Escaped with clean air (should be rare)")
+        
+        # =====================================================================
+        # SUMMARY
+        # =====================================================================
+        print(f"\n{'=' * 80}")
+        print("FLOW PATH SUMMARY")
+        print(f"{'=' * 80}")
+        
+        print(f"\n  COMPLETE MATERIAL PATH:")
+        print(f"    Feed -> Venturi Solids Inlet (0, {self.venturi_solids_inlet_pos[1]*1000:.0f}, {self.venturi_solids_inlet_pos[2]*1000:.0f}) mm")
+        print(f"      | [Zone 0-2] Entrainment in venturi throat")
+        print(f"      v")
+        print(f"    Venturi Outlet (0, {self.venturi_total_length*1000:.0f}, 0) mm")
+        print(f"      | [Zone 10] Round->Rect transition duct")
+        print(f"      v")
+        print(f"    Zigzag Inlet (0, {self.zigzag_inlet_y*1000:.0f}, 0) mm")
+        print(f"      ^ [Zone 20-21] Counter-current separation")
+        print(f"      |---> Coarse Outlet [Zone 30] -> STARCH COLLECTION")
+        print(f"      v")
+        print(f"    Zigzag Fines ({self.duct_zigzag_cyclone_start[0]*1000:.0f}, {self.zigzag_fines_outlet_y*1000:.0f}, 0) mm")
+        print(f"      | [Zone 22] Vertical transition")
+        print(f"      +--\\ [Zone 40] 90 deg Elbow")
+        print(f"         --> [Zone 41] Horizontal to cyclone")
+        print(f"    Cyclone Inlet ({self.duct_zigzag_cyclone_end[0]*1000:.0f}, {self.duct_zigzag_cyclone_end[1]*1000:.0f}, 0) mm")
+        print(f"      @ [Zone 50-52] Staged centrifugal separation")
+        print(f"      |---> Dust outlets [Zone 55-57] -> FINES COLLECTION")
+        print(f"      v")
+        print(f"    Cyclone Overflow ({self.duct_cyclone_bag_start[0]*1000:.0f}, {self.duct_cyclone_bag_start[1]*1000:.0f}, 0) mm")
+        print(f"      +--\\ [Zone 60] 90 deg Elbow")
+        print(f"         --> [Zone 61] Expansion duct")
+        print(f"    Bag Filter ({self.duct_cyclone_bag_end[0]*1000:.0f}, {self.duct_cyclone_bag_end[1]*1000:.0f}, 0) mm")
+        print(f"      | [Zone 70] Final capture")
+        print(f"      |---> Dust hopper [Zone 75] -> ULTRA-FINES COLLECTION")
+        print(f"      +---> Clean air [Zone 80] -> EXHAUST")
+        
+        print(f"\n  KEY PARAMETERS:")
+        print(f"    Total air flow:      {Q*3600:.0f} m3/h = {Q*1000:.1f} L/s")
+        print(f"    Zigzag cut size d50: {self.zigzag_d50*1e6:.1f} um")
+        print(f"    Cyclone cut size:    {self.cyclone_d50*1e6:.2f} um")
+        
+        print(f"\n  EXPECTED SEPARATION (at current conditions):")
+        # Determine actual separation based on d50 values
+        if self.zigzag_d50 > 200e-6:  # d50 > 200um means all flour passes
+            print(f"    ALL FLOUR (<200um): -> Zigzag fines -> Cyclones")
+            print(f"    Only large fiber (>{self.zigzag_d50*1e6:.0f}um) -> Coarse")
+            if self.cyclone_d50 < 5e-6:  # Very fine cyclone cut
+                print(f"    ALL fines collected in PRIMARY cyclone (d50={self.cyclone_d50*1e6:.1f}um)")
+        else:
+            print(f"    Starch (>{self.zigzag_d50*1e6:.0f}um): -> Zigzag coarse [Zone 30]")
+            print(f"    Fines (<{self.zigzag_d50*1e6:.0f}um):  -> Cyclones for staged separation")
+        
+        # =====================================================================
+        # INDUSTRIAL OPERATING ANALYSIS
+        # =====================================================================
+        print(f"\n{'-' * 80}")
+        print(f"INDUSTRIAL OPERATING ANALYSIS")
+        print(f"{'-' * 80}")
+        
+        Q = self._Q_air
+        mu = self._mu
+        rho_p = self._rho_p
+        rho_f = self._rho_f
+        g = self._g
+        zz_area = self._A_zigzag
+        cyclone_inlet_area = 0.075 * 0.15  # 75x150 mm
+        
+        print(f"\n  CURRENT OPERATING POINT:")
+        print(f"    Air flow: {Q*3600:.0f} m3/h ({Q*1000:.1f} L/s)")
+        print(f"    Zigzag d50: {self.zigzag_d50*1e6:.1f} um")
+        print(f"    Cyclone inlet velocity: {self.v_air_cyclone_inlet:.1f} m/s")
+        print(f"    Cyclone d50: {self.cyclone_d50*1e6:.2f} um")
+        
+        # Operating mode determination
+        if self.zigzag_d50 > 200e-6:
+            print(f"\n  OPERATING MODE: BYPASS ZIGZAG")
+            print(f"    At this flow, zigzag passes all material to cyclones.")
+            print(f"    Zigzag acts as transport duct, not separator.")
+        elif self.zigzag_d50 > 100e-6:
+            print(f"\n  OPERATING MODE: FIBER REJECTION")
+            print(f"    Zigzag removes large fiber (>{self.zigzag_d50*1e6:.0f}um) to coarse.")
+            print(f"    All flour components pass to cyclones.")
+        else:
+            print(f"\n  OPERATING MODE: FINE SEPARATION")
+            print(f"    Zigzag separates at d50={self.zigzag_d50*1e6:.1f}um.")
+        
+        if self.cyclone_d50 < 5e-6:
+            print(f"    WARNING: Cyclone d50={self.cyclone_d50*1e6:.2f}um - all material collected in Cy1!")
+        
+        # Calculate recommended operating ranges
+        print(f"\n  RECOMMENDED OPERATING RANGES:")
+        
+        # For d50 = 35 um (protein/starch boundary)
+        d50_target_ps = 35e-6
+        v_air_ps = (d50_target_ps**2 * g * (rho_p - rho_f)) / (18 * mu)
+        Q_ps = v_air_ps * zz_area
+        v_cyc_ps = Q_ps / cyclone_inlet_area
+        
+        # For d50 = 100 um (fiber rejection)
+        d50_target_fiber = 100e-6
+        v_air_fiber = (d50_target_fiber**2 * g * (rho_p - rho_f)) / (18 * mu)
+        Q_fiber = v_air_fiber * zz_area
+        v_cyc_fiber = Q_fiber / cyclone_inlet_area
+        
+        # For cyclone at 20 m/s (typical industrial)
+        Q_cyc_20 = 20.0 * cyclone_inlet_area
+        v_zz_at_20 = Q_cyc_20 / zz_area
+        d50_at_20 = np.sqrt(18 * mu * v_zz_at_20 / (g * (rho_p - rho_f))) * 1e6
+        
+        print(f"\n    For protein/starch separation (d50=35um):")
+        print(f"      Q = {Q_ps*3600:.1f} m3/h, v_cyclone = {v_cyc_ps:.2f} m/s")
+        if v_cyc_ps < 10:
+            print(f"      ISSUE: Cyclone velocity too low for effective separation")
+        
+        print(f"\n    For fiber rejection (d50=100um):")
+        print(f"      Q = {Q_fiber*3600:.1f} m3/h, v_cyclone = {v_cyc_fiber:.2f} m/s")
+        if v_cyc_fiber < 10:
+            print(f"      ISSUE: Cyclone velocity too low for effective separation")
+        
+        print(f"\n    For optimal cyclone operation (v=20 m/s):")
+        print(f"      Q = {Q_cyc_20*3600:.0f} m3/h, d50 = {d50_at_20:.0f} um")
+        if d50_at_20 > 200:
+            print(f"      MODE: All flour to fines, cyclones do staged separation")
+        
+        # Practical recommendation
+        print(f"\n  PRACTICAL RECOMMENDATION:")
+        if Q > 0.2:  # High flow mode
+            print(f"    Current high-flow mode ({Q*3600:.0f} m3/h) is suitable for:")
+            print(f"    - High throughput processing")
+            print(f"    - When zigzag bypass is acceptable")
+            print(f"    - Cyclone-only separation of fine fractions")
+            print(f"    Note: All material <{self.zigzag_d50*1e6:.0f}um goes to cyclones")
+        else:
+            print(f"    Current flow ({Q*3600:.0f} m3/h) provides d50={self.zigzag_d50*1e6:.0f}um")
+            print(f"    Adjust --air-flow to tune separation point")
+        
+        print(f"\n{'=' * 80}")
+    
     def initialize_particles(
         self,
         num_particles: int = None,
-        mean_diameter: float = 30e-6,   # 30 µm (flour average)
-        diameter_std: float = 15e-6,    # 15 µm std dev
+        mean_diameter: float = 30e-6,   # 30 um (flour average)
+        diameter_std: float = 15e-6,    # 15 um std dev
         initial_velocity: Tuple[float, float, float] = (0.0, 0.5, 0.0),
     ):
         """
@@ -2664,8 +3549,8 @@ class ClassificationFlowPhysicsSimulator:
         
         Args:
             num_particles: Number of particles (default: config value)
-            mean_diameter: Mean particle diameter [m] (default 30µm)
-            diameter_std: Standard deviation [m] (default 15µm)
+            mean_diameter: Mean particle diameter [m] (default 30um)
+            diameter_std: Standard deviation [m] (default 15um)
             initial_velocity: Initial velocity from feed system [m/s]
         """
         n = num_particles or self.config.num_particles
@@ -2702,8 +3587,8 @@ class ClassificationFlowPhysicsSimulator:
         diameters = self.state.diameters.numpy()[:n]
         
         print(f"\n  Initialized {n} particles at venturi inlet")
-        print(f"    Diameter range: {diameters.min()*1e6:.1f} - {diameters.max()*1e6:.1f} µm")
-        print(f"    Mean diameter:  {diameters.mean()*1e6:.1f} µm")
+        print(f"    Diameter range: {diameters.min()*1e6:.1f} - {diameters.max()*1e6:.1f} um")
+        print(f"    Mean diameter:  {diameters.mean()*1e6:.1f} um")
         print(f"    Inlet position: ({self.venturi_solids_inlet_pos[0]*1000:.0f}, {self.venturi_solids_inlet_pos[1]*1000:.0f}, {self.venturi_solids_inlet_pos[2]*1000:.0f}) mm")
     
     def step(self):
@@ -2795,13 +3680,19 @@ class ClassificationFlowPhysicsSimulator:
                 wp.vec3(*self.duct_venturi_zigzag_end),
                 float(self.duct_venturi_zigzag_radius),
                 
+                # Zigzag to cyclone path with elbow
                 wp.vec3(*self.duct_zigzag_cyclone_start),
                 wp.vec3(*self.duct_zigzag_cyclone_end),
                 float(self.duct_zigzag_cyclone_radius),
+                wp.vec3(*self.elbow_zigzag_cyclone_pos),
+                float(self.elbow_zigzag_cyclone_bend_radius),
                 
+                # Cyclone to bag filter path with elbow
                 wp.vec3(*self.duct_cyclone_bag_start),
                 wp.vec3(*self.duct_cyclone_bag_end),
                 float(self.duct_cyclone_bag_radius),
+                wp.vec3(*self.elbow_cyclone_bag_pos),
+                float(self.elbow_cyclone_bag_bend_radius),
                 
                 # Physics parameters
                 float(dt),
@@ -2992,8 +3883,8 @@ def create_classification_simulator(
     Create a classification system and flow simulator.
     
     Args:
-        air_flow_rate_m3s: Air volumetric flow rate [m³/s]
-        particle_density: Particle density [kg/m³] (flour ~1450)
+        air_flow_rate_m3s: Air volumetric flow rate [m3/s]
+        particle_density: Particle density [kg/m3] (flour ~1450)
         num_particles: Number of simulation particles
         device: Warp device ('cuda' or 'cpu')
         

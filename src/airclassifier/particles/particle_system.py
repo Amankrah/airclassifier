@@ -1188,6 +1188,300 @@ class WarpParticleSystem:
     def synchronize(self):
         """Synchronize GPU operations."""
         wp.synchronize()
+    
+    # =========================================================================
+    # REUSABLE METHODS FOR PHYSICS SIMULATIONS
+    # =========================================================================
+    
+    def inject_raw_particles(
+        self,
+        positions: np.ndarray,
+        velocities: np.ndarray,
+        diameters: np.ndarray,
+        densities: np.ndarray,
+        particle_types: np.ndarray = None,
+    ) -> int:
+        """
+        Inject particles with explicit property arrays.
+        
+        Useful when transferring particles between physics simulations
+        (e.g., from feed system to classification system).
+        
+        Args:
+            positions: Particle positions (N, 3) in meters
+            velocities: Particle velocities (N, 3) in m/s
+            diameters: Particle diameters (N,) in meters
+            densities: Particle densities (N,) in kg/m³
+            particle_types: Optional particle types (N,) as int
+            
+        Returns:
+            Number of particles actually injected
+        """
+        n_inject = len(positions)
+        
+        # Check capacity
+        available = self.max_particles - self.num_particles
+        if n_inject > available:
+            n_inject = available
+            if n_inject == 0:
+                return 0
+        
+        # Prepare arrays
+        pos_np = positions[:n_inject].astype(np.float32)
+        vel_np = velocities[:n_inject].astype(np.float32)
+        dia_np = diameters[:n_inject].astype(np.float32)
+        den_np = densities[:n_inject].astype(np.float32)
+        
+        if particle_types is None:
+            types_np = np.zeros(n_inject, dtype=np.int32)
+        else:
+            types_np = particle_types[:n_inject].astype(np.int32)
+        
+        # Copy to GPU
+        pos_wp = wp.array(pos_np, dtype=wp.vec3, device=self.device)
+        vel_wp = wp.array(vel_np, dtype=wp.vec3, device=self.device)
+        dia_wp = wp.array(dia_np, dtype=float, device=self.device)
+        den_wp = wp.array(den_np, dtype=float, device=self.device)
+        type_wp = wp.array(types_np, dtype=wp.int32, device=self.device)
+        
+        # Launch initialization kernel
+        wp.launch(
+            kernel=initialize_particles_kernel,
+            dim=n_inject,
+            inputs=[
+                self.positions,
+                self.velocities,
+                self.diameters,
+                self.densities,
+                self.masses,
+                self.particle_types,
+                self.states,
+                self.ages,
+                pos_wp,
+                vel_wp,
+                dia_wp,
+                den_wp,
+                type_wp,
+                self.num_particles,
+                n_inject,
+            ],
+            device=self.device
+        )
+        
+        self.num_particles += n_inject
+        return n_inject
+    
+    def get_active_particles(self) -> Dict[str, np.ndarray]:
+        """
+        Get all data for active particles only.
+        
+        Returns:
+            Dictionary with positions, velocities, diameters, densities, types
+            for active particles only.
+        """
+        states = self.get_states()
+        active_mask = states == 1
+        
+        return {
+            "positions": self.get_positions()[active_mask],
+            "velocities": self.get_velocities()[active_mask],
+            "diameters": self.get_diameters()[active_mask],
+            "densities": self.densities.numpy()[:self.num_particles][active_mask],
+            "types": self.get_particle_types()[active_mask],
+            "count": int(np.sum(active_mask)),
+        }
+    
+    def get_exited_particles(self, exit_zone_y: float = None) -> Dict[str, np.ndarray]:
+        """
+        Get particles that have exited through a boundary.
+        
+        Args:
+            exit_zone_y: Y coordinate threshold for exit (particles below this)
+                        If None, uses coarse_y_max
+        
+        Returns:
+            Dictionary with particle data for exited particles
+        """
+        if exit_zone_y is None:
+            exit_zone_y = self.coarse_y_max
+        
+        positions = self.get_positions()
+        states = self.get_states()
+        
+        # Active particles that crossed exit boundary
+        exit_mask = (states == 1) & (positions[:, 1] < exit_zone_y)
+        
+        return {
+            "positions": positions[exit_mask],
+            "velocities": self.get_velocities()[exit_mask],
+            "diameters": self.get_diameters()[exit_mask],
+            "densities": self.densities.numpy()[:self.num_particles][exit_mask],
+            "types": self.get_particle_types()[exit_mask],
+            "count": int(np.sum(exit_mask)),
+        }
+    
+    def transfer_to_system(
+        self,
+        target_system: "WarpParticleSystem",
+        position_offset: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        exit_zone_y: float = None,
+        remove_transferred: bool = True,
+    ) -> int:
+        """
+        Transfer exited particles to another particle system.
+        
+        This is useful for connecting physics simulations:
+        - Feed system → Classification system
+        - Classification system → Cyclone system
+        
+        Args:
+            target_system: Target particle system to receive particles
+            position_offset: Offset to apply to positions (for coordinate transform)
+            exit_zone_y: Y threshold for considering particles as exited
+            remove_transferred: Whether to deactivate transferred particles
+            
+        Returns:
+            Number of particles transferred
+        """
+        exited = self.get_exited_particles(exit_zone_y)
+        
+        if exited["count"] == 0:
+            return 0
+        
+        # Apply position offset
+        new_positions = exited["positions"] + np.array(position_offset)
+        
+        # Inject into target system
+        n_transferred = target_system.inject_raw_particles(
+            positions=new_positions,
+            velocities=exited["velocities"],
+            diameters=exited["diameters"],
+            densities=exited["densities"],
+            particle_types=exited["types"],
+        )
+        
+        # Deactivate transferred particles in source
+        if remove_transferred and n_transferred > 0:
+            positions = self.get_positions()
+            states = self.states.numpy()
+            
+            if exit_zone_y is None:
+                exit_zone_y = self.coarse_y_max
+            
+            exit_mask = (states[:self.num_particles] == 1) & (positions[:, 1] < exit_zone_y)
+            states[:self.num_particles][exit_mask] = -8  # OUT_OF_BOUNDS
+            
+            # Copy back to GPU
+            wp.copy(self.states, wp.array(states, dtype=wp.int32, device=self.device))
+        
+        return n_transferred
+    
+    def update_fluid_velocity_field(
+        self,
+        velocity_func: callable,
+    ):
+        """
+        Update fluid velocities using a custom function.
+        
+        Args:
+            velocity_func: Function (positions: np.ndarray) -> np.ndarray
+                          Takes Nx3 positions, returns Nx3 velocities
+        """
+        if self.num_particles == 0:
+            return
+        
+        positions = self.get_positions()
+        fluid_velocities = velocity_func(positions)
+        self.set_fluid_velocities(fluid_velocities)
+    
+    def get_mass_flow_rate(
+        self,
+        plane_y: float,
+        plane_tolerance: float = 0.01,
+        dt: float = 0.001,
+    ) -> float:
+        """
+        Calculate mass flow rate through a horizontal plane.
+        
+        Args:
+            plane_y: Y coordinate of measurement plane
+            plane_tolerance: Distance tolerance for considering particle crossing
+            dt: Time step used in simulation
+            
+        Returns:
+            Mass flow rate [kg/s]
+        """
+        positions = self.get_positions()
+        velocities = self.get_velocities()
+        states = self.get_states()
+        
+        active_mask = states == 1
+        
+        # Find particles near the plane with downward velocity
+        near_plane = (np.abs(positions[:, 1] - plane_y) < plane_tolerance) & active_mask
+        crossing_down = (velocities[:, 1] < 0) & near_plane
+        
+        if not np.any(crossing_down):
+            return 0.0
+        
+        masses = self.masses.numpy()[:self.num_particles]
+        crossing_mass = np.sum(masses[crossing_down])
+        
+        # Estimate flow rate from crossing frequency
+        crossing_velocity = np.mean(np.abs(velocities[crossing_down, 1]))
+        crossing_time = plane_tolerance / crossing_velocity if crossing_velocity > 0 else dt
+        
+        return crossing_mass / crossing_time
+    
+    def get_particle_data_for_export(self) -> Dict[str, np.ndarray]:
+        """
+        Get all particle data in a format suitable for export or visualization.
+        
+        Returns:
+            Dictionary with all particle arrays (positions, velocities, etc.)
+        """
+        return {
+            "positions": self.get_positions(),
+            "velocities": self.get_velocities(),
+            "diameters": self.get_diameters(),
+            "densities": self.densities.numpy()[:self.num_particles],
+            "masses": self.masses.numpy()[:self.num_particles],
+            "types": self.get_particle_types(),
+            "states": self.get_states(),
+            "ages": self.ages.numpy()[:self.num_particles],
+            "num_particles": self.num_particles,
+            "time": self.time,
+        }
+    
+    def load_particle_data(self, data: Dict[str, np.ndarray]):
+        """
+        Load particle data from a dictionary (e.g., from export or another system).
+        
+        Args:
+            data: Dictionary with particle arrays from get_particle_data_for_export()
+        """
+        self.reset()
+        
+        n = data.get("num_particles", len(data["positions"]))
+        
+        self.inject_raw_particles(
+            positions=data["positions"][:n],
+            velocities=data["velocities"][:n],
+            diameters=data["diameters"][:n],
+            densities=data["densities"][:n],
+            particle_types=data.get("types", None),
+        )
+        
+        # Restore ages if available
+        if "ages" in data:
+            ages = data["ages"][:n].astype(np.float32)
+            wp.copy(
+                self.ages,
+                wp.array(ages, dtype=float, device=self.device),
+                count=n
+            )
+        
+        self.time = data.get("time", 0.0)
 
 
 # =============================================================================

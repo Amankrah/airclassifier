@@ -6,7 +6,7 @@ with cyclone walls using both analytical SDF and mesh-based approaches.
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import numpy as np
 import warp as wp
 
@@ -475,3 +475,436 @@ def estimate_collision_frequency(
     proximity_factor = radial_position / cyclone_radius
 
     return proximity_factor / orbital_period
+
+
+# =============================================================================
+# GENERIC WALL COLLISION FUNCTIONS
+# Reusable across feed system, ductwork, and classification system
+# =============================================================================
+
+@wp.func
+def cylindrical_wall_collision(
+    pos: wp.vec3,
+    vel: wp.vec3,
+    center: wp.vec3,
+    axis: wp.int32,      # 0=X, 1=Y, 2=Z
+    radius: float,
+    length: float,
+    particle_radius: float,
+    restitution: float,
+    friction: float
+) -> wp.vec3:
+    """
+    Handle collision with a cylindrical wall.
+    
+    Reusable for ducts, hoppers, airlocks, screw housings, etc.
+    
+    Args:
+        pos: Particle position
+        vel: Particle velocity
+        center: Cylinder center position
+        axis: Cylinder axis (0=X, 1=Y, 2=Z)
+        radius: Inner cylinder radius
+        length: Cylinder length (not used for infinite cylinder)
+        particle_radius: Particle radius
+        restitution: Coefficient of restitution
+        friction: Friction coefficient
+        
+    Returns:
+        Corrected position after collision
+    """
+    # Get position relative to center
+    local = pos - center
+    
+    # Compute radial distance in the plane perpendicular to axis
+    if axis == 0:  # X axis
+        r_sq = local[1] * local[1] + local[2] * local[2]
+    elif axis == 1:  # Y axis
+        r_sq = local[0] * local[0] + local[2] * local[2]
+    else:  # Z axis
+        r_sq = local[0] * local[0] + local[1] * local[1]
+    
+    r = wp.sqrt(r_sq)
+    effective_radius = radius - particle_radius
+    
+    if r > effective_radius and r > 1e-10:
+        # Particle is outside cylinder wall - push it back
+        penetration = r - effective_radius
+        
+        # Radial unit vector (pointing outward)
+        if axis == 0:
+            n = wp.vec3(0.0, local[1] / r, local[2] / r)
+        elif axis == 1:
+            n = wp.vec3(local[0] / r, 0.0, local[2] / r)
+        else:
+            n = wp.vec3(local[0] / r, local[1] / r, 0.0)
+        
+        # Push particle inside
+        new_pos = pos - n * (penetration + particle_radius * 0.01)
+        return new_pos
+    
+    return pos
+
+
+@wp.func
+def conical_wall_collision(
+    pos: wp.vec3,
+    vel: wp.vec3,
+    apex: wp.vec3,
+    axis_dir: wp.vec3,    # Unit vector along cone axis
+    half_angle: float,     # Half angle of cone [rad]
+    height: float,         # Height from apex to base
+    particle_radius: float,
+    restitution: float,
+    friction: float
+) -> wp.vec3:
+    """
+    Handle collision with a conical wall (e.g., hopper cone, cyclone cone).
+    
+    Args:
+        pos: Particle position
+        vel: Particle velocity
+        apex: Position of cone apex
+        axis_dir: Unit vector along cone axis (from apex toward base)
+        half_angle: Half angle of cone
+        height: Height from apex to base
+        particle_radius: Particle radius
+        restitution: Coefficient of restitution
+        friction: Friction coefficient
+        
+    Returns:
+        Corrected position after collision
+    """
+    # Vector from apex to particle
+    to_particle = pos - apex
+    
+    # Project onto axis to get axial distance
+    axial_dist = wp.dot(to_particle, axis_dir)
+    
+    # Clamp to valid cone region
+    if axial_dist < 0.0 or axial_dist > height:
+        return pos
+    
+    # Radial component (perpendicular to axis)
+    axial_vec = axis_dir * axial_dist
+    radial_vec = to_particle - axial_vec
+    radial_dist = wp.length(radial_vec)
+    
+    # Cone radius at this axial position
+    cone_radius = axial_dist * wp.tan(half_angle)
+    effective_radius = cone_radius - particle_radius / wp.cos(half_angle)
+    
+    if radial_dist > effective_radius and radial_dist > 1e-10:
+        # Particle is outside cone wall
+        penetration = radial_dist - effective_radius
+        
+        # Radial unit vector
+        radial_unit = radial_vec / radial_dist
+        
+        # Normal to cone surface (pointing inward)
+        # n = -radial * cos(angle) + axis * sin(angle)
+        cos_a = wp.cos(half_angle)
+        sin_a = wp.sin(half_angle)
+        normal = -radial_unit * cos_a + axis_dir * sin_a
+        
+        # Push particle inside along normal
+        new_pos = pos + normal * (penetration + particle_radius * 0.01) / cos_a
+        return new_pos
+    
+    return pos
+
+
+@wp.func
+def rectangular_duct_collision(
+    pos: wp.vec3,
+    vel: wp.vec3,
+    center: wp.vec3,
+    axis: wp.int32,       # Duct axis: 0=X, 1=Y, 2=Z
+    width: float,         # Width in first perpendicular direction
+    height: float,        # Height in second perpendicular direction
+    particle_radius: float,
+    restitution: float,
+    friction: float
+) -> wp.vec3:
+    """
+    Handle collision with a rectangular duct wall.
+    
+    Args:
+        pos: Particle position
+        vel: Particle velocity
+        center: Duct centerline position
+        axis: Duct axis direction (flow direction)
+        width: Duct width (perpendicular to axis, in positive coord direction)
+        height: Duct height (perpendicular to axis and width)
+        particle_radius: Particle radius
+        restitution: Coefficient of restitution
+        friction: Friction coefficient
+        
+    Returns:
+        Corrected position after collision
+    """
+    # Get local position relative to centerline
+    local = pos - center
+    
+    # Effective half-dimensions
+    half_w = (width - 2.0 * particle_radius) * 0.5
+    half_h = (height - 2.0 * particle_radius) * 0.5
+    
+    new_pos = pos
+    
+    if axis == 0:  # X axis duct
+        # Y-Z cross section
+        if local[1] > half_w:
+            new_pos = wp.vec3(pos[0], center[1] + half_w, pos[2])
+        elif local[1] < -half_w:
+            new_pos = wp.vec3(pos[0], center[1] - half_w, pos[2])
+        
+        if local[2] > half_h:
+            new_pos = wp.vec3(new_pos[0], new_pos[1], center[2] + half_h)
+        elif local[2] < -half_h:
+            new_pos = wp.vec3(new_pos[0], new_pos[1], center[2] - half_h)
+            
+    elif axis == 1:  # Y axis duct
+        # X-Z cross section
+        if local[0] > half_w:
+            new_pos = wp.vec3(center[0] + half_w, pos[1], pos[2])
+        elif local[0] < -half_w:
+            new_pos = wp.vec3(center[0] - half_w, pos[1], pos[2])
+        
+        if local[2] > half_h:
+            new_pos = wp.vec3(new_pos[0], new_pos[1], center[2] + half_h)
+        elif local[2] < -half_h:
+            new_pos = wp.vec3(new_pos[0], new_pos[1], center[2] - half_h)
+            
+    else:  # Z axis duct
+        # X-Y cross section
+        if local[0] > half_w:
+            new_pos = wp.vec3(center[0] + half_w, pos[1], pos[2])
+        elif local[0] < -half_w:
+            new_pos = wp.vec3(center[0] - half_w, pos[1], pos[2])
+        
+        if local[1] > half_h:
+            new_pos = wp.vec3(new_pos[0], center[1] + half_h, new_pos[2])
+        elif local[1] < -half_h:
+            new_pos = wp.vec3(new_pos[0], center[1] - half_h, new_pos[2])
+    
+    return new_pos
+
+
+@wp.kernel
+def handle_generic_wall_collisions(
+    positions: wp.array(dtype=wp.vec3),
+    velocities: wp.array(dtype=wp.vec3),
+    diameters: wp.array(dtype=float),
+    is_active: wp.array(dtype=wp.int32),
+    # Wall parameters
+    wall_type: wp.int32,       # 0=cylinder, 1=cone, 2=rect_duct
+    wall_center: wp.vec3,
+    wall_axis: wp.int32,       # 0=X, 1=Y, 2=Z
+    wall_param1: float,        # radius (cyl/cone) or width (rect)
+    wall_param2: float,        # length (cyl) or half_angle (cone) or height (rect)
+    wall_param3: float,        # height (cone) or 0 (others)
+    restitution: float,
+    friction: float
+):
+    """
+    Generic wall collision kernel - handles multiple geometry types.
+    
+    This kernel can be reused across different simulation contexts.
+    """
+    tid = wp.tid()
+    
+    if is_active[tid] != 1:
+        return
+    
+    pos = positions[tid]
+    vel = velocities[tid]
+    particle_radius = diameters[tid] * 0.5
+    
+    new_pos = pos
+    
+    if wall_type == 0:
+        # Cylindrical wall
+        new_pos = cylindrical_wall_collision(
+            pos, vel, wall_center, wall_axis,
+            wall_param1, wall_param2, particle_radius,
+            restitution, friction
+        )
+    elif wall_type == 1:
+        # Conical wall
+        axis_dir = wp.vec3(0.0, 0.0, 0.0)
+        if wall_axis == 0:
+            axis_dir = wp.vec3(1.0, 0.0, 0.0)
+        elif wall_axis == 1:
+            axis_dir = wp.vec3(0.0, 1.0, 0.0)
+        else:
+            axis_dir = wp.vec3(0.0, 0.0, 1.0)
+        
+        new_pos = conical_wall_collision(
+            pos, vel, wall_center, axis_dir,
+            wall_param1, wall_param2, wall_param3, particle_radius,
+            restitution, friction
+        )
+    elif wall_type == 2:
+        # Rectangular duct
+        new_pos = rectangular_duct_collision(
+            pos, vel, wall_center, wall_axis,
+            wall_param1, wall_param2, particle_radius,
+            restitution, friction
+        )
+    
+    # Apply position correction
+    if wp.length(new_pos - pos) > 1e-10:
+        # Calculate normal from position change
+        delta = new_pos - pos
+        normal = delta / wp.length(delta)
+        
+        # Reflect velocity
+        new_vel = reflect_velocity(vel, normal, restitution, friction)
+        velocities[tid] = new_vel
+        positions[tid] = new_pos
+
+
+# =============================================================================
+# WALL COLLISION HANDLER CLASS
+# Reusable manager for complex geometries with multiple wall sections
+# =============================================================================
+
+@dataclass
+class WallSection:
+    """Definition of a single wall section."""
+    wall_type: int          # 0=cylinder, 1=cone, 2=rect_duct
+    center: Tuple[float, float, float]
+    axis: int               # 0=X, 1=Y, 2=Z
+    param1: float           # radius/width
+    param2: float           # length/half_angle/height
+    param3: float = 0.0     # height for cone
+
+
+class WallCollisionHandler:
+    """
+    Manager for handling wall collisions with complex geometries.
+    
+    Supports multiple wall sections (cylinders, cones, rectangular ducts)
+    that can be combined to represent feed hoppers, ductwork, and cyclones.
+    
+    Example:
+        handler = WallCollisionHandler(restitution=0.3, friction=0.4)
+        
+        # Add hopper cone
+        handler.add_cone(
+            apex=(0, 2, 0), axis=1, half_angle=30, height=1.0
+        )
+        
+        # Add cylindrical section
+        handler.add_cylinder(
+            center=(0, 1.5, 0), axis=1, radius=0.3, length=0.5
+        )
+        
+        # Process collisions
+        handler.process(positions, velocities, diameters, is_active, device)
+    """
+    
+    def __init__(
+        self,
+        restitution: float = 0.3,
+        friction: float = 0.4,
+        device: str = "cuda"
+    ):
+        self.restitution = restitution
+        self.friction = friction
+        self.device = device
+        self.wall_sections: List[WallSection] = []
+    
+    def add_cylinder(
+        self,
+        center: Tuple[float, float, float],
+        axis: int,
+        radius: float,
+        length: float
+    ):
+        """Add a cylindrical wall section."""
+        self.wall_sections.append(WallSection(
+            wall_type=0,
+            center=center,
+            axis=axis,
+            param1=radius,
+            param2=length,
+        ))
+    
+    def add_cone(
+        self,
+        apex: Tuple[float, float, float],
+        axis: int,
+        half_angle_deg: float,
+        height: float
+    ):
+        """Add a conical wall section."""
+        import math
+        self.wall_sections.append(WallSection(
+            wall_type=1,
+            center=apex,
+            axis=axis,
+            param1=math.radians(half_angle_deg),
+            param2=height,
+            param3=height,
+        ))
+    
+    def add_rectangular_duct(
+        self,
+        center: Tuple[float, float, float],
+        axis: int,
+        width: float,
+        height: float
+    ):
+        """Add a rectangular duct wall section."""
+        self.wall_sections.append(WallSection(
+            wall_type=2,
+            center=center,
+            axis=axis,
+            param1=width,
+            param2=height,
+        ))
+    
+    def process(
+        self,
+        positions: "wp.array",
+        velocities: "wp.array",
+        diameters: "wp.array",
+        is_active: "wp.array",
+    ):
+        """
+        Process wall collisions for all wall sections.
+        
+        Args:
+            positions: Particle positions (Warp array)
+            velocities: Particle velocities (Warp array)
+            diameters: Particle diameters (Warp array)
+            is_active: Active flags (Warp array)
+        """
+        n = len(positions)
+        
+        for section in self.wall_sections:
+            wp.launch(
+                kernel=handle_generic_wall_collisions,
+                dim=n,
+                inputs=[
+                    positions,
+                    velocities,
+                    diameters,
+                    is_active,
+                    section.wall_type,
+                    wp.vec3(*section.center),
+                    section.axis,
+                    section.param1,
+                    section.param2,
+                    section.param3,
+                    self.restitution,
+                    self.friction,
+                ],
+                device=self.device
+            )
+    
+    def clear(self):
+        """Remove all wall sections."""
+        self.wall_sections.clear()
