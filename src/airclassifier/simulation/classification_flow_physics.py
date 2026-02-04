@@ -44,6 +44,13 @@ from ..geometry.assembly.classification import (
     create_standard_classification_system,
 )
 from ..utils.constants import PI, TWO_PI, GRAVITY
+from ..particles import (
+    FluidConfig,
+    ParticlePhysicsConfig,
+    ParticleMaterial,
+    create_particle_population,
+    create_whole_flour_population,
+)
 
 
 # =============================================================================
@@ -56,18 +63,25 @@ class ClassificationFlowConfig:
     Configuration for classification flow simulation.
     
     All parameters have physical meaning - no magic numbers.
+    Supports FluidConfig and ParticleMaterial for consistency with feed system.
     """
     # Particle parameters
     num_particles: int = 5000
     particle_density: float = 1450.0       # [kg/m3] Typical flour/starch
     visual_particle_diameter: float = 0.002  # [m] 2mm for visualization
+    sphericity: float = 0.75               # [-] Shape factor (for non-spherical drag)
     
-    # Air properties
+    # Air properties (can be set via FluidConfig)
     air_density: float = 1.2               # [kg/m3] At ~20°C, 1 atm
     air_viscosity: float = 1.81e-5         # [Pa·s] Dynamic viscosity
     
+    # Optional reusable configs
+    fluid_config: Optional[FluidConfig] = None
+    material: Optional[ParticleMaterial] = None
+    
     # Air flow rate - determines all air velocities
-    air_flow_rate_m3s: float = 0.1         # [m3/s] Volumetric flow rate (360 m3/h)
+    # Default matches air system at 2500 RPM (~1768 m³/h from run_air_flow_physics)
+    air_flow_rate_m3s: float = 1768.0 / 3600.0  # [m3/s] ~0.491 m3/s = 1768 m3/h
     
     # Collision parameters
     restitution: float = 0.3               # Coefficient of restitution (inelastic)
@@ -86,13 +100,55 @@ class ClassificationFlowConfig:
     device: str = "cuda"                   # Warp device ('cuda' or 'cpu')
     
     def __post_init__(self):
-        """Validate configuration."""
+        """Apply FluidConfig/Material and validate."""
+        if self.fluid_config is not None:
+            self.air_density = self.fluid_config.density
+            self.air_viscosity = self.fluid_config.dynamic_viscosity
+        if self.material is not None:
+            self.particle_density = self.material.density
+            self.sphericity = getattr(self.material, 'sphericity', self.sphericity)
         if self.dt > 0.005:
             print(f"Warning: dt={self.dt}s may be too large for stability")
         if self.particle_density < self.air_density:
             print(f"Warning: particle density < air density - particles will float")
         if self.air_flow_rate_m3s < 0.01:
             print(f"Warning: Low air flow rate may cause poor separation")
+    
+    @classmethod
+    def from_fluid_config(
+        cls,
+        fluid_config: FluidConfig,
+        num_particles: int = 5000,
+        air_flow_rate_m3s: float = 1768.0 / 3600.0,  # Air system at 2500 RPM
+        **kwargs
+    ) -> "ClassificationFlowConfig":
+        """Create config from FluidConfig for consistency with air/feed systems."""
+        return cls(
+            fluid_config=fluid_config,
+            num_particles=num_particles,
+            air_flow_rate_m3s=air_flow_rate_m3s,
+            **kwargs
+        )
+    
+    @classmethod
+    def for_food_powder(
+        cls,
+        source: str = "yellow_pea",
+        fraction: str = "whole",
+        air_flow_rate_m3s: float = 1768.0 / 3600.0,  # Air system at 2500 RPM
+        num_particles: int = 5000,
+        **kwargs
+    ) -> "ClassificationFlowConfig":
+        """Create config for food powder classification (protein/starch separation)."""
+        material = ParticleMaterial.create_food_powder(source, fraction)
+        fluid = FluidConfig.air_at_stp()
+        return cls(
+            material=material,
+            fluid_config=fluid,
+            num_particles=num_particles,
+            air_flow_rate_m3s=air_flow_rate_m3s,
+            **kwargs
+        )
 
 
 # =============================================================================
@@ -117,6 +173,13 @@ class ClassificationFlowState:
     masses: Any = None         # wp.array(dtype=float)
     zones: Any = None          # wp.array(dtype=wp.int32) - which component
     is_active: Any = None      # wp.array(dtype=wp.int32) - 1=active, 0=inactive
+    
+    # Optional per-particle type/density (for material-based populations)
+    particle_types: Any = None   # wp.array(dtype=wp.int32) - 0=protein, 1=starch, 2=fiber
+    densities: Any = None        # wp.array(dtype=float) - per-particle density
+    
+    # Number of active particles (slots 0..particles_active-1)
+    particles_active: int = 0
     
     # Simulation state
     time: float = 0.0
@@ -2676,11 +2739,15 @@ class ClassificationFlowPhysicsSimulator:
         self.venturi_throat_start = get_geo_attr('venturi', 'throat_start', self.venturi_total_length * 0.3)
         self.venturi_throat_end = get_geo_attr('venturi', 'throat_end', self.venturi_total_length * 0.5)
         
-        # Solids inlet position
+        # Solids inlet position and direction (for feed->classification connection)
         solids_inlet = get_geo_attr('venturi', 'solids_inlet_pos', None)
         if solids_inlet is None:
             solids_inlet = self.venturi_center.copy()
         self.venturi_solids_inlet_pos = np.array(solids_inlet)
+        solids_inlet_dir = get_geo_attr('venturi', 'solids_inlet_dir', None)
+        if solids_inlet_dir is None:
+            solids_inlet_dir = np.array([0.0, 1.0, 0.0])  # Default: +Y into venturi
+        self.venturi_solids_inlet_dir = np.array(solids_inlet_dir, dtype=np.float64)
         self.venturi_solids_inlet_radius = get_geo_attr('venturi', 'solids_inlet_diameter', 0.05) / 2.0
         
         # =====================================================================
@@ -3043,6 +3110,9 @@ class ClassificationFlowPhysicsSimulator:
         self.state.masses = wp.zeros(n, dtype=float, device=self.device)
         self.state.zones = wp.zeros(n, dtype=wp.int32, device=self.device)
         self.state.is_active = wp.zeros(n, dtype=wp.int32, device=self.device)
+        # Optional: per-particle type and density (for material/transfer)
+        self.state.particle_types = wp.zeros(n, dtype=wp.int32, device=self.device)
+        self.state.densities = wp.zeros(n, dtype=float, device=self.device)
     
     def _setup_hash_grid(self):
         """Setup hash grid for particle collisions."""
@@ -3591,6 +3661,274 @@ class ClassificationFlowPhysicsSimulator:
         print(f"    Mean diameter:  {diameters.mean()*1e6:.1f} um")
         print(f"    Inlet position: ({self.venturi_solids_inlet_pos[0]*1000:.0f}, {self.venturi_solids_inlet_pos[1]*1000:.0f}, {self.venturi_solids_inlet_pos[2]*1000:.0f}) mm")
     
+    # =========================================================================
+    # FEED SYSTEM INTEGRATION (particles from feed_flow_physics)
+    # =========================================================================
+    
+    def get_solids_inlet_position(self) -> np.ndarray:
+        """Return world position of venturi solids inlet (for feed->classification connection)."""
+        return np.array(self.venturi_solids_inlet_pos, dtype=np.float64)
+    
+    def get_solids_inlet_direction(self) -> np.ndarray:
+        """Return world direction of venturi solids inlet (flow into venturi)."""
+        return np.array(self.venturi_solids_inlet_dir, dtype=np.float64)
+    
+    def inject_particles_from_feed(
+        self,
+        transfer_data: Dict[str, Any],
+        offset_feed_outlet_to_solids_inlet: Optional[np.ndarray] = None,
+    ) -> int:
+        """
+        Inject particles transferred from the feed system into the venturi solids inlet.
+        
+        Uses output from feed_flow_physics.get_particle_data_for_transfer().
+        Positions are translated from feed outlet to classification solids inlet
+        (optionally via offset_feed_outlet_to_solids_inlet = solids_inlet_pos - feed_outlet_pos).
+        
+        Args:
+            transfer_data: Dict with keys positions, velocities, diameters, masses,
+                types (optional), count; and optionally outlet_position, outlet_direction.
+            offset_feed_outlet_to_solids_inlet: If provided, add this to positions.
+                If None, computed as solids_inlet_pos - transfer_data['outlet_position'].
+        
+        Returns:
+            Number of particles injected.
+        """
+        positions = np.asarray(transfer_data['positions'], dtype=np.float64)
+        velocities = np.asarray(transfer_data['velocities'], dtype=np.float64)
+        diameters = np.asarray(transfer_data['diameters'], dtype=np.float64)
+        masses = np.asarray(transfer_data['masses'], dtype=np.float64)
+        count = int(transfer_data['count'])
+        
+        if count == 0:
+            return 0
+        
+        # Position offset: from feed outlet to classification solids inlet
+        if offset_feed_outlet_to_solids_inlet is not None:
+            offset = np.asarray(offset_feed_outlet_to_solids_inlet, dtype=np.float64)
+        else:
+            outlet_pos = transfer_data.get('outlet_position')
+            if outlet_pos is not None:
+                outlet_pos = np.asarray(outlet_pos, dtype=np.float64)
+                offset = self.get_solids_inlet_position() - outlet_pos
+            else:
+                offset = np.zeros(3, dtype=np.float64)
+        
+        positions = positions[:count] + offset
+        
+        n_max = self.config.num_particles
+        n_inject = min(count, n_max - self.state.particles_active)
+        if n_inject <= 0:
+            print("  Classification: no slot for injected particles; increase num_particles or clear some.")
+            return 0
+        
+        start = self.state.particles_active
+        end = start + n_inject
+        
+        # Update device arrays via numpy slice (read full, update slice, copy back)
+        pos_full = self.state.positions.numpy().copy()
+        pos_full[start:end] = positions[:n_inject]
+        self.state.positions = wp.array(pos_full, dtype=wp.vec3, device=self.device)
+        
+        vel_full = self.state.velocities.numpy().copy()
+        vel_full[start:end] = velocities[:n_inject]
+        self.state.velocities = wp.array(vel_full, dtype=wp.vec3, device=self.device)
+        
+        dia_full = self.state.diameters.numpy().copy()
+        dia_full[start:end] = diameters[:n_inject]
+        self.state.diameters = wp.array(dia_full, dtype=float, device=self.device)
+        
+        mass_full = self.state.masses.numpy().copy()
+        mass_full[start:end] = masses[:n_inject]
+        self.state.masses = wp.array(mass_full, dtype=float, device=self.device)
+        
+        zone_full = self.state.zones.numpy().copy()
+        zone_full[start:end] = 0  # VENTURI_INLET
+        self.state.zones = wp.array(zone_full, dtype=wp.int32, device=self.device)
+        
+        active_full = self.state.is_active.numpy().copy()
+        active_full[start:end] = 1
+        self.state.is_active = wp.array(active_full, dtype=wp.int32, device=self.device)
+        
+        dens_full = self.state.densities.numpy().copy()
+        if transfer_data.get('densities') is not None:
+            dens_full[start:end] = np.asarray(transfer_data['densities'][:n_inject], dtype=np.float64)
+        else:
+            dens_full[start:end] = self.config.particle_density
+        self.state.densities = wp.array(dens_full, dtype=float, device=self.device)
+        
+        type_full = self.state.particle_types.numpy().copy()
+        if transfer_data.get('types') is not None:
+            type_full[start:end] = np.asarray(transfer_data['types'][:n_inject], dtype=np.int32)
+        else:
+            type_full[start:end] = 0
+        self.state.particle_types = wp.array(type_full, dtype=wp.int32, device=self.device)
+        
+        self.state.particles_active = end
+        print(f"  Injected {n_inject} particles from feed system at venturi solids inlet (total active: {end})")
+        return n_inject
+    
+    def initialize_particles_from_material(
+        self,
+        material: ParticleMaterial,
+        num_particles: Optional[int] = None,
+        initial_velocity: Tuple[float, float, float] = (0.0, 0.5, 0.0),
+        visual_scale_diameter: Optional[float] = None,
+    ) -> None:
+        """
+        Initialize particles at venturi solids inlet using a ParticleMaterial.
+        
+        Uses create_particle_population from the particles module for consistent
+        size/density/sphericity with feed and other systems.
+        """
+        n = num_particles or self.config.num_particles
+        n = min(n, self.config.num_particles)
+        
+        diameters_np, densities_np, sphericities_np = create_particle_population(material, n)
+        diameters_np = np.asarray(diameters_np, dtype=np.float64)
+        densities_np = np.asarray(densities_np, dtype=np.float64)
+        
+        # Masses from volume and density
+        vols = (np.pi / 6.0) * (diameters_np ** 3)
+        masses_np = densities_np * vols
+        
+        # Clamp diameters to classification range (e.g. 5–100 um) if needed
+        scale = visual_scale_diameter
+        if scale is not None and np.median(diameters_np) < scale * 0.1:
+            diameters_np = np.clip(diameters_np, 5e-6, 100e-6)
+        
+        # Positions: at solids inlet, random in circle
+        rng = np.random.default_rng(42)
+        r = np.sqrt(rng.uniform(0, 1, n)) * self.venturi_solids_inlet_radius * 0.8
+        theta = rng.uniform(0, 2 * np.pi, n)
+        cx, cy, cz = self.venturi_solids_inlet_pos[0], self.venturi_solids_inlet_pos[1], self.venturi_solids_inlet_pos[2]
+        positions_np = np.column_stack([
+            cx + r * np.cos(theta),
+            np.full(n, cy),
+            cz + r * np.sin(theta),
+        ]).astype(np.float64)
+        
+        # Velocities: initial_velocity + small random
+        velocities_np = np.zeros((n, 3), dtype=np.float64)
+        velocities_np[:] = initial_velocity
+        velocities_np += rng.uniform(-0.05, 0.05, (n, 3))
+        
+        # Zones: all VENTURI_INLET (0), active
+        zones_np = np.zeros(n, dtype=np.int32)
+        is_active_np = np.ones(n, dtype=np.int32)
+        types_np = np.zeros(n, dtype=np.int32)  # single material
+        
+        # Copy to device (full arrays: fill 0:n, rest unchanged)
+        n_max = self.config.num_particles
+        pos_full = self.state.positions.numpy().copy()
+        pos_full[0:n] = positions_np
+        self.state.positions = wp.array(pos_full, dtype=wp.vec3, device=self.device)
+        vel_full = self.state.velocities.numpy().copy()
+        vel_full[0:n] = velocities_np
+        self.state.velocities = wp.array(vel_full, dtype=wp.vec3, device=self.device)
+        dia_full = self.state.diameters.numpy().copy()
+        dia_full[0:n] = diameters_np
+        self.state.diameters = wp.array(dia_full, dtype=float, device=self.device)
+        mass_full = self.state.masses.numpy().copy()
+        mass_full[0:n] = masses_np
+        self.state.masses = wp.array(mass_full, dtype=float, device=self.device)
+        zone_full = self.state.zones.numpy().copy()
+        zone_full[0:n] = zones_np
+        self.state.zones = wp.array(zone_full, dtype=wp.int32, device=self.device)
+        active_full = self.state.is_active.numpy().copy()
+        active_full[0:n] = is_active_np
+        self.state.is_active = wp.array(active_full, dtype=wp.int32, device=self.device)
+        dens_full = self.state.densities.numpy().copy()
+        dens_full[0:n] = densities_np
+        self.state.densities = wp.array(dens_full, dtype=float, device=self.device)
+        type_full = self.state.particle_types.numpy().copy()
+        type_full[0:n] = types_np
+        self.state.particle_types = wp.array(type_full, dtype=wp.int32, device=self.device)
+        
+        self.state.particles_active = n
+        print(f"\n  Initialized {n} particles from material at venturi inlet")
+        print(f"    Diameter range: {diameters_np.min()*1e6:.1f} - {diameters_np.max()*1e6:.1f} um")
+        print(f"    Mean diameter:  {diameters_np.mean()*1e6:.1f} um")
+    
+    def initialize_whole_flour_population(
+        self,
+        source: str = "yellow_pea",
+        num_particles: Optional[int] = None,
+        initial_velocity: Tuple[float, float, float] = (0.0, 0.5, 0.0),
+    ) -> None:
+        """
+        Initialize a whole-flour particle population (protein + starch + fiber) at venturi solids inlet.
+        
+        Uses create_whole_flour_population from the particles module for consistency
+        with the feed system; particles enter classification as they would from the deagglomerator.
+        """
+        n = num_particles or self.config.num_particles
+        n = min(n, self.config.num_particles)
+        
+        _material, diameters_np, densities_np, _sphericities, types_np = create_whole_flour_population(source, n, 43)
+        diameters_np = np.asarray(diameters_np, dtype=np.float64)
+        densities_np = np.asarray(densities_np, dtype=np.float64)
+        types_np = np.asarray(types_np, dtype=np.int32)
+        
+        # Clamp to classification size range (microns)
+        diameters_np = np.clip(diameters_np, 5e-6, 100e-6)
+        
+        vols = (np.pi / 6.0) * (diameters_np ** 3)
+        masses_np = densities_np * vols
+        
+        rng = np.random.default_rng(43)
+        r = np.sqrt(rng.uniform(0, 1, n)) * self.venturi_solids_inlet_radius * 0.8
+        theta = rng.uniform(0, 2 * np.pi, n)
+        cx, cy, cz = self.venturi_solids_inlet_pos[0], self.venturi_solids_inlet_pos[1], self.venturi_solids_inlet_pos[2]
+        positions_np = np.column_stack([
+            cx + r * np.cos(theta),
+            np.full(n, cy),
+            cz + r * np.sin(theta),
+        ]).astype(np.float64)
+        
+        velocities_np = np.zeros((n, 3), dtype=np.float64)
+        velocities_np[:] = initial_velocity
+        velocities_np += rng.uniform(-0.05, 0.05, (n, 3))
+        
+        zones_np = np.zeros(n, dtype=np.int32)
+        is_active_np = np.ones(n, dtype=np.int32)
+        
+        n_max = self.config.num_particles
+        pos_full = self.state.positions.numpy().copy()
+        pos_full[0:n] = positions_np
+        self.state.positions = wp.array(pos_full, dtype=wp.vec3, device=self.device)
+        vel_full = self.state.velocities.numpy().copy()
+        vel_full[0:n] = velocities_np
+        self.state.velocities = wp.array(vel_full, dtype=wp.vec3, device=self.device)
+        dia_full = self.state.diameters.numpy().copy()
+        dia_full[0:n] = diameters_np
+        self.state.diameters = wp.array(dia_full, dtype=float, device=self.device)
+        mass_full = self.state.masses.numpy().copy()
+        mass_full[0:n] = masses_np
+        self.state.masses = wp.array(mass_full, dtype=float, device=self.device)
+        zone_full = self.state.zones.numpy().copy()
+        zone_full[0:n] = zones_np
+        self.state.zones = wp.array(zone_full, dtype=wp.int32, device=self.device)
+        active_full = self.state.is_active.numpy().copy()
+        active_full[0:n] = is_active_np
+        self.state.is_active = wp.array(active_full, dtype=wp.int32, device=self.device)
+        dens_full = self.state.densities.numpy().copy()
+        dens_full[0:n] = densities_np
+        self.state.densities = wp.array(dens_full, dtype=float, device=self.device)
+        type_full = self.state.particle_types.numpy().copy()
+        type_full[0:n] = types_np
+        self.state.particle_types = wp.array(type_full, dtype=wp.int32, device=self.device)
+        
+        self.state.particles_active = n
+        
+        n_protein = int(np.sum(types_np == 0))
+        n_starch = int(np.sum(types_np == 1))
+        n_fiber = int(np.sum(types_np == 2))
+        total_mass = float(np.sum(masses_np))
+        print(f"\n  Initialized {n} particles as {source} whole flour at venturi inlet")
+        print(f"    Protein: {n_protein} ({100*n_protein/n:.0f}%)  Starch: {n_starch} ({100*n_starch/n:.0f}%)  Fiber: {n_fiber} ({100*n_fiber/n:.0f}%)")
+        print(f"    Diameter range: {diameters_np.min()*1e6:.1f} - {diameters_np.max()*1e6:.1f} um  Total mass: {total_mass*1000:.2f} g")
+    
     def step(self):
         """Advance simulation by one time step."""
         dt = self.config.dt
@@ -3874,7 +4212,7 @@ class ClassificationFlowPhysicsSimulator:
 # =============================================================================
 
 def create_classification_simulator(
-    air_flow_rate_m3s: float = 0.1,
+    air_flow_rate_m3s: float = 1768.0 / 3600.0,  # Air system at 2500 RPM (~1768 m³/h)
     particle_density: float = 1450.0,
     num_particles: int = 10000,
     device: str = "cuda",
@@ -3883,7 +4221,7 @@ def create_classification_simulator(
     Create a classification system and flow simulator.
     
     Args:
-        air_flow_rate_m3s: Air volumetric flow rate [m3/s]
+        air_flow_rate_m3s: Air volumetric flow rate [m3/s] (default: 1768 m³/h from air system at 2500 RPM)
         particle_density: Particle density [kg/m3] (flour ~1450)
         num_particles: Number of simulation particles
         device: Warp device ('cuda' or 'cpu')

@@ -17,39 +17,80 @@ The simulation tracks particles through the system and shows:
 - Separation statistics (coarse vs. fines vs. protein)
 
 Usage:
-    # Run simulation with default settings
+    # Default run (1000 particles, 5 s, 0.3 m3/s)
     python examples/run_classification_flow.py
-    
-    # Run with detailed flow path diagnostics
-    python examples/run_classification_flow.py --diagnostics
-    
-    # Print diagnostics only (no simulation)
+
+    # Diagnostics only (no simulation)
     python examples/run_classification_flow.py --no-sim
-    
-    # Full simulation with visualization
-    python examples/run_classification_flow.py --visualize --particles 5000 --time 10
+    python examples/run_classification_flow.py --diagnostics --no-sim
 
-    # Print diagnostics only (no simulation)
-    python examples/run_classification_flow.py --no-sim
-
-    # Run simulation with full diagnostics
+    # Run with diagnostics printed before/after
     python examples/run_classification_flow.py --diagnostics
+    python examples/run_classification_flow.py -d --particles 2000 --time 10
 
-    # Run with diagnostics and visualization
+    # Particle count and time
+    python examples/run_classification_flow.py --particles 5000 --time 10
+    python examples/run_classification_flow.py -n 500 -t 3
+
+    # Air flow rate (m3/s)
+    python examples/run_classification_flow.py --air-flow 0.1
+    python examples/run_classification_flow.py --air-flow 0.5 --particles 2000
+
+    # Particle size (when not using --material)
+    python examples/run_classification_flow.py --particle-dia 30 --particle-std 15
+    python examples/run_classification_flow.py --particle-dia 80 --particle-std 40
+
+    # Food powder materials (whole flour: protein + starch + fiber)
+    python examples/run_classification_flow.py --material yellow_pea
+    python examples/run_classification_flow.py --material faba_bean --particles 500
+    python examples/run_classification_flow.py --material oat --time 8
+
+    # Single fraction (protein, starch, or fiber only)
+    python examples/run_classification_flow.py --material protein --particles 1000
+    python examples/run_classification_flow.py --material starch
+    python examples/run_classification_flow.py --material fiber
+
+    # Target cut size d50 in microns (auto air flow; geometry warning may apply)
+    python examples/run_classification_flow.py --target-d50 35
+    python examples/run_classification_flow.py --target-d50 40 --particles 2000
+
+    # Zigzag geometry overrides (mm)
+    python examples/run_classification_flow.py --zigzag-width 100 --zigzag-depth 150
+    python examples/run_classification_flow.py --zigzag-width 120 --diagnostics
+
+    # Turbulence intensity
+    python examples/run_classification_flow.py --turbulence 0.2
+
+    # Compute device
+    python examples/run_classification_flow.py --device cpu
+    python examples/run_classification_flow.py --device cuda -n 5000
+
+    # 3D visualization (requires pyvista)
+    python examples/run_classification_flow.py --visualize
+    python examples/run_classification_flow.py -v --particles 2000 --time 10
+    python examples/run_classification_flow.py --visualize --material yellow_pea --diagnostics
+
+    # Combined examples
     python examples/run_classification_flow.py --diagnostics --visualize --particles 5000 --time 10
+    python examples/run_classification_flow.py --material yellow_pea --air-flow 0.2 -n 1000 -t 5 -v
+    python examples/run_classification_flow.py --no-sim --material faba_bean --diagnostics
 
-    # Run with custom air flow and diagnostics
-    python examples/run_classification_flow.py --diagnostics --air-flow 0.1 --particles 2000
-    
 Options:
     -n, --particles N     Number of particles (default: 1000)
     -t, --time T          Simulation time in seconds (default: 5)
-    -d, --diagnostics     Print detailed flow path with all calculations
-    --no-sim              Only print diagnostics, skip simulation
+    --dt                  Time step in seconds (default: 0.001)
+    --air-flow            Air flow rate in m3/s (default: 1768 m3/h, from air system at 2500 RPM)
+    --particle-dia        Mean particle diameter in microns (default: 50)
+    --particle-std        Particle diameter std dev in microns (default: 30)
+    --material            Preset: yellow_pea, faba_bean, oat, protein, starch, fiber
     -v, --visualize       Enable 3D visualization (requires pyvista)
-    --air-flow            Air flow rate in m3/s (default: 0.3)
-    --particle-dia        Mean particle diameter in microns (default: 30um)
-    --device              Compute device: cuda or cpu (default: cuda)
+    -d, --diagnostics     Print detailed flow path with all calculations
+    --no-sim              Print diagnostics only, skip simulation
+    --target-d50          Target cut size in microns (auto air flow)
+    --zigzag-width        Override zigzag channel width in mm
+    --zigzag-depth        Override zigzag channel depth in mm
+    --turbulence          Turbulent intensity (default: 0.15)
+    --device              cuda or cpu (default: cuda)
 """
 
 import sys
@@ -71,20 +112,22 @@ def main():
         description="Physics-based classification flow simulation"
     )
     parser.add_argument(
-        "--particles", "-n", type=int, default=1000,
-        help="Number of particles (default: 1000)"
+        "--particles", "-n", type=int, default=100000,
+        help="Number of particles (default: 100000)"
     )
     parser.add_argument(
-        "--time", "-t", type=float, default=5.0,
-        help="Simulation time in seconds (default: 5)"
+        "--time", "-t", type=float, default=180.0,
+        help="Simulation time in seconds (default: 180)"
     )
     parser.add_argument(
         "--dt", type=float, default=0.001,
         help="Time step in seconds (default: 0.001)"
     )
+    # Default matches air system at 2500 RPM (run_air_flow_physics: ~1768 m³/h)
+    _AIR_FLOW_DEFAULT_M3_S = 1768.0 / 3600.0  # ~0.491 m³/s
     parser.add_argument(
-        "--air-flow", type=float, default=0.3,
-        help="Air flow rate in m³/s (default: 0.3)"
+        "--air-flow", type=float, default=_AIR_FLOW_DEFAULT_M3_S,
+        help="Air flow rate in m³/s (default: 1768 m³/h from air system at 2500 RPM)"
     )
     parser.add_argument(
         "--particle-dia", type=float, default=50.0,
@@ -149,6 +192,7 @@ def main():
     from airclassifier.geometry.assembly.classification import (
         ClassificationSystemAssembly,
     )
+    from airclassifier.particles import FluidConfig, ParticleMaterial
     
     # Create assembly with optional geometry overrides
     print("\nCreating classification system assembly...")
@@ -266,15 +310,42 @@ def main():
         args.air_flow = Q_required
         print(f"\n    => Setting air flow to {Q_required*1000:.4f} L/s ({Q_required*3600:.2f} m^3/h)")
     
-    # Create physics config
+    # Create physics config (use FluidConfig and material when --material set)
     print("\nConfiguring physics simulation...")
-    config = ClassificationFlowConfig(
-        dt=args.dt,
-        air_flow_rate_m3s=args.air_flow,
-        num_particles=args.particles,
-        device=args.device,
-        turbulent_intensity=args.turbulence,
-    )
+    if args.material and args.material in ("yellow_pea", "faba_bean", "oat"):
+        config = ClassificationFlowConfig.for_food_powder(
+            source=args.material,
+            fraction="whole",
+            air_flow_rate_m3s=args.air_flow,
+            num_particles=args.particles,
+            dt=args.dt,
+            device=args.device,
+            turbulent_intensity=args.turbulence,
+        )
+        print(f"  Using FluidConfig + {args.material} whole flour")
+    elif args.material:
+        # Single fraction (protein/starch/fiber) or other preset - use material with FluidConfig
+        source = "yellow_pea" if args.material in ("protein", "starch", "fiber") else args.material
+        fraction = args.material if args.material in ("protein", "starch", "fiber") else "whole"
+        material = ParticleMaterial.create_food_powder(source, fraction)
+        config = ClassificationFlowConfig(
+            dt=args.dt,
+            air_flow_rate_m3s=args.air_flow,
+            num_particles=args.particles,
+            device=args.device,
+            turbulent_intensity=args.turbulence,
+            material=material,
+            fluid_config=FluidConfig.air_at_stp(),
+        )
+        print(f"  Using FluidConfig + material: {material.name}")
+    else:
+        config = ClassificationFlowConfig(
+            dt=args.dt,
+            air_flow_rate_m3s=args.air_flow,
+            num_particles=args.particles,
+            device=args.device,
+            turbulent_intensity=args.turbulence,
+        )
     
     # Create simulator
     simulator = ClassificationFlowPhysicsSimulator(assembly, config)
@@ -291,38 +362,32 @@ def main():
             print("=" * 70)
             return
     
-    # Initialize particles
+    # Initialize particles (use integrated particle module when --material set)
     print("\nInitializing particles at venturi inlet...")
     
-    if args.material:
-        # Use preset food powder material
-        from airclassifier.particles.material import ParticleMaterial
-        
-        if args.material in ["protein", "starch", "fiber"]:
-            material = ParticleMaterial.create_food_powder("yellow_pea", args.material)
-        else:
-            material = ParticleMaterial.create_food_powder(args.material, "whole")
-        
-        print(f"  Using material: {material.name}")
-        print(f"    Density: {material.density:.0f} kg/m3")
-        print(f"    Size range: {material.size_distribution.d_min*1e6:.1f} - {material.size_distribution.d_max*1e6:.1f} um")
-        print(f"    d50: {material.size_distribution.d50*1e6:.1f} um")
-        
-        # Sample diameters from material distribution
-        diameters = material.sample_diameters(args.particles)
-        mean_dia_m = diameters.mean()
-        std_dia_m = diameters.std()
-        
-        print(f"    Sampled {args.particles} particles: mean={mean_dia_m*1e6:.1f} um, std={std_dia_m*1e6:.1f} um")
+    if args.material and args.material in ("yellow_pea", "faba_bean", "oat"):
+        # Whole flour population (protein + starch + fiber) via reusable module
+        simulator.initialize_whole_flour_population(
+            source=args.material,
+            num_particles=args.particles,
+            initial_velocity=(0.0, 0.5, 0.0),
+        )
+    elif args.material and args.material in ("protein", "starch", "fiber"):
+        # Single fraction via material
+        material = ParticleMaterial.create_food_powder("yellow_pea", args.material)
+        simulator.initialize_particles_from_material(
+            material=material,
+            num_particles=args.particles,
+            initial_velocity=(0.0, 0.5, 0.0),
+        )
     else:
         mean_dia_m = args.particle_dia * 1e-6
         std_dia_m = args.particle_std * 1e-6
-    
-    simulator.initialize_particles(
-        num_particles=args.particles,
-        mean_diameter=mean_dia_m,
-        diameter_std=std_dia_m,
-    )
+        simulator.initialize_particles(
+            num_particles=args.particles,
+            mean_diameter=mean_dia_m,
+            diameter_std=std_dia_m,
+        )
     
     # Visualization setup
     plotter = None

@@ -2437,7 +2437,12 @@ class AirFlowPhysicsSimulator:
         print("\nEnergy Consumption:")
         print(f"  Shaft power:      {self.state.shaft_power/1000:.2f} kW")
         print(f"  Electrical power: {self.state.electrical_power/1000:.2f} kW")
-        print(f"  Total energy:     {self.state.total_energy_kWh:.4f} kWh")
+        # Show energy with appropriate precision based on magnitude
+        energy = self.state.total_energy_kWh
+        if energy < 0.0001:
+            print(f"  Total energy:     {energy:.6f} kWh ({energy * 1000:.3f} Wh)")
+        else:
+            print(f"  Total energy:     {energy:.4f} kWh")
         
         print("=" * 60)
     

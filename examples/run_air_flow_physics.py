@@ -21,6 +21,18 @@ Usage:
     python examples/run_air_flow_physics.py --time 15 --rpm 2500 --particles 2000 --visualize
     python examples/run_air_flow_physics.py --analyze --no-sim  # Physics analysis only
     python examples/run_air_flow_physics.py --analyze --temperature 40  # Hot air
+
+    # Quick physics analysis at 25°C
+    python examples/run_air_flow_physics.py --no-sim --analyze --temperature 25
+
+    # Detailed flow regime analysis at 40°C (hot air)
+    python examples/run_air_flow_physics.py --no-sim --flow-regime --temperature 40
+
+    # Detailed blower analysis
+    python examples/run_air_flow_physics.py --no-sim --blower-analysis
+
+    # Full simulation with post-analysis
+    python examples/run_air_flow_physics.py --analyze --time 60 --rpm 2500
 """
 
 import argparse
