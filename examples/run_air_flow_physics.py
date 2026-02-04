@@ -32,7 +32,11 @@ Usage:
     python examples/run_air_flow_physics.py --no-sim --blower-analysis
 
     # Full simulation with post-analysis
-    python examples/run_air_flow_physics.py --analyze --time 60 --rpm 2500
+    python examples/run_air_flow_physics.py --analyze --time 180 --rpm 3000
+
+    # Air system + ductwork to venturi air inlet (steady 1D duct hydraulics)
+    python examples/run_air_flow_physics.py --no-sim --full-flow
+    python examples/run_air_flow_physics.py --analyze --full-flow --time 180 --rpm 3000
 """
 
 import argparse
@@ -105,7 +109,22 @@ def parse_args():
         "--blower-analysis", action="store_true",
         help="Print detailed blower performance analysis"
     )
+    parser.add_argument(
+        "--full-flow", action="store_true",
+        help="Include ductwork flow from air system outlet to venturi air inlet"
+    )
     return parser.parse_args()
+
+
+def _print_final_operating_point(results):
+    """Print final operating point once (avoids duplicate output)."""
+    print(f"\nFinal operating point:")
+    print(f"  Blower RPM:      {results['blower_rpm']:.0f}")
+    print(f"  Flow rate:       {results['volume_flow_rate_m3_h']:.0f} m³/h")
+    print(f"  Pressure rise:   {results['pressure_rise_Pa']:.0f} Pa")
+    print(f"  Shaft power:     {results['shaft_power_kW']:.1f} kW")
+    print(f"  Efficiency:      {results['efficiency']*100:.1f}%")
+    print(f"  Total energy:    {results['total_energy_kWh']:.3f} kWh")
 
 
 def main():
@@ -245,7 +264,42 @@ def main():
         
         if args.no_sim:
             print("\n--no-sim specified, skipping full simulation.")
-            return
+    
+    # Ductwork from air system outlet to venturi air inlet (steady 1D hydraulics)
+    if args.full_flow:
+        from airclassifier.geometry.assembly.complete_system import (
+            CompleteClassifierAssembly,
+            CompleteSystemParams,
+        )
+        from airclassifier.simulation.airclass_flow_physics import (
+            compute_air_to_venturi_flow,
+            print_ductwork_flow_summary,
+        )
+        print("\nBuilding complete system (air + ductwork to venturi)...")
+        full_params = CompleteSystemParams(
+            air_flow_m3_h=args.flow_rate,
+            include_feed_system=False,
+            include_exhaust=False,
+            include_ductwork=True,
+            include_air_system=True,
+        )
+        complete_assembly = CompleteClassifierAssembly(full_params)
+        Q_m3_s = args.flow_rate / 3600.0
+        result = compute_air_to_venturi_flow(
+            complete_assembly,
+            Q_m3_s,
+            rho=fluid_config.density,
+            mu=fluid_config.dynamic_viscosity,
+        )
+        print_ductwork_flow_summary(result)
+        if result.get("venturi_inlet_diameter_m"):
+            print(
+                f"\nVenturi air inlet: D = {result['venturi_inlet_diameter_m']*1000:.0f} mm, "
+                f"v = {result['venturi_inlet_velocity_m_s']:.2f} m/s"
+            )
+    
+    if args.no_sim:
+        return
     
     # Visualization setup
     plotter = None
@@ -590,19 +644,46 @@ def main():
     print(f"  Rate:            {simulator.state.step / elapsed:.0f} steps/s")
     
     results = simulator.get_results()
-    print(f"\nFinal operating point:")
-    print(f"  Blower RPM:      {results['blower_rpm']:.0f}")
-    print(f"  Flow rate:       {results['volume_flow_rate_m3_h']:.0f} m³/h")
-    print(f"  Pressure rise:   {results['pressure_rise_Pa']:.0f} Pa")
-    print(f"  Shaft power:     {results['shaft_power_kW']:.1f} kW")
-    print(f"  Efficiency:      {results['efficiency']*100:.1f}%")
-    print(f"  Total energy:    {results['total_energy_kWh']:.3f} kWh")
+    _print_final_operating_point(results)
     
-    # Print duct segment data
+    # Print duct segment data (air system only)
     print(f"\nDuct segment pressure drops:")
     for segment in simulator.get_duct_segment_data():
         print(f"  {segment['name']:20s}: {segment['pressure_drop']:.1f} Pa "
               f"(v={segment['velocity']:.1f} m/s, Re={segment['reynolds']:.0f})")
+    
+    # Ductwork to venturi at actual simulated flow (when --full-flow was used)
+    if args.full_flow:
+        from airclassifier.geometry.assembly.complete_system import (
+            CompleteClassifierAssembly,
+            CompleteSystemParams,
+        )
+        from airclassifier.simulation.airclass_flow_physics import (
+            compute_air_to_venturi_flow,
+        )
+        full_params = CompleteSystemParams(
+            air_flow_m3_h=args.flow_rate,
+            include_feed_system=False,
+            include_exhaust=False,
+            include_ductwork=True,
+            include_air_system=True,
+        )
+        complete_assembly = CompleteClassifierAssembly(full_params)
+        Q_actual_m3_s = results["volume_flow_rate_m3_h"] / 3600.0
+        venturi_result = compute_air_to_venturi_flow(
+            complete_assembly,
+            Q_actual_m3_s,
+            rho=fluid_config.density,
+            mu=fluid_config.dynamic_viscosity,
+        )
+        print("\n" + "=" * 60)
+        print("DUCTWORK TO VENTURI (at actual flow)")
+        print("=" * 60)
+        print(f"  Volume flow:    {venturi_result['volume_flow_rate_m3_h']:.1f} m³/h")
+        print(f"  Total dP:       {venturi_result['total_pressure_drop_Pa']:.1f} Pa")
+        print(f"  Venturi inlet:  D = {venturi_result['venturi_inlet_diameter_m']*1000:.0f} mm, "
+              f"v = {venturi_result['venturi_inlet_velocity_m_s']:.2f} m/s")
+        print("=" * 60)
     
     # =========================================================================
     # POST-SIMULATION ANALYSIS

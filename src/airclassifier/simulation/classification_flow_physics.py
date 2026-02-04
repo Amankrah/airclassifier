@@ -61,38 +61,46 @@ from ..particles import (
 class ClassificationFlowConfig:
     """
     Configuration for classification flow simulation.
-    
-    All parameters have physical meaning - no magic numbers.
-    Supports FluidConfig and ParticleMaterial for consistency with feed system.
+
+    Classification does not create air or feed—it performs separation on the air and
+    feed flow coming in. Particle parameters (num_particles, particle_density,
+    visual_particle_diameter, sphericity) are provided by feedclass_flow_physics
+    through feed_flow_physics via feed_result. Air parameters (air_density,
+    air_viscosity, air_flow_rate_m3s) come from air_result. Particle feed entry
+    rate at the solids inlet is computed from solids mass flow and particle
+    properties (Warp kernel feed_entry_rate_particles_per_s / feedclass
+    compute_feed_entry_rate_particles_per_s). Use from_air_and_feed_results() to
+    build config from airclass and feedclass results only. Direct construction is
+    for legacy/standalone use only.
     """
-    # Particle parameters
-    num_particles: int = 5000
-    particle_density: float = 1450.0       # [kg/m3] Typical flour/starch
-    visual_particle_diameter: float = 0.002  # [m] 2mm for visualization
-    sphericity: float = 0.75               # [-] Shape factor (for non-spherical drag)
-    
-    # Air properties (can be set via FluidConfig)
-    air_density: float = 1.2               # [kg/m3] At ~20°C, 1 atm
-    air_viscosity: float = 1.81e-5         # [Pa·s] Dynamic viscosity
-    
-    # Optional reusable configs
+    # Particle parameters: provided by feedclass/feed_flow_physics via feed_result (legacy defaults for direct construction)
+    num_particles: int = 5000              # Capacity; set from feed_result when using from_air_and_feed_results
+    particle_density: float = 1450.0      # [kg/m3] From feed_result
+    visual_particle_diameter: float = 0.002  # [m] From feed_result particle_diameter_m
+    sphericity: float = 0.75               # [-] From feed_result or material
+
+    # Air properties: from air_result when using from_air_and_feed_results (legacy defaults for direct construction)
+    air_density: float = 1.2               # [kg/m3] From air_result / FluidConfig
+    air_viscosity: float = 1.81e-5        # [Pa·s] From air_result / FluidConfig
+
+    # Optional; when provided, __post_init__ copies density/viscosity into fields above
     fluid_config: Optional[FluidConfig] = None
     material: Optional[ParticleMaterial] = None
-    
-    # Air flow rate - determines all air velocities
-    # Default matches air system at 2500 RPM (~1768 m³/h from run_air_flow_physics)
-    air_flow_rate_m3s: float = 1768.0 / 3600.0  # [m3/s] ~0.491 m3/s = 1768 m3/h
-    
+
+    # Air flow rate [m3/s]; from air_result when using from_air_and_feed_results
+    air_flow_rate_m3s: float = 0.0
+
     # Collision parameters
     restitution: float = 0.3               # Coefficient of restitution (inelastic)
-    friction: float = 0.4                  # Friction coefficient
-    
+    friction: float = 0.4                   # Friction coefficient
+
     # Simulation timing
     dt: float = 0.001                      # [s] Time step (1ms for stability)
-    
-    # Feed rate from feed system
-    particle_feed_rate: float = 100.0      # [particles/s] From deagglomerator
-    
+
+    # Feed entry rate at solids inlet [particles/s]; from feed_result (particle_feed_rate_per_s)
+    # or computed from solids_mass_flow via Warp feed_entry_rate_particles_per_s kernel
+    particle_feed_rate: float = 0.0        # 0 = not set; set by from_air_and_feed_results from feed_result
+
     # Turbulence parameters (for zigzag mixing)
     turbulent_intensity: float = 0.15      # Fraction of mean velocity (15%)
     
@@ -109,46 +117,158 @@ class ClassificationFlowConfig:
             self.sphericity = getattr(self.material, 'sphericity', self.sphericity)
         if self.dt > 0.005:
             print(f"Warning: dt={self.dt}s may be too large for stability")
-        if self.particle_density < self.air_density:
+        if self.particle_density > 0 and self.air_density > 0 and self.particle_density < self.air_density:
             print(f"Warning: particle density < air density - particles will float")
-        if self.air_flow_rate_m3s < 0.01:
+        if self.air_flow_rate_m3s > 0 and self.air_flow_rate_m3s < 0.01:
             print(f"Warning: Low air flow rate may cause poor separation")
-    
+
     @classmethod
-    def from_fluid_config(
+    def from_air_and_feed_results(
         cls,
-        fluid_config: FluidConfig,
-        num_particles: int = 5000,
-        air_flow_rate_m3s: float = 1768.0 / 3600.0,  # Air system at 2500 RPM
+        air_result: Dict[str, Any],
+        feed_result: Dict[str, Any],
+        classification_assembly: ClassificationSystemAssembly,
+        solids_mass_flow_kg_s: Optional[float] = None,
+        num_particles_capacity: Optional[int] = None,
+        fluid_config: Optional[FluidConfig] = None,
+        material: Optional[ParticleMaterial] = None,
+        simulation_time_s: float = 180.0,
         **kwargs
     ) -> "ClassificationFlowConfig":
-        """Create config from FluidConfig for consistency with air/feed systems."""
+        """
+        Build config from airclass and feedclass results only (no magic numbers).
+        Particle params from feed_result (feedclass/feed_flow_physics). Air params from
+        air_result. Particle feed entry rate at solids inlet from feed_result
+        (particle_feed_rate_per_s) or computed from solids_mass_flow_kg_s via
+        feedclass compute_feed_entry_rate_particles_per_s (same formula as Warp
+        feed_entry_rate_particles_per_s kernel).
+        """
+        from .feedclass_flow_physics import compute_feed_entry_rate_particles_per_s
+
+        Q_m3s = air_result.get("volume_flow_rate_m3_s", 0.0)
+        if Q_m3s <= 0:
+            Q_m3s = air_result.get("volume_flow_rate_m3_h", 0.0) / 3600.0
+        rho_air = kwargs.pop("rho_air", 1.204)
+        mu_air = kwargs.pop("mu_air", 1.82e-5)
+        if fluid_config is not None:
+            rho_air = fluid_config.density
+            mu_air = fluid_config.dynamic_viscosity
+
+        particle_density = feed_result.get("particle_density_kg_m3", 0.0)
+        particle_dia_m = feed_result.get("particle_diameter_m", 0.0)
+        sphericity = feed_result.get("sphericity", 0.75)
+        if material is not None:
+            particle_density = material.density
+            sphericity = getattr(material, "sphericity", sphericity)
+            if hasattr(material, "size_distribution") and material.size_distribution is not None:
+                sd = material.size_distribution
+                particle_dia_m = (sd.d_min + sd.d_max) / 2.0
+        if particle_density <= 0:
+            particle_density = 1420.0
+        if particle_dia_m <= 0:
+            particle_dia_m = 50e-6
+
+        # Feed entry rate at solids inlet: from feed_result or computed from solids mass flow
+        particle_feed_rate = feed_result.get("particle_feed_rate_per_s", 0.0)
+        if particle_feed_rate <= 0 and solids_mass_flow_kg_s is not None and solids_mass_flow_kg_s > 0:
+            particle_feed_rate = compute_feed_entry_rate_particles_per_s(
+                solids_mass_flow_kg_s, particle_density, particle_dia_m
+            )
+
+        # Capacity: from caller or from feed rate * simulation time (with headroom)
+        n_cap = num_particles_capacity
+        if n_cap is None or n_cap <= 0:
+            n_cap = max(5000, int(particle_feed_rate * simulation_time_s * 1.2)) if particle_feed_rate > 0 else 10000
+
         return cls(
-            fluid_config=fluid_config,
-            num_particles=num_particles,
-            air_flow_rate_m3s=air_flow_rate_m3s,
-            **kwargs
-        )
-    
-    @classmethod
-    def for_food_powder(
-        cls,
-        source: str = "yellow_pea",
-        fraction: str = "whole",
-        air_flow_rate_m3s: float = 1768.0 / 3600.0,  # Air system at 2500 RPM
-        num_particles: int = 5000,
-        **kwargs
-    ) -> "ClassificationFlowConfig":
-        """Create config for food powder classification (protein/starch separation)."""
-        material = ParticleMaterial.create_food_powder(source, fraction)
-        fluid = FluidConfig.air_at_stp()
-        return cls(
+            air_flow_rate_m3s=Q_m3s,
+            air_density=rho_air,
+            air_viscosity=mu_air,
+            particle_density=particle_density,
+            visual_particle_diameter=particle_dia_m,
+            sphericity=sphericity,
+            num_particles=n_cap,
+            particle_feed_rate=particle_feed_rate,
+            fluid_config=fluid_config or FluidConfig.air_at_stp(),
             material=material,
-            fluid_config=fluid,
-            num_particles=num_particles,
-            air_flow_rate_m3s=air_flow_rate_m3s,
             **kwargs
         )
+
+
+# =============================================================================
+# VENTURI PHYSICS FROM AIR + FEED (geometry and first principles)
+# =============================================================================
+
+def get_venturi_geometry_from_assembly(assembly: ClassificationSystemAssembly) -> Dict[str, Any]:
+    """Extract venturi geometry from classification assembly (no magic numbers)."""
+    venturi = assembly.venturi
+    vp = venturi.params
+    return {
+        "inlet_diameter_m": vp.inlet_diameter,
+        "inlet_area_m2": vp.inlet_area,
+        "throat_diameter_m": vp.throat_diameter,
+        "throat_area_m2": vp.throat_area,
+        "outlet_diameter_m": vp.outlet_diameter,
+        "total_length_m": vp.total_length,
+        "throat_start_m": vp.throat_start_position,
+        "throat_end_m": vp.throat_end_position,
+        "solids_inlet_diameter_m": getattr(
+            venturi.ports.get("solids_inlet"),
+            "diameter",
+            vp.solids_inlet_diameter if hasattr(vp, "solids_inlet_diameter") else 0.04,
+        ),
+    }
+
+
+def compute_venturi_physics_from_air_and_feed(
+    air_result: Dict[str, Any],
+    feed_result: Dict[str, Any],
+    classification_assembly: ClassificationSystemAssembly,
+    solids_mass_flow_kg_s: Optional[float] = None,
+    rho_air: float = 1.204,
+) -> Dict[str, Any]:
+    """
+    Compute venturi and air–particle interaction from airclass + feedclass results and geometry.
+    No magic numbers: continuity (Q = A*v), Bernoulli, momentum transfer, loading ratio.
+    """
+    geo = get_venturi_geometry_from_assembly(classification_assembly)
+    Q_m3s = air_result.get("volume_flow_rate_m3_s", 0.0)
+    if Q_m3s <= 0:
+        Q_m3s = air_result.get("volume_flow_rate_m3_h", 0.0) / 3600.0
+    v_inlet = air_result.get("venturi_inlet_velocity_m_s", 0.0)
+    if v_inlet <= 0 and geo["inlet_area_m2"] > 0:
+        v_inlet = Q_m3s / geo["inlet_area_m2"]
+    A_throat = geo["throat_area_m2"]
+    v_throat = Q_m3s / A_throat if A_throat > 0 else 0.0
+    segments = feed_result.get("segments", [])
+    particle_entry_v = segments[-1]["particle_velocity_along_m_s"] if segments else 0.1
+    m_dot_air = Q_m3s * rho_air
+    loading_ratio = 0.0
+    momentum_transfer_N = 0.0
+    pressure_drop_solids_Pa = 0.0
+    mixture_density_kg_m3 = rho_air
+    if solids_mass_flow_kg_s is not None and solids_mass_flow_kg_s > 0 and m_dot_air > 0:
+        loading_ratio = solids_mass_flow_kg_s / m_dot_air
+        momentum_transfer_N = solids_mass_flow_kg_s * (v_throat - particle_entry_v)
+        if A_throat > 0 and v_throat > 0:
+            pressure_drop_solids_Pa = momentum_transfer_N / (A_throat * v_throat)
+        particle_density = feed_result.get("particle_density_kg_m3", 1420.0)
+        vol_flow_solids = solids_mass_flow_kg_s / particle_density
+        vol_flow_air = Q_m3s
+        solid_vol_frac = vol_flow_solids / (vol_flow_air + vol_flow_solids) if (vol_flow_air + vol_flow_solids) > 0 else 0.0
+        mixture_density_kg_m3 = (1.0 - solid_vol_frac) * rho_air + solid_vol_frac * particle_density
+    return {
+        "volume_flow_rate_m3_s": Q_m3s,
+        "venturi_inlet_velocity_m_s": v_inlet,
+        "venturi_throat_velocity_m_s": v_throat,
+        "venturi_throat_area_m2": A_throat,
+        "particle_entry_velocity_m_s": particle_entry_v,
+        "loading_ratio": loading_ratio,
+        "momentum_transfer_N": momentum_transfer_N,
+        "pressure_drop_solids_Pa": pressure_drop_solids_Pa,
+        "mixture_density_kg_m3": mixture_density_kg_m3,
+        "venturi_geometry": geo,
+    }
 
 
 # =============================================================================
@@ -678,6 +798,32 @@ if wp is not None:
         """
         eps = 1.0e-10
         return rho_f * v_rel_mag * diameter / wp.max(mu_f, eps)
+
+    # -------------------------------------------------------------------------
+    # FEED ENTRY RATE AT SOLIDS INLET (from feedclass / solids mass flow)
+    # -------------------------------------------------------------------------
+    @wp.func
+    def particle_mass_from_density_diameter(rho_p: float, d_p: float) -> float:
+        """
+        Mass per particle [kg]: m = rho_p * (pi/6) * d_p^3.
+        Used to compute feed entry rate at solids inlet: N_dot = m_dot_solids / m_particle.
+        """
+        return rho_p * (PI / 6.0) * (d_p * d_p * d_p)
+
+    @wp.func
+    def feed_entry_rate_particles_per_s(
+        solids_mass_flow_kg_s: float,
+        rho_p: float,
+        d_p: float,
+    ) -> float:
+        """
+        Particle feed entry rate at solids inlet [particles/s] from mass flow and particle properties.
+        N_dot = m_dot_solids / m_particle; m_particle from particle_mass_from_density_diameter.
+        """
+        m_p = particle_mass_from_density_diameter(rho_p, d_p)
+        if m_p <= 0.0:
+            return 0.0
+        return solids_mass_flow_kg_s / m_p
 
     # -------------------------------------------------------------------------
     # DRAG COEFFICIENT MODELS

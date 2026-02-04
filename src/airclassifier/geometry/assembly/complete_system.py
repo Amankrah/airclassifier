@@ -278,6 +278,10 @@ class CompleteClassifierAssembly:
         # Store duct sections as list of (component, world_position) tuples
         # Same format as classification.py's _duct_sections
         self._duct_connections = []
+        # Air system -> Venturi air_inlet path only (for flow physics)
+        self._air_to_venturi_ducts: List[Tuple[Any, Tuple[float, float, float]]] = []
+        # Feed system (deagglomerator) -> Venturi solids_inlet path only (for flow physics)
+        self._feed_to_venturi_ducts: List[Tuple[Any, Tuple[float, float, float]]] = []
 
         # Get classification system's venturi ports
         classification = self._subsystems.get('classification')
@@ -394,6 +398,7 @@ class CompleteClassifierAssembly:
             direction=(1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
         self._duct_connections.append((duct1, d1_pos))
+        self._air_to_venturi_ducts.append((duct1, d1_pos))
 
         curr_x = start_x + gap + d1_len
 
@@ -408,6 +413,7 @@ class CompleteClassifierAssembly:
             inlet_direction=(1.0, 0.0, 0.0), rotation_axis=(0.0, -1.0, 0.0),
         ))
         self._duct_connections.append((elbow1, e1_inlet))
+        self._air_to_venturi_ducts.append((elbow1, e1_inlet))
 
         # Step 3: Vertical duct down in -Z to reach route_z level
         # Elbow2 will turn -Z to +Y, dropping by R in Z
@@ -420,6 +426,7 @@ class CompleteClassifierAssembly:
             direction=(0.0, 0.0, -1.0), center=(0, 0, 0), flanged=True,
         ))
         self._duct_connections.append((duct2, d2_pos))
+        self._air_to_venturi_ducts.append((duct2, d2_pos))
 
         e2_inlet_z = e1_outlet_z - gap - d2_len
 
@@ -434,6 +441,7 @@ class CompleteClassifierAssembly:
             inlet_direction=(0.0, 0.0, -1.0), rotation_axis=(-1.0, 0.0, 0.0),
         ))
         self._duct_connections.append((elbow2, e2_inlet))
+        self._air_to_venturi_ducts.append((elbow2, e2_inlet))
 
         # Now we're at (e1_outlet_x, e2_outlet_y, e2_outlet_z) going +Y
         # We need to reach elbow4 inlet at (e4_inlet_x, e4_inlet_y, route_z)
@@ -467,6 +475,7 @@ class CompleteClassifierAssembly:
             direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
         self._duct_connections.append((duct3, d3_pos))
+        self._air_to_venturi_ducts.append((duct3, d3_pos))
 
         d3_end_y = e2_outlet_y + gap + d3_len
 
@@ -481,6 +490,7 @@ class CompleteClassifierAssembly:
             inlet_direction=(0.0, 1.0, 0.0), rotation_axis=(0.0, 0.0, -1.0),
         ))
         self._duct_connections.append((elbow3, e3_inlet))
+        self._air_to_venturi_ducts.append((elbow3, e3_inlet))
 
         # Step 7: Horizontal duct in -X direction toward elbow4 (aligned with venturi)
         # CRITICAL: elbow4 must be positioned so its outlet aligns with target_x, target_z
@@ -501,6 +511,7 @@ class CompleteClassifierAssembly:
             direction=(-1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
         self._duct_connections.append((duct4, d4_pos))
+        self._air_to_venturi_ducts.append((duct4, d4_pos))
 
         d4_end_x = e3_outlet_x - gap - d4_len_actual
 
@@ -515,6 +526,7 @@ class CompleteClassifierAssembly:
             inlet_direction=(-1.0, 0.0, 0.0), rotation_axis=(0.0, 0.0, 1.0),
         ))
         self._duct_connections.append((elbow4, e4_inlet_actual))
+        self._air_to_venturi_ducts.append((elbow4, e4_inlet_actual))
 
         # Step 9: Final approach duct in +Y direction
         # Connect from e4_outlet to transition inlet
@@ -527,6 +539,7 @@ class CompleteClassifierAssembly:
                 direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
             ))
             self._duct_connections.append((duct5, d5_pos))
+            self._air_to_venturi_ducts.append((duct5, d5_pos))
             trans_pos_y = e4_outlet_y_actual + gap + d5_len_actual + gap
         else:
             trans_pos_y = e4_outlet_y_actual + gap
@@ -541,6 +554,7 @@ class CompleteClassifierAssembly:
         ))
         # Place transition aligned with venturi air inlet
         self._duct_connections.append((trans, (target_x, trans_pos_y, target_z)))
+        self._air_to_venturi_ducts.append((trans, (target_x, trans_pos_y, target_z)))
 
     def _build_feed_to_solids_inlet(self, venturi, venturi_pos: np.ndarray):
         """
@@ -590,17 +604,18 @@ class CompleteClassifierAssembly:
         target_x, target_y, target_z = solids_inlet_world
 
         # ============================================================
-        # ANGLED SHAFT AT 15 DEGREES
+        # ANGLED SHAFT (geometry-derived angle from horizontal)
         # 
         # Feed is at (feed_x, feed_y, feed_z) - high Y, high Z
         # Target is at (target_x, target_y, target_z) - lower Y, lower Z
         # 
         # Shaft direction: -Z (toward classifier) with -Y (descending)
-        # The 15-degree angle is measured from horizontal (Z axis)
+        # Angle measured from horizontal (Z axis); stored for physics/kinetics.
         # ============================================================
 
-        # Shaft parameters
+        # Shaft parameters (angle from horizontal for gravity-driven flow)
         shaft_angle_deg = 15.0
+        self._feed_chute_angle_deg = shaft_angle_deg
         shaft_angle_rad = np.radians(shaft_angle_deg)
         
         shaft_d = max(min(feed_outlet_d * 0.5, solids_inlet_d * 1.5), 0.035)
@@ -655,7 +670,8 @@ class CompleteClassifierAssembly:
             direction=(0.0, -1.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
         self._duct_connections.append((stub_duct, stub_pos))
-        
+        self._feed_to_venturi_ducts.append((stub_duct, stub_pos))
+
         stub_end_y = feed_y - gap - stub_len
         
         # ============================================================
@@ -685,7 +701,8 @@ class CompleteClassifierAssembly:
             direction=(0.0, -1.0, 0.0), center=(0, 0, 0), flanged=True,
         ))
         self._duct_connections.append((drop_duct, drop_pos))
-        
+        self._feed_to_venturi_ducts.append((drop_duct, drop_pos))
+
         drop_end_y = stub_end_y - gap - drop_needed
         
         # ============================================================
@@ -700,7 +717,8 @@ class CompleteClassifierAssembly:
             rotation_axis=(-1.0, 0.0, 0.0),  # -X axis: -Y turns to -Z
         ))
         self._duct_connections.append((elbow1, e1_pos))
-        
+        self._feed_to_venturi_ducts.append((elbow1, e1_pos))
+
         # After elbow1: now going -Z direction (toward classifier)
         e1_out_y = drop_end_y - gap - elbow_R
         e1_out_z = feed_z - elbow_R
@@ -727,7 +745,8 @@ class CompleteClassifierAssembly:
                 direction=shaft_dir_tuple, center=(0, 0, 0), flanged=True,
             ))
             self._duct_connections.append((shaft_duct, tuple(shaft_start)))
-            
+            self._feed_to_venturi_ducts.append((shaft_duct, tuple(shaft_start)))
+
             # Shaft end position
             shaft_end = shaft_start + shaft_dir * shaft_len
             shaft_end_y = shaft_end[1]
@@ -750,6 +769,7 @@ class CompleteClassifierAssembly:
         # Position transition to connect to solids_inlet
         trans_pos = (target_x, shaft_end_y - gap, shaft_end_z - gap)
         self._duct_connections.append((trans, trans_pos))
+        self._feed_to_venturi_ducts.append((trans, trans_pos))
 
     def _build_feed_to_venturi_connection_UNUSED(self, venturi, venturi_pos: np.ndarray):
         """
@@ -1312,6 +1332,37 @@ class CompleteClassifierAssembly:
         if hasattr(self, '_duct_connections'):
             return len(self._duct_connections)
         return 0
+
+    def get_air_to_venturi_ductwork(self) -> List[Tuple[Any, Tuple[float, float, float]]]:
+        """
+        Get ductwork from Air System outlet to Venturi air_inlet only.
+
+        Returns list of (component, world_position) in flow order:
+        duct1 -> elbow1 -> duct2 -> elbow2 -> duct3 -> elbow3 -> duct4 -> elbow4 -> duct5? -> transition.
+        Empty if ductwork was not built (e.g. air system or ductwork disabled).
+        """
+        if hasattr(self, '_air_to_venturi_ducts'):
+            return list(self._air_to_venturi_ducts)
+        return []
+
+    def get_feed_to_venturi_ductwork(self) -> List[Tuple[Any, Tuple[float, float, float]]]:
+        """
+        Get ductwork from Feed System (deagglomerator) outlet to Venturi solids_inlet only.
+
+        Returns list of (component, world_position) in flow order:
+        stub_duct -> drop_duct -> elbow1 -> shaft_duct? -> transition.
+        Empty if ductwork was not built (e.g. feed system or ductwork disabled).
+        """
+        if hasattr(self, '_feed_to_venturi_ducts'):
+            return list(self._feed_to_venturi_ducts)
+        return []
+
+    def get_feed_to_venturi_chute_angle_deg(self) -> Optional[float]:
+        """
+        Chute angle from horizontal [degrees] for the feed-to-venturi shaft segment.
+        Set from geometry when feed-to-venturi ductwork is built.
+        """
+        return getattr(self, '_feed_chute_angle_deg', None)
     
     def get_bounds(self) -> Tuple[np.ndarray, np.ndarray]:
         """Get bounding box of entire system."""

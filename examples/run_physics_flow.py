@@ -21,9 +21,27 @@ Physics Analysis:
 - Flow regime classification (Stokes/Transitional/Newton)
 
 Usage:
-    python examples/run_physics_flow.py [--particles N] [--time T]
-    python examples/run_physics_flow.py --analyze  # Physics analysis only
-    python examples/run_physics_flow.py --material yellow_pea  # Use food powder
+    # Full simulation (default 20 s, 2000 particles)
+    python examples/run_physics_flow.py
+    python examples/run_physics_flow.py --time 30 --particles 5000
+    python examples/run_physics_flow.py --visualize  # 3D view with animated hopper, airlock, feeder, deagg
+
+    # Physics analysis only (no simulation)
+    python examples/run_physics_flow.py --analyze --no-sim
+    python examples/run_physics_flow.py --analyze --no-sim --settling  # Detailed settling analysis
+
+    # Material / food powder
+    python examples/run_physics_flow.py --material yellow_pea
+    python examples/run_physics_flow.py --analyze --material yellow_pea  # Analysis with flour properties
+
+    # Feed ductwork + kinetics to venturi solids inlet (geometry-based)
+    python examples/run_physics_flow.py --no-sim --feed-to-venturi
+    python examples/run_physics_flow.py --no-sim --feed-to-venturi --particle-dia 15
+    python examples/run_physics_flow.py --analyze --feed-to-venturi --material yellow_pea
+
+    # Full simulation with analysis and feed-to-venturi
+    python examples/run_physics_flow.py --analyze --feed-to-venturi --time 180 --visualize
+    python examples/run_physics_flow.py --analyze --feed-to-venturi --time 180 --material yellow_pea
 """
 
 import sys
@@ -45,16 +63,16 @@ def main():
         description="Physics-based feed flow simulation"
     )
     parser.add_argument(
-        "--particles", "-n", type=int, default=2000,
+        "--particles", "-n", type=int, default=5000,
         help="Number of particles (default: 2000)"
     )
     parser.add_argument(
-        "--time", "-t", type=float, default=20.0,
+        "--time", "-t", type=float, default=180.0,
         help="Simulation time in seconds (default: 20)"
     )
     parser.add_argument(
-        "--dt", type=float, default=0.005,
-        help="Time step in seconds (default: 0.005)"
+        "--dt", type=float, default=0.001,
+        help="Time step in seconds (default: 0.001)"
     )
     parser.add_argument(
         "--airlock-rpm", type=float, default=20,
@@ -105,6 +123,10 @@ def main():
     parser.add_argument(
         "--settling", action="store_true",
         help="Print detailed settling analysis"
+    )
+    parser.add_argument(
+        "--feed-to-venturi", action="store_true",
+        help="Include ductwork flow and particle kinetics from feed outlet to venturi solids inlet"
     )
     
     args = parser.parse_args()
@@ -236,7 +258,52 @@ def main():
         
         if args.no_sim:
             print("\n--no-sim specified, skipping simulation.")
-            return
+    
+    # Feed-to-venturi ductwork flow and particle kinetics (geometry-based, no magic numbers)
+    if args.feed_to_venturi:
+        from airclassifier.geometry.assembly.complete_system import (
+            CompleteClassifierAssembly,
+            CompleteSystemParams,
+        )
+        from airclassifier.simulation.feedclass_flow_physics import (
+            compute_feed_to_venturi_flow,
+            print_feed_ductwork_summary,
+        )
+        print("\nBuilding complete system (feed + ductwork to venturi solids inlet)...")
+        full_params = CompleteSystemParams(
+            throughput_kg_h=params.feeder_target_rate_kg_h,
+            include_feed_system=True,
+            include_air_system=False,
+            include_exhaust=False,
+            include_ductwork=True,
+        )
+        complete_assembly = CompleteClassifierAssembly(full_params)
+        particle_dia_m = getattr(config, "visual_particle_diameter", particle_dia_m)
+        if hasattr(config, "material") and config.material is not None:
+            particle_density_kg_m3 = config.material.density
+        else:
+            particle_density_kg_m3 = 1420.0
+        rho_air = getattr(
+            getattr(config, "fluid_config", None), "density", 1.204
+        )
+        mu_air = getattr(
+            getattr(config, "fluid_config", None), "dynamic_viscosity", 1.82e-5
+        )
+        result = compute_feed_to_venturi_flow(
+            complete_assembly,
+            volume_flow_air_m3_s=0.0,
+            particle_diameter_m=particle_dia_m,
+            particle_density_kg_m3=particle_density_kg_m3,
+            rho_air=rho_air,
+            mu_air=mu_air,
+        )
+        print_feed_ductwork_summary(result)
+        chute_angle = complete_assembly.get_feed_to_venturi_chute_angle_deg()
+        if chute_angle is not None:
+            print(f"\nChute angle (from geometry): {chute_angle:.1f} deg from horizontal")
+    
+    if args.no_sim:
+        return
     
     # Visualization setup
     plotter = None

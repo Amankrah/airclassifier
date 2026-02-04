@@ -24,6 +24,10 @@ Usage:
     python examples/run_classification_flow.py --no-sim
     python examples/run_classification_flow.py --diagnostics --no-sim
 
+    # Full system: airclass -> feedclass -> classification (no magic numbers)
+    python examples/run_classification_flow.py --full-system
+    python examples/run_classification_flow.py --full-system --material yellow_pea --no-sim
+
     # Operating-condition validation (zigzag/cyclone cut sizes vs flow)
     python examples/run_classification_flow.py --validate
     python examples/run_classification_flow.py --diagnostics --validate
@@ -90,6 +94,7 @@ Options:
     -v, --visualize       Enable 3D visualization (requires pyvista)
     -d, --diagnostics     Print detailed flow path with all calculations
     --validate            Run operating-condition validation (zigzag/cyclone vs flow)
+    --full-system         Run airclass -> feedclass -> classification (no magic numbers)
     --no-sim              Print diagnostics only, skip simulation
     --target-d50          Target cut size in microns (auto air flow)
     --zigzag-width        Override zigzag channel width in mm
@@ -185,6 +190,10 @@ def main():
         "--validate", action="store_true",
         help="Run operating-condition validation (zigzag/cyclone cut sizes vs flow)"
     )
+    parser.add_argument(
+        "--full-system", action="store_true",
+        help="Run air flow to venturi (airclass), then feed to venturi (feedclass), then classification from geometry and physics (no magic numbers)"
+    )
     
     args = parser.parse_args()
     
@@ -197,164 +206,247 @@ def main():
     from airclassifier.simulation.classification_flow_physics import (
         ClassificationFlowPhysicsSimulator,
         ClassificationFlowConfig,
+        compute_venturi_physics_from_air_and_feed,
     )
     from airclassifier.geometry.assembly.classification import (
         ClassificationSystemAssembly,
     )
     from airclassifier.particles import FluidConfig, ParticleMaterial
     
-    # Create assembly with optional geometry overrides
-    print("\nCreating classification system assembly...")
-    
-    # Check for zigzag geometry overrides
-    from airclassifier.geometry.assembly.classification import ClassificationSystemParams
-    
-    custom_params = None
-    if args.zigzag_width is not None or args.zigzag_depth is not None:
-        # Create custom params with overrides
-        custom_params = ClassificationSystemParams()
-        if args.zigzag_width is not None:
-            custom_params.zigzag_channel_width = args.zigzag_width / 1000.0  # mm to m
-            print(f"  [Override] Zigzag width: {args.zigzag_width:.1f} mm")
-        if args.zigzag_depth is not None:
-            custom_params.zigzag_channel_depth = args.zigzag_depth / 1000.0  # mm to m
-            print(f"  [Override] Zigzag depth: {args.zigzag_depth:.1f} mm")
-        assembly = ClassificationSystemAssembly(params=custom_params)
-    else:
-        assembly = ClassificationSystemAssembly()
-    
-    # Print assembly info
-    print(f"\n  Components:")
-    print(f"    - Venturi eductor (particle entrainment)")
-    print(f"    - Zigzag classifier (primary separation)")
-    print(f"    - Multi-cyclone system (staged separation)")
-    print(f"    - Bag filter (final collection)")
-    
-    # =========================================================================
-    # CALCULATE OPTIMAL AIR FLOW FOR TARGET D50
-    # =========================================================================
-    if args.target_d50 is not None:
-        # Physics constants
-        g = 9.81  # m/s^2
-        mu = 1.81e-5  # Pa.s (air viscosity)
-        rho_p = 1450.0  # kg/m^3 (particle density)
-        rho_f = 1.2  # kg/m^3 (air density)
-        
-        # Get zigzag cross-section
-        zz_width = assembly.zigzag.params.channel_width
-        zz_depth = assembly.zigzag.params.channel_depth
-        zz_area = zz_width * zz_depth
-        
-        # Target d50 in meters
-        d50_target = args.target_d50 * 1e-6
-        
-        # Calculate required air velocity from d50 formula:
-        # d50 = sqrt(18*mu*v_air / (g*(rho_p - rho_f)))
-        # => v_air = d50^2 * g * (rho_p - rho_f) / (18 * mu)
-        v_air_required = (d50_target**2 * g * (rho_p - rho_f)) / (18 * mu)
-        
-        # Calculate required volumetric flow rate
-        Q_required = v_air_required * zz_area
-        
-        print(f"\n  TARGET D50 CALCULATION:")
-        print(f"    Target d50:          {args.target_d50:.1f} um")
-        print(f"    Zigzag area:         {zz_area*1e6:.0f} mm^2 ({zz_width*1000:.0f} x {zz_depth*1000:.0f} mm)")
-        print(f"    Required v_air:      {v_air_required*100:.2f} cm/s = {v_air_required:.4f} m/s")
-        print(f"    Required Q:          {Q_required*1000:.4f} L/s = {Q_required*3600:.2f} m^3/h")
-        
-        # Check cyclone inlet velocity at this flow
-        cyclone_inlet_area = 0.075 * 0.15  # 75x150 mm from geometry
-        v_cyclone = Q_required / cyclone_inlet_area
-        print(f"    Cyclone inlet v:     {v_cyclone:.2f} m/s", end="")
-        if v_cyclone < 5:
-            print(" [WARNING: Too slow for effective cyclone separation!]")
-            print(f"\n  DESIGN ISSUE:")
-            print(f"    The zigzag and cyclone have incompatible flow requirements:")
-            print(f"    - Zigzag needs v={v_air_required*100:.1f} cm/s for d50={args.target_d50}um")
-            print(f"    - Cyclone needs v=15-25 m/s for centrifugal separation")
-            print(f"    At same flow rate, these cannot both be satisfied.")
-            print(f"\n  OPTIONS:")
-            
-            # Option 1: Make zigzag smaller
-            Q_cyclone_target = 15.0 * cyclone_inlet_area  # For 15 m/s cyclone inlet
-            zz_area_small = Q_cyclone_target / v_air_required
-            if zz_area_small > 0:
-                side_mm = np.sqrt(zz_area_small) * 1000
-                print(f"    1. RESIZE ZIGZAG LARGER (impractical: {side_mm:.0f}x{side_mm:.0f} mm)")
-            
-            # Option 2: Higher d50 with current geometry
-            v_for_15ms_cyclone = 15.0 * cyclone_inlet_area / zz_area
-            d50_at_15ms = np.sqrt(18 * mu * v_for_15ms_cyclone / (g * (rho_p - rho_f))) * 1e6
-            print(f"    2. ACCEPT HIGHER d50 = {d50_at_15ms:.0f} um (use --air-flow 0.17)")
-            print(f"       (all particles < {d50_at_15ms:.0f}um go to fines)")
-            
-            # Option 3: Two-stage air system
-            print(f"    3. ADD SECONDARY AIR INJECTION before cyclones (not implemented)")
-            
-            # Option 4: Resize zigzag SMALLER for higher velocity at same Q
-            # For cyclone at 15 m/s with small Q, make zigzag SMALLER
-            # Target: same d50, but with Q that gives cyclone 15 m/s
-            print(f"    4. REDESIGN: Smaller zigzag + higher flow for both")
-            
-            # Calculate: what zigzag size gives d50=35um AND cyclone v=15 m/s?
-            # v_zigzag = d50^2 * g * (rho_p - rho_f) / (18 * mu) [fixed by physics]
-            # Q = v_zigzag * A_zigzag = v_cyclone * A_cyclone
-            # A_zigzag = v_cyclone * A_cyclone / v_zigzag
-            # For v_cyclone = 15, A_cyclone = 0.01125, v_zigzag = 0.053:
-            # A_zigzag = 15 * 0.01125 / 0.053 = 3.18 m² (too large)
-            # So we need a SMALLER cyclone inlet!
-            
-            # Alternative: what cyclone inlet size works with current zigzag?
-            # v_cyclone = Q / A_cyclone, need v_cyclone = 15
-            # Q = v_zigzag * A_zigzag = 0.053 * 0.024 = 0.00128 m³/s
-            # A_cyclone_needed = Q / 15 = 0.00128 / 15 = 85 mm²
-            A_cyclone_needed = Q_required / 15.0
-            d_cyclone_needed = np.sqrt(4 * A_cyclone_needed / np.pi) * 1000
-            print(f"       For current geometry + d50={args.target_d50}um, need cyclone inlet D={d_cyclone_needed:.0f}mm")
-            print(f"       (current cyclone inlet is ~75x150mm = 11250 mm²)")
-        else:
-            print(" [OK]")
-        
-        # Override the air flow rate
-        args.air_flow = Q_required
-        print(f"\n    => Setting air flow to {Q_required*1000:.4f} L/s ({Q_required*3600:.2f} m^3/h)")
-    
-    # Create physics config (use FluidConfig and material when --material set)
-    print("\nConfiguring physics simulation...")
-    if args.material and args.material in ("yellow_pea", "faba_bean", "oat"):
-        config = ClassificationFlowConfig.for_food_powder(
-            source=args.material,
-            fraction="whole",
-            air_flow_rate_m3s=args.air_flow,
-            num_particles=args.particles,
-            dt=args.dt,
-            device=args.device,
-            turbulent_intensity=args.turbulence,
+    if args.full_system:
+        # Full system: airclass -> feedclass -> classification (geometry + physics, no magic numbers)
+        from airclassifier.geometry.assembly.complete_system import (
+            CompleteClassifierAssembly,
+            CompleteSystemParams,
         )
-        print(f"  Using FluidConfig + {args.material} whole flour")
-    elif args.material:
-        # Single fraction (protein/starch/fiber) or other preset - use material with FluidConfig
-        source = "yellow_pea" if args.material in ("protein", "starch", "fiber") else args.material
-        fraction = args.material if args.material in ("protein", "starch", "fiber") else "whole"
-        material = ParticleMaterial.create_food_powder(source, fraction)
-        config = ClassificationFlowConfig(
+        from airclassifier.simulation.airclass_flow_physics import (
+            compute_air_to_venturi_flow,
+            print_ductwork_flow_summary,
+        )
+        from airclassifier.simulation.feedclass_flow_physics import (
+            compute_feed_to_venturi_flow,
+            print_feed_ductwork_summary,
+        )
+        print("\n[FULL SYSTEM] Air -> Venturi -> Feed -> Venturi -> Classification")
+        fluid = FluidConfig.air_at_stp()
+        material = None
+        if args.material:
+            fraction = "whole" if args.material in ("yellow_pea", "faba_bean", "oat") else args.material
+            material = ParticleMaterial.create_food_powder(args.material, fraction)
+        particle_dia_m = args.particle_dia * 1e-6
+        particle_density = material.density if material else 1420.0
+        Q_m3s = args.air_flow
+        complete_params = CompleteSystemParams(
+            air_flow_m3_h=Q_m3s * 3600.0,
+            throughput_kg_h=500.0,
+            include_feed_system=True,
+            include_air_system=True,
+            include_exhaust=False,
+            include_ductwork=True,
+        )
+        complete_assembly = CompleteClassifierAssembly(complete_params)
+        print("\n1. Air system -> Venturi air inlet (airclass)...")
+        air_result = compute_air_to_venturi_flow(
+            complete_assembly, Q_m3s,
+            rho=fluid.density, mu=fluid.dynamic_viscosity,
+        )
+        print_ductwork_flow_summary(air_result)
+        print("\n2. Feed system -> Venturi solids inlet (feedclass)...")
+        solids_mass_flow_kg_s = complete_assembly.params.throughput_kg_h / 3600.0
+        sphericity = getattr(material, "sphericity", None) if material else None
+        feed_result = compute_feed_to_venturi_flow(
+            complete_assembly,
+            volume_flow_air_m3_s=0.0,
+            particle_diameter_m=particle_dia_m,
+            particle_density_kg_m3=particle_density,
+            rho_air=fluid.density,
+            mu_air=fluid.dynamic_viscosity,
+            solids_mass_flow_kg_s=solids_mass_flow_kg_s,
+            sphericity=sphericity,
+        )
+        print_feed_ductwork_summary(feed_result)
+        classification_assembly = complete_assembly.get_subsystem("classification")
+        venturi_physics = compute_venturi_physics_from_air_and_feed(
+            air_result, feed_result, classification_assembly,
+            solids_mass_flow_kg_s=solids_mass_flow_kg_s,
+            rho_air=fluid.density,
+        )
+        print("\n3. Venturi + classification (from geometry and air/feed results):")
+        print(f"   Throat velocity:    {venturi_physics['venturi_throat_velocity_m_s']:.1f} m/s")
+        print(f"   Particle entry:     {venturi_physics['particle_entry_velocity_m_s']:.2f} m/s")
+        print(f"   Loading ratio:      {venturi_physics['loading_ratio']:.4f}")
+        print(f"   Momentum transfer: {venturi_physics['momentum_transfer_N']:.1f} N")
+        print(f"   dP (solids accel):  {venturi_physics['pressure_drop_solids_Pa']:.1f} Pa")
+        assembly = classification_assembly
+        config = ClassificationFlowConfig.from_air_and_feed_results(
+            air_result, feed_result, classification_assembly,
+            solids_mass_flow_kg_s=solids_mass_flow_kg_s,
+            num_particles_capacity=args.particles,
+            simulation_time_s=args.time,
             dt=args.dt,
-            air_flow_rate_m3s=args.air_flow,
-            num_particles=args.particles,
             device=args.device,
             turbulent_intensity=args.turbulence,
+            fluid_config=fluid,
             material=material,
-            fluid_config=FluidConfig.air_at_stp(),
         )
-        print(f"  Using FluidConfig + material: {material.name}")
+        print("\nCreating classification system assembly (from full system)...")
     else:
-        config = ClassificationFlowConfig(
-            dt=args.dt,
-            air_flow_rate_m3s=args.air_flow,
-            num_particles=args.particles,
-            device=args.device,
-            turbulent_intensity=args.turbulence,
-        )
+        # Classification-only: assembly and config from args (legacy path)
+        # Create assembly with optional geometry overrides
+        print("\nCreating classification system assembly...")
+        
+        # Check for zigzag geometry overrides
+        from airclassifier.geometry.assembly.classification import ClassificationSystemParams
+        
+        custom_params = None
+        if args.zigzag_width is not None or args.zigzag_depth is not None:
+            # Create custom params with overrides
+            custom_params = ClassificationSystemParams()
+            if args.zigzag_width is not None:
+                custom_params.zigzag_channel_width = args.zigzag_width / 1000.0  # mm to m
+                print(f"  [Override] Zigzag width: {args.zigzag_width:.1f} mm")
+            if args.zigzag_depth is not None:
+                custom_params.zigzag_channel_depth = args.zigzag_depth / 1000.0  # mm to m
+                print(f"  [Override] Zigzag depth: {args.zigzag_depth:.1f} mm")
+            assembly = ClassificationSystemAssembly(params=custom_params)
+        else:
+            assembly = ClassificationSystemAssembly()
+        
+        # Print assembly info
+        print(f"\n  Components:")
+        print(f"    - Venturi eductor (particle entrainment)")
+        print(f"    - Zigzag classifier (primary separation)")
+        print(f"    - Multi-cyclone system (staged separation)")
+        print(f"    - Bag filter (final collection)")
+        
+        # =========================================================================
+        # CALCULATE OPTIMAL AIR FLOW FOR TARGET D50
+        # =========================================================================
+        if args.target_d50 is not None:
+            # Physics constants
+            g = 9.81  # m/s^2
+            mu = 1.81e-5  # Pa.s (air viscosity)
+            rho_p = 1450.0  # kg/m^3 (particle density)
+            rho_f = 1.2  # kg/m^3 (air density)
+            
+            # Get zigzag cross-section
+            zz_width = assembly.zigzag.params.channel_width
+            zz_depth = assembly.zigzag.params.channel_depth
+            zz_area = zz_width * zz_depth
+            
+            # Target d50 in meters
+            d50_target = args.target_d50 * 1e-6
+            
+            # Calculate required air velocity from d50 formula:
+            # d50 = sqrt(18*mu*v_air / (g*(rho_p - rho_f)))
+            # => v_air = d50^2 * g * (rho_p - rho_f) / (18 * mu)
+            v_air_required = (d50_target**2 * g * (rho_p - rho_f)) / (18 * mu)
+            
+            # Calculate required volumetric flow rate
+            Q_required = v_air_required * zz_area
+            
+            print(f"\n  TARGET D50 CALCULATION:")
+            print(f"    Target d50:          {args.target_d50:.1f} um")
+            print(f"    Zigzag area:         {zz_area*1e6:.0f} mm^2 ({zz_width*1000:.0f} x {zz_depth*1000:.0f} mm)")
+            print(f"    Required v_air:      {v_air_required*100:.2f} cm/s = {v_air_required:.4f} m/s")
+            print(f"    Required Q:          {Q_required*1000:.4f} L/s = {Q_required*3600:.2f} m^3/h")
+            
+            # Check cyclone inlet velocity at this flow
+            cyclone_inlet_area = 0.075 * 0.15  # 75x150 mm from geometry
+            v_cyclone = Q_required / cyclone_inlet_area
+            print(f"    Cyclone inlet v:     {v_cyclone:.2f} m/s", end="")
+            if v_cyclone < 5:
+                print(" [WARNING: Too slow for effective cyclone separation!]")
+                print(f"\n  DESIGN ISSUE:")
+                print(f"    The zigzag and cyclone have incompatible flow requirements:")
+                print(f"    - Zigzag needs v={v_air_required*100:.1f} cm/s for d50={args.target_d50}um")
+                print(f"    - Cyclone needs v=15-25 m/s for centrifugal separation")
+                print(f"    At same flow rate, these cannot both be satisfied.")
+                print(f"\n  OPTIONS:")
+                
+                # Option 1: Make zigzag smaller
+                Q_cyclone_target = 15.0 * cyclone_inlet_area  # For 15 m/s cyclone inlet
+                zz_area_small = Q_cyclone_target / v_air_required
+                if zz_area_small > 0:
+                    side_mm = np.sqrt(zz_area_small) * 1000
+                    print(f"    1. RESIZE ZIGZAG LARGER (impractical: {side_mm:.0f}x{side_mm:.0f} mm)")
+                
+                # Option 2: Higher d50 with current geometry
+                v_for_15ms_cyclone = 15.0 * cyclone_inlet_area / zz_area
+                d50_at_15ms = np.sqrt(18 * mu * v_for_15ms_cyclone / (g * (rho_p - rho_f))) * 1e6
+                print(f"    2. ACCEPT HIGHER d50 = {d50_at_15ms:.0f} um (use --air-flow 0.17)")
+                print(f"       (all particles < {d50_at_15ms:.0f}um go to fines)")
+                
+                # Option 3: Two-stage air system
+                print(f"    3. ADD SECONDARY AIR INJECTION before cyclones (not implemented)")
+                
+                # Option 4: Resize zigzag SMALLER for higher velocity at same Q
+                # For cyclone at 15 m/s with small Q, make zigzag SMALLER
+                # Target: same d50, but with Q that gives cyclone 15 m/s
+                print(f"    4. REDESIGN: Smaller zigzag + higher flow for both")
+                
+                # Calculate: what zigzag size gives d50=35um AND cyclone v=15 m/s?
+                # v_zigzag = d50^2 * g * (rho_p - rho_f) / (18 * mu) [fixed by physics]
+                # Q = v_zigzag * A_zigzag = v_cyclone * A_cyclone
+                # A_zigzag = v_cyclone * A_cyclone / v_zigzag
+                # For v_cyclone = 15, A_cyclone = 0.01125, v_zigzag = 0.053:
+                # A_zigzag = 15 * 0.01125 / 0.053 = 3.18 m² (too large)
+                # So we need a SMALLER cyclone inlet!
+                
+                # Alternative: what cyclone inlet size works with current zigzag?
+                # v_cyclone = Q / A_cyclone, need v_cyclone = 15
+                # Q = v_zigzag * A_zigzag = 0.053 * 0.024 = 0.00128 m³/s
+                # A_cyclone_needed = Q / 15 = 0.00128 / 15 = 85 mm²
+                A_cyclone_needed = Q_required / 15.0
+                d_cyclone_needed = np.sqrt(4 * A_cyclone_needed / np.pi) * 1000
+                print(f"       For current geometry + d50={args.target_d50}um, need cyclone inlet D={d_cyclone_needed:.0f}mm")
+                print(f"       (current cyclone inlet is ~75x150mm = 11250 mm²)")
+            else:
+                print(" [OK]")
+            
+            # Override the air flow rate
+            args.air_flow = Q_required
+            print(f"\n    => Setting air flow to {Q_required*1000:.4f} L/s ({Q_required*3600:.2f} m^3/h)")
+        
+        # Create physics config (legacy path: material/fluid from example, not created by classification)
+        print("\nConfiguring physics simulation...")
+        if args.material and args.material in ("yellow_pea", "faba_bean", "oat"):
+            # Material created here (same as feed); classification only receives it for separation
+            material = ParticleMaterial.create_food_powder(args.material, "whole")
+            fluid = FluidConfig.air_at_stp()
+            config = ClassificationFlowConfig(
+                dt=args.dt,
+                air_flow_rate_m3s=args.air_flow,
+                num_particles=args.particles,
+                device=args.device,
+                turbulent_intensity=args.turbulence,
+                material=material,
+                fluid_config=fluid,
+            )
+            print(f"  Using FluidConfig + {args.material} whole flour")
+        elif args.material:
+            # Single fraction (protein/starch/fiber) or other preset - use material with FluidConfig
+            source = "yellow_pea" if args.material in ("protein", "starch", "fiber") else args.material
+            fraction = args.material if args.material in ("protein", "starch", "fiber") else "whole"
+            material = ParticleMaterial.create_food_powder(source, fraction)
+            config = ClassificationFlowConfig(
+                dt=args.dt,
+                air_flow_rate_m3s=args.air_flow,
+                num_particles=args.particles,
+                device=args.device,
+                turbulent_intensity=args.turbulence,
+                material=material,
+                fluid_config=FluidConfig.air_at_stp(),
+            )
+            print(f"  Using FluidConfig + material: {material.name}")
+        else:
+            config = ClassificationFlowConfig(
+                dt=args.dt,
+                air_flow_rate_m3s=args.air_flow,
+                num_particles=args.particles,
+                device=args.device,
+                turbulent_intensity=args.turbulence,
+            )
     
     # Run operating-condition validation when requested
     if args.validate or args.diagnostics:
