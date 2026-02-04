@@ -15,8 +15,15 @@ that uses actual geometry from the FeedSystemAssembly with proper physics:
 
 NO magic numbers - everything derived from geometry and physics principles.
 
+Physics Analysis:
+- Terminal velocities using drag models
+- Settling behavior analysis
+- Flow regime classification (Stokes/Transitional/Newton)
+
 Usage:
     python examples/run_physics_flow.py [--particles N] [--time T]
+    python examples/run_physics_flow.py --analyze  # Physics analysis only
+    python examples/run_physics_flow.py --material yellow_pea  # Use food powder
 """
 
 import sys
@@ -82,6 +89,23 @@ def main():
         "--particle-dia", type=float, default=15.0,
         help="Particle diameter in mm (default: 15mm, must be < smallest passage/5)"
     )
+    parser.add_argument(
+        "--analyze", "-a", action="store_true",
+        help="Print physics analysis (terminal velocities, settling, flow regimes)"
+    )
+    parser.add_argument(
+        "--no-sim", action="store_true",
+        help="Only print physics analysis, don't run simulation"
+    )
+    parser.add_argument(
+        "--material", "-m", type=str, default=None,
+        choices=["yellow_pea", "faba_bean", "oat"],
+        help="Use food powder material properties (enables realistic size distribution)"
+    )
+    parser.add_argument(
+        "--settling", action="store_true",
+        help="Print detailed settling analysis"
+    )
     
     args = parser.parse_args()
     
@@ -95,11 +119,13 @@ def main():
         FeedFlowPhysicsSimulator,
         FlowPhysicsConfig,
         create_physics_flow_simulator,
+        create_food_powder_flow_simulator,
     )
     from airclassifier.geometry.assembly.feed_system import (
         FeedSystemAssembly,
         FeedSystemParams,
     )
+    from airclassifier.particles import ParticleMaterial, FluidConfig
     
     # Create assembly and simulator
     print("\nCreating feed system assembly...")
@@ -116,33 +142,101 @@ def main():
     particle_dia_m = args.particle_dia / 1000.0
     
     print("\nConfiguring physics simulation...")
-    config = FlowPhysicsConfig(
-        dt=args.dt,
-        total_time=args.time,
-        airlock_rpm=args.airlock_rpm,
-        feeder_rpm=args.feeder_rpm,
-        deagg_rpm=args.deagg_rpm,
-        num_particles=args.particles,
-        device=args.device,
-        enable_pouring=args.pouring,
-        hopper_fill_percentage=args.fill_percent,
-        visual_particle_diameter=particle_dia_m,
-    )
+    
+    # Use material properties if specified
+    if args.material:
+        print(f"  Using {args.material} flour material properties")
+        material = ParticleMaterial.create_food_powder(args.material, "whole")
+        fluid = FluidConfig.air_at_stp()
+        
+        config = FlowPhysicsConfig(
+            dt=args.dt,
+            total_time=args.time,
+            airlock_rpm=args.airlock_rpm,
+            feeder_rpm=args.feeder_rpm,
+            deagg_rpm=args.deagg_rpm,
+            num_particles=args.particles,
+            device=args.device,
+            enable_pouring=args.pouring,
+            hopper_fill_percentage=args.fill_percent,
+            visual_particle_diameter=particle_dia_m,
+            material=material,
+            fluid_config=fluid,
+        )
+    else:
+        config = FlowPhysicsConfig(
+            dt=args.dt,
+            total_time=args.time,
+            airlock_rpm=args.airlock_rpm,
+            feeder_rpm=args.feeder_rpm,
+            deagg_rpm=args.deagg_rpm,
+            num_particles=args.particles,
+            device=args.device,
+            enable_pouring=args.pouring,
+            hopper_fill_percentage=args.fill_percent,
+            visual_particle_diameter=particle_dia_m,
+        )
     
     # Create simulator
     simulator = FeedFlowPhysicsSimulator(assembly, config)
     
-    # Initialize based on mode
+    # Initialize based on mode and material
     if args.pouring:
         print("\nPouring mode enabled - particles will be poured into hopper")
+    elif args.material:
+        # Initialize with food powder material
+        print(f"\nInitializing particles as {args.material} whole flour...")
+        simulator.initialize_whole_flour_population(
+            source=args.material,
+            num_particles=args.particles,
+        )
     else:
-        # Initialize particles directly in hopper
+        # Initialize particles directly in hopper with default material
         print("\nInitializing particles in hopper...")
         simulator.initialize_particles(
             num_particles=args.particles,
             mean_diameter=particle_dia_m,
             std_diameter=particle_dia_m * 0.1,  # 10% variation
         )
+    
+    # =========================================================================
+    # PHYSICS ANALYSIS (using reusable drag models)
+    # =========================================================================
+    if args.analyze or args.no_sim or args.settling:
+        simulator.print_physics_analysis()
+        
+        if args.settling:
+            print("\n" + "=" * 60)
+            print("DETAILED SETTLING ANALYSIS")
+            print("=" * 60)
+            
+            tv_data = simulator.compute_terminal_velocities()
+            diameters = simulator.get_diameters()
+            
+            # Print per-particle data for first 10 particles
+            print("\nSample particles (first 10):")
+            print(f"  {'#':>3}  {'Dia (mm)':>10}  {'v_t (cm/s)':>12}  {'Re_p':>10}  {'Regime':>12}")
+            print("  " + "-" * 55)
+            
+            for i in range(min(10, len(diameters))):
+                d_mm = diameters[i] * 1000
+                v_t_cm = tv_data['terminal_velocities'][i] * 100
+                Re_p = tv_data['particle_reynolds'][i]
+                
+                if Re_p < 1:
+                    regime = "Stokes"
+                elif Re_p < 1000:
+                    regime = "Transitional"
+                else:
+                    regime = "Newton"
+                
+                print(f"  {i+1:3d}  {d_mm:10.2f}  {v_t_cm:12.2f}  {Re_p:10.2f}  {regime:>12}")
+            
+            print("=" * 60)
+        
+        if args.no_sim:
+            print("\n--no-sim specified, skipping simulation.")
+            return
     
     # Visualization setup
     plotter = None
@@ -588,6 +682,36 @@ def main():
     print(f"  Deagg:                {counts['deagg']:5d}")
     print(f"  Exited:               {counts['exited']:5d}")
     print(f"  Inactive:             {counts['inactive']:5d}")
+    
+    # =========================================================================
+    # POST-SIMULATION ANALYSIS
+    # =========================================================================
+    if args.analyze:
+        print("\n" + "=" * 70)
+        print("POST-SIMULATION ANALYSIS")
+        print("=" * 70)
+        
+        # Mass flow rate
+        mass_flow = simulator.get_mass_flow_rate()
+        print(f"\nMass flow rate: {mass_flow * 3600:.1f} kg/h")
+        
+        # Exited particles info
+        exited_data = simulator.get_exited_particles()
+        if exited_data['count'] > 0:
+            print(f"\nExited particles ready for classification system:")
+            print(f"  Count:     {exited_data['count']}")
+            print(f"  Outlet:    {simulator.get_outlet_position()}")
+            
+            if args.material:
+                # Show type breakdown
+                types = exited_data['types']
+                n_protein = np.sum(types == 0)
+                n_starch = np.sum(types == 1)
+                n_fiber = np.sum(types == 2)
+                print(f"  Protein:   {n_protein} ({100*n_protein/len(types):.1f}%)")
+                print(f"  Starch:    {n_starch} ({100*n_starch/len(types):.1f}%)")
+                print(f"  Fiber:     {n_fiber} ({100*n_fiber/len(types):.1f}%)")
+    
     print("=" * 70)
     
     if plotter is not None:

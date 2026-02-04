@@ -43,9 +43,21 @@ from ..particles import (
     # Population factories
     create_particle_population,
     create_whole_flour_population,
-    # Warp functions (reusable in kernels)
-    particle_volume,
-    particle_mass,
+)
+
+# Import reusable interaction handlers
+from ..particles.interactions import (
+    WallCollisionHandler,
+    ParticleCollisionHandler,
+    ParticleCollisionParams,
+    reflect_velocity,
+)
+
+# Import drag models for physics calculations
+from ..particles.drag_models import (
+    terminal_velocity_schiller_naumann,
+    terminal_velocity_haider_levenspiel,
+    DragModel,
 )
 
 
@@ -1540,6 +1552,22 @@ class FeedFlowPhysicsSimulator:
     
     Uses actual geometry from FeedSystemAssembly and computes all
     physics from first principles - no magic numbers.
+    
+    Physics Implementation:
+        The main physics kernel (physics_flow_kernel) handles all particle
+        physics inline for GPU efficiency. The reusable modules from
+        airclassifier.particles are used for:
+        
+        - ParticleMaterial: Define realistic material properties
+        - FluidConfig: Configure air/fluid properties
+        - WallCollisionHandler: Optional alternative wall collision approach
+        - ParticleCollisionHandler: Optional particle-particle collisions
+        - terminal_velocity_*: Calculate settling velocities
+        
+    Design Note:
+        The inline kernel approach is chosen for this feed system because
+        it has complex zone-based flow with transitions between components.
+        For simpler geometries, WallCollisionHandler can be used directly.
     """
     
     def __init__(
@@ -1572,8 +1600,61 @@ class FeedFlowPhysicsSimulator:
         # Hash grid for particle-particle collisions
         self._setup_hash_grid()
         
+        # Setup reusable collision handlers (optional, for external use)
+        self._setup_collision_handlers()
+        
         # State flags
         self._discharge_open = 0
+    
+    def _setup_collision_handlers(self):
+        """
+        Setup reusable collision handlers from particles module.
+        
+        These handlers provide an alternative to the inline kernel physics
+        and can be used for post-processing or validation.
+        """
+        cfg = self.config
+        
+        # Wall collision handler with feed system geometry
+        self.wall_handler = WallCollisionHandler(
+            restitution=cfg.restitution,
+            friction=cfg.friction,
+            device=self.device,
+        )
+        
+        # Add hopper cone
+        hopper_geo = self.geometry['hopper']
+        half_angle_deg = np.degrees(np.arctan2(
+            hopper_geo.top_radius - hopper_geo.bottom_radius,
+            hopper_geo.cone_height
+        ))
+        self.wall_handler.add_cone(
+            apex=tuple(hopper_geo.center),
+            axis=1,  # Y-axis (vertical)
+            half_angle_deg=half_angle_deg,
+            height=hopper_geo.cone_height,
+        )
+        
+        # Add hopper cylinder
+        cylinder_center = hopper_geo.center.copy()
+        cylinder_center[1] += hopper_geo.cone_height + hopper_geo.cylinder_height / 2
+        self.wall_handler.add_cylinder(
+            center=tuple(cylinder_center),
+            axis=1,
+            radius=hopper_geo.top_radius,
+            length=hopper_geo.cylinder_height,
+        )
+        
+        # Particle-particle collision handler
+        self.particle_handler = ParticleCollisionHandler(
+            params=ParticleCollisionParams(
+                restitution_coefficient=cfg.restitution,
+                friction_coefficient=cfg.friction,
+                enable_collisions=True,
+            ),
+            max_particles=cfg.num_particles,
+            device=self.device,
+        )
     
     def _compute_derived_parameters(self):
         """Compute all derived physics parameters from geometry."""
@@ -2566,6 +2647,143 @@ class FeedFlowPhysicsSimulator:
         if self.state.time > 0:
             return total_exited_mass / self.state.time
         return 0.0
+    
+    # =========================================================================
+    # PHYSICS ANALYSIS USING REUSABLE DRAG MODELS
+    # =========================================================================
+    
+    def compute_terminal_velocities(self) -> Dict[str, np.ndarray]:
+        """
+        Compute terminal settling velocities for all particles.
+        
+        Uses the reusable drag models from airclassifier.particles.drag_models
+        to calculate the theoretical terminal velocity for each particle.
+        
+        Returns:
+            Dictionary with:
+                - terminal_velocities: Terminal velocity for each particle [m/s]
+                - stokes_velocities: Stokes regime terminal velocity [m/s]
+                - particle_reynolds: Particle Reynolds number at terminal velocity
+        """
+        diameters = self.get_diameters()
+        cfg = self.config
+        
+        # Get particle densities
+        if hasattr(self, '_particle_densities') and self._particle_densities is not None:
+            densities = self._particle_densities[:self.state.particles_active]
+        else:
+            densities = np.full(len(diameters), cfg.particle_density)
+        
+        # Compute terminal velocities using Schiller-Naumann (iterative)
+        terminal_velocities = np.zeros(len(diameters))
+        stokes_velocities = np.zeros(len(diameters))
+        
+        for i, (d, rho_p) in enumerate(zip(diameters, densities)):
+            # Schiller-Naumann (accurate for Re < 1000)
+            terminal_velocities[i] = terminal_velocity_schiller_naumann(
+                diameter=d,
+                particle_density=rho_p,
+                fluid_density=cfg.air_density,
+                fluid_viscosity=cfg.air_viscosity,
+                gravity=GRAVITY,
+            )
+            
+            # Stokes (for comparison - valid only for Re < 1)
+            delta_rho = rho_p - cfg.air_density
+            stokes_velocities[i] = (d**2 * delta_rho * GRAVITY) / (18.0 * cfg.air_viscosity)
+        
+        # Compute Reynolds numbers at terminal velocity
+        particle_reynolds = (cfg.air_density * terminal_velocities * diameters) / cfg.air_viscosity
+        
+        return {
+            'terminal_velocities': terminal_velocities,
+            'stokes_velocities': stokes_velocities,
+            'particle_reynolds': particle_reynolds,
+        }
+    
+    def compute_settling_analysis(self) -> Dict[str, Any]:
+        """
+        Analyze particle settling behavior using drag models.
+        
+        Provides insights into how particles will behave during gravity flow
+        through the feed system.
+        
+        Returns:
+            Dictionary with settling statistics and flow predictions
+        """
+        tv_data = self.compute_terminal_velocities()
+        diameters = self.get_diameters()
+        cfg = self.config
+        
+        # Statistics
+        v_t = tv_data['terminal_velocities']
+        Re_p = tv_data['particle_reynolds']
+        
+        # Settling time estimates through hopper
+        hopper_geo = self.geometry['hopper']
+        hopper_height = hopper_geo.cone_height + hopper_geo.cylinder_height
+        settling_times = hopper_height / np.maximum(v_t, 1e-10)
+        
+        # Flow regime classification
+        stokes_regime = Re_p < 1
+        transitional_regime = (Re_p >= 1) & (Re_p < 1000)
+        newton_regime = Re_p >= 1000
+        
+        return {
+            'terminal_velocity_mean': float(np.mean(v_t)),
+            'terminal_velocity_min': float(np.min(v_t)),
+            'terminal_velocity_max': float(np.max(v_t)),
+            'reynolds_mean': float(np.mean(Re_p)),
+            'reynolds_min': float(np.min(Re_p)),
+            'reynolds_max': float(np.max(Re_p)),
+            'settling_time_mean': float(np.mean(settling_times)),
+            'settling_time_range': (float(np.min(settling_times)), float(np.max(settling_times))),
+            'stokes_regime_fraction': float(np.mean(stokes_regime)),
+            'transitional_regime_fraction': float(np.mean(transitional_regime)),
+            'newton_regime_fraction': float(np.mean(newton_regime)),
+            'hopper_height': hopper_height,
+        }
+    
+    def print_physics_analysis(self):
+        """
+        Print detailed physics analysis using the reusable drag models.
+        """
+        analysis = self.compute_settling_analysis()
+        cfg = self.config
+        
+        print("\n" + "=" * 60)
+        print("FEED SYSTEM PHYSICS ANALYSIS")
+        print("(Using reusable drag models from particles module)")
+        print("=" * 60)
+        
+        print(f"\nFluid Properties:")
+        print(f"  Air density:      {cfg.air_density:.3f} kg/m^3")
+        print(f"  Air viscosity:    {cfg.air_viscosity:.2e} Pa.s")
+        
+        print(f"\nParticle Properties:")
+        print(f"  Density:          {cfg.particle_density:.0f} kg/m^3")
+        print(f"  Sphericity:       {cfg.sphericity:.2f}")
+        print(f"  Restitution:      {cfg.restitution:.2f}")
+        print(f"  Friction:         {cfg.friction:.2f}")
+        
+        print(f"\nTerminal Velocity (Schiller-Naumann):")
+        print(f"  Mean:             {analysis['terminal_velocity_mean']*100:.2f} cm/s")
+        print(f"  Range:            {analysis['terminal_velocity_min']*100:.2f} - {analysis['terminal_velocity_max']*100:.2f} cm/s")
+        
+        print(f"\nParticle Reynolds Number:")
+        print(f"  Mean:             {analysis['reynolds_mean']:.3f}")
+        print(f"  Range:            {analysis['reynolds_min']:.3f} - {analysis['reynolds_max']:.3f}")
+        
+        print(f"\nFlow Regime Distribution:")
+        print(f"  Stokes (Re < 1):       {analysis['stokes_regime_fraction']*100:.1f}%")
+        print(f"  Transitional (1-1000): {analysis['transitional_regime_fraction']*100:.1f}%")
+        print(f"  Newton (Re > 1000):    {analysis['newton_regime_fraction']*100:.1f}%")
+        
+        print(f"\nSettling Time Estimates (hopper height = {analysis['hopper_height']*100:.0f} cm):")
+        print(f"  Mean:             {analysis['settling_time_mean']:.2f} s")
+        print(f"  Range:            {analysis['settling_time_range'][0]:.2f} - {analysis['settling_time_range'][1]:.2f} s")
+        
+        print("=" * 60)
 
 
 # =============================================================================
