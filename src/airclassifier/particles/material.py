@@ -572,6 +572,8 @@ class FluidConfig:
     """
     density: float = 1.204           # [kg/m³] Fluid density
     dynamic_viscosity: float = 1.825e-5  # [Pa·s] Dynamic viscosity
+    temperature_c: Optional[float] = 20.0  # [°C] Temperature (for reference)
+    pressure_Pa: Optional[float] = 101325.0  # [Pa] Pressure (for reference)
     
     @property
     def kinematic_viscosity(self) -> float:
@@ -584,6 +586,8 @@ class FluidConfig:
         return cls(
             density=1.204,
             dynamic_viscosity=1.825e-5,
+            temperature_c=20.0,
+            pressure_Pa=101325.0,
         )
     
     @classmethod
@@ -607,7 +611,12 @@ class FluidConfig:
         S = 120.0  # Sutherland constant [K]
         viscosity = mu_ref * (T_K / T_ref) ** 1.5 * (T_ref + S) / (T_K + S)
         
-        return cls(density=density, dynamic_viscosity=viscosity)
+        return cls(
+            density=density,
+            dynamic_viscosity=viscosity,
+            temperature_c=T_celsius,
+            pressure_Pa=P_Pa,
+        )
 
 
 # =============================================================================

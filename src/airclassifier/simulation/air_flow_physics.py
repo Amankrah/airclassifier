@@ -40,9 +40,10 @@ import warp as wp
 
 from ..geometry.assembly.air_system import AirSystemAssembly, AirSystemParams
 from ..utils.constants import PI, GRAVITY, AirProperties
+from ..particles import FluidConfig  # Reusable fluid configuration
 
 # =============================================================================
-# PHYSICAL CONSTANTS (from air properties)
+# PHYSICAL CONSTANTS (from air properties - also available via FluidConfig)
 # =============================================================================
 
 RHO_AIR = AirProperties.DENSITY           # kg/m³ at STP
@@ -113,9 +114,12 @@ class AirFlowPhysicsConfig:
     # Damper control
     damper_ramp_time: float = 1.0   # [s] Time for damper to open/close
     
-    # Air properties
+    # Air properties (can be set via FluidConfig or directly)
     air_density: float = RHO_AIR
     air_viscosity: float = MU_AIR
+    
+    # Optional FluidConfig for consistency with other modules
+    fluid_config: Optional[FluidConfig] = None
     
     # SPH Air particles (physically accurate air flow)
     enable_sph: bool = True
@@ -127,6 +131,63 @@ class AirFlowPhysicsConfig:
     
     # Device
     device: str = "cuda"
+    
+    def __post_init__(self):
+        """Apply FluidConfig properties if provided."""
+        if self.fluid_config is not None:
+            self.air_density = self.fluid_config.density
+            self.air_viscosity = self.fluid_config.dynamic_viscosity
+    
+    @classmethod
+    def from_fluid_config(
+        cls,
+        fluid_config: FluidConfig,
+        target_rpm: float = 3000.0,
+        total_time: float = 10.0,
+        dt: float = 0.001,
+        **kwargs
+    ) -> "AirFlowPhysicsConfig":
+        """
+        Create config from a FluidConfig for consistency with other modules.
+        
+        Args:
+            fluid_config: FluidConfig instance (e.g., FluidConfig.air_at_stp())
+            target_rpm: Target blower RPM
+            total_time: Simulation duration [s]
+            dt: Time step [s]
+            **kwargs: Additional config parameters
+            
+        Returns:
+            Configured AirFlowPhysicsConfig
+        """
+        return cls(
+            dt=dt,
+            total_time=total_time,
+            target_rpm=target_rpm,
+            fluid_config=fluid_config,
+            **kwargs
+        )
+    
+    @classmethod
+    def for_temperature(
+        cls,
+        temperature_c: float = 20.0,
+        target_rpm: float = 3000.0,
+        **kwargs
+    ) -> "AirFlowPhysicsConfig":
+        """
+        Create config with air properties at a specific temperature.
+        
+        Args:
+            temperature_c: Air temperature in Celsius
+            target_rpm: Target blower RPM
+            **kwargs: Additional config parameters
+            
+        Returns:
+            Configured AirFlowPhysicsConfig
+        """
+        fluid = FluidConfig.air_at_temperature(temperature_c)
+        return cls.from_fluid_config(fluid, target_rpm=target_rpm, **kwargs)
 
 
 @dataclass
@@ -1452,7 +1513,7 @@ class AirFlowPhysicsSimulator:
         print(f"\n  Air Flow Physics Parameters (computed from geometry):")
         print(f"    Design RPM:        {blower_geo.design_rpm:.0f}")
         print(f"    Target RPM:        {cfg.target_rpm:.0f}")
-        print(f"    Design ω:          {self.design_omega:.1f} rad/s")
+        print(f"    Design omega:      {self.design_omega:.1f} rad/s")
         print(f"    Impeller dia:      {blower_geo.impeller_diameter*1000:.0f} mm")
         print(f"    Design tip speed:  {self.design_tip_speed:.1f} m/s")
         print(f"    Design flow:       {blower_geo.design_flow_rate:.0f} m³/h")
@@ -2044,6 +2105,355 @@ class AirFlowPhysicsSimulator:
                 'pressure_drop': duct.pressure_drop,
             })
         return data
+    
+    # =========================================================================
+    # PHYSICS ANALYSIS METHODS
+    # =========================================================================
+    
+    def compute_sph_statistics(self) -> Dict[str, Any]:
+        """
+        Compute detailed SPH particle statistics.
+        
+        Returns:
+            Dictionary with SPH statistics including velocity, density,
+            pressure distributions, and flow characteristics.
+        """
+        if not self.config.enable_sph or self.state.positions is None:
+            return {'enabled': False}
+        
+        positions = self.state.positions.numpy()
+        velocities = self.state.velocities.numpy()
+        densities = self.state.densities.numpy()
+        pressures = self.state.pressures.numpy()
+        
+        # Velocity statistics
+        speeds = np.linalg.norm(velocities, axis=1)
+        vel_x = velocities[:, 0]
+        vel_y = velocities[:, 1]
+        vel_z = velocities[:, 2]
+        
+        # Position spread (for flow uniformity)
+        pos_std = np.std(positions, axis=0)
+        
+        # Density variation (should be near rest density for incompressible)
+        density_variation = np.std(densities) / np.mean(densities) * 100
+        
+        # Pressure statistics
+        pressure_range = np.max(pressures) - np.min(pressures)
+        
+        # Compute kinetic energy
+        kinetic_energy = 0.5 * self.particle_mass * np.sum(speeds ** 2)
+        
+        # Flow direction analysis
+        mean_velocity = np.mean(velocities, axis=0)
+        flow_direction = mean_velocity / (np.linalg.norm(mean_velocity) + 1e-10)
+        
+        return {
+            'enabled': True,
+            'num_particles': len(positions),
+            # Velocity
+            'velocity_mean': float(np.mean(speeds)),
+            'velocity_max': float(np.max(speeds)),
+            'velocity_min': float(np.min(speeds)),
+            'velocity_std': float(np.std(speeds)),
+            'velocity_x_mean': float(np.mean(vel_x)),
+            'velocity_y_mean': float(np.mean(vel_y)),
+            'velocity_z_mean': float(np.mean(vel_z)),
+            # Density
+            'density_mean': float(np.mean(densities)),
+            'density_std': float(np.std(densities)),
+            'density_variation_percent': float(density_variation),
+            'density_min': float(np.min(densities)),
+            'density_max': float(np.max(densities)),
+            # Pressure
+            'pressure_mean': float(np.mean(pressures)),
+            'pressure_std': float(np.std(pressures)),
+            'pressure_range': float(pressure_range),
+            'pressure_min': float(np.min(pressures)),
+            'pressure_max': float(np.max(pressures)),
+            # Energy
+            'kinetic_energy_J': float(kinetic_energy),
+            # Flow direction
+            'flow_direction': flow_direction.tolist(),
+            'mean_velocity_magnitude': float(np.linalg.norm(mean_velocity)),
+            # Position spread
+            'position_std_x': float(pos_std[0]),
+            'position_std_y': float(pos_std[1]),
+            'position_std_z': float(pos_std[2]),
+        }
+    
+    def compute_flow_regime_analysis(self) -> Dict[str, Any]:
+        """
+        Analyze flow regimes throughout the system.
+        
+        Computes Reynolds numbers and classifies flow as laminar,
+        transitional, or turbulent for each duct segment.
+        
+        Returns:
+            Dictionary with flow regime analysis for each segment.
+        """
+        cfg = self.config
+        rho = cfg.air_density
+        mu = cfg.air_viscosity
+        nu = mu / rho  # Kinematic viscosity
+        
+        # Get current flow rate
+        Q = self.state.volume_flow_rate  # m³/s
+        
+        analysis = {
+            'flow_rate_m3_s': Q,
+            'flow_rate_m3_h': Q * 3600,
+            'air_density': rho,
+            'air_viscosity': mu,
+            'kinematic_viscosity': nu,
+            'segments': [],
+        }
+        
+        # Analyze each duct segment
+        for duct in self.geometry['ducts']:
+            velocity = Q / duct.area if duct.area > 0 else 0.0
+            Re = rho * velocity * duct.diameter / mu if velocity > 0 else 0.0
+            
+            # Classify flow regime
+            if Re < 2300:
+                regime = "laminar"
+            elif Re < 4000:
+                regime = "transitional"
+            else:
+                regime = "turbulent"
+            
+            # Calculate friction factor
+            if Re > 0:
+                f = calculate_friction_factor(Re, duct.roughness, duct.diameter)
+            else:
+                f = 0.0
+            
+            # Pressure drop
+            if velocity > 0:
+                dP = f * (duct.length / duct.diameter) * (rho * velocity ** 2 / 2.0)
+            else:
+                dP = 0.0
+            
+            analysis['segments'].append({
+                'name': duct.name,
+                'diameter_mm': duct.diameter * 1000,
+                'length_mm': duct.length * 1000,
+                'area_cm2': duct.area * 10000,
+                'velocity_m_s': velocity,
+                'reynolds': Re,
+                'flow_regime': regime,
+                'friction_factor': f,
+                'pressure_drop_Pa': dP,
+            })
+        
+        # Overall flow regime summary
+        reynolds_values = [s['reynolds'] for s in analysis['segments'] if s['reynolds'] > 0]
+        if reynolds_values:
+            analysis['reynolds_mean'] = np.mean(reynolds_values)
+            analysis['reynolds_max'] = np.max(reynolds_values)
+            analysis['reynolds_min'] = np.min(reynolds_values)
+            
+            # Count regimes
+            regimes = [s['flow_regime'] for s in analysis['segments']]
+            analysis['laminar_count'] = regimes.count('laminar')
+            analysis['transitional_count'] = regimes.count('transitional')
+            analysis['turbulent_count'] = regimes.count('turbulent')
+        
+        return analysis
+    
+    def compute_blower_analysis(self) -> Dict[str, Any]:
+        """
+        Analyze blower operating point and performance.
+        
+        Returns:
+            Dictionary with detailed blower performance metrics.
+        """
+        blower_geo = self.geometry['blower']
+        omega = self.state.blower_omega
+        rpm = self.state.blower_rpm
+        
+        # Design point
+        design_rpm = blower_geo.design_rpm
+        design_Q = blower_geo.design_flow_rate / 3600.0  # m³/s
+        design_P = blower_geo.design_pressure_rise
+        
+        # Current operating point
+        Q = self.state.volume_flow_rate
+        P = self.state.static_pressure_rise
+        W = self.state.shaft_power
+        eta = self.state.efficiency
+        
+        # Speed ratio
+        n_ratio = rpm / design_rpm if design_rpm > 0 else 0.0
+        
+        # Flow coefficient (dimensionless)
+        tip_speed = omega * blower_geo.impeller_radius
+        if tip_speed > 0:
+            flow_coeff = Q / (blower_geo.blade_outlet_area * tip_speed)
+        else:
+            flow_coeff = 0.0
+        
+        # Head coefficient (dimensionless)
+        if tip_speed > 0:
+            head_coeff = P / (self.config.air_density * tip_speed ** 2)
+        else:
+            head_coeff = 0.0
+        
+        # Specific speed (dimensionless)
+        if P > 0 and Q > 0:
+            specific_speed = omega * np.sqrt(Q) / (P / self.config.air_density) ** 0.75
+        else:
+            specific_speed = 0.0
+        
+        # Operating point relative to design
+        flow_ratio = Q / design_Q if design_Q > 0 else 0.0
+        pressure_ratio = P / design_P if design_P > 0 else 0.0
+        
+        return {
+            # Geometry
+            'impeller_diameter_mm': blower_geo.impeller_diameter * 1000,
+            'impeller_width_mm': blower_geo.impeller_width * 1000,
+            'blade_type': blower_geo.blade_type,
+            'num_blades': blower_geo.num_blades,
+            # Design point
+            'design_rpm': design_rpm,
+            'design_flow_rate_m3_h': blower_geo.design_flow_rate,
+            'design_pressure_Pa': design_P,
+            # Current operation
+            'current_rpm': rpm,
+            'current_omega_rad_s': omega,
+            'tip_speed_m_s': tip_speed,
+            'flow_rate_m3_s': Q,
+            'flow_rate_m3_h': Q * 3600,
+            'pressure_rise_Pa': P,
+            'shaft_power_W': W,
+            'shaft_power_kW': W / 1000,
+            'efficiency': eta,
+            'efficiency_percent': eta * 100,
+            # Ratios
+            'speed_ratio': n_ratio,
+            'flow_ratio': flow_ratio,
+            'pressure_ratio': pressure_ratio,
+            # Dimensionless coefficients
+            'flow_coefficient': flow_coeff,
+            'head_coefficient': head_coeff,
+            'specific_speed': specific_speed,
+        }
+    
+    def print_physics_analysis(self):
+        """
+        Print comprehensive physics analysis report.
+        
+        Includes fluid properties, flow regime analysis, blower performance,
+        and SPH statistics if enabled.
+        """
+        cfg = self.config
+        
+        print("\n" + "=" * 60)
+        print("AIR FLOW PHYSICS ANALYSIS")
+        print("(Using FluidConfig for consistent air properties)")
+        print("=" * 60)
+        
+        # Fluid properties
+        print("\nFluid Properties:")
+        print(f"  Air density:      {cfg.air_density:.3f} kg/m^3")
+        print(f"  Air viscosity:    {cfg.air_viscosity:.2e} Pa.s")
+        print(f"  Kinematic visc:   {cfg.air_viscosity/cfg.air_density:.2e} m^2/s")
+        if cfg.fluid_config and cfg.fluid_config.temperature_c is not None:
+            print(f"  Temperature:      {cfg.fluid_config.temperature_c:.1f} C")
+        
+        # Blower analysis
+        blower = self.compute_blower_analysis()
+        print("\nBlower Performance:")
+        print(f"  Impeller:         {blower['impeller_diameter_mm']:.0f} mm dia, "
+              f"{blower['num_blades']} {blower['blade_type']} blades")
+        print(f"  Design point:     {blower['design_rpm']:.0f} RPM, "
+              f"{blower['design_flow_rate_m3_h']:.0f} m³/h, "
+              f"{blower['design_pressure_Pa']:.0f} Pa")
+        print(f"  Current RPM:      {blower['current_rpm']:.0f} "
+              f"({blower['speed_ratio']*100:.0f}% of design)")
+        print(f"  Tip speed:        {blower['tip_speed_m_s']:.1f} m/s")
+        print(f"  Flow rate:        {blower['flow_rate_m3_h']:.0f} m³/h "
+              f"({blower['flow_ratio']*100:.0f}% of design)")
+        print(f"  Pressure rise:    {blower['pressure_rise_Pa']:.0f} Pa "
+              f"({blower['pressure_ratio']*100:.0f}% of design)")
+        print(f"  Shaft power:      {blower['shaft_power_kW']:.2f} kW")
+        print(f"  Efficiency:       {blower['efficiency_percent']:.1f}%")
+        print(f"  Specific speed:   {blower['specific_speed']:.3f}")
+        
+        # Flow regime analysis
+        flow = self.compute_flow_regime_analysis()
+        print("\nFlow Regime Analysis:")
+        print(f"  Flow rate:        {flow['flow_rate_m3_h']:.0f} m³/h")
+        if 'reynolds_mean' in flow:
+            print(f"  Reynolds (mean):  {flow['reynolds_mean']:.0f}")
+            print(f"  Reynolds (range): {flow['reynolds_min']:.0f} - {flow['reynolds_max']:.0f}")
+        
+        # Segment details
+        print("\n  Duct Segments:")
+        print(f"    {'Name':<25} {'D(mm)':>6} {'V(m/s)':>8} {'Re':>10} {'Regime':<12} {'dP(Pa)':>8}")
+        print("    " + "-" * 75)
+        for seg in flow['segments']:
+            print(f"    {seg['name']:<25} {seg['diameter_mm']:>6.0f} "
+                  f"{seg['velocity_m_s']:>8.2f} {seg['reynolds']:>10.0f} "
+                  f"{seg['flow_regime']:<12} {seg['pressure_drop_Pa']:>8.1f}")
+        
+        # Regime summary
+        if 'laminar_count' in flow:
+            print(f"\n  Flow Regime Distribution:")
+            total = flow['laminar_count'] + flow['transitional_count'] + flow['turbulent_count']
+            if total > 0:
+                print(f"    Laminar (Re < 2300):      {flow['laminar_count']} "
+                      f"({100*flow['laminar_count']/total:.0f}%)")
+                print(f"    Transitional (2300-4000): {flow['transitional_count']} "
+                      f"({100*flow['transitional_count']/total:.0f}%)")
+                print(f"    Turbulent (Re > 4000):    {flow['turbulent_count']} "
+                      f"({100*flow['turbulent_count']/total:.0f}%)")
+        
+        # SPH statistics
+        sph = self.compute_sph_statistics()
+        if sph['enabled']:
+            print("\nSPH Particle Statistics:")
+            print(f"  Particles:        {sph['num_particles']}")
+            print(f"  Velocity (mean):  {sph['velocity_mean']:.2f} m/s")
+            print(f"  Velocity (range): {sph['velocity_min']:.2f} - {sph['velocity_max']:.2f} m/s")
+            print(f"  Velocity (std):   {sph['velocity_std']:.2f} m/s")
+            print(f"  Flow direction:   ({sph['flow_direction'][0]:.2f}, "
+                  f"{sph['flow_direction'][1]:.2f}, {sph['flow_direction'][2]:.2f})")
+            print(f"  Density (mean):   {sph['density_mean']:.3f} kg/m³")
+            print(f"  Density var:      {sph['density_variation_percent']:.1f}%")
+            print(f"  Pressure range:   {sph['pressure_min']:.0f} - {sph['pressure_max']:.0f} Pa")
+            print(f"  Kinetic energy:   {sph['kinetic_energy_J']:.4f} J")
+        
+        # System pressure drops
+        print("\nSystem Pressure Balance:")
+        total_dp = self.state.total_pressure_drop
+        blower_dp = self.state.static_pressure_rise
+        print(f"  Blower rise:      +{blower_dp:.0f} Pa")
+        print(f"  System drop:      -{total_dp:.0f} Pa")
+        print(f"  Balance:          {blower_dp - total_dp:+.0f} Pa")
+        
+        # Energy
+        print("\nEnergy Consumption:")
+        print(f"  Shaft power:      {self.state.shaft_power/1000:.2f} kW")
+        print(f"  Electrical power: {self.state.electrical_power/1000:.2f} kW")
+        print(f"  Total energy:     {self.state.total_energy_kWh:.4f} kWh")
+        
+        print("=" * 60)
+    
+    def get_analysis_summary(self) -> Dict[str, Any]:
+        """
+        Get complete analysis data as a dictionary.
+        
+        Returns:
+            Dictionary containing all analysis metrics.
+        """
+        return {
+            'sph_statistics': self.compute_sph_statistics(),
+            'flow_regime': self.compute_flow_regime_analysis(),
+            'blower': self.compute_blower_analysis(),
+            'results': self.get_results(),
+        }
 
 
 # =============================================================================
@@ -2058,6 +2468,7 @@ def create_air_flow_simulator(
     enable_sph: bool = True,
     num_particles: int = 1000,
     device: str = "cuda",
+    fluid_config: Optional[FluidConfig] = None,
 ) -> AirFlowPhysicsSimulator:
     """
     Create a physics-based air flow simulator with SPH air particles.
@@ -2070,6 +2481,7 @@ def create_air_flow_simulator(
         enable_sph: Enable SPH air simulation
         num_particles: Number of SPH air particles
         device: Compute device
+        fluid_config: Optional FluidConfig for air properties
         
     Returns:
         Configured AirFlowPhysicsSimulator
@@ -2078,6 +2490,46 @@ def create_air_flow_simulator(
         dt=dt,
         total_time=total_time,
         target_rpm=target_rpm,
+        enable_sph=enable_sph,
+        num_particles=num_particles,
+        device=device,
+        fluid_config=fluid_config or FluidConfig.air_at_stp(),
+    )
+    
+    return AirFlowPhysicsSimulator(assembly, config)
+
+
+def create_air_flow_simulator_at_temperature(
+    assembly: AirSystemAssembly,
+    temperature_c: float = 20.0,
+    target_rpm: float = 3000.0,
+    total_time: float = 10.0,
+    dt: float = 0.001,
+    enable_sph: bool = True,
+    num_particles: int = 1000,
+    device: str = "cuda",
+) -> AirFlowPhysicsSimulator:
+    """
+    Create a physics-based air flow simulator with temperature-adjusted air properties.
+    
+    Args:
+        assembly: AirSystemAssembly with geometry
+        temperature_c: Air temperature in Celsius
+        target_rpm: Target blower RPM
+        total_time: Simulation duration [s]
+        dt: Time step [s]
+        enable_sph: Enable SPH air simulation
+        num_particles: Number of SPH air particles
+        device: Compute device
+        
+    Returns:
+        Configured AirFlowPhysicsSimulator
+    """
+    config = AirFlowPhysicsConfig.for_temperature(
+        temperature_c=temperature_c,
+        target_rpm=target_rpm,
+        dt=dt,
+        total_time=total_time,
         enable_sph=enable_sph,
         num_particles=num_particles,
         device=device,

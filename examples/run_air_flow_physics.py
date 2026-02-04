@@ -10,9 +10,17 @@ Demonstrates SPH (Smoothed Particle Hydrodynamics) air flow simulation:
 - Blower startup/shutdown with fan affinity laws
 - Boundary containment within actual duct geometry
 
+Physics Analysis:
+- Flow regime analysis (laminar/transitional/turbulent)
+- Blower performance metrics (efficiency, specific speed)
+- SPH particle statistics
+- Temperature-dependent air properties via FluidConfig
+
 Usage:
     python examples/run_air_flow_physics.py --time 10
     python examples/run_air_flow_physics.py --time 15 --rpm 2500 --particles 2000 --visualize
+    python examples/run_air_flow_physics.py --analyze --no-sim  # Physics analysis only
+    python examples/run_air_flow_physics.py --analyze --temperature 40  # Hot air
 """
 
 import argparse
@@ -65,6 +73,26 @@ def parse_args():
         choices=["cuda", "cpu"],
         help="Compute device (default: cuda)"
     )
+    parser.add_argument(
+        "--analyze", "-a", action="store_true",
+        help="Print physics analysis (flow regimes, blower performance, SPH stats)"
+    )
+    parser.add_argument(
+        "--no-sim", action="store_true",
+        help="Only print physics analysis, don't run full simulation"
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=20.0,
+        help="Air temperature in Celsius (default: 20)"
+    )
+    parser.add_argument(
+        "--flow-regime", action="store_true",
+        help="Print detailed flow regime analysis per duct segment"
+    )
+    parser.add_argument(
+        "--blower-analysis", action="store_true",
+        help="Print detailed blower performance analysis"
+    )
     return parser.parse_args()
 
 
@@ -81,11 +109,13 @@ def main():
         AirFlowPhysicsSimulator,
         AirFlowPhysicsConfig,
         create_air_flow_simulator,
+        create_air_flow_simulator_at_temperature,
     )
     from airclassifier.geometry.assembly.air_system import (
         AirSystemAssembly,
         AirSystemParams,
     )
+    from airclassifier.particles import FluidConfig
     
     # Create assembly
     print("\nCreating air system assembly...")
@@ -98,6 +128,12 @@ def main():
     assembly.build_mesh()
     assembly.print_summary()
     
+    # Create FluidConfig for consistent air properties
+    print(f"\nConfiguring air properties at {args.temperature}°C...")
+    fluid_config = FluidConfig.air_at_temperature(args.temperature)
+    print(f"  Air density:   {fluid_config.density:.4f} kg/m³")
+    print(f"  Air viscosity: {fluid_config.dynamic_viscosity:.2e} Pa·s")
+    
     # Create physics config with SPH air particles
     print("\nConfiguring SPH physics simulation...")
     config = AirFlowPhysicsConfig(
@@ -106,22 +142,98 @@ def main():
         target_rpm=args.rpm,
         ramp_time=2.0,
         damper_ramp_time=1.0,
-        enable_sph=args.visualize,
+        enable_sph=args.visualize or args.analyze,  # Enable for analysis too
         num_particles=args.particles,
         smoothing_length=0.04,      # 40mm SPH kernel radius
         speed_of_sound=50.0,        # Artificial for stability
         sph_viscosity=0.01,         # SPH viscosity coefficient
         xsph_factor=0.1,            # Velocity smoothing
         device=args.device,
+        fluid_config=fluid_config,
     )
     
     # Create simulator
     simulator = AirFlowPhysicsSimulator(assembly, config)
     
     # Initialize SPH air particles if enabled
-    if args.visualize:
+    if args.visualize or args.analyze:
         print("\nInitializing SPH air particles...")
         simulator.initialize_particles()
+    
+    # =========================================================================
+    # PHYSICS ANALYSIS (using FluidConfig and analysis methods)
+    # =========================================================================
+    if args.analyze or args.no_sim or args.flow_regime or args.blower_analysis:
+        # Run a few steps to establish flow
+        print("\nRunning brief startup for analysis...")
+        simulator.start_system()
+        startup_steps = min(500, int(2.0 / args.dt))  # 2 seconds or 500 steps
+        for _ in range(startup_steps):
+            simulator.step()
+        
+        # Print comprehensive analysis
+        simulator.print_physics_analysis()
+        
+        # Detailed flow regime analysis
+        if args.flow_regime:
+            print("\n" + "=" * 60)
+            print("DETAILED FLOW REGIME ANALYSIS")
+            print("=" * 60)
+            
+            flow = simulator.compute_flow_regime_analysis()
+            
+            print("\nPer-Segment Details:")
+            for seg in flow['segments']:
+                print(f"\n  {seg['name']}:")
+                print(f"    Diameter:       {seg['diameter_mm']:.0f} mm")
+                print(f"    Length:         {seg['length_mm']:.0f} mm")
+                print(f"    Cross-section:  {seg['area_cm2']:.1f} cm²")
+                print(f"    Velocity:       {seg['velocity_m_s']:.2f} m/s")
+                print(f"    Reynolds:       {seg['reynolds']:.0f}")
+                print(f"    Flow regime:    {seg['flow_regime'].upper()}")
+                print(f"    Friction f:     {seg['friction_factor']:.5f}")
+                print(f"    Pressure drop:  {seg['pressure_drop_Pa']:.1f} Pa")
+            
+            print("=" * 60)
+        
+        # Detailed blower analysis
+        if args.blower_analysis:
+            print("\n" + "=" * 60)
+            print("DETAILED BLOWER ANALYSIS")
+            print("=" * 60)
+            
+            blower = simulator.compute_blower_analysis()
+            
+            print("\nGeometry:")
+            print(f"  Impeller diameter:  {blower['impeller_diameter_mm']:.0f} mm")
+            print(f"  Impeller width:     {blower['impeller_width_mm']:.0f} mm")
+            print(f"  Blade type:         {blower['blade_type']}")
+            print(f"  Number of blades:   {blower['num_blades']}")
+            
+            print("\nDesign Point:")
+            print(f"  RPM:                {blower['design_rpm']:.0f}")
+            print(f"  Flow rate:          {blower['design_flow_rate_m3_h']:.0f} m³/h")
+            print(f"  Pressure rise:      {blower['design_pressure_Pa']:.0f} Pa")
+            
+            print("\nCurrent Operating Point:")
+            print(f"  RPM:                {blower['current_rpm']:.0f} ({blower['speed_ratio']*100:.0f}% of design)")
+            print(f"  Angular velocity:   {blower['current_omega_rad_s']:.1f} rad/s")
+            print(f"  Tip speed:          {blower['tip_speed_m_s']:.1f} m/s")
+            print(f"  Flow rate:          {blower['flow_rate_m3_h']:.0f} m³/h ({blower['flow_ratio']*100:.0f}% of design)")
+            print(f"  Pressure rise:      {blower['pressure_rise_Pa']:.0f} Pa ({blower['pressure_ratio']*100:.0f}% of design)")
+            print(f"  Shaft power:        {blower['shaft_power_kW']:.2f} kW")
+            print(f"  Efficiency:         {blower['efficiency_percent']:.1f}%")
+            
+            print("\nDimensionless Coefficients:")
+            print(f"  Flow coefficient:   {blower['flow_coefficient']:.4f}")
+            print(f"  Head coefficient:   {blower['head_coefficient']:.4f}")
+            print(f"  Specific speed:     {blower['specific_speed']:.3f}")
+            
+            print("=" * 60)
+        
+        if args.no_sim:
+            print("\n--no-sim specified, skipping full simulation.")
+            return
     
     # Visualization setup
     plotter = None
@@ -479,6 +591,44 @@ def main():
     for segment in simulator.get_duct_segment_data():
         print(f"  {segment['name']:20s}: {segment['pressure_drop']:.1f} Pa "
               f"(v={segment['velocity']:.1f} m/s, Re={segment['reynolds']:.0f})")
+    
+    # =========================================================================
+    # POST-SIMULATION ANALYSIS
+    # =========================================================================
+    if args.analyze:
+        print("\n" + "=" * 70)
+        print("POST-SIMULATION ANALYSIS")
+        print("=" * 70)
+        
+        # Final SPH statistics
+        sph = simulator.compute_sph_statistics()
+        if sph['enabled']:
+            print("\nFinal SPH Statistics:")
+            print(f"  Particle count:     {sph['num_particles']}")
+            print(f"  Velocity (mean):    {sph['velocity_mean']:.2f} m/s")
+            print(f"  Velocity (max):     {sph['velocity_max']:.2f} m/s")
+            print(f"  Density variation:  {sph['density_variation_percent']:.1f}%")
+            print(f"  Flow direction:     ({sph['flow_direction'][0]:.2f}, "
+                  f"{sph['flow_direction'][1]:.2f}, {sph['flow_direction'][2]:.2f})")
+        
+        # Flow regime summary
+        flow = simulator.compute_flow_regime_analysis()
+        print(f"\nFlow Regime Summary:")
+        if 'turbulent_count' in flow:
+            total = flow['laminar_count'] + flow['transitional_count'] + flow['turbulent_count']
+            print(f"  Laminar:      {flow['laminar_count']}/{total} segments")
+            print(f"  Transitional: {flow['transitional_count']}/{total} segments")
+            print(f"  Turbulent:    {flow['turbulent_count']}/{total} segments")
+        
+        # Blower efficiency tracking
+        blower = simulator.compute_blower_analysis()
+        print(f"\nBlower Summary:")
+        print(f"  Operating at:   {blower['flow_ratio']*100:.0f}% flow, "
+              f"{blower['pressure_ratio']*100:.0f}% pressure")
+        print(f"  Efficiency:     {blower['efficiency_percent']:.1f}%")
+        print(f"  Specific speed: {blower['specific_speed']:.3f}")
+        
+        print("=" * 70)
     
     # ============================================
     # SHUTDOWN SEQUENCE - Close dampers, slow motor
