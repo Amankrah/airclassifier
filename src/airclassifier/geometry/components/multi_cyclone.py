@@ -531,6 +531,113 @@ class MultiCycloneSystem:
             })
         return info
 
+    def calculate_stage_performance(
+        self,
+        volumetric_flow: float,
+        particle_density: float = 1420.0,
+    ) -> List[dict]:
+        """
+        Calculate actual cut sizes and efficiencies for each stage.
+
+        Args:
+            volumetric_flow: System flow rate [m³/s]
+            particle_density: Particle density [kg/m³]
+
+        Returns:
+            List of performance dicts for each stage
+        """
+        results = []
+        for stage in self.params.stages:
+            cyclone = self._cyclones[stage.name]
+            d50 = cyclone.calculate_cut_size_d50(volumetric_flow, particle_density)
+            dP = cyclone.calculate_pressure_drop(volumetric_flow)
+            inlet_area = cyclone.params.inlet_width * cyclone.params.inlet_height
+            v_inlet = volumetric_flow / inlet_area
+            results.append({
+                "name": stage.name,
+                "diameter_mm": stage.diameter * 1000,
+                "design_d50_um": stage.design_d50 * 1e6,
+                "actual_d50_um": d50 * 1e6,
+                "d50_ratio": d50 / stage.design_d50 if stage.design_d50 > 0 else float("inf"),
+                "inlet_velocity_m_s": v_inlet,
+                "pressure_drop_Pa": dP,
+            })
+        return results
+
+    def calculate_required_flow_for_design_d50(
+        self,
+        particle_density: float = 1420.0,
+    ) -> float:
+        """
+        Calculate flow rate needed to achieve design d50 values.
+
+        Uses the primary cyclone's design d50 as reference.
+
+        Returns:
+            Required volumetric flow rate [m³/s]
+        """
+        primary = self.params.stages[0]
+        cyclone = self._cyclones[primary.name]
+        return cyclone.calculate_required_flow_for_d50(primary.design_d50, particle_density)
+
+    def validate_staging(
+        self,
+        volumetric_flow: float,
+        particle_density: float = 1420.0,
+    ) -> dict:
+        """
+        Validate that staging will work at given flow rate.
+
+        Returns:
+            Dictionary with valid, warnings, errors, stages, recommended_flow_m3_h, etc.
+        """
+        stage_perf = self.calculate_stage_performance(
+            volumetric_flow, particle_density
+        )
+        result = {
+            "valid": True,
+            "warnings": [],
+            "errors": [],
+            "stages": stage_perf,
+        }
+
+        d50_values = [s["actual_d50_um"] for s in stage_perf]
+        if d50_values != sorted(d50_values, reverse=True):
+            result["warnings"].append(
+                "Cut sizes are not in expected order. Check cyclone sizing."
+            )
+
+        primary_d50 = stage_perf[0]["actual_d50_um"]
+        if primary_d50 < 5:
+            result["errors"].append(
+                f"Primary cyclone d50 ({primary_d50:.1f} µm) is too small. "
+                "Will collect ALL material in first stage. Reduce flow rate."
+            )
+            result["valid"] = False
+
+        for stage in stage_perf:
+            ratio = stage["d50_ratio"]
+            if ratio < 0.1:
+                result["errors"].append(
+                    f"{stage['name']}: actual d50 ({stage['actual_d50_um']:.1f} µm) is "
+                    f"{ratio*100:.0f}% of design ({stage['design_d50_um']:.0f} µm). "
+                    "Flow rate is much too high."
+                )
+                result["valid"] = False
+            elif ratio < 0.5:
+                result["warnings"].append(
+                    f"{stage['name']}: actual d50 ({stage['actual_d50_um']:.1f} µm) is "
+                    f"only {ratio*100:.0f}% of design ({stage['design_d50_um']:.0f} µm)."
+                )
+
+        Q_design = self.calculate_required_flow_for_design_d50(particle_density)
+        result["recommended_flow_m3_s"] = Q_design
+        result["recommended_flow_m3_h"] = Q_design * 3600
+        result["current_flow_m3_h"] = volumetric_flow * 3600
+        result["flow_ratio"] = volumetric_flow / Q_design if Q_design > 0 else float("inf")
+
+        return result
+
     def print_summary(self):
         """Print summary of multi-cyclone system."""
         print("=" * 60)

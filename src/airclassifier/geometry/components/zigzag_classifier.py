@@ -387,6 +387,138 @@ class ZigzagClassifier:
         """
         return volumetric_flow / self.params.channel_cross_section_area
 
+    def calculate_cut_size_d50(
+        self,
+        volumetric_flow: float,
+        particle_density: float = 1420.0,
+        air_density: float = 1.204,
+        air_viscosity: float = 1.82e-5,
+    ) -> float:
+        """
+        Calculate the cut size (d50) for given flow rate.
+
+        Particles smaller than d50 go to fines, larger go to coarse.
+
+        Args:
+            volumetric_flow: Flow rate [m³/s]
+            particle_density: Particle density [kg/m³]
+            air_density: Air density [kg/m³]
+            air_viscosity: Dynamic viscosity [Pa·s]
+
+        Returns:
+            d50 cut size [m]
+        """
+        v_air = self.get_air_velocity(volumetric_flow)
+        g = 9.81
+        # Stokes law rearranged for terminal velocity = air velocity
+        # v_t = d² × (ρ_p - ρ_f) × g / (18 × μ)
+        # d50 = √(18 × μ × v_air / (g × (ρ_p - ρ_f)))
+        d50 = np.sqrt(
+            18 * air_viscosity * v_air / (g * (particle_density - air_density))
+        )
+        return d50
+
+    def calculate_required_flow_for_d50(
+        self,
+        target_d50: float,
+        particle_density: float = 1420.0,
+        air_density: float = 1.204,
+        air_viscosity: float = 1.82e-5,
+    ) -> float:
+        """
+        Calculate required flow rate to achieve target cut size.
+
+        Args:
+            target_d50: Desired cut size [m]
+            particle_density: Particle density [kg/m³]
+            air_density: Air density [kg/m³]
+            air_viscosity: Dynamic viscosity [Pa·s]
+
+        Returns:
+            Required volumetric flow rate [m³/s]
+        """
+        g = 9.81
+        # Rearrange: v_air = d50² × (ρ_p - ρ_f) × g / (18 × μ)
+        v_air = (
+            (target_d50 ** 2)
+            * (particle_density - air_density)
+            * g
+            / (18 * air_viscosity)
+        )
+        Q = v_air * self.params.channel_cross_section_area
+        return Q
+
+    def validate_operating_conditions(
+        self,
+        volumetric_flow: float,
+        min_particle_size: float = 5e-6,
+        max_particle_size: float = 100e-6,
+        particle_density: float = 1420.0,
+    ) -> dict:
+        """
+        Validate if flow rate is appropriate for particle separation.
+
+        Args:
+            volumetric_flow: Flow rate [m³/s]
+            min_particle_size: Smallest particle to separate [m]
+            max_particle_size: Largest particle to separate [m]
+            particle_density: Particle density [kg/m³]
+
+        Returns:
+            Dictionary with validation results and recommendations
+        """
+        d50 = self.calculate_cut_size_d50(volumetric_flow, particle_density)
+        v_air = self.get_air_velocity(volumetric_flow)
+
+        result = {
+            "valid": True,
+            "warnings": [],
+            "errors": [],
+            "d50_um": d50 * 1e6,
+            "air_velocity_m_s": v_air,
+            "volumetric_flow_m3_h": volumetric_flow * 3600,
+        }
+
+        if d50 > max_particle_size:
+            result["valid"] = False
+            result["errors"].append(
+                f"Cut size ({d50*1e6:.1f} µm) > max particle ({max_particle_size*1e6:.1f} µm). "
+                "ALL particles will go to fines. Reduce flow rate."
+            )
+
+        if d50 < min_particle_size:
+            result["valid"] = False
+            result["errors"].append(
+                f"Cut size ({d50*1e6:.1f} µm) < min particle ({min_particle_size*1e6:.1f} µm). "
+                "ALL particles will go to coarse. Increase flow rate."
+            )
+
+        if v_air > 5.0:
+            result["warnings"].append(
+                f"Air velocity ({v_air:.1f} m/s) is high. May cause excessive turbulence."
+            )
+
+        if v_air > 20.0:
+            result["errors"].append(
+                f"Air velocity ({v_air:.1f} m/s) is very high. "
+                "Zigzag will act as transport duct, not separator."
+            )
+            result["valid"] = False
+
+        Q_for_max = self.calculate_required_flow_for_d50(
+            max_particle_size * 0.8, particle_density
+        )
+        Q_for_min = self.calculate_required_flow_for_d50(
+            min_particle_size * 1.2, particle_density
+        )
+        result["recommended_flow_range_m3_s"] = (Q_for_min, Q_for_max)
+        result["recommended_flow_range_m3_h"] = (
+            Q_for_min * 3600,
+            Q_for_max * 3600,
+        )
+
+        return result
+
     def to_warp_mesh(self, device: str = "cuda") -> wp.Mesh:
         """Create a Warp mesh from the classifier geometry."""
         if self._vertices is None:

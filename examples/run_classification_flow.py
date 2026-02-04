@@ -24,6 +24,10 @@ Usage:
     python examples/run_classification_flow.py --no-sim
     python examples/run_classification_flow.py --diagnostics --no-sim
 
+    # Operating-condition validation (zigzag/cyclone cut sizes vs flow)
+    python examples/run_classification_flow.py --validate
+    python examples/run_classification_flow.py --diagnostics --validate
+
     # Run with diagnostics printed before/after
     python examples/run_classification_flow.py --diagnostics
     python examples/run_classification_flow.py -d --particles 2000 --time 10
@@ -85,6 +89,7 @@ Options:
     --material            Preset: yellow_pea, faba_bean, oat, protein, starch, fiber
     -v, --visualize       Enable 3D visualization (requires pyvista)
     -d, --diagnostics     Print detailed flow path with all calculations
+    --validate            Run operating-condition validation (zigzag/cyclone vs flow)
     --no-sim              Print diagnostics only, skip simulation
     --target-d50          Target cut size in microns (auto air flow)
     --zigzag-width        Override zigzag channel width in mm
@@ -175,6 +180,10 @@ def main():
     parser.add_argument(
         "--zigzag-depth", type=float, default=None,
         help="Override zigzag channel depth in mm (default: 200mm from geometry)"
+    )
+    parser.add_argument(
+        "--validate", action="store_true",
+        help="Run operating-condition validation (zigzag/cyclone cut sizes vs flow)"
     )
     
     args = parser.parse_args()
@@ -347,6 +356,44 @@ def main():
             turbulent_intensity=args.turbulence,
         )
     
+    # Run operating-condition validation when requested
+    if args.validate or args.diagnostics:
+        air_flow_m3_h = config.air_flow_rate_m3s * 3600.0
+        rho = config.particle_density
+        if config.material is not None and hasattr(config.material, "size_distribution"):
+            sd = config.material.size_distribution
+            min_um = sd.d_min * 1e6
+            max_um = sd.d_max * 1e6
+        else:
+            min_um, max_um = 5.0, 100.0
+        val = assembly.validate_system_configuration(
+            air_flow_m3_h=air_flow_m3_h,
+            particle_density=rho,
+            min_particle_um=min_um,
+            max_particle_um=max_um,
+        )
+        print("\n" + "=" * 70)
+        print("OPERATING CONDITION VALIDATION")
+        print("=" * 70)
+        print(f"  Air flow: {air_flow_m3_h:.0f} m3/h   Particle density: {rho:.0f} kg/m3")
+        print(f"  Particle size range: {min_um:.0f} - {max_um:.0f} um")
+        zz = val.get("components", {}).get("zigzag", {})
+        cy = val.get("components", {}).get("cyclones", {})
+        if zz:
+            print(f"  Zigzag d50: {zz.get('d50_um', 0):.1f} um   v_air: {zz.get('air_velocity_m_s', 0):.2f} m/s")
+        if cy and cy.get("stages"):
+            for s in cy["stages"]:
+                print(f"  {s['name']}: d50={s['actual_d50_um']:.2f} um (design {s['design_d50_um']:.0f} um)")
+        for err in val.get("errors", []):
+            print(f"  ERROR: {err}")
+        for w in val.get("warnings", []):
+            print(f"  WARNING: {w}")
+        if not val.get("valid") and val.get("recommendation"):
+            print(f"  RECOMMENDATION: {val['recommendation']}")
+        if cy.get("recommended_flow_m3_h") is not None:
+            print(f"  Recommended flow for design d50: {cy['recommended_flow_m3_h']:.0f} m3/h")
+        print("=" * 70 + "\n")
+
     # Create simulator
     simulator = ClassificationFlowPhysicsSimulator(assembly, config)
     

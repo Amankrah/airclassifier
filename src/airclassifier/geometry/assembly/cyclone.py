@@ -350,6 +350,185 @@ class CycloneAssembly:
 
         return section
 
+    def calculate_cut_size_d50(
+        self,
+        volumetric_flow: float,
+        particle_density: float = 1420.0,
+        air_density: float = 1.204,
+        air_viscosity: float = 1.82e-5,
+        num_turns: float = 5.0,
+    ) -> float:
+        """
+        Calculate cyclone cut size using Lapple equation.
+
+        Args:
+            volumetric_flow: Flow rate [m³/s]
+            particle_density: Particle density [kg/m³]
+            air_density: Air density [kg/m³]
+            air_viscosity: Dynamic viscosity [Pa·s]
+            num_turns: Effective number of turns in cyclone
+
+        Returns:
+            d50 cut size [m]
+        """
+        p = self.params
+        inlet_area = p.inlet_width * p.inlet_height
+        v_inlet = volumetric_flow / inlet_area
+        # Lapple equation: d50 = √(9 × μ × W / (π × N × v_i × (ρ_p - ρ_g)))
+        d50 = np.sqrt(
+            9
+            * air_viscosity
+            * p.inlet_width
+            / (
+                np.pi
+                * num_turns
+                * v_inlet
+                * (particle_density - air_density)
+            )
+        )
+        return d50
+
+    def calculate_required_flow_for_d50(
+        self,
+        target_d50: float,
+        particle_density: float = 1420.0,
+        air_density: float = 1.204,
+        air_viscosity: float = 1.82e-5,
+        num_turns: float = 5.0,
+    ) -> float:
+        """
+        Calculate required flow rate to achieve target cut size.
+
+        Args:
+            target_d50: Desired cut size [m]
+            particle_density: Particle density [kg/m³]
+            air_density: Air density [kg/m³]
+            air_viscosity: Dynamic viscosity [Pa·s]
+            num_turns: Effective number of turns in cyclone
+
+        Returns:
+            Required volumetric flow rate [m³/s]
+        """
+        p = self.params
+        # Rearrange Lapple: v_i = 9 × μ × W / (π × N × d50² × (ρ_p - ρ_g))
+        v_inlet = (
+            9
+            * air_viscosity
+            * p.inlet_width
+            / (
+                np.pi
+                * num_turns
+                * target_d50 ** 2
+                * (particle_density - air_density)
+            )
+        )
+        inlet_area = p.inlet_width * p.inlet_height
+        return v_inlet * inlet_area
+
+    def get_collection_efficiency(
+        self,
+        particle_diameter: float,
+        volumetric_flow: float,
+        particle_density: float = 1420.0,
+    ) -> float:
+        """
+        Estimate collection efficiency for a given particle size.
+
+        Uses Lapple efficiency curve approximation.
+
+        Args:
+            particle_diameter: Particle diameter [m]
+            volumetric_flow: Flow rate [m³/s]
+            particle_density: Particle density [kg/m³]
+
+        Returns:
+            Collection efficiency (0-1)
+        """
+        d50 = self.calculate_cut_size_d50(volumetric_flow, particle_density)
+        ratio = d50 / particle_diameter
+        efficiency = 1.0 / (1.0 + ratio ** 2)
+        return efficiency
+
+    def calculate_pressure_drop(
+        self,
+        volumetric_flow: float,
+        air_density: float = 1.204,
+    ) -> float:
+        """
+        Estimate cyclone pressure drop.
+
+        Args:
+            volumetric_flow: Flow rate [m³/s]
+            air_density: Air density [kg/m³]
+
+        Returns:
+            Pressure drop [Pa]
+        """
+        p = self.params
+        inlet_area = p.inlet_width * p.inlet_height
+        v_inlet = volumetric_flow / inlet_area
+        K = 7.0
+        dP = K * 0.5 * air_density * v_inlet ** 2
+        return dP
+
+    def validate_operating_conditions(
+        self,
+        volumetric_flow: float,
+        particle_density: float = 1420.0,
+    ) -> dict:
+        """
+        Validate cyclone operating conditions.
+
+        Returns:
+            Dictionary with valid, warnings, errors, d50_um, inlet_velocity_m_s, pressure_drop_Pa.
+        """
+        p = self.params
+        inlet_area = p.inlet_width * p.inlet_height
+        v_inlet = volumetric_flow / inlet_area
+        d50 = self.calculate_cut_size_d50(volumetric_flow, particle_density)
+        dP = self.calculate_pressure_drop(volumetric_flow)
+
+        result = {
+            "valid": True,
+            "warnings": [],
+            "errors": [],
+            "d50_um": d50 * 1e6,
+            "inlet_velocity_m_s": v_inlet,
+            "pressure_drop_Pa": dP,
+            "volumetric_flow_m3_h": volumetric_flow * 3600,
+        }
+
+        if v_inlet < 10:
+            result["warnings"].append(
+                f"Inlet velocity ({v_inlet:.1f} m/s) is low. May have poor separation."
+            )
+
+        if v_inlet > 30:
+            result["warnings"].append(
+                f"Inlet velocity ({v_inlet:.1f} m/s) is high. "
+                "Increased wear and pressure drop."
+            )
+
+        if v_inlet > 50:
+            result["errors"].append(
+                f"Inlet velocity ({v_inlet:.1f} m/s) is excessive. Severe erosion likely."
+            )
+            result["valid"] = False
+
+        if dP > 2500:
+            result["warnings"].append(
+                f"Pressure drop ({dP:.0f} Pa) is high. "
+                "Consider larger cyclone or lower flow."
+            )
+
+        if d50 < 1e-6:
+            result["warnings"].append(
+                f"Cut size ({d50*1e6:.2f} µm) is submicron. "
+                "Cyclone may collect excessively."
+            )
+
+        return result
+
     def print_summary(self):
         """Print summary of cyclone geometry."""
         p = self.params

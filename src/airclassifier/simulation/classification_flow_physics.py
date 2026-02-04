@@ -2694,6 +2694,32 @@ class ClassificationFlowPhysicsSimulator:
         # Separation statistics arrays
         self._setup_statistics_arrays()
         
+        # Operating-condition validation (zigzag/cyclone cut sizes vs flow)
+        self._validation_result = None
+        try:
+            Q_m3s = self.config.air_flow_rate_m3s
+            rho = self.config.particle_density
+            min_um = 5.0
+            max_um = 100.0
+            if self.config.material is not None and hasattr(
+                self.config.material, "size_distribution"
+            ):
+                sd = self.config.material.size_distribution
+                min_um = sd.d_min * 1e6
+                max_um = sd.d_max * 1e6
+            self._validation_result = assembly.validate_system_configuration(
+                air_flow_m3_h=Q_m3s * 3600.0,
+                particle_density=rho,
+                min_particle_um=min_um,
+                max_particle_um=max_um,
+            )
+            if not self._validation_result.get("valid", True):
+                rec = self._validation_result.get("recommendation", "")
+                msg = (rec[:80] + "...") if len(rec) > 80 else rec
+                print(f"\n  WARNING: Operating conditions mismatch. Run with --validate for details. {msg}")
+        except Exception:
+            pass  # Validation is best-effort; do not block init
+
         print(f"\n  ClassificationFlowPhysicsSimulator initialized")
         print(f"    Device: {self.device}")
         print(f"    Max particles: {self.config.num_particles}")

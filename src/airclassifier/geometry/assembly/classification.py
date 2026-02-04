@@ -726,6 +726,64 @@ class ClassificationSystemAssembly:
         port = component.ports[port_name]
         return self._get_port_world_pos(component_name, port)
 
+    def validate_system_configuration(
+        self,
+        air_flow_m3_h: float,
+        particle_density: float = 1420.0,
+        min_particle_um: float = 5.0,
+        max_particle_um: float = 100.0,
+    ) -> dict:
+        """
+        Validate entire classification system configuration.
+
+        Should be called before running simulation to check that operating
+        conditions (air flow) match the component geometries for the intended
+        particle size range.
+
+        Args:
+            air_flow_m3_h: Air flow rate [m³/h]
+            particle_density: Particle density [kg/m³]
+            min_particle_um: Smallest particle to separate [µm]
+            max_particle_um: Largest particle to separate [µm]
+
+        Returns:
+            Dictionary with valid, warnings, errors, components.zigzag,
+            components.cyclones, and optional recommendation.
+        """
+        Q = air_flow_m3_h / 3600.0  # m³/s
+
+        result = {
+            "valid": True,
+            "warnings": [],
+            "errors": [],
+            "components": {},
+        }
+
+        zigzag_val = self.zigzag.validate_operating_conditions(
+            Q,
+            min_particle_um * 1e-6,
+            max_particle_um * 1e-6,
+            particle_density,
+        )
+        result["components"]["zigzag"] = zigzag_val
+        if not zigzag_val["valid"]:
+            result["valid"] = False
+            result["errors"].extend(zigzag_val["errors"])
+
+        cyclone_val = self.multi_cyclone.validate_staging(Q, particle_density)
+        result["components"]["cyclones"] = cyclone_val
+        if not cyclone_val["valid"]:
+            result["valid"] = False
+            result["errors"].extend(cyclone_val["errors"])
+
+        if not result["valid"] and "recommended_flow_m3_h" in cyclone_val:
+            result["recommendation"] = (
+                f"Current flow ({air_flow_m3_h:.0f} m³/h) is incompatible with classification. "
+                f"Recommended: {cyclone_val['recommended_flow_m3_h']:.0f} m³/h for design cut sizes."
+            )
+
+        return result
+
     def to_warp_mesh(self) -> wp.Mesh:
         """Create a Warp mesh from the system geometry."""
         if not self._mesh_built:
