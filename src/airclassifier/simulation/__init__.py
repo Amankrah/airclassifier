@@ -19,15 +19,20 @@ from .simulator import (
     # Enums
     FlowMode,
     SystemState,
-    
+    PouringState,
+
     # Base classes
     BaseSimulationConfig,
     BaseSimulationState,
-    
+
     # Air System (basic)
     AirSystemConfig,
     AirSystemState,
     AirSystemSimulator,
+
+    # Feed System (wrapper)
+    FeedSystemConfig,
+    FeedSystemSimulator,
 )
 
 from .cfd_dem_coupling import (
@@ -80,15 +85,21 @@ __all__ = [
     # Enums
     "FlowMode",
     "SystemState",
-    
+    "PouringState",
+    "LidState",
+
     # Base classes
     "BaseSimulationConfig",
     "BaseSimulationState",
-    
+
     # Air System Simulator (basic)
     "AirSystemConfig",
     "AirSystemState",
     "AirSystemSimulator",
+
+    # Feed System Simulator (wrapper)
+    "FeedSystemConfig",
+    "FeedSystemSimulator",
     
     # CFD-DEM (advanced)
     "CFDDEMCoupler",

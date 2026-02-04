@@ -13,11 +13,14 @@ Features:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Tuple, Callable, Union
+from typing import Optional, Dict, Any, List, Tuple, Callable, Union, TYPE_CHECKING
 from enum import Enum
 from pathlib import Path
 import numpy as np
 import time
+
+if TYPE_CHECKING:
+    import pyvista as pv
 
 try:
     import warp as wp
@@ -286,7 +289,7 @@ class ParticleVisualizer:
         self._stats_actor = None
         self._frame_count = 0
     
-    def create_plotter(self, off_screen: bool = False) -> pv.Plotter:
+    def create_plotter(self, off_screen: bool = False) -> "pv.Plotter":
         """Create and configure the PyVista plotter."""
         self.plotter = pv.Plotter(
             window_size=self.config.window_size,

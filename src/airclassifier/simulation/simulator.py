@@ -27,6 +27,14 @@ import yaml
 
 from ..utils.constants import GRAVITY, AirProperties, PI
 
+# Import feed flow physics for wrapper classes
+from .feed_flow_physics import (
+    FeedFlowPhysicsSimulator,
+    FlowPhysicsConfig,
+    FlowPhysicsState,
+    LidState,
+)
+
 
 class FlowMode(Enum):
     """Flow field simulation mode."""
@@ -40,6 +48,13 @@ class SystemState(Enum):
     STARTING = "starting"
     RUNNING = "running"
     STOPPING = "stopping"
+
+
+class PouringState(Enum):
+    """State of particle pouring process."""
+    IDLE = "idle"
+    POURING = "pouring"
+    COMPLETE = "complete"
 
 
 # =============================================================================
@@ -300,6 +315,126 @@ class AirSystemSimulator:
         # Assume flow in +X direction through main duct
         return np.array([velocity_magnitude, 0.0, 0.0])
 
+
+# =============================================================================
+# FEED SYSTEM SIMULATOR (Wrapper for FeedFlowPhysicsSimulator)
+# =============================================================================
+
+@dataclass
+class FeedSystemConfig(BaseSimulationConfig):
+    """Configuration for feed system simulation (wrapper for FlowPhysicsConfig)."""
+    
+    # Feed system specific parameters
+    feed_rate_kg_h: float = 500.0
+    airlock_rpm: float = 20.0
+    feeder_rpm: float = 60.0
+    deagg_rpm: float = 1500.0
+    ramp_time: float = 1.0
+    
+    # Particle parameters
+    num_particles: int = 5000
+    
+    # Lid animation
+    animate_lid: bool = True
+    lid_open_angle: float = 90.0
+    lid_animation_time: float = 1.0
+    
+    # Pouring parameters
+    enable_pouring: bool = True
+    hopper_fill_percentage: float = 50.0
+    pour_height: float = 0.3
+    pour_rate_kg_s: float = 50.0
+    pour_stream_radius: float = 0.15
+    settling_time: float = 1.0
+    
+    # Visual particle size
+    visual_particle_diameter: float = 0.015
+    
+    def to_flow_physics_config(self) -> FlowPhysicsConfig:
+        """Convert to FlowPhysicsConfig."""
+        return FlowPhysicsConfig(
+            dt=self.dt,
+            total_time=self.duration,
+            device=self.device,
+            airlock_rpm=self.airlock_rpm,
+            feeder_rpm=self.feeder_rpm,
+            deagg_rpm=self.deagg_rpm,
+            num_particles=self.num_particles,
+            animate_lid=self.animate_lid,
+            lid_open_angle=self.lid_open_angle,
+            lid_animation_time=self.lid_animation_time,
+            enable_pouring=self.enable_pouring,
+            hopper_fill_percentage=self.hopper_fill_percentage,
+            pour_height=self.pour_height,
+            pour_rate_kg_s=self.pour_rate_kg_s,
+            pour_stream_radius=self.pour_stream_radius,
+            settling_time=self.settling_time,
+            visual_particle_diameter=self.visual_particle_diameter,
+        )
+
+
+class FeedSystemSimulator:
+    """
+    Wrapper for FeedFlowPhysicsSimulator providing simplified interface.
+    
+    This class provides the expected interface (start, run, get_results)
+    while using FeedFlowPhysicsSimulator internally.
+    """
+    
+    def __init__(
+        self,
+        assembly: Any,  # FeedSystemAssembly
+        config: FeedSystemConfig = None,
+    ):
+        """
+        Initialize feed system simulator.
+        
+        Args:
+            assembly: FeedSystemAssembly instance
+            config: Simulation configuration
+        """
+        self.assembly = assembly
+        self.config = config or FeedSystemConfig()
+        
+        # Convert config to FlowPhysicsConfig
+        flow_config = self.config.to_flow_physics_config()
+        
+        # Create the physics simulator
+        self._simulator = FeedFlowPhysicsSimulator(assembly, flow_config)
+    
+    def start(self):
+        """Start the simulation (begin workflow)."""
+        self._simulator.start_simulation()
+    
+    def step(self):
+        """Advance simulation by one time step."""
+        self._simulator.step()
+    
+    def run(self, progress_callback=None):
+        """Run the full simulation."""
+        self.start()
+        
+        total_steps = self.config.num_steps
+        for step in range(total_steps):
+            self.step()
+            
+            if progress_callback and step % self.config.output_steps == 0:
+                progress_callback(step, total_steps)
+        
+        wp.synchronize()
+    
+    def get_results(self) -> Dict[str, Any]:
+        """Get simulation results."""
+        state = self._simulator.state
+        return {
+            "time": state.time,
+            "steps": state.step,
+            "phase": state.phase.value if hasattr(state.phase, 'value') else str(state.phase),
+            "particles_active": state.particles_active,
+            "particles_poured": state.particles_poured,
+            "lid_state": state.lid_state.value if hasattr(state.lid_state, 'value') else str(state.lid_state),
+            "lid_angle": state.lid_angle,
+        }
 
 
 def main():
