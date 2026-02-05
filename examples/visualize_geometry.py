@@ -730,6 +730,13 @@ def visualize_classification_system():
         print("  - Multi-Cyclone System (staged collection)")
         print("  - Bag Filter (fine particle capture)")
         print("  - Connecting Ductwork")
+        if getattr(cls, '_bypass_split_tee', None):
+            print("  - Bypass Duct (flow split/merge around classifier)")
+        # Check for dropout hopper in duct sections
+        for duct, _ in cls._duct_sections:
+            if type(duct).__name__ == 'ExpandingTransitionWithDropout':
+                print("  - Coarse Dropout Hopper (pre-separation)")
+                break
         print(f"\nTotal mesh: {len(vertices):,} vertices, {len(indices)//3:,} triangles")
 
         cls.print_summary()
@@ -749,7 +756,10 @@ def visualize_classification_system():
                 'zigzag': '#2ECC71',       # Green
                 'multi_cyclone': '#E74C3C', # Red
                 'bag_filter': '#F39C12',   # Orange
-                'duct': '#95A5A6'          # Gray
+                'duct': '#95A5A6',         # Gray
+                'dropout': '#8B4513',      # Saddle Brown (dropout hopper)
+                'tee': '#1ABC9C',          # Teal (tee junctions)
+                'airlock': '#CD853F',      # Peru/tan (rotary airlocks)
             }
 
             # Add Venturi
@@ -789,14 +799,41 @@ def visualize_classification_system():
                             label='Bag Filter', opacity=0.85)
 
             # Add Ducts (new format: list of (duct_component, position) tuples)
-            print(f"  Adding {len(cls._duct_sections)} duct sections...")
-            for idx, (duct, position) in enumerate(cls._duct_sections):
+            # Color-code by component type: dropout hopper, tee junctions, regular duct
+            all_duct_sections = list(cls._duct_sections)
+            if hasattr(cls, '_collection_duct_sections'):
+                all_duct_sections.extend(cls._collection_duct_sections)
+            print(f"  Adding {len(all_duct_sections)} duct sections ({len(cls._duct_sections)} main + {len(getattr(cls, '_collection_duct_sections', []))} collection)...")
+            label_added = {'duct': False, 'dropout': False, 'tee': False, 'airlock': False}
+            for idx, (duct, position) in enumerate(all_duct_sections):
                 v, i, _ = duct.generate_mesh()
                 v = v + np.array(position)  # Apply position offset
                 faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
                 mesh = pv.PolyData(v, faces)
-                plotter.add_mesh(mesh, color=colors['duct'],
-                                label="Ductwork" if idx == 0 else None, opacity=0.7)
+
+                type_name = type(duct).__name__
+                if type_name == 'ExpandingTransitionWithDropout':
+                    color = colors['dropout']
+                    label = "Dropout Hopper" if not label_added['dropout'] else None
+                    label_added['dropout'] = True
+                    opacity = 0.85
+                elif type_name == 'TeeJunction':
+                    color = colors['tee']
+                    label = "Tee Junction" if not label_added['tee'] else None
+                    label_added['tee'] = True
+                    opacity = 0.85
+                elif type_name == 'RotaryAirlock':
+                    color = colors['airlock']
+                    label = "Rotary Airlock" if not label_added['airlock'] else None
+                    label_added['airlock'] = True
+                    opacity = 0.85
+                else:
+                    color = colors['duct']
+                    label = "Ductwork" if not label_added['duct'] else None
+                    label_added['duct'] = True
+                    opacity = 0.7
+
+                plotter.add_mesh(mesh, color=color, label=label, opacity=opacity)
 
             plotter.add_legend(bcolor='white', face='circle')
             plotter.add_title('Classification System - Port-Based Assembly')

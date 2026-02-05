@@ -125,6 +125,24 @@ class ClassificationSystemParams:
     duct_spacing: float = 0.08              # [m] Minimum duct length between components
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
+    # Coarse dropout hopper (integrated into venturi-to-zigzag transition)
+    include_dropout: bool = True          # Whether to include dropout hopper on transition
+    dropout_hopper_height: float = 0.15   # [m] Hopper cone height
+    dropout_hopper_outlet_d: float = 0.04 # [m] Hopper discharge opening diameter
+
+    # Coarse collection hardware (rotary airlocks below discharge points)
+    include_coarse_collection: bool = True   # Airlock below zigzag coarse outlet
+    coarse_airlock_rotor_d: float = 0.08     # [m] 80mm rotor diameter
+
+    # Dropout collection hardware (only active if include_dropout=True)
+    include_dropout_collection: bool = True  # Airlock below dropout hopper discharge
+    dropout_airlock_rotor_d: float = 0.06    # [m] 60mm rotor diameter
+
+    # Bypass duct (splits flow before venturi, merges before cyclones)
+    include_bypass: bool = False          # Whether to build bypass geometry
+    bypass_diameter: float = 0.06         # [m] Bypass duct diameter (or auto-size)
+    bypass_stub_length: float = 0.05      # [m] Tee branch stub length
+
     # Mesh resolution
     resolution: int = 24
 
@@ -174,6 +192,8 @@ class ClassificationSystemAssembly:
 
         # Duct sections: list of (duct_component, world_position) tuples
         self._duct_sections: List[Tuple[Any, Tuple[float, float, float]]] = []
+        # Collection hardware (coarse/dropout airlocks + routing) - separate from main flow
+        self._collection_duct_sections: List[Tuple[Any, Tuple[float, float, float]]] = []
 
         # Mesh data
         self._combined_vertices = None
@@ -247,6 +267,30 @@ class ClassificationSystemAssembly:
         self._component_positions['venturi'] = np.array([
             p.center[0], p.center[1], p.center[2]
         ])
+
+        # Bypass split tee below venturi (if bypass enabled)
+        if p.include_bypass:
+            from ..components.tee_junction import TeeJunction, TeeJunctionParams
+            split_tee_main_length = 0.10
+            split_tee = TeeJunction(TeeJunctionParams(
+                main_diameter=p.venturi_inlet_diameter,
+                branch_diameter=p.bypass_diameter,
+                main_length=split_tee_main_length,
+                branch_stub_length=p.bypass_stub_length,
+                main_direction=(0.0, 1.0, 0.0),
+                branch_direction=(1.0, 0.0, 0.0),
+                center=(0, 0, 0),
+            ))
+            # Position so tee outlet aligns with venturi air_inlet (with gap)
+            # Tee outlet port (local): (0, main_length/2, 0)
+            split_tee_pos = (
+                p.center[0],
+                p.center[1] - gap - split_tee_main_length / 2,
+                p.center[2],
+            )
+            self._duct_sections.append((split_tee, split_tee_pos))
+            self._bypass_split_tee = split_tee
+            self._bypass_split_tee_pos = split_tee_pos
 
         # Get venturi outlet port in world coordinates
         venturi_outlet = self.venturi.ports['outlet']
@@ -338,18 +382,214 @@ class ClassificationSystemAssembly:
             duct1a_start[1] + duct1a_length + gap,
             duct1a_start[2],
         )
-        trans1 = Transition(TransitionParams(
-            transition_type="round_to_rect",
-            inlet_dimensions=(venturi_d,),
-            outlet_dimensions=(zigzag_inlet_w, zigzag_inlet_h),
-            length=trans1_length,
-            concentric=True,
-            wall_thickness=0.002,
-            direction=(0.0, 1.0, 0.0),  # Vertical +Y
-            center=(0, 0, 0),
-            flanged=True,
-        ))
+
+        if p.include_dropout:
+            # Expanding transition with integrated dropout hopper
+            from ..components.expanding_transition import (
+                ExpandingTransitionWithDropout, ExpandingTransitionParams,
+            )
+            trans1 = ExpandingTransitionWithDropout(ExpandingTransitionParams(
+                inlet_diameter=venturi_d,
+                outlet_width=zigzag_inlet_w,
+                outlet_depth=zigzag_inlet_h,
+                transition_length=trans1_length,
+                hopper_height=p.dropout_hopper_height,
+                hopper_outlet_diameter=p.dropout_hopper_outlet_d,
+                wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0),
+                center=(0, 0, 0),
+                flanged=True,
+            ))
+        else:
+            trans1 = Transition(TransitionParams(
+                transition_type="round_to_rect",
+                inlet_dimensions=(venturi_d,),
+                outlet_dimensions=(zigzag_inlet_w, zigzag_inlet_h),
+                length=trans1_length,
+                concentric=True,
+                wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0),
+                center=(0, 0, 0),
+                flanged=True,
+            ))
         self._duct_sections.append((trans1, trans1_start))
+
+        # ============================================================
+        # 2a. COARSE COLLECTION - Routed to -X side of zigzag
+        # ============================================================
+        # The coarse outlet is directly above the air supply duct, so
+        # collection hardware must route SIDEWAYS (-X) to clear it.
+        # Route: coarse_outlet → horizontal transition (-X) → 90° elbow → airlock
+        if p.include_coarse_collection:
+            from ..components import RotaryAirlock, RotaryAirlockParams
+
+            zigzag_coarse = self.zigzag.ports['coarse_outlet']
+            zigzag_coarse_world = self._get_port_world_pos('zigzag', zigzag_coarse)
+
+            # Rect-to-round transition oriented HORIZONTALLY (-X) from coarse outlet
+            coarse_round_d = zigzag_coarse.width  # 60mm
+            diag = np.sqrt(zigzag_coarse.width**2 + zigzag_coarse.height**2) / 2
+            r = coarse_round_d / 2
+            coarse_trans_length = abs(diag - r) / np.tan(np.radians(15))
+            coarse_trans_length = max(coarse_trans_length, 0.10)
+
+            coarse_trans = Transition(TransitionParams(
+                transition_type="rect_to_round",
+                inlet_dimensions=(zigzag_coarse.width, zigzag_coarse.height),
+                outlet_dimensions=(coarse_round_d,),
+                length=coarse_trans_length,
+                concentric=True,
+                wall_thickness=0.002,
+                direction=(-1.0, 0.0, 0.0),  # Horizontal to -X (away from cyclones)
+                center=(0, 0, 0),
+            ))
+            coarse_trans_start = (
+                zigzag_coarse_world[0] - gap,
+                zigzag_coarse_world[1],
+                zigzag_coarse_world[2],
+            )
+            self._collection_duct_sections.append((coarse_trans, coarse_trans_start))
+
+            # 90° elbow turning from -X to -Y (downward)
+            coarse_elbow_R = coarse_round_d * 1.5
+            coarse_elbow = DuctElbow(DuctElbowParams(
+                diameter=coarse_round_d,
+                bend_radius=coarse_elbow_R,
+                angle=90.0,
+                wall_thickness=0.002,
+                flanged=True,
+                center=(0, 0, 0),
+                inlet_direction=(-1.0, 0.0, 0.0),
+                rotation_axis=(0.0, 0.0, -1.0),  # Turns -X → -Y
+            ))
+            coarse_elbow_inlet = (
+                coarse_trans_start[0] - coarse_trans_length - gap,
+                coarse_trans_start[1],
+                coarse_trans_start[2],
+            )
+            coarse_elbow_outlet_local = coarse_elbow.get_outlet_position()
+            coarse_elbow_outlet = (
+                coarse_elbow_inlet[0] + coarse_elbow_outlet_local[0],
+                coarse_elbow_inlet[1] + coarse_elbow_outlet_local[1],
+                coarse_elbow_inlet[2] + coarse_elbow_outlet_local[2],
+            )
+            self._collection_duct_sections.append((coarse_elbow, coarse_elbow_inlet))
+
+            # Rotary airlock below elbow outlet
+            coarse_airlock = RotaryAirlock(RotaryAirlockParams(
+                rotor_diameter=p.coarse_airlock_rotor_d,
+                rotor_length=p.coarse_airlock_rotor_d * 0.6,
+                num_vanes=8,
+                vane_thickness=0.004,
+                vane_tip_clearance=0.0003,
+                inlet_diameter=coarse_round_d,
+                outlet_diameter=coarse_round_d * 0.85,
+            ))
+            airlock_inlet_port = coarse_airlock.ports['inlet']
+            coarse_airlock_pos = (
+                coarse_elbow_outlet[0],
+                coarse_elbow_outlet[1] - gap - airlock_inlet_port.position[1],
+                coarse_elbow_outlet[2],
+            )
+            self._collection_duct_sections.append((coarse_airlock, coarse_airlock_pos))
+
+        # ============================================================
+        # 2b. DROPOUT COLLECTION - Routed to -X side to clear venturi
+        # ============================================================
+        # The dropout hopper discharges directly above the venturi, so
+        # we route sideways (-X) with an elbow before the airlock.
+        # Route: dropout → 90° elbow (-Y to -X) → short duct → 90° elbow (-X to -Y) → airlock
+        if p.include_dropout and p.include_dropout_collection:
+            from ..components import RotaryAirlock, RotaryAirlockParams
+
+            if hasattr(trans1, 'ports') and 'dropout' in trans1.ports:
+                dropout_port = trans1.ports['dropout']
+                dropout_world = np.array(trans1_start) + np.array(dropout_port.position)
+                dropout_d = p.dropout_hopper_outlet_d  # 40mm
+
+                # Elbow 1: turns from -Y (down) to -X (left)
+                dropout_elbow_R = dropout_d * 2.0  # Generous bend for powder flow
+                dropout_elbow1 = DuctElbow(DuctElbowParams(
+                    diameter=dropout_d,
+                    bend_radius=dropout_elbow_R,
+                    angle=90.0,
+                    wall_thickness=0.002,
+                    flanged=True,
+                    center=(0, 0, 0),
+                    inlet_direction=(0.0, -1.0, 0.0),
+                    rotation_axis=(0.0, 0.0, 1.0),  # Turns -Y → -X
+                ))
+                dropout_elbow1_inlet = (
+                    dropout_world[0],
+                    dropout_world[1] - gap,
+                    dropout_world[2],
+                )
+                elbow1_outlet_local = dropout_elbow1.get_outlet_position()
+                elbow1_outlet = (
+                    dropout_elbow1_inlet[0] + elbow1_outlet_local[0],
+                    dropout_elbow1_inlet[1] + elbow1_outlet_local[1],
+                    dropout_elbow1_inlet[2] + elbow1_outlet_local[2],
+                )
+                self._collection_duct_sections.append((dropout_elbow1, dropout_elbow1_inlet))
+
+                # Short horizontal duct going -X to clear venturi envelope
+                dropout_duct_length = 0.10  # 100mm
+                dropout_duct = RoundDuct(RoundDuctParams(
+                    diameter=dropout_d,
+                    length=dropout_duct_length,
+                    wall_thickness=0.002,
+                    direction=(-1.0, 0.0, 0.0),
+                    center=(0, 0, 0),
+                    flanged=True,
+                ))
+                dropout_duct_start = (
+                    elbow1_outlet[0] - gap,
+                    elbow1_outlet[1],
+                    elbow1_outlet[2],
+                )
+                self._collection_duct_sections.append((dropout_duct, dropout_duct_start))
+
+                # Elbow 2: turns from -X to -Y (downward to airlock)
+                dropout_elbow2 = DuctElbow(DuctElbowParams(
+                    diameter=dropout_d,
+                    bend_radius=dropout_elbow_R,
+                    angle=90.0,
+                    wall_thickness=0.002,
+                    flanged=True,
+                    center=(0, 0, 0),
+                    inlet_direction=(-1.0, 0.0, 0.0),
+                    rotation_axis=(0.0, 0.0, -1.0),  # Turns -X → -Y
+                ))
+                dropout_elbow2_inlet = (
+                    dropout_duct_start[0] - dropout_duct_length - gap,
+                    dropout_duct_start[1],
+                    dropout_duct_start[2],
+                )
+                elbow2_outlet_local = dropout_elbow2.get_outlet_position()
+                elbow2_outlet = (
+                    dropout_elbow2_inlet[0] + elbow2_outlet_local[0],
+                    dropout_elbow2_inlet[1] + elbow2_outlet_local[1],
+                    dropout_elbow2_inlet[2] + elbow2_outlet_local[2],
+                )
+                self._collection_duct_sections.append((dropout_elbow2, dropout_elbow2_inlet))
+
+                # Rotary airlock below elbow 2
+                dropout_airlock = RotaryAirlock(RotaryAirlockParams(
+                    rotor_diameter=p.dropout_airlock_rotor_d,
+                    rotor_length=p.dropout_airlock_rotor_d * 0.6,
+                    num_vanes=6,
+                    vane_thickness=0.003,
+                    vane_tip_clearance=0.0003,
+                    inlet_diameter=dropout_d,
+                    outlet_diameter=dropout_d * 0.85,
+                ))
+                dropout_inlet_port = dropout_airlock.ports['inlet']
+                dropout_airlock_pos = (
+                    elbow2_outlet[0],
+                    elbow2_outlet[1] - gap - dropout_inlet_port.position[1],
+                    elbow2_outlet[2],
+                )
+                self._collection_duct_sections.append((dropout_airlock, dropout_airlock_pos))
 
         # Get zigzag fines_outlet in world coordinates
         zigzag_fines = self.zigzag.ports['fines_outlet']
@@ -458,13 +698,47 @@ class ClassificationSystemAssembly:
         )
         self._duct_sections.append((elbow2, elbow2_inlet_pos))
 
-        # STEP 3: Horizontal round duct
+        # STEP 3: Horizontal round duct (with optional merge tee for bypass)
         duct2_length = p.primary_cyclone_diameter * 0.5  # Shorter duct
-        duct2_start = (
-            elbow2_outlet_pos[0] + gap,
-            elbow2_outlet_pos[1],
-            elbow2_outlet_pos[2],
-        )
+        next_x = elbow2_outlet_pos[0] + gap
+
+        if p.include_bypass:
+            # Insert merge tee for bypass flow to rejoin the fines path
+            from ..components.tee_junction import TeeJunction, TeeJunctionParams
+            merge_tee_main_length = 0.10
+            merge_tee = TeeJunction(TeeJunctionParams(
+                main_diameter=duct2_diameter,
+                branch_diameter=p.bypass_diameter,
+                main_length=merge_tee_main_length,
+                branch_stub_length=p.bypass_stub_length,
+                main_direction=(1.0, 0.0, 0.0),
+                branch_direction=(0.0, -1.0, 0.0),  # Bypass arrives from below
+                center=(0, 0, 0),
+            ))
+            # Position so tee inlet aligns with elbow2 outlet
+            # Tee inlet port (local): (-main_length/2, 0, 0)
+            merge_tee_pos = (
+                next_x + merge_tee_main_length / 2,
+                elbow2_outlet_pos[1],
+                elbow2_outlet_pos[2],
+            )
+            self._duct_sections.append((merge_tee, merge_tee_pos))
+            self._bypass_merge_tee = merge_tee
+            self._bypass_merge_tee_pos = merge_tee_pos
+
+            # Duct2 starts after merge tee
+            duct2_start = (
+                next_x + merge_tee_main_length + gap,
+                elbow2_outlet_pos[1],
+                elbow2_outlet_pos[2],
+            )
+        else:
+            duct2_start = (
+                next_x,
+                elbow2_outlet_pos[1],
+                elbow2_outlet_pos[2],
+            )
+
         duct2 = RoundDuct(RoundDuctParams(
             diameter=duct2_diameter,
             length=duct2_length,
@@ -635,6 +909,99 @@ class ClassificationSystemAssembly:
         ))
         self._duct_sections.append((expansion, transition_start))
 
+        # ============================================================
+        # 5. BYPASS ROUTING (if enabled)
+        # ============================================================
+        # Route: split_tee.branch → horizontal duct (+X) → 90° elbow →
+        #        vertical duct (+Y) → merge_tee.branch (from below)
+        if p.include_bypass:
+            bypass_d = p.bypass_diameter
+            bypass_elbow_R = bypass_d * 1.5
+
+            # Split tee branch port world position
+            split_branch = self._bypass_split_tee.ports['branch']
+            split_branch_world = (
+                np.array(self._bypass_split_tee_pos)
+                + np.array(split_branch.position)
+            )
+
+            # Merge tee branch port world position
+            merge_branch = self._bypass_merge_tee.ports['branch']
+            merge_branch_world = (
+                np.array(self._bypass_merge_tee_pos)
+                + np.array(merge_branch.position)
+            )
+
+            # The vertical duct must arrive at merge_branch_world from below.
+            # The elbow turns +X → +Y, so elbow outlet is at:
+            #   (elbow_inlet_X + R, elbow_inlet_Y + R, Z)
+            # We need elbow_outlet_X = merge_branch_world_X
+            # So: elbow_inlet_X = merge_branch_world_X - R
+            target_elbow_inlet_x = merge_branch_world[0] - bypass_elbow_R
+
+            # Horizontal bypass duct from split tee branch going +X
+            bp_horiz_start = (
+                split_branch_world[0] + gap,
+                split_branch_world[1],
+                split_branch_world[2],
+            )
+            bp_horiz_length = target_elbow_inlet_x - gap - bp_horiz_start[0]
+            bp_horiz_length = max(bp_horiz_length, 0.02)  # Minimum 20mm
+
+            bp_horiz_duct = RoundDuct(RoundDuctParams(
+                diameter=bypass_d,
+                length=bp_horiz_length,
+                wall_thickness=0.002,
+                direction=(1.0, 0.0, 0.0),
+                center=(0, 0, 0),
+                flanged=True,
+            ))
+            self._duct_sections.append((bp_horiz_duct, bp_horiz_start))
+
+            # 90° elbow turning from +X to +Y
+            bp_elbow_inlet = (
+                bp_horiz_start[0] + bp_horiz_length + gap,
+                bp_horiz_start[1],
+                bp_horiz_start[2],
+            )
+            bp_elbow = DuctElbow(DuctElbowParams(
+                diameter=bypass_d,
+                bend_radius=bypass_elbow_R,
+                angle=90.0,
+                wall_thickness=0.002,
+                flanged=True,
+                center=(0, 0, 0),
+                inlet_direction=(1.0, 0.0, 0.0),
+                rotation_axis=(0.0, 0.0, -1.0),  # Turns +X → +Y
+            ))
+            bp_elbow_local_outlet = bp_elbow.get_outlet_position()
+            bp_elbow_outlet = (
+                bp_elbow_inlet[0] + bp_elbow_local_outlet[0],
+                bp_elbow_inlet[1] + bp_elbow_local_outlet[1],
+                bp_elbow_inlet[2] + bp_elbow_local_outlet[2],
+            )
+            self._duct_sections.append((bp_elbow, bp_elbow_inlet))
+
+            # Vertical bypass duct going +Y from elbow outlet to merge tee branch
+            bp_vert_start = (
+                bp_elbow_outlet[0],
+                bp_elbow_outlet[1] + gap,
+                bp_elbow_outlet[2],
+            )
+            bp_vert_end_y = merge_branch_world[1] - gap
+            bp_vert_length = bp_vert_end_y - bp_vert_start[1]
+            bp_vert_length = max(bp_vert_length, 0.05)
+
+            bp_vert_duct = RoundDuct(RoundDuctParams(
+                diameter=bypass_d,
+                length=bp_vert_length,
+                wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0),
+                center=(0, 0, 0),
+                flanged=True,
+            ))
+            self._duct_sections.append((bp_vert_duct, bp_vert_start))
+
     def _get_port_world_pos(self, component_name: str, port: ConnectionPort) -> np.ndarray:
         """Helper to get port position in world coordinates."""
         comp_pos = self._component_positions[component_name]
@@ -678,6 +1045,10 @@ class ClassificationSystemAssembly:
 
         # Add duct sections (each is a tuple of (duct_component, world_position))
         for duct, position in self._duct_sections:
+            add_component_mesh(duct, position)
+
+        # Add collection hardware (coarse/dropout airlocks and routing)
+        for duct, position in self._collection_duct_sections:
             add_component_mesh(duct, position)
 
         self._combined_vertices = np.vstack(all_vertices).astype(np.float32)
@@ -738,6 +1109,9 @@ class ClassificationSystemAssembly:
         particle_density: float = 1420.0,
         min_particle_um: float = 5.0,
         max_particle_um: float = 100.0,
+        *,
+        classification_flow_m3_h: float | None = None,
+        cyclone_flow_m3_h: float | None = None,
     ) -> dict:
         """
         Validate entire classification system configuration.
@@ -746,17 +1120,24 @@ class ClassificationSystemAssembly:
         conditions (air flow) match the component geometries for the intended
         particle size range.
 
+        When bypass is used, pass classification_flow_m3_h (flow through
+        venturi+zigzag) and cyclone_flow_m3_h (total flow after bypass merge)
+        so zigzag d50 and cyclone staging use the correct flows.
+
         Args:
-            air_flow_m3_h: Air flow rate [m³/h]
+            air_flow_m3_h: Air flow rate [m³/h] (used for both if optional flows not set)
             particle_density: Particle density [kg/m³]
             min_particle_um: Smallest particle to separate [µm]
             max_particle_um: Largest particle to separate [µm]
+            classification_flow_m3_h: Flow through zigzag [m³/h]; if set, used for zigzag validation.
+            cyclone_flow_m3_h: Flow through cyclones (after bypass merge) [m³/h]; if set, used for cyclone validation.
 
         Returns:
             Dictionary with valid, warnings, errors, components.zigzag,
             components.cyclones, and optional recommendation.
         """
-        Q = air_flow_m3_h / 3600.0  # m³/s
+        Q_zigzag = (classification_flow_m3_h if classification_flow_m3_h is not None else air_flow_m3_h) / 3600.0
+        Q_cyclone = (cyclone_flow_m3_h if cyclone_flow_m3_h is not None else air_flow_m3_h) / 3600.0
 
         result = {
             "valid": True,
@@ -766,7 +1147,7 @@ class ClassificationSystemAssembly:
         }
 
         zigzag_val = self.zigzag.validate_operating_conditions(
-            Q,
+            Q_zigzag,
             min_particle_um * 1e-6,
             max_particle_um * 1e-6,
             particle_density,
@@ -776,15 +1157,16 @@ class ClassificationSystemAssembly:
             result["valid"] = False
             result["errors"].extend(zigzag_val["errors"])
 
-        cyclone_val = self.multi_cyclone.validate_staging(Q, particle_density)
+        cyclone_val = self.multi_cyclone.validate_staging(Q_cyclone, particle_density)
         result["components"]["cyclones"] = cyclone_val
         if not cyclone_val["valid"]:
             result["valid"] = False
             result["errors"].extend(cyclone_val["errors"])
 
+        flow_for_recommendation = cyclone_flow_m3_h if cyclone_flow_m3_h is not None else air_flow_m3_h
         if not result["valid"] and "recommended_flow_m3_h" in cyclone_val:
             result["recommendation"] = (
-                f"Current flow ({air_flow_m3_h:.0f} m³/h) is incompatible with classification. "
+                f"Current flow ({flow_for_recommendation:.0f} m³/h) is incompatible with classification. "
                 f"Recommended: {cyclone_val['recommended_flow_m3_h']:.0f} m³/h for design cut sizes."
             )
 
@@ -846,6 +1228,18 @@ class ClassificationSystemAssembly:
             print(f"     {port_name:15s} pos=({world_pos[0]:.3f}, {world_pos[1]:.3f}, {world_pos[2]:.3f}) "
                   f"dir={port.direction} {dim}")
 
+        if p.include_coarse_collection:
+            coarse_port = self.zigzag.ports['coarse_outlet']
+            print(f"\n   Coarse collection hardware:")
+            print(f"     Transition:     rect {coarse_port.width*1000:.0f}x{coarse_port.height*1000:.0f}mm "
+                  f"-> round {coarse_port.width*1000:.0f}mm")
+            print(f"     Airlock rotor:  D={p.coarse_airlock_rotor_d*1000:.0f}mm")
+
+        if p.include_dropout and p.include_dropout_collection:
+            print(f"\n   Dropout collection hardware:")
+            print(f"     Hopper outlet:  D={p.dropout_hopper_outlet_d*1000:.0f}mm")
+            print(f"     Airlock rotor:  D={p.dropout_airlock_rotor_d*1000:.0f}mm")
+
         print("\n" + "-" * 70)
         print("3. MULTI-CYCLONE SYSTEM (Staged Collection)")
         print("-" * 70)
@@ -878,7 +1272,7 @@ class ClassificationSystemAssembly:
             print(f"     {port_name:20s} pos=({world_pos[0]:.3f}, {world_pos[1]:.3f}, {world_pos[2]:.3f}) {dim}")
 
         print("\n" + "-" * 70)
-        print("5. CONNECTING DUCTWORK")
+        print("5. CONNECTING DUCTWORK (main flow path)")
         print("-" * 70)
         for i, (duct, position) in enumerate(self._duct_sections):
             duct_type = type(duct).__name__
@@ -897,6 +1291,28 @@ class ClassificationSystemAssembly:
                       f"{length} {dim}")
             else:
                 print(f"   [{i+1}] {duct_type} at ({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f})")
+
+        if self._collection_duct_sections:
+            print(f"\n   Collection hardware ({len(self._collection_duct_sections)} sections):")
+            for i, (duct, position) in enumerate(self._collection_duct_sections):
+                duct_type = type(duct).__name__
+                if hasattr(duct, 'params'):
+                    if hasattr(duct.params, 'diameter'):
+                        dim = f"D={duct.params.diameter*1000:.0f}mm"
+                    elif hasattr(duct.params, 'rotor_diameter'):
+                        dim = f"D_rotor={duct.params.rotor_diameter*1000:.0f}mm"
+                    else:
+                        dim = ""
+                    if hasattr(duct.params, 'length'):
+                        length = f"L={duct.params.length*1000:.0f}mm"
+                    elif hasattr(duct.params, 'bend_radius'):
+                        length = f"R={duct.params.bend_radius*1000:.0f}mm"
+                    else:
+                        length = ""
+                    print(f"   [C{i+1}] {duct_type:20s} at ({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}) "
+                          f"{length} {dim}")
+                else:
+                    print(f"   [C{i+1}] {duct_type} at ({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f})")
 
         print("\n" + "=" * 70)
         extent = self.get_system_extent()

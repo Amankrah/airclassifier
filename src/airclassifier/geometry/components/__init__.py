@@ -229,6 +229,19 @@ from .exhaust_stack import (
     create_short_vent_stack,
 )
 
+# Expanding Transition with Dropout Hopper
+from .expanding_transition import (
+    ExpandingTransitionWithDropout,
+    ExpandingTransitionParams,
+    create_standard_expanding_transition,
+)
+
+# Tee Junction (split/merge)
+from .tee_junction import (
+    TeeJunction,
+    TeeJunctionParams,
+)
+
 __all__ = [
     # Cyclone Body
     "CycloneBody",
@@ -393,4 +406,11 @@ __all__ = [
     "create_standard_exhaust_stack",
     "create_tall_stack",
     "create_short_vent_stack",
+    # Expanding Transition with Dropout
+    "ExpandingTransitionWithDropout",
+    "ExpandingTransitionParams",
+    "create_standard_expanding_transition",
+    # Tee Junction
+    "TeeJunction",
+    "TeeJunctionParams",
 ]

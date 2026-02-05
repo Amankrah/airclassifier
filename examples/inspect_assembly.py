@@ -933,6 +933,25 @@ def inspect_classification_system():
     return classification
 
 
+def _filter_main_flow_ducts(duct_sections):
+    """Filter classification duct sections to the main flow path only.
+
+    Collection hardware (airlocks, routing elbows/ducts) is now stored in
+    _collection_duct_sections, so this only needs to remove bypass tees.
+    Expected main flow indices [0]-[8]:
+      [0]=duct1a, [1]=trans1, [2]=trans2a, [3]=elbow2, [4]=duct2,
+      [5]=trans2b, [6]=elbow3, [7]=duct3a, [8]=expansion
+    """
+    filtered = []
+    for duct, pos in duct_sections:
+        tname = type(duct).__name__
+        # Skip bypass tee junctions
+        if tname == 'TeeJunction':
+            continue
+        filtered.append((duct, pos))
+    return filtered
+
+
 def verify_classification_system_dimensions():
     """
     Verify dimension matching at all connection points in the classification system.
@@ -957,9 +976,9 @@ def verify_classification_system_dimensions():
     zigzag = classification.zigzag
     multi_cyclone = classification.multi_cyclone
     bag_filter = classification.bag_filter
-    duct_sections = classification._duct_sections
+    duct_sections = _filter_main_flow_ducts(classification._duct_sections)
 
-    print(f"\n  Total duct/transition sections: {len(duct_sections)}")
+    print(f"\n  Main flow path duct sections: {len(duct_sections)} (total incl. collection: {len(classification._duct_sections)})")
 
     def get_equiv_diameter(port):
         """Calculate equivalent diameter from port area: D_eq = sqrt(4*A/π)"""
@@ -1118,13 +1137,20 @@ def verify_classification_system_dimensions():
     cyclone_inlet_w = cyclone_inlet.width * 1000
     cyclone_inlet_h = cyclone_inlet.height * 1000
 
-    match_w = abs(trans2b_outlet[1] - cyclone_inlet_w) < 5.0
-    match_h = abs(trans2b_outlet[2] - cyclone_inlet_h) < 5.0
-    match = match_w and match_h
+    # The transition outlet_dimensions are ordered by the transition's
+    # coordinate system (perp1, perp2), which for +X direction flow maps
+    # outlet_dimensions[0] → height (Y) and [1] → width (Z).
+    # Compare order-independently: both dimension pairs must match as a set.
+    trans_dims = sorted([trans2b_outlet[1], trans2b_outlet[2]])
+    cyclone_dims = sorted([cyclone_inlet_w, cyclone_inlet_h])
+    match_d1 = abs(trans_dims[0] - cyclone_dims[0]) < 5.0
+    match_d2 = abs(trans_dims[1] - cyclone_dims[1]) < 5.0
+    match = match_d1 and match_d2
 
     print(f"  Transition 2b outlet:     {trans2b_outlet[1]:.1f} x {trans2b_outlet[2]:.1f} mm")
     print(f"  Cyclone inlet:            {cyclone_inlet_w:.1f} x {cyclone_inlet_h:.1f} mm")
-    print(f"  Match: {'[OK]' if match else '[FAIL]'}")
+    note = " (axis order differs due to +X flow direction)" if trans2b_outlet[1] != cyclone_inlet_w else ""
+    print(f"  Match: {'[OK]' if match else '[FAIL]'}{note}")
     verification_results.append(("Trans2b→CycloneIn", match, trans2b_outlet[1], cyclone_inlet_w))
     all_ok = all_ok and match
 
@@ -1236,7 +1262,7 @@ def verify_classification_system_coordinates():
     zigzag = classification.zigzag
     multi_cyclone = classification.multi_cyclone
     bag_filter = classification.bag_filter
-    duct_sections = classification._duct_sections
+    duct_sections = _filter_main_flow_ducts(classification._duct_sections)
 
     positions = classification.get_component_positions()
     venturi_pos = positions['venturi']
@@ -1483,7 +1509,7 @@ def verify_classification_system_angles():
     zigzag = classification.zigzag
     multi_cyclone = classification.multi_cyclone
     bag_filter = classification.bag_filter
-    duct_sections = classification._duct_sections
+    duct_sections = _filter_main_flow_ducts(classification._duct_sections)
 
     def calc_angle(dir1, dir2):
         """Calculate angle in degrees between two direction vectors."""
@@ -1761,23 +1787,50 @@ def detailed_classification_system_analysis():
     print("=" * 70)
 
     duct_sections = classification._duct_sections
-    # Structure: [0]=duct1a, [1]=trans1, [2]=trans2a, [3]=elbow2, [4]=duct2, 
-    # [5]=trans2b, [6]=elbow3, [7]=duct3a, [8]=expansion
+
+    # Build a lookup by type name for robust access regardless of insertion order
+    def find_duct(type_name, occurrence=0):
+        """Find duct section by type name. occurrence=0 for first, 1 for second, etc."""
+        count = 0
+        for duct, pos in duct_sections:
+            if type(duct).__name__ == type_name:
+                if count == occurrence:
+                    return duct, pos
+                count += 1
+        return None, None
+
+    duct1a, _ = find_duct('RoundDuct', 0)
+    elbow2, _ = find_duct('DuctElbow', 0)
+    duct2, _ = find_duct('RoundDuct', 1)
+    elbow3, _ = find_duct('DuctElbow', 1)
+    duct3a, _ = find_duct('RoundDuct', 2)
 
     print("\n  New structure uses proper transitions for shape/size changes:")
-    print(f"    - Duct1a ({duct_sections[0][0].params.diameter*1000:.0f}mm round) → Trans1 → Zigzag inlet (rect)")
-    print(f"    - Zigzag fines (rect) → Trans2a → Elbow2 ({duct_sections[3][0].params.diameter*1000:.0f}mm)")
-    print(f"    - Elbow2 → Duct2 ({duct_sections[4][0].params.diameter*1000:.0f}mm) → Trans2b → Cyclone inlet (rect)")
+    if duct1a:
+        print(f"    - Duct1a ({duct1a.params.diameter*1000:.0f}mm round) → Trans1 → Zigzag inlet (rect)")
+    if elbow2:
+        print(f"    - Zigzag fines (rect) → Trans2a → Elbow2 ({elbow2.params.diameter*1000:.0f}mm)")
+    if duct2:
+        print(f"    - Elbow2 → Duct2 ({duct2.params.diameter*1000:.0f}mm) → Trans2b → Cyclone inlet (rect)")
     print(f"    - Cyclone overflow ({multi_cyclone.ports['overflow'].diameter*1000:.0f}mm) → Elbow3 → Duct3a")
-    print(f"    - Duct3a ({duct_sections[7][0].params.diameter*1000:.0f}mm) → Expansion → Bag filter ({bag_filter.ports['dirty_air_inlet'].diameter*1000:.0f}mm)")
+    if duct3a:
+        print(f"    - Duct3a ({duct3a.params.diameter*1000:.0f}mm) → Expansion → Bag filter ({bag_filter.ports['dirty_air_inlet'].diameter*1000:.0f}mm)")
+
+    # Check for coarse collection hardware
+    coarse_airlock, _ = find_duct('RotaryAirlock', 0)
+    if coarse_airlock:
+        print(f"    - Zigzag coarse → Rect-to-Round → Airlock (rotor D={coarse_airlock.params.rotor_diameter*1000:.0f}mm)")
 
     print("\n  Direct diameter matches (round-to-round connections):")
-    connections = [
-        ("Venturi outlet", venturi.ports['outlet'].diameter, "Duct 1a", duct_sections[0][0].params.diameter),
-        ("Elbow 2", duct_sections[3][0].params.diameter, "Duct 2", duct_sections[4][0].params.diameter),
-        ("Cyclone overflow", multi_cyclone.ports['overflow'].diameter, "Elbow 3", duct_sections[6][0].params.diameter),
-        ("Elbow 3", duct_sections[6][0].params.diameter, "Duct 3a", duct_sections[7][0].params.diameter),
-    ]
+    connections = []
+    if duct1a:
+        connections.append(("Venturi outlet", venturi.ports['outlet'].diameter, "Duct 1a", duct1a.params.diameter))
+    if elbow2 and duct2:
+        connections.append(("Elbow 2", elbow2.params.diameter, "Duct 2", duct2.params.diameter))
+    if elbow3:
+        connections.append(("Cyclone overflow", multi_cyclone.ports['overflow'].diameter, "Elbow 3", elbow3.params.diameter))
+    if elbow3 and duct3a:
+        connections.append(("Elbow 3", elbow3.params.diameter, "Duct 3a", duct3a.params.diameter))
 
     for src_name, src_d, tgt_name, tgt_d in connections:
         match = abs(src_d - tgt_d) < 0.001
@@ -1827,7 +1880,7 @@ def calculate_classification_system_flow_path():
     print("=" * 70)
 
     positions = classification.get_component_positions()
-    duct_sections = classification._duct_sections
+    duct_sections = _filter_main_flow_ducts(classification._duct_sections)
 
     # Get key port positions (world coordinates)
     print(f"\nAir flow path (key positions):")
@@ -1867,7 +1920,8 @@ def calculate_classification_system_flow_path():
     print(f"  Zigzag fines outlet:   Y = {z_fines_world[1]*1000:8.1f} mm")
 
     # After elbow 2, flow goes horizontal (+X)
-    elbow2, elbow2_pos = duct_sections[1]
+    # [3] = elbow2 in main flow path: [0]=duct1a, [1]=trans1, [2]=trans2a, [3]=elbow2, ...
+    elbow2, elbow2_pos = duct_sections[3]
     elbow2_outlet_y = elbow2_pos[1] + elbow2.params.bend_radius
     print(f"  Elbow 2 outlet:        Y = {elbow2_outlet_y*1000:8.1f} mm (turns to +X)")
 
@@ -1929,8 +1983,8 @@ def calculate_classification_system_flow_path():
     print(f"  Elbow 2 arc:          {elbow2_arc*1000:8.1f} mm (90° turn)")
     total_path += elbow2_arc
 
-    # Duct 2 (horizontal)
-    duct2_length = duct_sections[2][0].params.length
+    # Duct 2 (horizontal) - [4] in main flow path
+    duct2_length = duct_sections[4][0].params.length
     print(f"  Duct 2 (horizontal):  {duct2_length*1000:8.1f} mm")
     total_path += duct2_length
 
@@ -1940,14 +1994,14 @@ def calculate_classification_system_flow_path():
     print(f"  Multi-cyclone:        {mc_total_height*1000:8.1f} mm (staged)")
     total_path += mc_total_height
 
-    # Elbow 3 arc
-    elbow3 = duct_sections[3][0]
+    # Elbow 3 arc - [6] in main flow path
+    elbow3 = duct_sections[6][0]
     elbow3_arc = elbow3.params.bend_radius * np.radians(elbow3.params.angle)
     print(f"  Elbow 3 arc:          {elbow3_arc*1000:8.1f} mm (90° turn)")
     total_path += elbow3_arc
 
-    # Duct 3 (horizontal)
-    duct3_length = duct_sections[4][0].params.length
+    # Duct 3 (horizontal) - [7] in main flow path
+    duct3_length = duct_sections[7][0].params.length
     print(f"  Duct 3 (horizontal):  {duct3_length*1000:8.1f} mm")
     total_path += duct3_length
 

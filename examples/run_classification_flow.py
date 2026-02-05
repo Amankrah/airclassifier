@@ -210,6 +210,15 @@ def main():
         "--full-system", action="store_true",
         help="Run air flow to venturi (airclass), then feed to venturi (feedclass), then classification from geometry and physics (no magic numbers)"
     )
+    parser.add_argument(
+        "--batch-feed", action="store_true",
+        help="Force batch feeding (all particles active at t=0) instead of continuous. "
+             "Default with --full-system is continuous feeding."
+    )
+    parser.add_argument(
+        "--max-loading", type=float, default=2.0,
+        help="Max solids loading ratio mu = m_dot_solids / m_dot_air for venturi entrainment cap (default: 2.0)"
+    )
     
     args = parser.parse_args()
 
@@ -335,6 +344,8 @@ def main():
             fluid_config=fluid,
             material=material,
             bypass_ratio=args.bypass_ratio,
+            continuous_feeding=not args.batch_feed,
+            max_loading_ratio=args.max_loading,
         )
         print("\nCreating classification system assembly (from full system)...")
     else:
@@ -507,7 +518,9 @@ def main():
     
     # Run operating-condition validation when requested
     if args.validate or args.diagnostics:
-        air_flow_m3_h = config.air_flow_rate_m3s * 3600.0
+        total_flow_m3_h = config.air_flow_rate_m3s * 3600.0
+        bypass = getattr(config, "bypass_ratio", 0.0)
+        classification_flow_m3_h = total_flow_m3_h * (1.0 - bypass)
         rho = config.particle_density
         if config.material is not None and hasattr(config.material, "size_distribution"):
             sd = config.material.size_distribution
@@ -516,15 +529,19 @@ def main():
         else:
             min_um, max_um = 5.0, 100.0
         val = assembly.validate_system_configuration(
-            air_flow_m3_h=air_flow_m3_h,
+            air_flow_m3_h=total_flow_m3_h,
             particle_density=rho,
             min_particle_um=min_um,
             max_particle_um=max_um,
+            classification_flow_m3_h=classification_flow_m3_h if bypass > 0 else None,
+            cyclone_flow_m3_h=total_flow_m3_h if bypass > 0 else None,
         )
         print("\n" + "=" * 70)
         print("OPERATING CONDITION VALIDATION")
         print("=" * 70)
-        print(f"  Air flow: {air_flow_m3_h:.0f} m3/h   Particle density: {rho:.0f} kg/m3")
+        print(f"  Air flow (total): {total_flow_m3_h:.0f} m3/h   Particle density: {rho:.0f} kg/m3")
+        if bypass > 0:
+            print(f"  Classification flow (zigzag): {classification_flow_m3_h:.1f} m3/h   Cyclone flow: {total_flow_m3_h:.0f} m3/h")
         print(f"  Particle size range: {min_um:.0f} - {max_um:.0f} um")
         zz = val.get("components", {}).get("zigzag", {})
         cy = val.get("components", {}).get("cyclones", {})
@@ -740,6 +757,13 @@ def main():
     else:
         print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h")
     print(f"  Zigzag d50: {simulator.zigzag_d50 * 1e6:.1f} µm")
+    if config.continuous_feeding:
+        print(f"  Feeding: continuous at {config.particle_feed_rate:.0f} particles/s")
+        m_per_particle = config.particle_density * (np.pi / 6.0) * config.visual_particle_diameter**3
+        print(f"  Feed mass flow: {config.particle_feed_rate * m_per_particle * 3600:.1f} kg/h")
+        print(f"  Max loading ratio: {config.max_loading_ratio:.1f}")
+    else:
+        print(f"  Feeding: batch (all particles active at t=0)")
     print("-" * 70)
     
     total_steps = int(args.time / args.dt)
@@ -780,8 +804,22 @@ def main():
             bag = sep_counts['bagfilter']
             
             status = f"  [{progress:5.1f}%] t={simulator.state.time:5.2f}s"
-            status += f" | Active:{active:4d} Coarse:{coarse:3d}"
-            status += f" Cy1:{cy1:3d} Cy2:{cy2:3d} Cy3:{cy3:3d} Bag:{bag:3d}"
+            # Show feed progress if continuous feeding
+            if config.continuous_feeding:
+                fed = simulator.state.particles_fed
+                total_to_feed = simulator.state.total_particles_to_feed
+                status += f" | Fed:{fed:5d}/{total_to_feed}"
+            status += f" | Active:{active:5d} Coarse:{coarse:5d}"
+            status += f" Cy1:{cy1:5d} Cy2:{cy2:5d} Cy3:{cy3:5d} Bag:{bag:5d}"
+            # Show zone breakdown for active particles
+            zz = zone_counts.get('zigzag', 0)
+            fp = zone_counts.get('fines_path', 0)
+            vent = zone_counts.get('venturi', 0)
+            duct_vz = zone_counts.get('duct_v_z', 0)
+            cy1_z = zone_counts.get('cyclone_1', 0)
+            cy2_z = zone_counts.get('cyclone_2', 0)
+            cy3_z = zone_counts.get('cyclone_3', 0)
+            status += f"  [zz:{zz:5d} fp:{fp:4d} v:{vent:3d} d:{duct_vz:3d} c1:{cy1_z:4d} c2:{cy2_z:4d} c3:{cy3_z:4d}]"
             print(status)
         
         # Update visualization every frame
@@ -907,6 +945,11 @@ def main():
     print(f"  Sim time:  {simulator.state.time:.2f} s")
     print(f"  Steps:     {simulator.state.step:,}")
     print(f"  Rate:      {simulator.state.step / elapsed:.0f} steps/s")
+    if config.continuous_feeding:
+        fed = simulator.state.particles_fed
+        total_to_feed = simulator.state.total_particles_to_feed
+        print(f"  Feeding:   {fed}/{total_to_feed} particles fed ({100*fed/max(1,total_to_feed):.1f}%)")
+        print(f"  Feed rate: {config.particle_feed_rate:.0f} particles/s")
     
     # Print final separation summary
     simulator.print_separation_summary()
@@ -956,7 +999,30 @@ def main():
             print(f"\n  Protein Recovery Estimate:")
             print(f"    Protein-rich fractions (Cy3 + Bag): {protein_outlets:5d} ({100*protein_outlets/max(1,total):.1f}%)")
             print(f"    Starch-rich fractions (Coarse):     {starch_outlets:5d} ({100*starch_outlets/max(1,total):.1f}%)")
-    
+
+        # Per-zone particle size analysis
+        zones_arr = simulator.get_zones()
+        diameters_arr = simulator.get_diameters()
+        is_active_arr = simulator.state.is_active.numpy()[:simulator.state.particles_active]
+
+        print(f"\n  Particle Size Analysis by Zone (active particles):")
+        zone_labels = [
+            ('Venturi (0-2)', lambda z: (z >= 0) & (z <= 2)),
+            ('Duct V→Z (10)', lambda z: z == 10),
+            ('Zigzag (20-21)', lambda z: (z == 20) | (z == 21)),
+            ('Fines path (22)', lambda z: z == 22),
+            ('Elbow/Duct (40-41)', lambda z: (z == 40) | (z == 41)),
+            ('Cyclone 1 (50)', lambda z: z == 50),
+            ('Cyclone 2 (51)', lambda z: z == 51),
+            ('Cyclone 3 (52)', lambda z: z == 52),
+        ]
+        for label, zone_mask_fn in zone_labels:
+            mask = zone_mask_fn(zones_arr) & (is_active_arr == 1)
+            n = int(np.sum(mask))
+            if n > 0:
+                d_um = diameters_arr[mask] * 1e6  # Convert to µm
+                print(f"    {label:22s}: n={n:5d}  d=[{np.min(d_um):5.1f}, {np.median(d_um):5.1f}, {np.max(d_um):5.1f}] µm (min/med/max)")
+
     print("=" * 70)
     
     if plotter is not None:

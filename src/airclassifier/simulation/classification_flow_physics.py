@@ -106,6 +106,14 @@ class ClassificationFlowConfig:
     # or computed from solids_mass_flow via Warp feed_entry_rate_particles_per_s kernel
     particle_feed_rate: float = 0.0        # 0 = not set; set by from_air_and_feed_results from feed_result
 
+    # Continuous feeding: activate particles gradually instead of all at t=0
+    # When True, particles are pre-allocated but inactive; step() activates them at particle_feed_rate
+    continuous_feeding: bool = False
+
+    # Max solids loading ratio (mu = m_dot_solids / m_dot_air) for venturi entrainment cap
+    # Dilute-phase pneumatic transport: mu < 5 typical; conservative cap at mu=2
+    max_loading_ratio: float = 2.0
+
     # Turbulence parameters (for zigzag mixing)
     turbulent_intensity: float = 0.15      # Fraction of mean velocity (15%)
     
@@ -180,6 +188,24 @@ class ClassificationFlowConfig:
                 solids_mass_flow_kg_s, particle_density, particle_dia_m
             )
 
+        # Cap feed rate to venturi entrainment capacity (loading ratio limit)
+        # mu = m_dot_solids / m_dot_air; m_dot_solids = particle_feed_rate * m_per_particle
+        max_loading = kwargs.pop("max_loading_ratio", 2.0)
+        continuous = kwargs.pop("continuous_feeding", True)
+        m_dot_air = Q_m3s * rho_air
+        if particle_feed_rate > 0 and m_dot_air > 0:
+            m_per_particle = particle_density * (np.pi / 6.0) * particle_dia_m**3
+            m_dot_solids_requested = particle_feed_rate * m_per_particle
+            m_dot_solids_max = max_loading * m_dot_air
+            if m_dot_solids_requested > m_dot_solids_max:
+                capped_rate = m_dot_solids_max / m_per_particle
+                print(f"  [Feed cap] Requested {particle_feed_rate:.0f} particles/s "
+                      f"({m_dot_solids_requested*3600:.1f} kg/h) exceeds venturi capacity "
+                      f"({m_dot_solids_max*3600:.1f} kg/h at mu={max_loading:.1f})")
+                print(f"             Capped to {capped_rate:.0f} particles/s "
+                      f"({m_dot_solids_max*3600:.1f} kg/h)")
+                particle_feed_rate = capped_rate
+
         # Capacity: from caller or from feed rate * simulation time (with headroom)
         n_cap = num_particles_capacity
         if n_cap is None or n_cap <= 0:
@@ -194,6 +220,8 @@ class ClassificationFlowConfig:
             sphericity=sphericity,
             num_particles=n_cap,
             particle_feed_rate=particle_feed_rate,
+            continuous_feeding=continuous,
+            max_loading_ratio=max_loading,
             fluid_config=fluid_config or FluidConfig.air_at_stp(),
             material=material,
             **kwargs
@@ -661,24 +689,89 @@ def extract_geometry(assembly: ClassificationSystemAssembly) -> Dict[str, Any]:
     # DUCT SECTIONS (from assembly)
     # =========================================================================
     geometry['ducts'] = []
-    if hasattr(assembly, '_duct_sections'):
-        for duct, position in assembly._duct_sections:
-            duct_info = {
-                'position': np.array(position),
-                'type': type(duct).__name__,
-            }
-            if hasattr(duct, 'params'):
-                if hasattr(duct.params, 'diameter'):
-                    duct_info['diameter'] = duct.params.diameter
-                if hasattr(duct.params, 'length'):
-                    duct_info['length'] = duct.params.length
-                if hasattr(duct.params, 'bend_radius'):
-                    duct_info['bend_radius'] = duct.params.bend_radius
-                    duct_info['is_elbow'] = True
-                if hasattr(duct.params, 'direction'):
-                    duct_info['direction'] = np.array(duct.params.direction)
-            geometry['ducts'].append(duct_info)
+    all_duct_sections = list(assembly._duct_sections)
+    if hasattr(assembly, '_collection_duct_sections'):
+        all_duct_sections.extend(assembly._collection_duct_sections)
+    for duct, position in all_duct_sections:
+        duct_info = {
+            'position': np.array(position),
+            'type': type(duct).__name__,
+        }
+        if hasattr(duct, 'params'):
+            if hasattr(duct.params, 'diameter'):
+                duct_info['diameter'] = duct.params.diameter
+            if hasattr(duct.params, 'length'):
+                duct_info['length'] = duct.params.length
+            if hasattr(duct.params, 'bend_radius'):
+                duct_info['bend_radius'] = duct.params.bend_radius
+                duct_info['is_elbow'] = True
+            if hasattr(duct.params, 'direction'):
+                duct_info['direction'] = np.array(duct.params.direction)
+        geometry['ducts'].append(duct_info)
     
+    # =========================================================================
+    # DROPOUT HOPPER GEOMETRY (if present)
+    # =========================================================================
+    geometry['dropout'] = None
+    for duct, position in assembly._duct_sections:
+        if type(duct).__name__ == 'ExpandingTransitionWithDropout':
+            dropout_pos = np.array(position)
+            dp = duct.params
+            dropout_port = duct.ports['dropout']
+            geometry['dropout'] = {
+                'position': dropout_pos,
+                'inlet_diameter': dp.inlet_diameter,
+                'transition_length': dp.transition_length,
+                'hopper_height': dp.hopper_height,
+                'hopper_outlet_diameter': dp.hopper_outlet_diameter,
+                'hopper_outlet_pos': dropout_pos + np.array(dropout_port.position),
+            }
+            break
+
+    # =========================================================================
+    # BYPASS GEOMETRY (if present)
+    # =========================================================================
+    geometry['bypass'] = None
+    if hasattr(assembly, '_bypass_split_tee'):
+        split_pos = np.array(assembly._bypass_split_tee_pos)
+        merge_pos = np.array(assembly._bypass_merge_tee_pos)
+        split_branch = assembly._bypass_split_tee.ports['branch']
+        merge_branch = assembly._bypass_merge_tee.ports['branch']
+
+        geometry['bypass'] = {
+            'split_pos': split_pos,
+            'merge_pos': merge_pos,
+            'split_branch_world': split_pos + np.array(split_branch.position),
+            'merge_branch_world': merge_pos + np.array(merge_branch.position),
+            'diameter': assembly.params.bypass_diameter,
+        }
+
+    # =========================================================================
+    # COARSE COLLECTION HARDWARE (if present)
+    # =========================================================================
+    geometry['coarse_collection'] = None
+    if hasattr(assembly.params, 'include_coarse_collection') and assembly.params.include_coarse_collection:
+        zigzag_coarse_port = assembly.zigzag.ports['coarse_outlet']
+        zigzag_pos = assembly._component_positions['zigzag']
+        coarse_world = zigzag_pos + np.array(zigzag_coarse_port.position)
+        geometry['coarse_collection'] = {
+            'port_position': coarse_world,
+            'port_width': zigzag_coarse_port.width,
+            'port_height': zigzag_coarse_port.height,
+            'airlock_rotor_d': assembly.params.coarse_airlock_rotor_d,
+        }
+
+    # DROPOUT COLLECTION HARDWARE (if present)
+    geometry['dropout_collection'] = None
+    if (hasattr(assembly.params, 'include_dropout_collection')
+            and assembly.params.include_dropout_collection
+            and geometry.get('dropout') is not None):
+        geometry['dropout_collection'] = {
+            'hopper_outlet_pos': geometry['dropout']['hopper_outlet_pos'],
+            'hopper_outlet_d': geometry['dropout']['hopper_outlet_diameter'],
+            'airlock_rotor_d': assembly.params.dropout_airlock_rotor_d,
+        }
+
     # =========================================================================
     # CONNECTION PATHS (computed from actual port positions)
     # =========================================================================
@@ -786,13 +879,51 @@ def print_geometry_summary(geometry: Dict[str, Any]):
     print(f"   Inlet diameter:   {b.inlet_diameter*1000:.1f} mm")
     print(f"   Outlet diameter:  {b.outlet_diameter*1000:.1f} mm")
     
+    # Dropout hopper
+    dropout = geometry.get('dropout')
+    if dropout is not None:
+        print("\n5. COARSE DROPOUT HOPPER")
+        print(f"   Position:         ({dropout['position'][0]*1000:.1f}, {dropout['position'][1]*1000:.1f}, {dropout['position'][2]*1000:.1f}) mm")
+        print(f"   Inlet diameter:   {dropout['inlet_diameter']*1000:.1f} mm")
+        print(f"   Transition length:{dropout['transition_length']*1000:.1f} mm")
+        print(f"   Hopper height:    {dropout['hopper_height']*1000:.1f} mm")
+        print(f"   Hopper outlet D:  {dropout['hopper_outlet_diameter']*1000:.1f} mm")
+        print(f"   Discharge pos:    ({dropout['hopper_outlet_pos'][0]*1000:.1f}, {dropout['hopper_outlet_pos'][1]*1000:.1f}, {dropout['hopper_outlet_pos'][2]*1000:.1f}) mm")
+
+    # Bypass
+    bypass = geometry.get('bypass')
+    if bypass is not None:
+        print("\n6. BYPASS DUCT")
+        print(f"   Split position:   ({bypass['split_pos'][0]*1000:.1f}, {bypass['split_pos'][1]*1000:.1f}, {bypass['split_pos'][2]*1000:.1f}) mm")
+        print(f"   Merge position:   ({bypass['merge_pos'][0]*1000:.1f}, {bypass['merge_pos'][1]*1000:.1f}, {bypass['merge_pos'][2]*1000:.1f}) mm")
+        print(f"   Bypass diameter:  {bypass['diameter']*1000:.1f} mm")
+
+    # Coarse collection hardware
+    coarse_coll = geometry.get('coarse_collection')
+    if coarse_coll is not None:
+        pos = coarse_coll['port_position']
+        print("\n7. COARSE COLLECTION (Zigzag)")
+        print(f"   Port position:    ({pos[0]*1000:.1f}, {pos[1]*1000:.1f}, {pos[2]*1000:.1f}) mm")
+        print(f"   Port size:        {coarse_coll['port_width']*1000:.1f} x {coarse_coll['port_height']*1000:.1f} mm")
+        print(f"   Airlock rotor D:  {coarse_coll['airlock_rotor_d']*1000:.1f} mm")
+
+    # Dropout collection hardware
+    dropout_coll = geometry.get('dropout_collection')
+    if dropout_coll is not None:
+        pos = dropout_coll['hopper_outlet_pos']
+        print("\n8. DROPOUT COLLECTION (Hopper)")
+        print(f"   Outlet position:  ({pos[0]*1000:.1f}, {pos[1]*1000:.1f}, {pos[2]*1000:.1f}) mm")
+        print(f"   Outlet diameter:  {dropout_coll['hopper_outlet_d']*1000:.1f} mm")
+        print(f"   Airlock rotor D:  {dropout_coll['airlock_rotor_d']*1000:.1f} mm")
+
     # Connections
-    print("\n5. CONNECTION PATHS")
+    section_num = 5 + (1 if dropout else 0) + (1 if bypass else 0) + (1 if coarse_coll else 0) + (1 if dropout_coll else 0)
+    print(f"\n{section_num}. CONNECTION PATHS")
     for name, conn in geometry['connections'].items():
         print(f"   {name}:")
         print(f"     Length:     {conn['length']*1000:.1f} mm")
         print(f"     Direction:  ({conn['direction'][0]:.2f}, {conn['direction'][1]:.2f}, {conn['direction'][2]:.2f})")
-    
+
     print("\n" + "=" * 70)
 
 
@@ -1281,39 +1412,40 @@ if wp is not None:
 
     @wp.func
     def compute_turbulent_dispersion(
-        vel: wp.vec3,
+        v_ref: float,
         turbulent_intensity: float,
         seed: int,
         tid: int
     ) -> wp.vec3:
         """
         Add turbulent velocity fluctuations for zigzag mixing.
-        
+
         TURBULENT DISPERSION:
         In real zigzag classifiers, turbulence is essential for:
         1. Keeping particles suspended
         2. Promoting mixing between stages
         3. Creating probability-based separation (not deterministic)
-        
-        v' = I * v_mean * random_direction
-        
+
+        v' = I * v_ref * random_direction
+
         Where I = turbulent intensity (typically 0.1-0.2 for zigzag)
-        
-        This causes some "misclassification" - a few protein particles
-        end up in coarse, and vice versa. This is physically realistic.
+        v_ref = reference air velocity (zone velocity, NOT particle velocity)
+
+        Using air velocity as reference ensures turbulence doesn't vanish
+        for slow particles near d50 - those particles NEED turbulence most
+        to break the equilibrium and get classified either way.
         """
-        # Simple pseudo-random based on particle ID and seed
-        # In practice, use Warp's random functions
-        phase = float(tid * 17 + seed * 31) * 0.1
-        
-        # Random velocity components (simplified Gaussian-like)
-        v_mag = wp.length(vel)
-        fluctuation = turbulent_intensity * v_mag
-        
-        vx = fluctuation * wp.sin(phase * 1.1)
-        vy = fluctuation * wp.cos(phase * 2.3)
-        vz = fluctuation * wp.sin(phase * 0.7 + 1.5)
-        
+        # Proper random numbers using Warp's RNG (changes every timestep via seed)
+        state = wp.rand_init(seed, tid)
+
+        # Fluctuation based on AIR velocity, not particle velocity
+        fluctuation = turbulent_intensity * v_ref
+
+        # Uniform random in [-1, 1] for each component
+        vx = fluctuation * (wp.randf(state) - 0.5) * 2.0
+        vy = fluctuation * (wp.randf(state) - 0.5) * 2.0
+        vz = fluctuation * (wp.randf(state) - 0.5) * 2.0
+
         return wp.vec3(vx, vy, vz)
 
     # -------------------------------------------------------------------------
@@ -1411,10 +1543,15 @@ if wp is not None:
 
         if r > r_transition:
             # Outer vortex: inward radial flow
-            # Strongest near the transition zone, weaker near wall
+            # Peaks at transition, weaker toward wall but NEVER zero.
+            # Continuity requires Q = v_r * 2*pi*r*H at every radius,
+            # so radial flow exists at all radii in the outer vortex.
+            # Floor of 0.5 at wall ensures particles can migrate inward:
+            #   Small particles (low inertia): inward drag > centrifugal -> escape
+            #   Large particles (high inertia): centrifugal > inward drag -> collected
             r_frac = (r - r_transition) / (cyclone_radius - r_transition + eps)
             r_frac = wp.clamp(r_frac, 0.0, 1.0)
-            v_radial_mag = -0.15 * v_inlet * (1.0 - r_frac)
+            v_radial_mag = -0.15 * v_inlet * (0.5 + 0.5 * (1.0 - r_frac))
         else:
             # Inner vortex: negligible radial (primarily axial upward)
             v_radial_mag = 0.0
@@ -2077,18 +2214,21 @@ if wp is not None:
                     pos = wp.vec3(pos[0], pos[1], center_z - half_d + particle_radius + 0.001)
                     vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 0.0, 1.0), restitution, friction)
             
+            # Terminal velocity: can this particle be carried at this point in the duct?
+            # v_air_duct is local (high in round section, drops to v_air_zigzag at zigzag).
+            # If v_t > local v_air_duct and particle is not moving up, it cannot progress
+            # and will oscillate or fall — send to coarse so the duct drains.
+            v_t = compute_terminal_velocity(d, rho_p, rho_f, mu_f, gravity)
+            if v_t > v_air_duct and vel[1] <= 0.0:
+                zone = 30  # Coarse (cannot be carried at this duct cross-section)
             # Transition to zigzag when reaching inlet
-            if pos[1] >= zigzag_inlet_y - particle_radius * 2.0:
+            elif pos[1] >= zigzag_inlet_y - particle_radius * 2.0:
                 zone = 20  # Enter zigzag
             # Particles that fall back below duct start (very heavy, v_t > v_air_round)
             elif pos[1] < duct_venturi_zigzag_start[1] - particle_radius:
                 zone = 30  # Coarse (fell through duct)
-            # Particles falling back in lower duct: they attempted the expansion
-            # section but couldn't transit it (v_t > v_air_zigzag). They oscillate
-            # at the round-to-transition boundary. Catch them when falling back
-            # through the lower 15% of the duct with downward velocity — this
-            # only triggers on the return trip since particles enter zone 10
-            # from the venturi with positive (upward) velocity.
+            # Fallback: particles falling in lower duct (progress < 0.15) with
+            # downward velocity — pre-classified by duct expansion.
             elif progress < 0.15 and vel[1] < -0.01:
                 zone = 30  # Coarse (pre-classified by duct expansion)
         
@@ -2118,9 +2258,10 @@ if wp is not None:
             )
 
             # Add turbulent dispersion (essential for realistic separation)
-            # Turbulence is already modeled in zone-specific velocities, but add
-            # additional stochastic component for realistic particle trajectories
-            v_turb = compute_turbulent_dispersion(vel, turbulent_intensity, random_seed, tid)
+            # Use ZONE velocity as reference so turbulence doesn't vanish
+            # for slow particles near d50 (those need it most)
+            v_zone_ref = v_air_zigzag * zigzag_velocity_ratio_zone
+            v_turb = compute_turbulent_dispersion(v_zone_ref, turbulent_intensity, random_seed, tid)
             v_air = v_air + v_turb
 
             # CAP upward velocity at zone velocity for proper separation.
@@ -2712,43 +2853,12 @@ if wp is not None:
         # ZONE 70: BAG FILTER (final fines capture)
         # =====================================================================
         elif zone == 70:
-            # BAG FILTER PHYSICS:
-            # - Dirty air enters from side
-            # - Bags capture particles via inertial impaction, interception, diffusion
-            # - Clean air exits through top
-            # - Collected dust falls to hopper
-            
-            local_x = pos[0] - bagfilter_center[0]
-            local_y = pos[1] - bagfilter_center[1]
-            local_z = pos[2] - bagfilter_center[2]
-            
-            # Simplified: air flows through filter, particles captured
-            # Small velocity upward
-            v_air = wp.vec3(0.0, 0.5, 0.0)
-            
-            # Box containment
-            if local_x + particle_radius > bagfilter_half_width:
-                pos = wp.vec3(bagfilter_center[0] + bagfilter_half_width - particle_radius - 0.001, pos[1], pos[2])
-                vel = reflect_velocity_inelastic(vel, wp.vec3(-1.0, 0.0, 0.0), restitution, friction)
-            elif local_x - particle_radius < -bagfilter_half_width:
-                pos = wp.vec3(bagfilter_center[0] - bagfilter_half_width + particle_radius + 0.001, pos[1], pos[2])
-                vel = reflect_velocity_inelastic(vel, wp.vec3(1.0, 0.0, 0.0), restitution, friction)
-            
-            if local_z + particle_radius > bagfilter_half_depth:
-                pos = wp.vec3(pos[0], pos[1], bagfilter_center[2] + bagfilter_half_depth - particle_radius - 0.001)
-                vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 0.0, -1.0), restitution, friction)
-            elif local_z - particle_radius < -bagfilter_half_depth:
-                pos = wp.vec3(pos[0], pos[1], bagfilter_center[2] - bagfilter_half_depth + particle_radius + 0.001)
-                vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 0.0, 1.0), restitution, friction)
-            
-            # Particles settle to hopper (collected)
-            if pos[1] <= bagfilter_dust_y + particle_radius * 2.0:
-                zone = 75  # Collected in bag filter hopper
-            # Very small particles might escape with clean air (rare)
-            elif pos[1] >= bagfilter_outlet_y - particle_radius * 2.0:
-                # Check if particle is small enough to escape
-                # In practice, bag filter captures > 99.9% of particles
-                zone = 80  # Escaped with clean air (should be rare)
+            # BAG FILTER: Capture on entry.
+            # Real bag filters capture >99.9% of particles via inertial
+            # impaction, interception, and diffusion on the filter media.
+            # Simulating internal trajectories is unnecessary — any particle
+            # that reaches the bag filter is effectively collected.
+            zone = 75
         
         # =====================================================================
         # ZONES 75, 80, 99: COLLECTION / EXIT
@@ -3144,7 +3254,11 @@ class ClassificationFlowPhysicsSimulator:
         # Operating-condition validation (zigzag/cyclone cut sizes vs flow)
         self._validation_result = None
         try:
-            Q_m3s = self.config.air_flow_rate_m3s
+            Q_total = self.config.air_flow_rate_m3s
+            bypass = getattr(self.config, "bypass_ratio", 0.0)
+            Q_class = Q_total * (1.0 - bypass)
+            total_flow_m3_h = Q_total * 3600.0
+            classification_flow_m3_h = Q_class * 3600.0
             rho = self.config.particle_density
             min_um = 5.0
             max_um = 100.0
@@ -3155,10 +3269,12 @@ class ClassificationFlowPhysicsSimulator:
                 min_um = sd.d_min * 1e6
                 max_um = sd.d_max * 1e6
             self._validation_result = assembly.validate_system_configuration(
-                air_flow_m3_h=Q_m3s * 3600.0,
+                air_flow_m3_h=total_flow_m3_h,
                 particle_density=rho,
                 min_particle_um=min_um,
                 max_particle_um=max_um,
+                classification_flow_m3_h=classification_flow_m3_h if bypass > 0 else None,
+                cyclone_flow_m3_h=total_flow_m3_h if bypass > 0 else None,
             )
             if not self._validation_result.get("valid", True):
                 rec = self._validation_result.get("recommendation", "")
@@ -4634,11 +4750,15 @@ class ClassificationFlowPhysicsSimulator:
         velocities_np[:] = initial_velocity
         velocities_np += rng.uniform(-0.05, 0.05, (n, 3))
         
-        # Zones: all VENTURI_INLET (0), active
+        # Zones: all VENTURI_INLET (0)
         zones_np = np.zeros(n, dtype=np.int32)
-        is_active_np = np.ones(n, dtype=np.int32)
+        # Continuous feeding: start inactive
+        if self.config.continuous_feeding:
+            is_active_np = np.zeros(n, dtype=np.int32)
+        else:
+            is_active_np = np.ones(n, dtype=np.int32)
         types_np = np.zeros(n, dtype=np.int32)  # single material
-        
+
         # Copy to device (full arrays: fill 0:n, rest unchanged)
         n_max = self.config.num_particles
         pos_full = self.state.positions.numpy().copy()
@@ -4665,9 +4785,17 @@ class ClassificationFlowPhysicsSimulator:
         type_full = self.state.particle_types.numpy().copy()
         type_full[0:n] = types_np
         self.state.particle_types = wp.array(type_full, dtype=wp.int32, device=self.device)
-        
-        self.state.particles_active = n
-        print(f"\n  Initialized {n} particles from material at venturi inlet")
+
+        if self.config.continuous_feeding:
+            self.state.particles_active = 0
+            self.state.total_particles_to_feed = n
+            self.state.particles_fed = 0
+            self._feed_accumulator = 0.0
+            print(f"\n  Pre-allocated {n} particles from material (continuous feeding)")
+            print(f"    Feed rate: {self.config.particle_feed_rate:.0f} particles/s")
+        else:
+            self.state.particles_active = n
+            print(f"\n  Initialized {n} particles from material at venturi inlet (batch)")
         print(f"    Diameter range: {diameters_np.min()*1e6:.1f} - {diameters_np.max()*1e6:.1f} um")
         print(f"    Mean diameter:  {diameters_np.mean()*1e6:.1f} um")
     
@@ -4712,8 +4840,12 @@ class ClassificationFlowPhysicsSimulator:
         velocities_np += rng.uniform(-0.05, 0.05, (n, 3))
         
         zones_np = np.zeros(n, dtype=np.int32)
-        is_active_np = np.ones(n, dtype=np.int32)
-        
+        # Continuous feeding: all particles start inactive; step() activates them gradually
+        if self.config.continuous_feeding:
+            is_active_np = np.zeros(n, dtype=np.int32)
+        else:
+            is_active_np = np.ones(n, dtype=np.int32)
+
         n_max = self.config.num_particles
         pos_full = self.state.positions.numpy().copy()
         pos_full[0:n] = positions_np
@@ -4740,13 +4872,28 @@ class ClassificationFlowPhysicsSimulator:
         type_full[0:n] = types_np
         self.state.particle_types = wp.array(type_full, dtype=wp.int32, device=self.device)
         
-        self.state.particles_active = n
-        
         n_protein = int(np.sum(types_np == 0))
         n_starch = int(np.sum(types_np == 1))
         n_fiber = int(np.sum(types_np == 2))
         total_mass = float(np.sum(masses_np))
-        print(f"\n  Initialized {n} particles as {source} whole flour at venturi inlet")
+
+        # Continuous feeding: pre-allocate all particles but start with 0 active
+        if self.config.continuous_feeding:
+            self.state.particles_active = 0
+            self.state.total_particles_to_feed = n
+            self.state.particles_fed = 0
+            self._feed_accumulator = 0.0
+            print(f"\n  Pre-allocated {n} particles as {source} whole flour (continuous feeding)")
+            print(f"    Feed rate: {self.config.particle_feed_rate:.0f} particles/s")
+            m_per_particle = float(np.mean(masses_np))
+            m_dot = self.config.particle_feed_rate * m_per_particle
+            print(f"    Mass flow: {m_dot*3600:.1f} kg/h  ({m_dot:.4f} kg/s)")
+            fill_time = n / self.config.particle_feed_rate if self.config.particle_feed_rate > 0 else float('inf')
+            print(f"    Time to feed all {n} particles: {fill_time:.1f} s")
+        else:
+            self.state.particles_active = n
+            print(f"\n  Initialized {n} particles as {source} whole flour at venturi inlet (batch)")
+
         print(f"    Protein: {n_protein} ({100*n_protein/n:.0f}%)  Starch: {n_starch} ({100*n_starch/n:.0f}%)  Fiber: {n_fiber} ({100*n_fiber/n:.0f}%)")
         print(f"    Diameter range: {diameters_np.min()*1e6:.1f} - {diameters_np.max()*1e6:.1f} um  Total mass: {total_mass*1000:.2f} g")
     
@@ -4754,9 +4901,30 @@ class ClassificationFlowPhysicsSimulator:
         """Advance simulation by one time step."""
         dt = self.config.dt
         cfg = self.config
-        
+
+        # Continuous feeding: activate pre-allocated particles at feed_rate
+        if cfg.continuous_feeding and self.state.particles_active < self.state.total_particles_to_feed:
+            feed_rate = cfg.particle_feed_rate
+            if feed_rate > 0:
+                if not hasattr(self, '_feed_accumulator'):
+                    self._feed_accumulator = 0.0
+                self._feed_accumulator += feed_rate * dt
+                new_count = int(self._feed_accumulator)
+                if new_count > 0:
+                    self._feed_accumulator -= new_count
+                    old_active = self.state.particles_active
+                    new_active = min(self.state.total_particles_to_feed, old_active + new_count)
+                    actually_added = new_active - old_active
+                    if actually_added > 0:
+                        # Mark newly activated particles as active on device
+                        active_np = self.state.is_active.numpy().copy()
+                        active_np[old_active:new_active] = 1
+                        self.state.is_active = wp.array(active_np, dtype=wp.int32, device=self.device)
+                        self.state.particles_active = new_active
+                        self.state.particles_fed += actually_added
+
         n = self.state.particles_active
-        
+
         if n == 0:
             self.state.time += dt
             self.state.step += 1
@@ -4966,7 +5134,8 @@ class ClassificationFlowPhysicsSimulator:
         return {
             'venturi': int(np.sum((active_zones >= 0) & (active_zones <= 2))),
             'duct_v_z': int(np.sum(active_zones == 10)),
-            'zigzag': int(np.sum((active_zones >= 20) & (active_zones <= 23))),
+            'zigzag': int(np.sum((active_zones == 20) | (active_zones == 21))),
+            'fines_path': int(np.sum(active_zones == 22)),
             'coarse_outlet': int(np.sum(active_zones == 30)),
             'elbow_z_c': int(np.sum(active_zones == 40)),
             'duct_z_c': int(np.sum(active_zones == 41)),
