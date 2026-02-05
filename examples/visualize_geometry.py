@@ -318,25 +318,139 @@ def visualize_airlock(use_mesh: bool = False):
 
 
 def visualize_zigzag(use_mesh: bool = False):
-    """Visualize a zigzag classifier."""
+    """
+    Visualize a zigzag classifier using the actual geometry mesh.
+
+    The zigzag classifier is a venturi-fed counter-current air classifier:
+    - Particles + air enter from BOTTOM via venturi eductor
+    - Air flows UP through the channel
+    - Deflector plates create separation zones with recirculation
+    - Light particles (protein) rise with air -> exit fines outlet (top)
+    - Heavy particles (starch) fall against air -> exit coarse outlet (bottom)
+
+    No side feed inlet is shown because particles enter via the venturi below.
+    """
     print("\n" + "=" * 60)
     print("ZIGZAG CLASSIFIER VISUALIZATION")
     print("=" * 60)
 
     from airclassifier.geometry.components.zigzag_classifier import (
-        create_standard_zigzag_classifier,
+        create_standard_zigzag_classifier
+    )
+    import numpy as np
+
+    # Create classifier using factory function (venturi-fed, no side feed inlet)
+    classifier = create_standard_zigzag_classifier(
+        channel_width=0.15,
+        num_stages=5,
+        channel_depth=0.30,
+        plate_angle_deg=45.0,
+        plate_length_ratio=0.5,
     )
 
-    classifier = create_standard_zigzag_classifier(channel_width=0.15, num_stages=5)
+    print("Zigzag Classifier (Venturi-Fed Counter-Current Design):")
+    print(f"  Channel width: {classifier.params.channel_width * 1000:.0f}mm")
+    print(f"  Channel depth: {classifier.params.channel_depth * 1000:.0f}mm")
+    print(f"  Number of stages: {classifier.params.num_stages}")
+    print(f"\nDeflector Plate Geometry:")
+    print(f"  Plate angle: {np.degrees(classifier.params.plate_angle):.0f} deg from vertical")
+    print(f"  Plate length: {classifier.params.plate_length * 1000:.1f}mm ({classifier.params.plate_length_ratio*100:.0f}% of width)")
+    print(f"  Throat width: {classifier.params.throat_width * 1000:.1f}mm")
+    print(f"  Blockage ratio: {classifier.params.blockage_ratio * 100:.0f}%")
+    print(f"\nSeparation Physics:")
+    print(f"  Velocity ratio in separation zones: {classifier.params.velocity_ratio_in_zone:.1%} of bulk")
+    print(f"  Turbulence intensity: {classifier.params.turbulence_intensity:.0%}")
+    print(f"\nFlow Path (Venturi-Fed):")
+    print("  - Air + particles enter from BOTTOM via venturi eductor")
+    print("  - Light particles (v_t < v_air) rise -> fines outlet (TOP)")
+    print("  - Heavy particles (v_t > v_air) fall -> coarse outlet (BOTTOM)")
 
-    print("Zigzag Classifier (Gravity Counter-Current):")
-    print(f"  Channel width: 150mm")
-    print(f"  Number of stages: 5")
-    print(f"  Feed stage: middle (stage 3)")
-    print(f"  Separation: fines (top) / coarse (bottom)")
+    # Get actual mesh from component
+    vertices, indices, normals = classifier.generate_mesh()
 
-    result = render_component(classifier, "Zigzag Classifier",
-                             COMPONENT_COLORS['zigzag'], use_mesh=use_mesh)
+    print(f"\nMesh Statistics:")
+    print(f"  Vertices: {len(vertices):,}")
+    print(f"  Triangles: {len(indices)//3:,}")
+
+    if PYVISTA_AVAILABLE:
+        import pyvista as pv
+
+        plotter = pv.Plotter()
+        plotter.set_background('white')
+        plotter.camera.up = (0, 1, 0)  # Y-up coordinate system
+
+        # Create PyVista mesh from actual geometry
+        faces = np.hstack([[3] + list(face) for face in indices.reshape(-1, 3)])
+        mesh = pv.PolyData(vertices, faces)
+
+        if use_mesh:
+            # Wireframe mesh mode
+            plotter.add_mesh(mesh, style='wireframe', color='black',
+                           line_width=1, label='Zigzag Classifier')
+            plotter.add_title('Zigzag Classifier - Mesh View (Actual Geometry)')
+        else:
+            # Solid color mode with edges visible
+            plotter.add_mesh(mesh, color=COMPONENT_COLORS['zigzag'], opacity=0.85,
+                           show_edges=True, edge_color='gray',
+                           label='Zigzag Classifier')
+            plotter.add_title('Zigzag Classifier - Actual Geometry (Venturi-Fed)')
+
+        # Add flow direction arrows
+        p = classifier.params
+        inlet_y_bottom = p.center[1] - p.air_inlet_height
+        fines_y_top = p.center[1] + p.total_height + p.fines_outlet_height
+        coarse_y_bottom = inlet_y_bottom - p.coarse_outlet_height
+
+        # Air + particles flow up from venturi (blue arrow)
+        arrow_start = np.array([[p.center[0], inlet_y_bottom - 0.05, p.center[2]]])
+        arrow_dir = np.array([[0, 0.15, 0]])
+        plotter.add_arrows(arrow_start, arrow_dir, color='blue', mag=1.0)
+
+        # Fines flow up (green arrow)
+        arrow_start2 = np.array([[p.center[0], fines_y_top + 0.02, p.center[2]]])
+        arrow_dir2 = np.array([[0, 0.08, 0]])
+        plotter.add_arrows(arrow_start2, arrow_dir2, color='green', mag=1.0)
+
+        # Coarse flow down (orange arrow)
+        arrow_start3 = np.array([[p.center[0], coarse_y_bottom - 0.02, p.center[2]]])
+        arrow_dir3 = np.array([[0, -0.08, 0]])
+        plotter.add_arrows(arrow_start3, arrow_dir3, color='orange', mag=1.0)
+
+        # Add text labels for flow
+        plotter.add_point_labels(
+            [[p.center[0] + 0.1, inlet_y_bottom - 0.08, p.center[2]]],
+            ['Air+Particles\n(from Venturi)'],
+            font_size=10, text_color='blue', shape_opacity=0
+        )
+        plotter.add_point_labels(
+            [[p.center[0] + 0.1, fines_y_top + 0.05, p.center[2]]],
+            ['Fines (Protein)\n(light particles)'],
+            font_size=10, text_color='green', shape_opacity=0
+        )
+        plotter.add_point_labels(
+            [[p.center[0] + 0.1, coarse_y_bottom - 0.05, p.center[2]]],
+            ['Coarse (Starch)\n(heavy particles)'],
+            font_size=10, text_color='orange', shape_opacity=0
+        )
+
+        plotter.add_axes()
+        plotter.add_legend(bcolor='white', face='circle')
+
+        # Reset camera to fit entire scene and set isometric view
+        plotter.reset_camera()
+        plotter.camera.azimuth = -170
+        plotter.camera.elevation = -20
+
+        print("\nOpening visualization window...")
+        print("(Close the window to continue)")
+        plotter.show(interactive=True)
+
+        result = {'success': True, 'message': 'Zigzag classifier visualized with actual geometry'}
+    else:
+        # Fallback to basic visualization
+        result = render_component(classifier, "Zigzag Classifier",
+                                 COMPONENT_COLORS['zigzag'], use_mesh=use_mesh)
+
     print(f"\nResult: {result['message']}")
     return result
 

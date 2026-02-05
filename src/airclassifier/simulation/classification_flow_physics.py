@@ -515,6 +515,15 @@ def extract_geometry(assembly: ClassificationSystemAssembly) -> Dict[str, Any]:
         channel_depth=zp.channel_depth,
         num_stages=zp.num_stages,
         stage_height=zp.stage_height,
+        # Deflector plate geometry (NEW - for proper separation physics)
+        plate_angle=zp.plate_angle,
+        plate_length=zp.plate_length,
+        plate_length_ratio=zp.plate_length_ratio,
+        throat_width=zp.throat_width,
+        blockage_ratio=zp.blockage_ratio,
+        velocity_ratio_throat=zp.velocity_ratio_throat,
+        velocity_ratio_in_zone=zp.velocity_ratio_in_zone,
+        turbulence_intensity_zigzag=zp.turbulence_intensity,
         # Air inlet (bottom)
         inlet_pos=zigzag_pos + np.array(zigzag_ports['air_inlet'].position),
         inlet_dir=np.array(zigzag_ports['air_inlet'].direction),
@@ -1119,43 +1128,107 @@ if wp is not None:
         total_height: float,
         num_stages: int,
         v_mean: float,
-        stage_height: float
+        stage_height: float,
+        plate_angle: float,
+        plate_length: float,
+        throat_width: float,
+        velocity_ratio_zone: float
     ) -> wp.vec3:
         """
-        Compute air velocity field in zigzag classifier.
-        
-        SEPARATION PRINCIPLE:
-        - Air flows upward at mean velocity v_mean
-        - At each zigzag stage, flow accelerates/decelerates
-        - Particles with v_terminal < v_mean rise (fines)
-        - Particles with v_terminal > v_mean fall (coarse)
-        
-        The zigzag geometry creates:
-        1. Velocity variations (acceleration at constrictions)
-        2. Turbulent recirculation zones
-        3. Multiple separation stages (each a "cut")
-        
-        This returns the LOCAL air velocity at the particle position.
+        Compute air velocity field in zigzag classifier with deflector plates.
+
+        DEFLECTOR PLATE SEPARATION PHYSICS:
+        ====================================
+        Air flows upward through channel with deflector plates protruding
+        from alternating walls. Each plate creates:
+
+        1. THROAT ZONE: Between plate tip and opposite wall
+           - Flow accelerates due to constriction
+           - v_throat = v_mean * (channel_width / throat_width)
+
+        2. SEPARATION ZONE: Behind each plate (downstream)
+           - Flow recirculates at low velocity
+           - v_zone = v_mean * velocity_ratio_zone (typically 0.3)
+           - This is where classification occurs!
+           - Particles with v_terminal > v_zone settle
+
+        3. TRANSPORT ZONE: Between separation zones
+           - Bulk upward flow at v_mean
+
+        Lateral velocity component from flow deflection around plates.
         """
         # Height in classifier (from bottom)
         local_y = pos[1] - zigzag_center[1]
-        
+        local_x = pos[0] - zigzag_center[0]
+
         # Base upward velocity
         v_y = v_mean
-        
-        # Stage-dependent velocity variation
-        # At each zigzag, flow accelerates on the inside of the turn
+        v_x = 0.0
+
+        # Stage-dependent velocity field
         if num_stages > 0 and stage_height > 0.0:
             stage_num = int(local_y / stage_height)
             pos_in_stage = local_y - float(stage_num) * stage_height
-            
-            # Velocity varies sinusoidally within each stage (simplified model)
-            # Maximum at stage center, minimum at transitions
-            t = pos_in_stage / stage_height
-            v_variation = 0.3 * wp.sin(t * 2.0 * PI)  # +/-30% variation
-            v_y = v_mean * (1.0 + v_variation)
-        
-        return wp.vec3(0.0, v_y, 0.0)
+            stage_fraction = pos_in_stage / stage_height
+
+            # Determine which side the plate is on (alternating)
+            # Odd stages: plate on left (stage_num % 2 == 0 from 0-indexing)
+            plate_on_left = (stage_num % 2) == 0
+
+            # Plate horizontal extent into channel
+            plate_horizontal = plate_length * wp.sin(plate_angle)
+            half_width = channel_width / 2.0
+
+            # Determine zone based on position within stage
+            # Plate is at vertical center of stage (stage_fraction ~ 0.5)
+            plate_y_fraction = 0.5
+            plate_vertical = plate_length * wp.cos(plate_angle)
+
+            # Distance from plate position
+            dy_from_plate = (stage_fraction - plate_y_fraction) * stage_height
+
+            # Is particle in separation zone? (behind/above plate)
+            separation_height = plate_vertical * 1.5  # Zone extends above plate
+            in_separation_zone = False
+
+            if dy_from_plate > 0.0 and dy_from_plate < separation_height:
+                # Above the plate - check if in separation zone laterally
+                if plate_on_left:
+                    # Separation zone is on left side (behind left plate)
+                    zone_left_edge = -half_width
+                    zone_right_edge = -half_width + plate_horizontal * 0.8
+                    if local_x >= zone_left_edge and local_x <= zone_right_edge:
+                        in_separation_zone = True
+                else:
+                    # Separation zone is on right side (behind right plate)
+                    zone_left_edge = half_width - plate_horizontal * 0.8
+                    zone_right_edge = half_width
+                    if local_x >= zone_left_edge and local_x <= zone_right_edge:
+                        in_separation_zone = True
+
+            # Is particle in throat zone? (constriction near plate tip)
+            throat_y_min = (plate_y_fraction - 0.1) * stage_height
+            throat_y_max = (plate_y_fraction + 0.2) * stage_height
+            in_throat_zone = pos_in_stage >= throat_y_min and pos_in_stage <= throat_y_max
+
+            if in_separation_zone:
+                # LOW velocity in separation zone - this is where separation happens
+                v_y = v_mean * velocity_ratio_zone
+                # Add slight recirculation (downward component at edges)
+                v_y = v_y * (0.7 + 0.3 * wp.cos(dy_from_plate / separation_height * PI))
+            elif in_throat_zone:
+                # HIGH velocity in throat (continuity)
+                v_y = v_mean * (channel_width / throat_width)
+                # Lateral deflection around plate
+                if plate_on_left:
+                    v_x = v_mean * 0.3  # Flow deflects right
+                else:
+                    v_x = -v_mean * 0.3  # Flow deflects left
+            else:
+                # Transport zone - bulk velocity with smooth transition
+                v_y = v_mean
+
+        return wp.vec3(v_x, v_y, 0.0)
 
     @wp.func
     def compute_turbulent_dispersion(
@@ -1596,7 +1669,7 @@ if wp is not None:
         venturi_solids_inlet_radius: float,
         
         # =====================================================================
-        # ZIGZAG GEOMETRY
+        # ZIGZAG GEOMETRY (with deflector plate parameters)
         # =====================================================================
         zigzag_center: wp.vec3,
         zigzag_channel_width: float,
@@ -1607,6 +1680,11 @@ if wp is not None:
         zigzag_inlet_y: float,            # Bottom of zigzag (air inlet)
         zigzag_fines_outlet_y: float,     # Top (fines exit)
         zigzag_coarse_outlet_y: float,    # Bottom (coarse exit)
+        # Deflector plate parameters (NEW)
+        zigzag_plate_angle: float,        # Plate angle from vertical [rad]
+        zigzag_plate_length: float,       # Plate length [m]
+        zigzag_throat_width: float,       # Constriction width [m]
+        zigzag_velocity_ratio_zone: float, # v_zone / v_bulk (typically 0.3)
         
         # =====================================================================
         # CYCLONE GEOMETRY (primary cyclone - others computed from this)
@@ -1920,14 +1998,18 @@ if wp is not None:
             local_x = pos[0] - zigzag_center[0]
             local_z = pos[2] - zigzag_center[2]
             
-            # Compute air velocity with stage-dependent variation
+            # Compute air velocity with deflector plate physics
             v_air = compute_zigzag_air_velocity(
                 pos, zigzag_center,
                 zigzag_channel_width, zigzag_total_height, zigzag_num_stages,
-                v_air_zigzag, zigzag_stage_height
+                v_air_zigzag, zigzag_stage_height,
+                zigzag_plate_angle, zigzag_plate_length, zigzag_throat_width,
+                zigzag_velocity_ratio_zone
             )
-            
+
             # Add turbulent dispersion (essential for realistic separation)
+            # Turbulence is already modeled in zone-specific velocities, but add
+            # additional stochastic component for realistic particle trajectories
             v_turb = compute_turbulent_dispersion(vel, turbulent_intensity, random_seed, tid)
             v_air = v_air + v_turb
             
@@ -1950,7 +2032,79 @@ if wp is not None:
             elif local_z - particle_radius < -half_d:
                 pos = wp.vec3(pos[0], pos[1], zigzag_center[2] - half_d + particle_radius + 0.001)
                 vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 0.0, 1.0), restitution, friction)
-            
+
+            # =========================================================
+            # DEFLECTOR PLATE COLLISION DETECTION
+            # =========================================================
+            # Plates alternate from left/right walls at each stage
+            # Plate at stage n: base on wall, tip extends into channel
+            if zigzag_stage_height > 0.0 and zigzag_plate_length > 0.0:
+                stage_num = int(local_y / zigzag_stage_height)
+                pos_in_stage = local_y - float(stage_num) * zigzag_stage_height
+
+                # Plate is at vertical center of stage
+                plate_y_local = 0.5 * zigzag_stage_height
+                plate_on_left = (stage_num % 2) == 0
+
+                # Plate geometry
+                plate_horizontal = zigzag_plate_length * wp.sin(zigzag_plate_angle)
+                plate_vertical = zigzag_plate_length * wp.cos(zigzag_plate_angle)
+
+                # Check if particle is near plate height
+                dy_from_plate_base = pos_in_stage - plate_y_local
+                if dy_from_plate_base >= -particle_radius and dy_from_plate_base <= plate_vertical + particle_radius:
+                    # Particle is at plate height - check lateral collision
+                    # Plate extends from wall into channel
+                    if plate_on_left:
+                        # Plate from left wall (-half_w) extending right
+                        plate_tip_x = -half_w + plate_horizontal
+                        # Check if particle is to the left of plate tip and overlapping plate
+                        if local_x < plate_tip_x + particle_radius:
+                            # Distance along plate direction
+                            t_along = dy_from_plate_base / (plate_vertical + 1e-6)
+                            t_along = wp.clamp(t_along, 0.0, 1.0)
+                            plate_x_at_y = -half_w + t_along * plate_horizontal
+
+                            if local_x < plate_x_at_y + particle_radius:
+                                # Collision with plate - reflect off plate surface
+                                # Plate normal points into channel (+X, -Y direction)
+                                nx = wp.cos(zigzag_plate_angle)
+                                ny = -wp.sin(zigzag_plate_angle)
+                                normal = wp.normalize(wp.vec3(nx, ny, 0.0))
+
+                                # Push particle away from plate
+                                push_dist = particle_radius + 0.001
+                                pos = wp.vec3(
+                                    zigzag_center[0] + plate_x_at_y + push_dist * nx,
+                                    pos[1] + push_dist * ny,
+                                    pos[2]
+                                )
+                                vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+                    else:
+                        # Plate from right wall (+half_w) extending left
+                        plate_tip_x = half_w - plate_horizontal
+                        # Check if particle is to the right of plate tip and overlapping plate
+                        if local_x > plate_tip_x - particle_radius:
+                            t_along = dy_from_plate_base / (plate_vertical + 1e-6)
+                            t_along = wp.clamp(t_along, 0.0, 1.0)
+                            plate_x_at_y = half_w - t_along * plate_horizontal
+
+                            if local_x > plate_x_at_y - particle_radius:
+                                # Collision with plate - reflect off plate surface
+                                # Plate normal points into channel (-X, -Y direction)
+                                nx = -wp.cos(zigzag_plate_angle)
+                                ny = -wp.sin(zigzag_plate_angle)
+                                normal = wp.normalize(wp.vec3(nx, ny, 0.0))
+
+                                # Push particle away from plate
+                                push_dist = particle_radius + 0.001
+                                pos = wp.vec3(
+                                    zigzag_center[0] + plate_x_at_y + push_dist * nx,
+                                    pos[1] + push_dist * ny,
+                                    pos[2]
+                                )
+                                vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+
             # SEPARATION LOGIC based on particle position
             # Rising particles (fines) move toward top
             if pos[1] >= zigzag_fines_outlet_y - particle_radius * 2.0:
@@ -2939,6 +3093,15 @@ class ClassificationFlowPhysicsSimulator:
             self.zigzag_total_height = get_geo_attr('zigzag', 'length', 0.90)
         self.zigzag_num_stages = get_geo_attr('zigzag', 'num_stages', 5)  # 5 stages
         self.zigzag_stage_height = self.zigzag_total_height / max(1, self.zigzag_num_stages)
+
+        # NEW: Deflector plate parameters for proper separation physics
+        self.zigzag_plate_angle = get_geo_attr('zigzag', 'plate_angle', np.radians(45))  # 45° default
+        self.zigzag_plate_length = get_geo_attr('zigzag', 'plate_length', self.zigzag_channel_width * 0.5)
+        self.zigzag_throat_width = get_geo_attr('zigzag', 'throat_width', self.zigzag_channel_width * 0.5)
+        self.zigzag_blockage_ratio = get_geo_attr('zigzag', 'blockage_ratio', 0.5)
+        self.zigzag_velocity_ratio_throat = get_geo_attr('zigzag', 'velocity_ratio_throat', 2.0)  # v_throat/v_bulk
+        self.zigzag_velocity_ratio_zone = get_geo_attr('zigzag', 'velocity_ratio_in_zone', 0.3)  # v_zone/v_bulk
+        self.zigzag_turbulence_intensity = get_geo_attr('zigzag', 'turbulence_intensity_zigzag', 0.25)
         
         # Zigzag inlet/outlet positions - USE ACTUAL PORT POSITIONS from geometry
         # The inlet_pos and outlet_pos are world coordinates, not relative to center
@@ -3450,6 +3613,15 @@ class ClassificationFlowPhysicsSimulator:
         print(f"    Number of stages:    {self.zigzag_num_stages}")
         print(f"    Stage height:        {self.zigzag_stage_height*1000:.1f} mm")
         print(f"    Total height:        {self.zigzag_total_height*1000:.0f} mm")
+
+        print(f"\n  DEFLECTOR PLATE GEOMETRY:")
+        print(f"    Plate angle:         {np.degrees(self.zigzag_plate_angle):.0f}° from vertical")
+        print(f"    Plate length:        {self.zigzag_plate_length*1000:.1f} mm")
+        print(f"    Throat width:        {self.zigzag_throat_width*1000:.1f} mm ({100*self.zigzag_throat_width/self.zigzag_channel_width:.0f}% open)")
+        print(f"    Blockage ratio:      {self.zigzag_blockage_ratio*100:.0f}%")
+        print(f"    Throat velocity:     {self.zigzag_velocity_ratio_throat:.1f}x bulk")
+        print(f"    Zone velocity:       {self.zigzag_velocity_ratio_zone:.0%} of bulk (separation)")
+        print(f"    Turbulence (zone):   {self.zigzag_turbulence_intensity:.0%} intensity")
         
         print(f"\n  PORT POSITIONS (World Coordinates):")
         print(f"    Air inlet (bottom):  Y = {self.zigzag_inlet_y*1000:.1f} mm, dir = (0, -1, 0)")
@@ -4151,7 +4323,12 @@ class ClassificationFlowPhysicsSimulator:
                 float(self.zigzag_inlet_y),
                 float(self.zigzag_fines_outlet_y),
                 float(self.zigzag_coarse_outlet_y),
-                
+                # Deflector plate parameters (NEW)
+                float(self.zigzag_plate_angle),
+                float(self.zigzag_plate_length),
+                float(self.zigzag_throat_width),
+                float(self.zigzag_velocity_ratio_zone),
+
                 # Primary cyclone
                 wp.vec3(*self.cyclone_primary_center),
                 float(self.cyclone_primary_radius),

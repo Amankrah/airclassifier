@@ -71,6 +71,7 @@ from .air_flow_physics import (
 )
 
 from .classification_flow_physics import (
+    ClassificationFlowPhysicsSimulator,
     ClassificationFlowConfig,
     ClassificationFlowState,
     SimulationPhase as ClassificationSimulationPhase,
@@ -79,6 +80,7 @@ from .classification_flow_physics import (
     ConnectionPath as ClassificationConnectionPath,
     extract_geometry as extract_classification_geometry,
     print_geometry_summary as print_classification_geometry_summary,
+    create_classification_simulator,
 )
 
 __all__ = [
@@ -134,6 +136,7 @@ __all__ = [
     "create_air_flow_simulator",
     
     # Classification flow physics (geometry-driven)
+    "ClassificationFlowPhysicsSimulator",
     "ClassificationFlowConfig",
     "ClassificationFlowState",
     "ClassificationSimulationPhase",
@@ -142,4 +145,5 @@ __all__ = [
     "ClassificationConnectionPath",
     "extract_classification_geometry",
     "print_classification_geometry_summary",
+    "create_classification_simulator",
 ]

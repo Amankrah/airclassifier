@@ -59,7 +59,12 @@ from .overflow import Overflow, OverflowParams, is_in_overflow, check_overflow_p
 from .zigzag_classifier import (
     ZigzagClassifier,
     ZigzagClassifierParams,
+    ZoneType,
+    DeflectorPlate,
+    SeparationZone,
     create_standard_zigzag_classifier,
+    create_high_efficiency_zigzag_classifier,
+    create_low_pressure_zigzag_classifier,
 )
 from .venturi_eductor import (
     VenturiEducator,
@@ -248,7 +253,12 @@ __all__ = [
     # Zigzag Classifier
     "ZigzagClassifier",
     "ZigzagClassifierParams",
+    "ZoneType",
+    "DeflectorPlate",
+    "SeparationZone",
     "create_standard_zigzag_classifier",
+    "create_high_efficiency_zigzag_classifier",
+    "create_low_pressure_zigzag_classifier",
     # Venturi Eductor
     "VenturiEducator",
     "VenturiEducatorParams",

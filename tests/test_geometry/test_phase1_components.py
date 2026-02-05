@@ -41,15 +41,19 @@ class TestZigzagClassifierParams:
             channel_depth=0.30,
             num_stages=5,
             stage_height=0.225,
-            zigzag_angle=np.radians(120),
+            plate_angle=np.radians(30.0),
+            plate_length_ratio=0.5,
+            plate_thickness=0.003,
             feed_stage=3,
             feed_width=0.075,
+            feed_angle=0.0,
             air_inlet_width=0.15,
             air_inlet_height=0.075,
             fines_outlet_width=0.15,
             fines_outlet_height=0.075,
             coarse_outlet_width=0.075,
             coarse_outlet_height=0.045,
+            wall_thickness=0.003,
         )
         assert params.num_stages == 5
         assert params.channel_width == 0.15
@@ -61,15 +65,19 @@ class TestZigzagClassifierParams:
             channel_depth=0.30,
             num_stages=5,
             stage_height=0.2,
-            zigzag_angle=np.radians(120),
+            plate_angle=np.radians(30.0),
+            plate_length_ratio=0.5,
+            plate_thickness=0.003,
             feed_stage=3,
             feed_width=0.075,
+            feed_angle=0.0,
             air_inlet_width=0.15,
             air_inlet_height=0.075,
             fines_outlet_width=0.15,
             fines_outlet_height=0.075,
             coarse_outlet_width=0.075,
             coarse_outlet_height=0.045,
+            wall_thickness=0.003,
         )
         assert_allclose(params.total_height, 1.0, rtol=1e-6)
 
@@ -81,15 +89,19 @@ class TestZigzagClassifierParams:
                 channel_depth=0.30,
                 num_stages=5,
                 stage_height=0.2,
-                zigzag_angle=np.radians(120),
+                plate_angle=np.radians(30.0),
+                plate_length_ratio=0.5,
+                plate_thickness=0.003,
                 feed_stage=10,  # Invalid: > num_stages
                 feed_width=0.075,
+                feed_angle=0.0,
                 air_inlet_width=0.15,
                 air_inlet_height=0.075,
                 fines_outlet_width=0.15,
                 fines_outlet_height=0.075,
                 coarse_outlet_width=0.075,
                 coarse_outlet_height=0.045,
+                wall_thickness=0.003,
             )
 
     def test_channel_cross_section_area(self):
@@ -99,15 +111,19 @@ class TestZigzagClassifierParams:
             channel_depth=0.30,
             num_stages=5,
             stage_height=0.2,
-            zigzag_angle=np.radians(120),
+            plate_angle=np.radians(30.0),
+            plate_length_ratio=0.5,
+            plate_thickness=0.003,
             feed_stage=3,
             feed_width=0.075,
+            feed_angle=0.0,
             air_inlet_width=0.15,
             air_inlet_height=0.075,
             fines_outlet_width=0.15,
             fines_outlet_height=0.075,
             coarse_outlet_width=0.075,
             coarse_outlet_height=0.045,
+            wall_thickness=0.003,
         )
         expected_area = 0.15 * 0.30
         assert_allclose(params.channel_cross_section_area, expected_area, rtol=1e-6)

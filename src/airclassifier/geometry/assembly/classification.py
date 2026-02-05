@@ -257,20 +257,26 @@ class ClassificationSystemAssembly:
         # ============================================================
         # Zigzag receives air+particles from venturi
         # air_inlet at bottom (receives from venturi), fines_outlet at top
+        # Uses deflector plate geometry for proper separation physics
         zigzag_params = ZigzagClassifierParams(
             channel_width=p.zigzag_channel_width,
             channel_depth=p.zigzag_channel_depth,
             num_stages=p.zigzag_num_stages,
             stage_height=p.zigzag_channel_width * 1.5,
-            zigzag_angle=np.radians(120),
+            # Deflector plate parameters (replaces old zigzag_angle)
+            plate_angle=np.radians(45),       # 45° from vertical - good separation/pressure balance
+            plate_length_ratio=0.5,            # Plate extends 50% across channel
+            plate_thickness=0.003,
             feed_stage=(p.zigzag_num_stages + 1) // 2,
             feed_width=p.zigzag_channel_width * 0.5,
+            feed_angle=0.0,
             air_inlet_width=p.zigzag_channel_width,
             air_inlet_height=p.zigzag_channel_width * 0.5,
             fines_outlet_width=p.zigzag_channel_width,
             fines_outlet_height=p.zigzag_channel_width * 0.5,
             coarse_outlet_width=p.zigzag_channel_width * 0.5,
             coarse_outlet_height=p.zigzag_channel_width * 0.3,
+            wall_thickness=0.003,
             center=(0.0, 0.0, 0.0)  # Will offset for port alignment
         )
         self.zigzag = ZigzagClassifier(zigzag_params)
