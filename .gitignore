@@ -23,8 +23,16 @@ sdist/
 var/
 wheels/
 *.egg-info/
-.installed.cfg
 *.egg
+.installed.cfg
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.manifest
+*.spec
+.ipynb_checkpoints/
 
 # IDE
 .vscode/
@@ -36,6 +44,11 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local / secrets
+.env
+.env.*
+!.env.example
 
 # Project specific
 *.png
