@@ -126,8 +126,8 @@ def main():
         help="Number of particles (default: 100000)"
     )
     parser.add_argument(
-        "--time", "-t", type=float, default=180.0,
-        help="Simulation time in seconds (default: 180)"
+        "--time", "-t", type=float, default=360.0,
+        help="Simulation time in seconds (default: 360)"
     )
     parser.add_argument(
         "--dt", type=float, default=0.001,
@@ -138,6 +138,17 @@ def main():
     parser.add_argument(
         "--air-flow", type=float, default=_AIR_FLOW_DEFAULT_M3_S,
         help="Air flow rate in m³/s (default: 1768 m³/h from air system at 2500 RPM)"
+    )
+    parser.add_argument(
+        "--blower-rpm", type=float, default=None,
+        help="VFD blower speed in RPM (overrides --air-flow via fan law: "
+             "Q = 3000 m³/h × RPM/3000). Design: 3000 RPM = 3000 m³/h."
+    )
+    parser.add_argument(
+        "--bypass-ratio", type=float, default=0.0,
+        help="Bypass ratio 0.0-1.0: fraction of total flow bypassing venturi+zigzag. "
+             "Bypass merges back before cyclones. E.g. 0.967 = 96.7%% bypass, "
+             "3.3%% through classification. (default: 0.0 = no bypass)"
     )
     parser.add_argument(
         "--particle-dia", type=float, default=50.0,
@@ -179,6 +190,11 @@ def main():
              "For protein/starch: use 30-40um. WARNING: current geometry may need redesign."
     )
     parser.add_argument(
+        "--throat-diameter", type=float, default=None,
+        help="Override venturi throat diameter in mm (default: 40mm = 80mm inlet × 0.5 ratio). "
+             "Controls flow restriction and system operating point."
+    )
+    parser.add_argument(
         "--zigzag-width", type=float, default=None,
         help="Override zigzag channel width in mm (default: 120mm from geometry)"
     )
@@ -196,11 +212,24 @@ def main():
     )
     
     args = parser.parse_args()
-    
+
+    # VFD: convert blower RPM to air flow via fan law
+    if args.blower_rpm is not None:
+        # Fan law: Q ∝ N → Q = Q_design × (N / N_design)
+        # Design point: 3000 m³/h at 3000 RPM
+        Q_DESIGN_M3H = 3000.0
+        RPM_DESIGN = 3000.0
+        Q_vfd_m3h = Q_DESIGN_M3H * (args.blower_rpm / RPM_DESIGN)
+        args.air_flow = Q_vfd_m3h / 3600.0  # convert to m³/s
+
     print("=" * 70)
     print("PHYSICS-BASED CLASSIFICATION FLOW SIMULATION")
     print("  Protein/Starch Separation via Air Classification")
     print("=" * 70)
+    if args.blower_rpm is not None:
+        print(f"  VFD: {args.blower_rpm:.0f} RPM -> {args.air_flow * 3600:.0f} m³/h (fan law)")
+    if args.bypass_ratio > 0:
+        print(f"  Bypass: {args.bypass_ratio*100:.1f}% around venturi+zigzag")
     
     # Import modules
     from airclassifier.simulation.classification_flow_physics import (
@@ -236,6 +265,15 @@ def main():
         particle_dia_m = args.particle_dia * 1e-6
         particle_density = material.density if material else 1420.0
         Q_m3s = args.air_flow
+        # Build classification params with optional throat diameter override
+        classification_params = None
+        if args.throat_diameter is not None:
+            from airclassifier.geometry.assembly.classification import ClassificationSystemParams
+            classification_params = ClassificationSystemParams()
+            throat_m = args.throat_diameter / 1000.0  # mm to m
+            classification_params.venturi_throat_ratio = throat_m / classification_params.venturi_inlet_diameter
+            print(f"  [Override] Venturi throat: {args.throat_diameter:.1f} mm "
+                  f"(ratio={classification_params.venturi_throat_ratio:.3f})")
         complete_params = CompleteSystemParams(
             air_flow_m3_h=Q_m3s * 3600.0,
             throughput_kg_h=500.0,
@@ -243,6 +281,7 @@ def main():
             include_air_system=True,
             include_exhaust=False,
             include_ductwork=True,
+            classification_params=classification_params,
         )
         complete_assembly = CompleteClassifierAssembly(complete_params)
         print("\n1. Air system -> Venturi air inlet (airclass)...")
@@ -273,6 +312,13 @@ def main():
         )
         print("\n3. Venturi + classification (from geometry and air/feed results):")
         print(f"   Throat velocity:    {venturi_physics['venturi_throat_velocity_m_s']:.1f} m/s")
+        print(f"   Mach at throat:     {venturi_physics['venturi_mach_throat']:.3f}")
+        if venturi_physics['venturi_flow_limited']:
+            print(f"   *** CHOKED FLOW *** Max: {venturi_physics['venturi_choked_flow_m3h']:.0f} m3/h")
+        elif venturi_physics['venturi_mach_throat'] > 0.3:
+            print(f"   *** COMPRESSIBLE *** Max: {venturi_physics['venturi_choked_flow_m3h']:.0f} m3/h")
+        print(f"   dP (Bernoulli):     {venturi_physics['pressure_drop_bernoulli_Pa']:.0f} Pa ({venturi_physics['pressure_drop_bernoulli_Pa']/1000:.1f} kPa)")
+        print(f"   K_venturi:          {venturi_physics['venturi_k_factor']:.1f} Pa/(m3/s)^2")
         print(f"   Particle entry:     {venturi_physics['particle_entry_velocity_m_s']:.2f} m/s")
         print(f"   Loading ratio:      {venturi_physics['loading_ratio']:.4f}")
         print(f"   Momentum transfer: {venturi_physics['momentum_transfer_N']:.1f} N")
@@ -288,6 +334,7 @@ def main():
             turbulent_intensity=args.turbulence,
             fluid_config=fluid,
             material=material,
+            bypass_ratio=args.bypass_ratio,
         )
         print("\nCreating classification system assembly (from full system)...")
     else:
@@ -299,9 +346,16 @@ def main():
         from airclassifier.geometry.assembly.classification import ClassificationSystemParams
         
         custom_params = None
-        if args.zigzag_width is not None or args.zigzag_depth is not None:
-            # Create custom params with overrides
+        has_overrides = (args.zigzag_width is not None or
+                         args.zigzag_depth is not None or
+                         args.throat_diameter is not None)
+        if has_overrides:
             custom_params = ClassificationSystemParams()
+            if args.throat_diameter is not None:
+                throat_m = args.throat_diameter / 1000.0  # mm to m
+                custom_params.venturi_throat_ratio = throat_m / custom_params.venturi_inlet_diameter
+                print(f"  [Override] Venturi throat: {args.throat_diameter:.1f} mm "
+                      f"(ratio={custom_params.venturi_throat_ratio:.3f})")
             if args.zigzag_width is not None:
                 custom_params.zigzag_channel_width = args.zigzag_width / 1000.0  # mm to m
                 print(f"  [Override] Zigzag width: {args.zigzag_width:.1f} mm")
@@ -417,6 +471,7 @@ def main():
             config = ClassificationFlowConfig(
                 dt=args.dt,
                 air_flow_rate_m3s=args.air_flow,
+                bypass_ratio=args.bypass_ratio,
                 num_particles=args.particles,
                 device=args.device,
                 turbulent_intensity=args.turbulence,
@@ -432,6 +487,7 @@ def main():
             config = ClassificationFlowConfig(
                 dt=args.dt,
                 air_flow_rate_m3s=args.air_flow,
+                bypass_ratio=args.bypass_ratio,
                 num_particles=args.particles,
                 device=args.device,
                 turbulent_intensity=args.turbulence,
@@ -443,6 +499,7 @@ def main():
             config = ClassificationFlowConfig(
                 dt=args.dt,
                 air_flow_rate_m3s=args.air_flow,
+                bypass_ratio=args.bypass_ratio,
                 num_particles=args.particles,
                 device=args.device,
                 turbulent_intensity=args.turbulence,
@@ -472,7 +529,9 @@ def main():
         zz = val.get("components", {}).get("zigzag", {})
         cy = val.get("components", {}).get("cyclones", {})
         if zz:
-            print(f"  Zigzag d50: {zz.get('d50_um', 0):.1f} um   v_air: {zz.get('air_velocity_m_s', 0):.2f} m/s")
+            v_bulk = zz.get('bulk_velocity_m_s', 0)
+            v_sep = zz.get('separation_zone_velocity_m_s', 0)
+            print(f"  Zigzag d50: {zz.get('d50_um', 0):.1f} um   v_zone: {v_sep:.2f} m/s (v_bulk: {v_bulk:.2f} m/s)")
         if cy and cy.get("stages"):
             for s in cy["stages"]:
                 print(f"  {s['name']}: d50={s['actual_d50_um']:.2f} um (design {s['design_d50_um']:.0f} um)")
@@ -673,7 +732,13 @@ def main():
     print(f"  Time: {args.time:.1f} s")
     print(f"  dt:   {args.dt*1000:.2f} ms")
     print(f"  Steps: {int(args.time / args.dt):,}")
-    print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h")
+    if args.bypass_ratio > 0:
+        Q_class = args.air_flow * (1.0 - args.bypass_ratio)
+        print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h total, "
+              f"{Q_class * 3600:.1f} m³/h classification, "
+              f"{args.bypass_ratio*100:.1f}% bypass")
+    else:
+        print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h")
     print(f"  Zigzag d50: {simulator.zigzag_d50 * 1e6:.1f} µm")
     print("-" * 70)
     

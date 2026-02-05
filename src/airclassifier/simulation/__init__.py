@@ -68,6 +68,7 @@ from .air_flow_physics import (
     DuctSegment,
     extract_air_geometry,
     create_air_flow_simulator,
+    calculate_venturi_system_resistance,
 )
 
 from .classification_flow_physics import (
@@ -81,6 +82,7 @@ from .classification_flow_physics import (
     extract_geometry as extract_classification_geometry,
     print_geometry_summary as print_classification_geometry_summary,
     create_classification_simulator,
+    compute_venturi_physics_from_air_and_feed,
 )
 
 __all__ = [
@@ -134,7 +136,8 @@ __all__ = [
     "DuctSegment",
     "extract_air_geometry",
     "create_air_flow_simulator",
-    
+    "calculate_venturi_system_resistance",
+
     # Classification flow physics (geometry-driven)
     "ClassificationFlowPhysicsSimulator",
     "ClassificationFlowConfig",
@@ -146,4 +149,5 @@ __all__ = [
     "extract_classification_geometry",
     "print_classification_geometry_summary",
     "create_classification_simulator",
+    "compute_venturi_physics_from_air_and_feed",
 ]

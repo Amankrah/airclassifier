@@ -677,7 +677,13 @@ class ZigzagClassifier:
         """
         Calculate terminal (settling) velocity for a particle.
 
-        Uses Schiller-Naumann correlation for intermediate Reynolds numbers.
+        Uses the Archimedes number method with Schiller-Naumann drag for
+        stable convergence across all Reynolds number regimes.
+
+        The Archimedes number Ar = d³ρ_f(ρ_p-ρ_f)g/μ² is a dimensionless
+        group that depends only on particle/fluid properties (not velocity).
+        We then solve: 24·Re·(1 + 0.15·Re^0.687) = Ar for Re, which gives
+        v_t = Re·μ/(ρ_f·d).
 
         Args:
             particle_diameter: Particle diameter [m]
@@ -694,30 +700,47 @@ class ZigzagClassifier:
         rho_f = air_density
         mu = air_viscosity
 
-        # First estimate using Stokes law
-        v_t_stokes = (d_p ** 2) * (rho_p - rho_f) * g / (18 * mu)
+        # Archimedes number (dimensionless, independent of velocity)
+        Ar = d_p ** 3 * rho_f * (rho_p - rho_f) * g / mu ** 2
 
-        # Check Reynolds number
-        Re_p = rho_f * v_t_stokes * d_p / mu
+        if Ar < 1e-10:
+            return 0.0
 
-        if Re_p < 0.1:
-            # Stokes regime
-            return v_t_stokes
-        elif Re_p < 1000:
-            # Intermediate regime - iterate with Schiller-Naumann
-            v_t = v_t_stokes
-            for _ in range(20):  # Iterate to convergence
-                Re_p = rho_f * v_t * d_p / mu
-                C_d = (24 / Re_p) * (1 + 0.15 * Re_p ** 0.687)
-                v_t_new = np.sqrt(4 * d_p * g * (rho_p - rho_f) / (3 * C_d * rho_f))
-                if abs(v_t_new - v_t) / v_t < 1e-6:
-                    break
-                v_t = v_t_new
-            return v_t
-        else:
-            # Newton regime (C_d ≈ 0.44)
+        # Stokes regime check: if Ar < ~18, Re < 0.1 (Stokes valid)
+        # Stokes: Re = Ar/18
+        Re_stokes = Ar / 18.0
+        if Re_stokes < 0.1:
+            return Re_stokes * mu / (rho_f * d_p)
+
+        # Solve: f(Re) = 24*Re*(1 + 0.15*Re^0.687) - Ar = 0
+        # Use Newton's method on Re for stable convergence
+        # Initial estimate from Stokes (capped to avoid overshoot)
+        Re = min(Re_stokes, 1000.0)
+
+        for _ in range(50):
+            f_Re = 24.0 * Re * (1.0 + 0.15 * Re ** 0.687) - Ar
+            # Derivative: df/dRe = 24*(1 + 0.15*Re^0.687) + 24*Re*0.15*0.687*Re^(-0.313)
+            #                    = 24*(1 + 0.15*Re^0.687*(1 + 0.687))
+            #                    = 24*(1 + 0.15*1.687*Re^0.687)
+            df_dRe = 24.0 * (1.0 + 0.15 * 1.687 * Re ** 0.687)
+            delta = f_Re / df_dRe
+            Re_new = Re - delta
+
+            # Ensure Re stays positive
+            if Re_new <= 0:
+                Re = Re * 0.5
+            else:
+                Re = Re_new
+
+            if abs(delta) < 1e-8 * Re:
+                break
+
+        # Newton regime cap (Re > 1000, C_d ≈ 0.44)
+        if Re > 1000:
             C_d = 0.44
             return np.sqrt(4 * d_p * g * (rho_p - rho_f) / (3 * C_d * rho_f))
+
+        return Re * mu / (rho_f * d_p)
 
     def calculate_cut_size_d50(
         self,

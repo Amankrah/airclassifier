@@ -90,6 +90,11 @@ class ClassificationFlowConfig:
     # Air flow rate [m3/s]; from air_result when using from_air_and_feed_results
     air_flow_rate_m3s: float = 0.0
 
+    # Bypass ratio: fraction of total flow that bypasses venturi+zigzag (0.0-1.0)
+    # 0.0 = no bypass (all flow through classification), 0.967 = 96.7% bypass
+    # Bypass flow merges back before cyclones, so cyclones see full Q_total
+    bypass_ratio: float = 0.0
+
     # Collision parameters
     restitution: float = 0.3               # Coefficient of restitution (inelastic)
     friction: float = 0.4                   # Friction coefficient
@@ -257,6 +262,23 @@ def compute_venturi_physics_from_air_and_feed(
         vol_flow_air = Q_m3s
         solid_vol_frac = vol_flow_solids / (vol_flow_air + vol_flow_solids) if (vol_flow_air + vol_flow_solids) > 0 else 0.0
         mixture_density_kg_m3 = (1.0 - solid_vol_frac) * rho_air + solid_vol_frac * particle_density
+    # Compressibility / choked flow check
+    speed_of_sound = 343.0  # m/s at ~20°C
+    mach_throat = v_throat / speed_of_sound if speed_of_sound > 0 else 0.0
+    Cd_venturi = 0.985
+    Q_choked = A_throat * speed_of_sound * Cd_venturi
+    flow_limited = Q_m3s > Q_choked
+
+    # Venturi K-factor for system curve: dP = K * Q²
+    A_inlet = geo["inlet_area_m2"]
+    if A_throat > 0 and A_inlet > 0:
+        k_venturi = 0.5 * rho_air * (1.0 / A_throat**2 - 1.0 / A_inlet**2)
+    else:
+        k_venturi = 0.0
+
+    # Bernoulli pressure drop (air only, incompressible)
+    pressure_drop_bernoulli_Pa = 0.5 * rho_air * (v_throat**2 - v_inlet**2)
+
     return {
         "volume_flow_rate_m3_s": Q_m3s,
         "venturi_inlet_velocity_m_s": v_inlet,
@@ -266,8 +288,15 @@ def compute_venturi_physics_from_air_and_feed(
         "loading_ratio": loading_ratio,
         "momentum_transfer_N": momentum_transfer_N,
         "pressure_drop_solids_Pa": pressure_drop_solids_Pa,
+        "pressure_drop_bernoulli_Pa": pressure_drop_bernoulli_Pa,
         "mixture_density_kg_m3": mixture_density_kg_m3,
         "venturi_geometry": geo,
+        # System curve feedback for blower operating point
+        "venturi_k_factor": k_venturi,
+        "venturi_choked_flow_m3s": Q_choked,
+        "venturi_choked_flow_m3h": Q_choked * 3600.0,
+        "venturi_mach_throat": mach_throat,
+        "venturi_flow_limited": flow_limited,
     }
 
 
@@ -421,6 +450,15 @@ class ComponentGeometry:
     total_height: float = 0.0
     fines_outlet_pos: np.ndarray = None
     coarse_outlet_pos: np.ndarray = None
+    # Deflector plate geometry (for proper separation physics)
+    plate_angle: float = 0.0            # [rad] Plate angle from vertical
+    plate_length: float = 0.0           # [m] Length of deflector plate
+    plate_length_ratio: float = 0.0     # Plate length / channel width
+    throat_width: float = 0.0           # [m] Width at throat (constriction)
+    blockage_ratio: float = 0.0         # Fraction of channel blocked by plate
+    velocity_ratio_throat: float = 0.0  # v_throat / v_bulk (typically ~2x)
+    velocity_ratio_in_zone: float = 0.0 # v_zone / v_bulk (typically ~0.3x)
+    turbulence_intensity_zigzag: float = 0.0  # Turbulence intensity in separation zones
     
     # Cyclone-specific
     cylinder_diameter: float = 0.0
@@ -587,6 +625,8 @@ def extract_geometry(assembly: ClassificationSystemAssembly) -> Dict[str, Any]:
             'vortex_finder_diameter': stage_params.vortex_finder_diameter,
             'dust_outlet_diameter': stage_params.dust_outlet_diameter,
             'dust_outlet_pos': cyclone_pos + np.array(cyclone_ports[f'dust_outlet_{stage.name}'].position),
+            'inlet_width': stage_params.inlet_width,
+            'inlet_height': stage_params.inlet_height,
         }
     
     # =========================================================================
@@ -1193,15 +1233,17 @@ if wp is not None:
 
             if dy_from_plate > 0.0 and dy_from_plate < separation_height:
                 # Above the plate - check if in separation zone laterally
+                # In real zigzag, the recirculation zone extends past the plate tip
+                # into the flow expansion region (1.5x plate horizontal extent)
                 if plate_on_left:
-                    # Separation zone is on left side (behind left plate)
+                    # Separation zone extends from wall past plate tip
                     zone_left_edge = -half_width
-                    zone_right_edge = -half_width + plate_horizontal * 0.8
+                    zone_right_edge = -half_width + plate_horizontal * 1.5
                     if local_x >= zone_left_edge and local_x <= zone_right_edge:
                         in_separation_zone = True
                 else:
-                    # Separation zone is on right side (behind right plate)
-                    zone_left_edge = half_width - plate_horizontal * 0.8
+                    # Separation zone extends from wall past plate tip
+                    zone_left_edge = half_width - plate_horizontal * 1.5
                     zone_right_edge = half_width
                     if local_x >= zone_left_edge and local_x <= zone_right_edge:
                         in_separation_zone = True
@@ -1225,8 +1267,15 @@ if wp is not None:
                 else:
                     v_x = -v_mean * 0.3  # Flow deflects left
             else:
-                # Transport zone - bulk velocity with smooth transition
-                v_y = v_mean
+                # Transport zone - REDUCED velocity accounting for plate obstruction.
+                # In real zigzag classifiers, the deflector plate array creates
+                # extensive recirculation and flow disruption. The effective
+                # velocity for particle transport is much lower than superficial
+                # bulk velocity. Using ~1.5× zone velocity gives an effective
+                # d50 ≈ 30-35 µm, close to the theoretical zone d50 of ~26 µm.
+                # This allows multi-stage classification: particles with
+                # v_t > v_eff fall between stages, reaching the coarse outlet.
+                v_y = v_mean * velocity_ratio_zone * 1.5
 
         return wp.vec3(v_x, v_y, 0.0)
 
@@ -1279,15 +1328,17 @@ if wp is not None:
     ) -> wp.vec3:
         """
         Compute tangential velocity field in cyclone.
-        
+
         CYCLONE FLOW PATTERN:
         1. Outer vortex: spirals downward along walls
         2. Inner vortex: spirals upward through core to vortex finder
-        
-        Tangential velocity profile (Rankine vortex model):
-        - Inner region (r < r_core): v_tan = omega * r (solid body rotation)
-        - Outer region (r > r_core): v_tan = Gamma / (2*pi * r) (free vortex)
-        
+
+        Rankine vortex model with correct boundary condition:
+        - At wall (r = R): v_tan = v_inlet (tangential entry)
+        - Outer region (r > r_core): v_tan = v_inlet * R / r (free vortex, angular momentum)
+        - Inner region (r < r_core): v_tan = v_tan_max * r / r_core (solid body)
+        - Peak at r_core: v_tan_max = v_inlet * R / r_core
+
         For separation:
         - Centrifugal force: F_c = m * v_tan^2 / r (pushes particles out)
         - Drag force: toward center (air flows inward)
@@ -1297,27 +1348,30 @@ if wp is not None:
         dx = pos[0] - cyclone_center[0]
         dz = pos[2] - cyclone_center[2]
         r = wp.sqrt(dx * dx + dz * dz)
-        
+
         eps = 1.0e-6
         if r < eps:
             return wp.vec3(0.0, 0.0, 0.0)
-        
+
         # Core radius (typically 0.3-0.5 of cyclone radius)
         r_core = cyclone_radius * 0.4
-        
-        # Tangential velocity (Rankine vortex)
+
+        # Tangential velocity (Rankine vortex with wall boundary condition)
+        # Boundary: v_tan(R) = v_inlet (tangential inlet)
+        # Free vortex conserves angular momentum: v_tan * r = v_inlet * R
         if r < r_core:
-            # Solid body rotation in core
-            v_tan = inlet_velocity * r / r_core
+            # Solid body rotation in core, matching peak at r_core
+            # v_tan_max at r_core = v_inlet * R / r_core
+            v_tan = inlet_velocity * cyclone_radius / r_core * r / r_core
         else:
-            # Free vortex in outer region (conserved angular momentum)
-            v_tan = inlet_velocity * r_core / r
-        
+            # Free vortex: v_tan = v_inlet * R / r
+            v_tan = inlet_velocity * cyclone_radius / r
+
         # Tangential direction (perpendicular to radial in XZ plane)
         # Counter-clockwise when viewed from above
         tan_x = -dz / r
         tan_z = dx / r
-        
+
         return wp.vec3(v_tan * tan_x, 0.0, v_tan * tan_z)
 
     @wp.func
@@ -1332,36 +1386,46 @@ if wp is not None:
     ) -> wp.vec3:
         """
         Compute radial velocity component in cyclone.
-        
-        RADIAL FLOW:
-        - Outer region: slight inward flow toward core
-        - Inner region: stronger inward flow toward vortex finder
-        
-        This radial drag competes with centrifugal force:
-        - Large particles: centrifugal > drag -> move to wall -> collected
-        - Small particles: drag > centrifugal -> follow air -> escape
+
+        RADIAL FLOW (inward, carries air toward inner vortex):
+        - Outer region (r > r_vf): inward flow, peaks near transition zone
+          This is the mechanism that draws small particles into the inner vortex
+        - Inner region (r < r_vf): negligible radial (flow is primarily upward)
+
+        Separation mechanism (without explicit centrifugal force):
+        - Drag accelerates particles toward air velocity (curved streamlines)
+        - Large particles: high inertia, can't follow tight curves -> stay outer -> wall
+        - Small particles: low inertia, follow streamlines -> drawn inward -> escape
         """
         dx = pos[0] - cyclone_center[0]
         dz = pos[2] - cyclone_center[2]
         r = wp.sqrt(dx * dx + dz * dz)
         local_y = pos[1] - cyclone_center[1]
-        
+
         eps = 1.0e-6
         if r < eps:
             return wp.vec3(0.0, 0.0, 0.0)
-        
-        # Radial velocity magnitude (inward, toward axis)
-        # Stronger near vortex finder, weaker near walls
-        r_normalized = r / cyclone_radius
-        v_radial_mag = -0.1 * v_inlet * (1.0 - r_normalized)  # Inward
-        
-        # In cone section, radial flow intensifies
-        total_height = cylinder_height + cone_height
-        if local_y < -cylinder_height:  # In cone
-            cone_factor = 1.0 + (-local_y - cylinder_height) / cone_height
-            v_radial_mag = v_radial_mag * cone_factor
-        
-        # Radial direction (inward)
+
+        # Transition radius (outer->inner vortex boundary)
+        r_transition = vortex_finder_radius * 1.2
+
+        if r > r_transition:
+            # Outer vortex: inward radial flow
+            # Strongest near the transition zone, weaker near wall
+            r_frac = (r - r_transition) / (cyclone_radius - r_transition + eps)
+            r_frac = wp.clamp(r_frac, 0.0, 1.0)
+            v_radial_mag = -0.15 * v_inlet * (1.0 - r_frac)
+        else:
+            # Inner vortex: negligible radial (primarily axial upward)
+            v_radial_mag = 0.0
+
+        # In cone section, converging walls intensify inward flow
+        if local_y < -cylinder_height:
+            cone_progress = (-local_y - cylinder_height) / (cone_height + eps)
+            cone_progress = wp.clamp(cone_progress, 0.0, 1.0)
+            v_radial_mag = v_radial_mag * (1.0 + cone_progress)
+
+        # Radial direction (negative magnitude = inward)
         return wp.vec3(v_radial_mag * dx / r, 0.0, v_radial_mag * dz / r)
 
     @wp.func
@@ -1370,38 +1434,52 @@ if wp is not None:
         cyclone_center: wp.vec3,
         cyclone_radius: float,
         vortex_finder_radius: float,
+        cylinder_height: float,
+        cone_height: float,
         v_inlet: float
     ) -> wp.vec3:
         """
         Compute axial (vertical) velocity in cyclone.
-        
-        AXIAL FLOW PATTERN:
+
+        AXIAL FLOW PATTERN (height-dependent):
         - Outer region (r > r_vf): DOWNWARD toward dust outlet
+          Accelerates in cone section (converging walls)
         - Inner region (r < r_vf): UPWARD toward vortex finder
-        
-        This creates the characteristic "double helix" flow:
-        - Dirty air spirals down along wall
-        - Clean air spirals up through center
-        
-        Particles that reach the wall spiral down and are collected.
-        Particles that stay in the core escape with clean air.
+          Strongest near the top where air exits through vortex finder
+
+        Double helix flow pattern:
+        - Outer spiral goes DOWN (carries large particles to dust outlet)
+        - Inner spiral goes UP (carries small particles to vortex finder exit)
         """
         dx = pos[0] - cyclone_center[0]
         dz = pos[2] - cyclone_center[2]
         r = wp.sqrt(dx * dx + dz * dz)
-        
-        # Transition radius (approximately vortex finder radius)
+        local_y = pos[1] - cyclone_center[1]
+
+        eps = 1.0e-6
+        # Transition radius (outer->inner vortex boundary)
         r_transition = vortex_finder_radius * 1.2
-        
+
         if r > r_transition:
             # Outer region: downward flow
             v_axial = -0.2 * v_inlet
+            # Stronger in cone section (converging walls accelerate downward flow)
+            if local_y < -cylinder_height:
+                cone_progress = (-local_y - cylinder_height) / (cone_height + eps)
+                cone_progress = wp.clamp(cone_progress, 0.0, 1.0)
+                v_axial = v_axial * (1.0 + 0.5 * cone_progress)
         else:
-            # Inner region: upward flow (toward vortex finder)
-            # Stronger toward center
+            # Inner region: upward flow toward vortex finder
+            # Stronger toward center and stronger near the top
             inner_factor = 1.0 - r / r_transition
             v_axial = 0.5 * v_inlet * inner_factor
-        
+            # Strengthen near the top (approaching vortex finder exit)
+            if local_y > -cylinder_height * 0.5:
+                # Upper half: boost upward flow (vortex finder suction)
+                height_factor = 1.0 + (local_y + cylinder_height * 0.5) / (cylinder_height * 0.5 + eps)
+                height_factor = wp.clamp(height_factor, 1.0, 1.5)
+                v_axial = v_axial * height_factor
+
         return wp.vec3(0.0, v_axial, 0.0)
 
     @wp.func
@@ -1756,7 +1834,14 @@ if wp is not None:
         # Air velocities
         v_air_venturi_inlet: float,  # Inlet air velocity
         v_air_zigzag: float,         # Mean upward velocity in zigzag
-        v_air_cyclone_inlet: float,  # Inlet velocity to cyclones
+        v_air_cyclone_inlet: float,  # Inlet velocity to primary cyclone
+        v_air_cyclone_secondary_inlet: float,  # Inlet velocity to secondary cyclone
+        v_air_cyclone_tertiary_inlet: float,   # Inlet velocity to tertiary cyclone
+
+        # Cyclone cone tip ratios (dust_outlet_D / cyclone_D)
+        cyclone_primary_cone_tip_ratio: float,
+        cyclone_secondary_cone_tip_ratio: float,
+        cyclone_tertiary_cone_tip_ratio: float,
         
         # Turbulence
         turbulent_intensity: float,
@@ -1931,9 +2016,23 @@ if wp is not None:
             dx = pos[0] - center_x
             dz = pos[2] - center_z
             
-            # Air velocity (constant through duct, upward)
-            v_air = wp.vec3(0.0, v_air_zigzag, 0.0)
-            
+            # Air velocity from continuity: Q = v * A = const
+            # Duct transitions from circular (D=72mm) to rectangular (120x200mm)
+            # so velocity is higher in the narrow round section
+            A_zigzag = zigzag_channel_width * zigzag_channel_depth
+            if progress < 0.1:
+                # Round duct: A = pi * r^2
+                A_local = PI * duct_venturi_zigzag_radius * duct_venturi_zigzag_radius
+            else:
+                # Transition section: morphing cross-section
+                trans_p = (progress - 0.1) / 0.9
+                trans_p = wp.clamp(trans_p, 0.0, 1.0)
+                hw = duct_venturi_zigzag_radius + trans_p * (zigzag_channel_width / 2.0 - duct_venturi_zigzag_radius)
+                hd = duct_venturi_zigzag_radius + trans_p * (zigzag_channel_depth / 2.0 - duct_venturi_zigzag_radius)
+                A_local = 4.0 * hw * hd
+            v_air_duct = v_air_zigzag * (A_zigzag / wp.max(A_local, 1.0e-6))
+            v_air = wp.vec3(0.0, v_air_duct, 0.0)
+
             # Transition from circular to rectangular cross-section
             # First ~10% is round duct, then transition to rectangular
             if progress < 0.1:
@@ -1981,6 +2080,17 @@ if wp is not None:
             # Transition to zigzag when reaching inlet
             if pos[1] >= zigzag_inlet_y - particle_radius * 2.0:
                 zone = 20  # Enter zigzag
+            # Particles that fall back below duct start (very heavy, v_t > v_air_round)
+            elif pos[1] < duct_venturi_zigzag_start[1] - particle_radius:
+                zone = 30  # Coarse (fell through duct)
+            # Particles falling back in lower duct: they attempted the expansion
+            # section but couldn't transit it (v_t > v_air_zigzag). They oscillate
+            # at the round-to-transition boundary. Catch them when falling back
+            # through the lower 15% of the duct with downward velocity — this
+            # only triggers on the return trip since particles enter zone 10
+            # from the venturi with positive (upward) velocity.
+            elif progress < 0.15 and vel[1] < -0.01:
+                zone = 30  # Coarse (pre-classified by duct expansion)
         
         # =====================================================================
         # ZONE 20-21: ZIGZAG CLASSIFIER (PRIMARY SEPARATION)
@@ -2012,7 +2122,18 @@ if wp is not None:
             # additional stochastic component for realistic particle trajectories
             v_turb = compute_turbulent_dispersion(vel, turbulent_intensity, random_seed, tid)
             v_air = v_air + v_turb
-            
+
+            # CAP upward velocity at zone velocity for proper separation.
+            # In zigzag classifiers, the effective velocity that determines the
+            # cut size (d50) is the zone velocity, not bulk or throat velocity.
+            # Without this cap, the high bulk/throat velocities lift all particles
+            # upward and prevent coarse classification. The zone velocity is the
+            # time-averaged effective velocity experienced by particles as they
+            # bounce between deflector plates through recirculation zones.
+            v_zone_max = v_air_zigzag * zigzag_velocity_ratio_zone
+            if v_air[1] > v_zone_max:
+                v_air = wp.vec3(v_air[0], v_zone_max, v_air[2])
+
             # Channel wall containment (rectangular cross-section)
             half_w = zigzag_channel_width / 2.0
             half_d = zigzag_channel_depth / 2.0
@@ -2276,6 +2397,18 @@ if wp is not None:
             # Transition to primary cyclone when reaching inlet
             if pos[0] >= duct_zigzag_cyclone_end[0] - particle_radius * 2.0:
                 zone = 50  # Enter primary cyclone
+                # Teleport to cyclone tangential inlet (at wall, top of cylinder)
+                # Without this, particles are placed OUTSIDE the cyclone body
+                # (duct end ~0.445m vs cyclone center ~0.685m, R=0.15m)
+                # and wall containment slams them to the wall immediately.
+                pos = wp.vec3(
+                    cyclone_primary_center[0] + cyclone_primary_radius - particle_radius * 2.0,
+                    cyclone_primary_center[1],
+                    cyclone_primary_center[2]
+                )
+                # Tangential inlet velocity (CCW viewed from above)
+                # At position (+R, 0, 0) from center, tangential direction is (0, 0, +1)
+                vel = wp.vec3(0.0, -0.2 * v_air_cyclone_inlet, v_air_cyclone_inlet)
         
         # =====================================================================
         # ZONE 50: PRIMARY CYCLONE (coarse fines)
@@ -2303,16 +2436,12 @@ if wp is not None:
             )
             v_axial = compute_cyclone_axial_velocity(
                 pos, cyclone_primary_center, cyclone_primary_radius, cyclone_primary_vf_radius,
+                cyclone_primary_cylinder_height, cyclone_primary_cone_height,
                 v_air_cyclone_inlet
             )
             
             v_air = v_tan + v_rad + v_axial
-            
-            # Centrifugal acceleration (pushes particles outward)
-            a_centrifugal = compute_centrifugal_acceleration(
-                pos, vel, cyclone_primary_center, wp.vec3(0.0, 1.0, 0.0)
-            )
-            
+
             # Wall containment (cylinder + cone)
             total_height = cyclone_primary_cylinder_height + cyclone_primary_cone_height
             
@@ -2321,12 +2450,13 @@ if wp is not None:
                 # In cylinder section
                 wall_r = cyclone_primary_radius
             else:
-                # In cone section - radius decreases linearly
+                # In cone section - radius decreases linearly to dust outlet
                 cone_progress = (-local_y - cyclone_primary_cylinder_height) / cyclone_primary_cone_height
                 cone_progress = wp.clamp(cone_progress, 0.0, 1.0)
-                # Cone tip is smaller (assume 0.3 of cylinder radius)
-                wall_r = cyclone_primary_radius * (1.0 - 0.7 * cone_progress)
-            
+                # Cone tapers from cylinder radius to tip (dust_outlet_D/2)
+                # tip_ratio = dust_outlet_D / D, so tip_r = tip_ratio * R
+                wall_r = cyclone_primary_radius * (1.0 - (1.0 - cyclone_primary_cone_tip_ratio) * cone_progress)
+
             # Radial containment
             if r + particle_radius > wall_r:
                 if r > 1.0e-6:
@@ -2334,20 +2464,27 @@ if wp is not None:
                     push = r + particle_radius - wall_r + 0.001
                     pos = pos + normal * push
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
-            
+
             # SEPARATION DECISION:
-            # - Particle at wall AND below cylinder -> dust outlet
-            # - Particle in core AND above certain height -> vortex finder -> next stage
-            
-            at_wall = r > wall_r * 0.8
+            # - Particle at wall in cone section -> collected (spirals down to dust outlet)
+            # - Particle in core above vortex finder -> escapes to next stage
+            at_wall = r > wall_r * 0.75
             in_core = r < cyclone_primary_vf_radius * 1.5
             below_cylinder = local_y < -cyclone_primary_cylinder_height
             above_vf = local_y > 0.0
-            
-            if at_wall and below_cylinder and local_y < cyclone_primary_dust_y + particle_radius * 3.0:
+
+            # Collect: particle at wall in cone section (will spiral down to dust)
+            if at_wall and below_cylinder:
                 zone = 55  # Collected in primary dust outlet
             elif in_core and above_vf:
                 zone = 51  # Move to secondary cyclone
+                # Teleport to secondary cyclone tangential inlet
+                pos = wp.vec3(
+                    cyclone_secondary_center[0] + cyclone_secondary_radius - particle_radius * 2.0,
+                    cyclone_secondary_center[1],
+                    cyclone_secondary_center[2]
+                )
+                vel = wp.vec3(0.0, -0.2 * v_air_cyclone_secondary_inlet, v_air_cyclone_secondary_inlet)
         
         # =====================================================================
         # ZONE 51: SECONDARY CYCLONE (medium fines)
@@ -2357,51 +2494,55 @@ if wp is not None:
             dz = pos[2] - cyclone_secondary_center[2]
             r = wp.sqrt(dx * dx + dz * dz)
             local_y = pos[1] - cyclone_secondary_center[1]
-            
-            # Cyclone velocity field
+
+            # Cyclone velocity field (computed from actual secondary inlet velocity)
             v_tan = compute_cyclone_tangential_velocity(
-                pos, cyclone_secondary_center, v_air_cyclone_inlet * 0.8, cyclone_secondary_radius
+                pos, cyclone_secondary_center, v_air_cyclone_secondary_inlet, cyclone_secondary_radius
             )
             v_rad = compute_cyclone_radial_velocity(
                 pos, cyclone_secondary_center, cyclone_secondary_radius, cyclone_secondary_vf_radius,
-                cyclone_secondary_cylinder_height, cyclone_secondary_cone_height, v_air_cyclone_inlet * 0.8
+                cyclone_secondary_cylinder_height, cyclone_secondary_cone_height, v_air_cyclone_secondary_inlet
             )
             v_axial = compute_cyclone_axial_velocity(
                 pos, cyclone_secondary_center, cyclone_secondary_radius, cyclone_secondary_vf_radius,
-                v_air_cyclone_inlet * 0.8
+                cyclone_secondary_cylinder_height, cyclone_secondary_cone_height,
+                v_air_cyclone_secondary_inlet
             )
-            
+
             v_air = v_tan + v_rad + v_axial
-            
-            a_centrifugal = compute_centrifugal_acceleration(
-                pos, vel, cyclone_secondary_center, wp.vec3(0.0, 1.0, 0.0)
-            )
-            
+
             # Wall containment
             if local_y >= -cyclone_secondary_cylinder_height:
                 wall_r = cyclone_secondary_radius
             else:
                 cone_progress = (-local_y - cyclone_secondary_cylinder_height) / cyclone_secondary_cone_height
                 cone_progress = wp.clamp(cone_progress, 0.0, 1.0)
-                wall_r = cyclone_secondary_radius * (1.0 - 0.7 * cone_progress)
-            
+                wall_r = cyclone_secondary_radius * (1.0 - (1.0 - cyclone_secondary_cone_tip_ratio) * cone_progress)
+
             if r + particle_radius > wall_r:
                 if r > 1.0e-6:
                     normal = wp.vec3(-dx / r, 0.0, -dz / r)
                     push = r + particle_radius - wall_r + 0.001
                     pos = pos + normal * push
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
-            
+
             # Separation decision
-            at_wall = r > wall_r * 0.8
+            at_wall = r > wall_r * 0.75
             in_core = r < cyclone_secondary_vf_radius * 1.5
             below_cylinder = local_y < -cyclone_secondary_cylinder_height
             above_vf = local_y > 0.0
-            
-            if at_wall and below_cylinder and local_y < cyclone_secondary_dust_y + particle_radius * 3.0:
+
+            if at_wall and below_cylinder:
                 zone = 56  # Collected in secondary dust outlet
             elif in_core and above_vf:
                 zone = 52  # Move to tertiary cyclone
+                # Teleport to tertiary cyclone tangential inlet
+                pos = wp.vec3(
+                    cyclone_tertiary_center[0] + cyclone_tertiary_radius - particle_radius * 2.0,
+                    cyclone_tertiary_center[1],
+                    cyclone_tertiary_center[2]
+                )
+                vel = wp.vec3(0.0, -0.2 * v_air_cyclone_tertiary_inlet, v_air_cyclone_tertiary_inlet)
         
         # =====================================================================
         # ZONE 52: TERTIARY CYCLONE (fine protein)
@@ -2411,51 +2552,55 @@ if wp is not None:
             dz = pos[2] - cyclone_tertiary_center[2]
             r = wp.sqrt(dx * dx + dz * dz)
             local_y = pos[1] - cyclone_tertiary_center[1]
-            
-            # Cyclone velocity field (smallest cyclone, highest velocity)
+
+            # Cyclone velocity field (smallest cyclone, highest inlet velocity)
             v_tan = compute_cyclone_tangential_velocity(
-                pos, cyclone_tertiary_center, v_air_cyclone_inlet * 0.6, cyclone_tertiary_radius
+                pos, cyclone_tertiary_center, v_air_cyclone_tertiary_inlet, cyclone_tertiary_radius
             )
             v_rad = compute_cyclone_radial_velocity(
                 pos, cyclone_tertiary_center, cyclone_tertiary_radius, cyclone_tertiary_vf_radius,
-                cyclone_tertiary_cylinder_height, cyclone_tertiary_cone_height, v_air_cyclone_inlet * 0.6
+                cyclone_tertiary_cylinder_height, cyclone_tertiary_cone_height, v_air_cyclone_tertiary_inlet
             )
             v_axial = compute_cyclone_axial_velocity(
                 pos, cyclone_tertiary_center, cyclone_tertiary_radius, cyclone_tertiary_vf_radius,
-                v_air_cyclone_inlet * 0.6
+                cyclone_tertiary_cylinder_height, cyclone_tertiary_cone_height,
+                v_air_cyclone_tertiary_inlet
             )
-            
+
             v_air = v_tan + v_rad + v_axial
-            
-            a_centrifugal = compute_centrifugal_acceleration(
-                pos, vel, cyclone_tertiary_center, wp.vec3(0.0, 1.0, 0.0)
-            )
-            
+
             # Wall containment
             if local_y >= -cyclone_tertiary_cylinder_height:
                 wall_r = cyclone_tertiary_radius
             else:
                 cone_progress = (-local_y - cyclone_tertiary_cylinder_height) / cyclone_tertiary_cone_height
                 cone_progress = wp.clamp(cone_progress, 0.0, 1.0)
-                wall_r = cyclone_tertiary_radius * (1.0 - 0.7 * cone_progress)
-            
+                wall_r = cyclone_tertiary_radius * (1.0 - (1.0 - cyclone_tertiary_cone_tip_ratio) * cone_progress)
+
             if r + particle_radius > wall_r:
                 if r > 1.0e-6:
                     normal = wp.vec3(-dx / r, 0.0, -dz / r)
                     push = r + particle_radius - wall_r + 0.001
                     pos = pos + normal * push
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
-            
+
             # Separation decision
-            at_wall = r > wall_r * 0.8
+            at_wall = r > wall_r * 0.75
             in_core = r < cyclone_tertiary_vf_radius * 1.5
             below_cylinder = local_y < -cyclone_tertiary_cylinder_height
             above_vf = local_y > 0.0
-            
-            if at_wall and below_cylinder and local_y < cyclone_tertiary_dust_y + particle_radius * 3.0:
+
+            if at_wall and below_cylinder:
                 zone = 57  # Collected in tertiary dust outlet (fine protein)
             elif in_core and above_vf:
                 zone = 60  # Move to bag filter path
+                # Teleport to elbow inlet (bag filter path)
+                pos = wp.vec3(
+                    elbow_cyclone_bag_pos[0],
+                    elbow_cyclone_bag_pos[1],
+                    elbow_cyclone_bag_pos[2]
+                )
+                vel = wp.vec3(0.0, v_air_cyclone_inlet * 0.5, 0.0)
         
         # =====================================================================
         # ZONES 55-57: CYCLONE DUST OUTLETS (collected)
@@ -2627,10 +2772,12 @@ if wp is not None:
             # Drag acceleration (uses zone-specific v_air computed above)
             a_drag = compute_drag_acceleration(vel, v_air, d, m, rho_f, mu_f)
             
-            # Add centrifugal acceleration if in cyclone
+            # In Lagrangian particle tracking (lab frame), centrifugal effect
+            # emerges naturally from drag redirecting particles toward curved
+            # air streamlines. Do NOT add explicit centrifugal acceleration —
+            # that would double-count the outward tendency and push all particles
+            # to the wall regardless of size.
             accel = a_gravity + a_drag
-            if zone == 50 or zone == 51 or zone == 52:
-                accel = accel + a_centrifugal
             
             # Semi-implicit Euler integration
             vel = vel + accel * dt
@@ -3152,23 +3299,27 @@ class ClassificationFlowPhysicsSimulator:
                     'cylinder_height': stage.get('cylinder_height', defaults['cylinder_height']),
                     'cone_height': stage.get('cone_height', defaults['cone_height']),
                     'vortex_finder_diameter': stage.get('vortex_finder_diameter', defaults['vortex_finder_diameter']),
+                    'dust_outlet_diameter': stage.get('dust_outlet_diameter', defaults.get('dust_outlet_diameter')),
                     'dust_outlet_pos': stage.get('dust_outlet_pos', defaults.get('dust_outlet_pos')),
+                    'inlet_width': stage.get('inlet_width', defaults.get('inlet_width')),
+                    'inlet_height': stage.get('inlet_height', defaults.get('inlet_height')),
                 }
             return defaults
         
         # PRIMARY CYCLONE (D=300mm)
+        # Stairmand proportions: inlet W=0.25D, H=0.5D, dust_outlet=0.375D
         primary_defaults = {
             'position': multi_cyclone_center,
             'diameter': 0.30,
             'cylinder_height': 0.30,  # ~300mm cylinder
             'cone_height': 0.90,      # ~900mm cone (total H=1200mm)
             'vortex_finder_diameter': 0.12,
+            'dust_outlet_diameter': 0.30 * 0.375,  # Stairmand: 0.375D
+            'inlet_width': 0.30 * 0.25,   # Stairmand: 0.25D = 75mm
+            'inlet_height': 0.30 * 0.5,   # Stairmand: 0.5D = 150mm
         }
         primary = get_cyclone_stage('primary', primary_defaults)
-        # FIX: Stage position is already in world coordinates if available from extract_geometry
-        # Don't add multi_cyclone_center again - the position is already world coords
         if cyclone_stages and 'position' in cyclone_stages.get('primary', {}):
-            # Position from extract_geometry is relative to multi_cyclone, so add center
             self.cyclone_primary_center = np.array(primary['position']) + multi_cyclone_center
         else:
             self.cyclone_primary_center = np.array(multi_cyclone_center)
@@ -3176,19 +3327,27 @@ class ClassificationFlowPhysicsSimulator:
         self.cyclone_primary_cylinder_height = primary['cylinder_height']
         self.cyclone_primary_cone_height = primary['cone_height']
         self.cyclone_primary_vf_radius = primary['vortex_finder_diameter'] / 2.0
+        D_pri = primary['diameter']
+        self.cyclone_primary_inlet_width = primary.get('inlet_width') or D_pri * 0.25
+        self.cyclone_primary_inlet_height = primary.get('inlet_height') or D_pri * 0.5
+        self.cyclone_primary_dust_outlet_diameter = primary.get('dust_outlet_diameter') or D_pri * 0.375
+        self.cyclone_primary_cone_tip_ratio = self.cyclone_primary_dust_outlet_diameter / D_pri
         dust_pos = primary.get('dust_outlet_pos')
         if dust_pos is not None:
             self.cyclone_primary_dust_y = float(dust_pos[1])
         else:
             self.cyclone_primary_dust_y = self.cyclone_primary_center[1] - self.cyclone_primary_cylinder_height - self.cyclone_primary_cone_height
-        
+
         # SECONDARY CYCLONE (D=200mm)
         secondary_defaults = {
-            'position': multi_cyclone_center + np.array([0.4, 0, 0]),  # Offset in +X
+            'position': multi_cyclone_center + np.array([0.4, 0, 0]),
             'diameter': 0.20,
-            'cylinder_height': 0.20,  # ~200mm cylinder
-            'cone_height': 0.60,      # ~600mm cone (total H=800mm)
+            'cylinder_height': 0.20,
+            'cone_height': 0.60,
             'vortex_finder_diameter': 0.08,
+            'dust_outlet_diameter': 0.20 * 0.375,
+            'inlet_width': 0.20 * 0.25,
+            'inlet_height': 0.20 * 0.5,
         }
         secondary = get_cyclone_stage('secondary', secondary_defaults)
         if cyclone_stages and 'position' in cyclone_stages.get('secondary', {}):
@@ -3199,19 +3358,27 @@ class ClassificationFlowPhysicsSimulator:
         self.cyclone_secondary_cylinder_height = secondary['cylinder_height']
         self.cyclone_secondary_cone_height = secondary['cone_height']
         self.cyclone_secondary_vf_radius = secondary['vortex_finder_diameter'] / 2.0
+        D_sec = secondary['diameter']
+        self.cyclone_secondary_inlet_width = secondary.get('inlet_width') or D_sec * 0.25
+        self.cyclone_secondary_inlet_height = secondary.get('inlet_height') or D_sec * 0.5
+        self.cyclone_secondary_dust_outlet_diameter = secondary.get('dust_outlet_diameter') or D_sec * 0.375
+        self.cyclone_secondary_cone_tip_ratio = self.cyclone_secondary_dust_outlet_diameter / D_sec
         dust_pos = secondary.get('dust_outlet_pos')
         if dust_pos is not None:
             self.cyclone_secondary_dust_y = float(dust_pos[1])
         else:
             self.cyclone_secondary_dust_y = self.cyclone_secondary_center[1] - self.cyclone_secondary_cylinder_height - self.cyclone_secondary_cone_height
-        
+
         # TERTIARY CYCLONE (D=120mm)
         tertiary_defaults = {
-            'position': multi_cyclone_center + np.array([0.725, 0, 0]),  # Further +X
+            'position': multi_cyclone_center + np.array([0.725, 0, 0]),
             'diameter': 0.12,
-            'cylinder_height': 0.12,  # ~120mm cylinder
-            'cone_height': 0.36,      # ~360mm cone (total H=480mm)
+            'cylinder_height': 0.12,
+            'cone_height': 0.36,
             'vortex_finder_diameter': 0.05,
+            'dust_outlet_diameter': 0.12 * 0.375,
+            'inlet_width': 0.12 * 0.25,
+            'inlet_height': 0.12 * 0.5,
         }
         tertiary = get_cyclone_stage('tertiary', tertiary_defaults)
         if cyclone_stages and 'position' in cyclone_stages.get('tertiary', {}):
@@ -3222,6 +3389,11 @@ class ClassificationFlowPhysicsSimulator:
         self.cyclone_tertiary_cylinder_height = tertiary['cylinder_height']
         self.cyclone_tertiary_cone_height = tertiary['cone_height']
         self.cyclone_tertiary_vf_radius = tertiary['vortex_finder_diameter'] / 2.0
+        D_ter = tertiary['diameter']
+        self.cyclone_tertiary_inlet_width = tertiary.get('inlet_width') or D_ter * 0.25
+        self.cyclone_tertiary_inlet_height = tertiary.get('inlet_height') or D_ter * 0.5
+        self.cyclone_tertiary_dust_outlet_diameter = tertiary.get('dust_outlet_diameter') or D_ter * 0.375
+        self.cyclone_tertiary_cone_tip_ratio = self.cyclone_tertiary_dust_outlet_diameter / D_ter
         dust_pos = tertiary.get('dust_outlet_pos')
         if dust_pos is not None:
             self.cyclone_tertiary_dust_y = float(dust_pos[1])
@@ -3352,36 +3524,148 @@ class ClassificationFlowPhysicsSimulator:
         # AIR VELOCITIES
         # =====================================================================
         # Compute from volumetric flow rate and cross-sectional areas
-        Q_air = cfg.air_flow_rate_m3s
-        
+        #
+        # BYPASS FLOW SPLIT:
+        #   Q_total  = blower output (cfg.air_flow_rate_m3s)
+        #   Q_class  = Q_total × (1 - bypass_ratio)  → through venturi + zigzag
+        #   Q_bypass = Q_total × bypass_ratio         → bypass duct (around zigzag)
+        #   Q_cyclone = Q_total                       → cyclones (after merge)
+        #
+        Q_total = cfg.air_flow_rate_m3s
+        bypass_ratio = cfg.bypass_ratio
+        Q_class = Q_total * (1.0 - bypass_ratio)  # through venturi + zigzag
+        Q_bypass = Q_total * bypass_ratio           # around classification
+        self._Q_total = Q_total
+        self._Q_class = Q_class
+        self._Q_bypass = Q_bypass
+        self._bypass_ratio = bypass_ratio
+
+        if bypass_ratio > 0:
+            print(f"\n  BYPASS FLOW SPLIT:")
+            print(f"      Total (blower):    {Q_total * 3600:.0f} m3/h")
+            print(f"      Classification:    {Q_class * 3600:.1f} m3/h ({(1-bypass_ratio)*100:.1f}%)")
+            print(f"      Bypass:            {Q_bypass * 3600:.1f} m3/h ({bypass_ratio*100:.1f}%)")
+            print(f"      Cyclone (merged):  {Q_total * 3600:.0f} m3/h")
+
+        # Use Q_class for venturi + zigzag, Q_total for cyclones
+        Q_air = Q_class
+
         # Venturi inlet velocity
         A_venturi_inlet = np.pi * (self.venturi_inlet_diameter / 2) ** 2
         self.v_air_venturi_inlet = Q_air / A_venturi_inlet
-        
-        # Zigzag air velocity (upward)
+
+        # =====================================================================
+        # VENTURI THROAT COMPRESSIBILITY / CHOKED FLOW CHECK
+        # =====================================================================
+        A_venturi_throat = np.pi * (self.venturi_throat_diameter / 2) ** 2
+        self._A_venturi_throat = A_venturi_throat
+        v_throat_requested = Q_air / A_venturi_throat if A_venturi_throat > 0 else 0.0
+
+        # Speed of sound in air at ~20°C
+        speed_of_sound = 343.0  # m/s
+        mach_throat = v_throat_requested / speed_of_sound if speed_of_sound > 0 else 0.0
+
+        # Discharge coefficient for well-designed venturi (ISO 5167)
+        Cd_venturi = 0.985
+
+        # Maximum (choked) flow: Mach 1 at throat
+        Q_choked = A_venturi_throat * speed_of_sound * Cd_venturi  # m³/s
+        self.venturi_Q_choked_m3s = Q_choked
+        self.venturi_Q_choked_m3h = Q_choked * 3600.0
+        self.venturi_mach_requested = mach_throat
+        self.venturi_flow_limited = False
+
+        # Venturi pressure drop (Bernoulli, incompressible):
+        # dP = 0.5 * rho * (v_throat² - v_inlet²) = 0.5 * rho * Q² * (1/A_t² - 1/A_i²)
+        # This is the K-factor for the system curve
+        if A_venturi_throat > 0 and A_venturi_inlet > 0:
+            self.venturi_k_factor = 0.5 * cfg.air_density * (1.0 / A_venturi_throat**2 - 1.0 / A_venturi_inlet**2)
+        else:
+            self.venturi_k_factor = 0.0
+
+        if mach_throat >= 1.0:
+            # CHOKED FLOW - cap at sonic limit
+            Q_air = Q_choked
+            self.venturi_flow_limited = True
+            print(f"\n  *** VENTURI CHOKED FLOW ***")
+            print(f"      Requested:       {cfg.air_flow_rate_m3s * 3600:.0f} m3/h")
+            print(f"      Throat velocity: {v_throat_requested:.0f} m/s > speed of sound ({speed_of_sound:.0f} m/s)")
+            print(f"      Mach number:     {mach_throat:.2f} (SUPERSONIC - impossible)")
+            print(f"      Throat diameter: {self.venturi_throat_diameter*1000:.1f} mm")
+            print(f"      Throat area:     {A_venturi_throat*1e6:.1f} mm²")
+            print(f"      Max choked flow: {Q_choked * 3600:.0f} m3/h (Ma=1, Cd={Cd_venturi})")
+            print(f"      Flow CAPPED to:  {Q_air * 3600:.0f} m3/h")
+            # Recalculate inlet velocity at capped flow
+            self.v_air_venturi_inlet = Q_air / A_venturi_inlet
+        elif mach_throat > 0.3:
+            # Compressibility effects significant (>5% density change)
+            print(f"\n  *** VENTURI COMPRESSIBILITY WARNING ***")
+            print(f"      Throat velocity: {v_throat_requested:.0f} m/s")
+            print(f"      Mach number:     {mach_throat:.2f} (>0.3 - compressible regime)")
+            print(f"      Bernoulli (incompressible) approximation has >5% error")
+            print(f"      Max choked flow: {Q_choked * 3600:.0f} m3/h")
+
+        self.v_air_venturi_throat = Q_air / A_venturi_throat if A_venturi_throat > 0 else 0.0
+        self.venturi_mach_actual = self.v_air_venturi_throat / speed_of_sound
+        self.venturi_pressure_drop_Pa = 0.5 * cfg.air_density * (
+            self.v_air_venturi_throat**2 - self.v_air_venturi_inlet**2
+        )
+
+        # Zigzag air velocity (upward) - uses potentially capped Q_air
         A_zigzag = self.zigzag_channel_width * self.zigzag_channel_depth
         self.v_air_zigzag = Q_air / A_zigzag
-        
-        # Cyclone inlet velocity
-        A_cyclone_inlet = np.pi * (self.cyclone_primary_radius * 0.2) ** 2  # Tangential inlet
-        self.v_air_cyclone_inlet = Q_air / A_cyclone_inlet
-        
+
+        # Cyclone inlet velocities — uses Q_total (bypass merges back before cyclones)
+        # Each cyclone has a RECTANGULAR tangential inlet (Stairmand: W=0.25D, H=0.5D)
+        # In series arrangement, same Q flows through each stage (minus collected dust)
+        # Velocity increases through series as cyclones get smaller
+        A_pri = self.cyclone_primary_inlet_width * self.cyclone_primary_inlet_height
+        A_sec = self.cyclone_secondary_inlet_width * self.cyclone_secondary_inlet_height
+        A_ter = self.cyclone_tertiary_inlet_width * self.cyclone_tertiary_inlet_height
+        self._A_cyclone_inlet = A_pri  # For backwards compatibility
+        self.v_air_cyclone_inlet = Q_total / max(A_pri, 1e-6)
+        self.v_air_cyclone_secondary_inlet = Q_total / max(A_sec, 1e-6)
+        self.v_air_cyclone_tertiary_inlet = Q_total / max(A_ter, 1e-6)
+
         # =====================================================================
         # CUT SIZE CALCULATION
         # =====================================================================
-        # d50 = sqrt(18 * mu * v_air / (g * (rho_p - rho_f)))
+        # IMPORTANT: Separation occurs in the ZONE (recirculation region), not bulk flow!
+        # v_zone = v_bulk * velocity_ratio_zone (typically 0.3)
+        # d50 = sqrt(18 * mu * v_zone / (g * (rho_p - rho_f)))
         g = 9.81
         rho_p = cfg.particle_density
         rho_f = cfg.air_density
         mu = cfg.air_viscosity
-        
-        self.zigzag_d50 = np.sqrt(18 * mu * self.v_air_zigzag / (g * (rho_p - rho_f)))
-        
-        # Cyclone d50 (approximate - depends on design)
-        # d50 ≈ sqrt(9*mu*W / (2*pi*N*v_in*(rho_p-rho_f)))
+
+        # Zone velocity where separation actually occurs
+        self.v_air_zigzag_zone = self.v_air_zigzag * self.zigzag_velocity_ratio_zone
+
+        # d50 based on ZONE velocity (where separation happens), not bulk
+        self.zigzag_d50 = np.sqrt(18 * mu * self.v_air_zigzag_zone / (g * (rho_p - rho_f)))
+
+        # For reference: what d50 would be if using bulk velocity (wrong!)
+        self.zigzag_d50_bulk = np.sqrt(18 * mu * self.v_air_zigzag / (g * (rho_p - rho_f)))
+
+        # Cyclone d50 per stage (Lapple equation)
+        # d50 = sqrt(9*mu*W / (2*pi*N*v_in*(rho_p-rho_f)))
         N_turns = 5  # Effective turns
-        W = self.cyclone_primary_radius * 0.2  # Inlet width
-        self.cyclone_d50 = np.sqrt(9 * mu * W / (2 * np.pi * N_turns * self.v_air_cyclone_inlet * (rho_p - rho_f)))
+        W_pri = self.cyclone_primary_inlet_width
+        W_sec = self.cyclone_secondary_inlet_width
+        W_ter = self.cyclone_tertiary_inlet_width
+        self.cyclone_d50 = np.sqrt(9 * mu * W_pri / (2 * np.pi * N_turns * self.v_air_cyclone_inlet * (rho_p - rho_f)))
+        self.cyclone_secondary_d50 = np.sqrt(9 * mu * W_sec / (2 * np.pi * N_turns * self.v_air_cyclone_secondary_inlet * (rho_p - rho_f)))
+        self.cyclone_tertiary_d50 = np.sqrt(9 * mu * W_ter / (2 * np.pi * N_turns * self.v_air_cyclone_tertiary_inlet * (rho_p - rho_f)))
+
+        # Cyclone inlet velocity validation
+        # Below ~5 m/s: no vortex forms, cyclone acts as gravity settler, Lapple equation invalid
+        # 5-15 m/s: weak vortex, Lapple d50 unreliable (actual d50 much coarser)
+        # 15-25 m/s: proper vortex, Lapple d50 valid
+        # >25 m/s: excessive pressure drop, possible re-entrainment
+        self.cyclone_min_vortex_velocity = 5.0    # m/s - absolute minimum for any vortex
+        self.cyclone_good_vortex_velocity = 15.0  # m/s - minimum for reliable Lapple d50
+        self.cyclone_vortex_ok = self.v_air_cyclone_inlet >= self.cyclone_min_vortex_velocity
+        self.cyclone_d50_reliable = self.v_air_cyclone_inlet >= self.cyclone_good_vortex_velocity
         
         # =====================================================================
         # SYSTEM BOUNDS
@@ -3405,7 +3689,7 @@ class ClassificationFlowPhysicsSimulator:
         self._Q_air = Q_air
         self._A_venturi_inlet = A_venturi_inlet
         self._A_zigzag = A_zigzag
-        self._A_cyclone_inlet = A_cyclone_inlet
+        self._A_cyclone_inlet = A_pri
         self._g = g
         self._rho_p = rho_p
         self._rho_f = rho_f
@@ -3416,24 +3700,76 @@ class ClassificationFlowPhysicsSimulator:
         # =====================================================================
         print(f"\n  Classification Physics Parameters:")
         print(f"\n    Air Flow:")
-        print(f"      Flow rate:       {Q_air * 3600:.0f} m3/h")
+        if bypass_ratio > 0:
+            print(f"      Total (blower):  {Q_total * 3600:.0f} m3/h")
+            print(f"      Bypass:          {Q_bypass * 3600:.1f} m3/h ({bypass_ratio*100:.1f}% around zigzag)")
+            if self.venturi_flow_limited:
+                print(f"      Classification:  {Q_air * 3600:.0f} m3/h (CAPPED from {Q_class * 3600:.1f} m3/h - choked)")
+            else:
+                print(f"      Classification:  {Q_air * 3600:.1f} m3/h ({(1-bypass_ratio)*100:.1f}% through venturi+zigzag)")
+            print(f"      Cyclone (merge): {Q_total * 3600:.0f} m3/h")
+        elif self.venturi_flow_limited:
+            print(f"      Flow rate:       {Q_air * 3600:.0f} m3/h (CAPPED from {cfg.air_flow_rate_m3s * 3600:.0f} m3/h - choked)")
+        else:
+            print(f"      Flow rate:       {Q_air * 3600:.0f} m3/h")
         print(f"      Venturi inlet:   {self.v_air_venturi_inlet:.1f} m/s")
-        print(f"      Zigzag:          {self.v_air_zigzag:.2f} m/s")
-        print(f"      Cyclone inlet:   {self.v_air_cyclone_inlet:.1f} m/s")
-        
-        print(f"\n    Cut Sizes (d50):")
-        print(f"      Zigzag:          {self.zigzag_d50 * 1e6:.1f} um")
-        print(f"      Cyclone:         {self.cyclone_d50 * 1e6:.1f} um")
-        
+        print(f"      Venturi throat:  {self.v_air_venturi_throat:.1f} m/s (D={self.venturi_throat_diameter*1000:.1f}mm, Ma={self.venturi_mach_actual:.3f})")
+        print(f"      Venturi dP:      {self.venturi_pressure_drop_Pa:.0f} Pa ({self.venturi_pressure_drop_Pa/1000:.1f} kPa)")
+        print(f"      Zigzag bulk:     {self.v_air_zigzag:.2f} m/s")
+        print(f"      Zigzag ZONE:     {self.v_air_zigzag_zone:.2f} m/s ({self.zigzag_velocity_ratio_zone:.0%} of bulk)")
+        print(f"      Cyclone (series, rectangular tangential inlet):")
+        for label, v_in, D, W, H in [
+            ("Primary",   self.v_air_cyclone_inlet,            self.cyclone_primary_radius*2,   self.cyclone_primary_inlet_width,   self.cyclone_primary_inlet_height),
+            ("Secondary", self.v_air_cyclone_secondary_inlet,  self.cyclone_secondary_radius*2, self.cyclone_secondary_inlet_width, self.cyclone_secondary_inlet_height),
+            ("Tertiary",  self.v_air_cyclone_tertiary_inlet,   self.cyclone_tertiary_radius*2,  self.cyclone_tertiary_inlet_width,  self.cyclone_tertiary_inlet_height),
+        ]:
+            status = ""
+            if v_in < self.cyclone_min_vortex_velocity:
+                status = " *** NO VORTEX ***"
+            elif v_in < self.cyclone_good_vortex_velocity:
+                status = " (weak vortex)"
+            print(f"        {label:10s} D={D*1000:.0f}mm  inlet={W*1000:.0f}x{H*1000:.0f}mm  v={v_in:.1f} m/s{status}")
+
+        print(f"\n    Venturi Throat Analysis:")
+        print(f"      Throat diameter: {self.venturi_throat_diameter*1000:.1f} mm")
+        print(f"      Throat area:     {self._A_venturi_throat*1e6:.1f} mm2")
+        print(f"      Max flow (Ma=1): {self.venturi_Q_choked_m3h:.0f} m3/h")
+        print(f"      K_venturi:       {self.venturi_k_factor:.1f} Pa/(m3/s)2")
+        if self.venturi_mach_actual > 0.3:
+            print(f"      *** Ma={self.venturi_mach_actual:.2f} > 0.3: compressible regime ***")
+        if self.venturi_flow_limited:
+            print(f"      *** FLOW CHOKED at venturi throat ***")
+
+        print(f"\n    Cut Sizes (d50) - based on ZONE velocity:")
+        print(f"      Zigzag:          {self.zigzag_d50 * 1e6:.1f} um (at v_zone={self.v_air_zigzag_zone:.2f} m/s)")
+        print(f"      (if bulk):       {self.zigzag_d50_bulk * 1e6:.1f} um (wrong - ignores zone effect)")
+        for label, d50, v_in in [
+            ("Cy1 (primary)",   self.cyclone_d50,            self.v_air_cyclone_inlet),
+            ("Cy2 (secondary)", self.cyclone_secondary_d50,  self.v_air_cyclone_secondary_inlet),
+            ("Cy3 (tertiary)",  self.cyclone_tertiary_d50,   self.v_air_cyclone_tertiary_inlet),
+        ]:
+            if v_in >= self.cyclone_good_vortex_velocity:
+                print(f"      {label:16s} {d50*1e6:.1f} um")
+            elif v_in >= self.cyclone_min_vortex_velocity:
+                print(f"      {label:16s} {d50*1e6:.1f} um (weak vortex)")
+            else:
+                print(f"      {label:16s} {d50*1e6:.1f} um *** NO VORTEX (v={v_in:.1f} m/s) ***")
+
+        print(f"\n    Multi-Stage Sharpening ({self.zigzag_num_stages} stages):")
+        print(f"      Each stage is a separation opportunity")
+        print(f"      Effective cut sharpness increases with stages")
+
         print(f"\n    For protein separation:")
         print(f"      Protein:         ~10-30 um (should go to fines)")
         print(f"      Starch:          ~15-60 um (should go to coarse)")
-        
-        if self.zigzag_d50 * 1e6 < 15:
-            print(f"      Status: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) < 15um - good for protein recovery")
+
+        if self.zigzag_d50 * 1e6 < 35:
+            print(f"      Status: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) in protein range - good!")
+        elif self.zigzag_d50 * 1e6 < 60:
+            print(f"      Status: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) in starch range - partial separation")
         else:
-            print(f"      WARNING: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) > 15um - may lose protein to coarse")
-            print(f"               Consider increasing air velocity or reducing channel size")
+            print(f"      WARNING: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) > 60um - poor separation")
+            print(f"               Consider: reduce channel size, increase air flow, or more stages")
     
     def _allocate_arrays(self):
         """Allocate particle arrays on device."""
@@ -3562,7 +3898,31 @@ class ClassificationFlowPhysicsSimulator:
         print(f"       = 0.5 x {rho_f} x ({v_throat:.2f}^2 - {v_inlet:.2f}^2)")
         print(f"       = {delta_P:.1f} Pa = {delta_P/1000:.3f} kPa")
         print(f"    This suction draws particles from solids inlet")
-        
+
+        print(f"\n  COMPRESSIBILITY CHECK (throat):")
+        speed_of_sound = 343.0
+        Ma = v_throat / speed_of_sound
+        print(f"    v_throat:            {v_throat:.1f} m/s")
+        print(f"    Speed of sound:      {speed_of_sound:.0f} m/s (air at ~20C)")
+        print(f"    Mach number:         {Ma:.3f}")
+        if Ma >= 1.0:
+            Q_choked = A_throat * speed_of_sound * 0.985
+            print(f"    *** CHOKED FLOW (Ma >= 1) ***")
+            print(f"    Max physical flow:   {Q_choked*3600:.0f} m3/h")
+            print(f"    Requested flow:      {Q*3600:.0f} m3/h (EXCEEDS LIMIT)")
+        elif Ma > 0.3:
+            print(f"    *** COMPRESSIBLE REGIME (Ma > 0.3) ***")
+            print(f"    Incompressible Bernoulli has >5% error")
+            rho_ratio = (1 + 0.2 * Ma**2)**(-2.5)  # isentropic density ratio
+            print(f"    Isentropic rho_throat/rho_inlet: {rho_ratio:.3f}")
+        else:
+            print(f"    Incompressible regime (Ma < 0.3) - Bernoulli valid")
+
+        print(f"\n  SYSTEM CURVE CONTRIBUTION:")
+        print(f"    K_venturi = 0.5*rho*(1/A_t^2 - 1/A_i^2)")
+        print(f"              = {self.venturi_k_factor:.1f} Pa/(m3/s)^2")
+        print(f"    dP at Q   = K*Q^2 = {self.venturi_k_factor * Q**2:.0f} Pa")
+
         print(f"\n  PARTICLE ENTRY (Zone 0 -> 1 -> 2):")
         print(f"    Zone 0: Solids inlet -> entering throat")
         print(f"    Zone 1: Throat region (high velocity entrainment)")
@@ -3630,28 +3990,54 @@ class ClassificationFlowPhysicsSimulator:
         
         print(f"\n  FLOW CALCULATIONS:")
         print(f"    Cross-section A:     {self._A_zigzag*1e4:.2f} cm2 = {self._A_zigzag*1e6:.0f} mm2")
-        print(f"    Upward air velocity: v = Q/A = {self.v_air_zigzag:.3f} m/s")
-        
+        print(f"    Bulk air velocity:   v_bulk = Q/A = {self.v_air_zigzag:.3f} m/s")
+        print(f"    Zone air velocity:   v_zone = v_bulk x {self.zigzag_velocity_ratio_zone:.2f} = {self.v_air_zigzag_zone:.3f} m/s")
+        print(f"    Throat air velocity: v_throat = v_bulk x {self.zigzag_velocity_ratio_throat:.2f} = {self.v_air_zigzag * self.zigzag_velocity_ratio_throat:.3f} m/s")
+
         Re_zigzag = compute_Re_rectangular(self.v_air_zigzag, self.zigzag_channel_width, self.zigzag_channel_depth)
         print(f"    Re (hydraulic):      {Re_zigzag:.0f} ({flow_regime(Re_zigzag)})")
-        
+
         print(f"\n  SEPARATION PHYSICS (Counter-current classification):")
-        print(f"    Air flows UP at v_air = {self.v_air_zigzag:.3f} m/s")
+        print(f"    Air flows UP through zigzag with deflector plates")
+        print(f"    Bulk velocity: v_bulk = {self.v_air_zigzag:.3f} m/s")
+        print(f"    BUT separation occurs in RECIRCULATION ZONES behind plates!")
+        print(f"    Zone velocity: v_zone = {self.v_air_zigzag_zone:.3f} m/s ({self.zigzag_velocity_ratio_zone:.0%} of bulk)")
         print(f"    Gravity pulls DOWN at g = {g} m/s2")
         print(f"    Particle terminal velocity: v_t = d^2*(rho_p-rho_f)*g / 18*mu")
         print(f"    ")
-        print(f"    CUT SIZE CALCULATION (d50):")
-        print(f"      d50 = sqrt(18*mu*v_air / (g*(rho_p-rho_f)))")
-        print(f"          = sqrt(18 x {mu:.2e} x {self.v_air_zigzag:.3f} / ({g} x ({rho_p}-{rho_f})))")
-        print(f"          = sqrt({18*mu*self.v_air_zigzag:.6e} / {g*(rho_p-rho_f):.2f})")
+        print(f"    CUT SIZE CALCULATION (d50) — using ZONE velocity:")
+        print(f"      v_zone = v_bulk x velocity_ratio = {self.v_air_zigzag:.3f} x {self.zigzag_velocity_ratio_zone:.2f} = {self.v_air_zigzag_zone:.3f} m/s")
+        print(f"      d50 = sqrt(18*mu*v_zone / (g*(rho_p-rho_f)))")
+        print(f"          = sqrt(18 x {mu:.2e} x {self.v_air_zigzag_zone:.3f} / ({g} x ({rho_p}-{rho_f})))")
+        print(f"          = sqrt({18*mu*self.v_air_zigzag_zone:.6e} / {g*(rho_p-rho_f):.2f})")
         print(f"          = {self.zigzag_d50*1e6:.1f} um")
-        
-        print(f"\n    PARTICLE FATE BY SIZE:")
-        for d_um in [10, 20, 30, 40, 50, 60]:
+        print(f"      (if using bulk velocity: d50_bulk = {self.zigzag_d50_bulk*1e6:.1f} um — WRONG, ignores zone effect)")
+
+        n_stages = self.zigzag_num_stages
+        print(f"\n    MULTI-STAGE SHARPENING ({n_stages} stages):")
+        print(f"      Each deflector plate creates a separation opportunity")
+        print(f"      Senden (1979): T_total = T1^n / (T1^n + (1-T1)^n)")
+        print(f"      With n={n_stages} stages, the grade efficiency curve is MUCH sharper")
+        print(f"      d50 stays ~{self.zigzag_d50*1e6:.0f}um but transition is steeper")
+
+        print(f"\n    PARTICLE FATE BY SIZE (v_t vs v_zone = {self.v_air_zigzag_zone*1000:.2f} mm/s):")
+        for d_um in [10, 20, 30, 40, 50, 60, 80, 100]:
             d_m = d_um * 1e-6
             v_t = terminal_velocity(d_m)
-            fate = "FINES (protein)" if v_t < self.v_air_zigzag else "COARSE (starch)"
-            print(f"      d = {d_um:3d} um: v_t = {v_t*1000:.2f} mm/s {'<' if v_t < self.v_air_zigzag else '>'} v_air = {self.v_air_zigzag*1000:.2f} mm/s -> {fate}")
+            # Single-stage probability
+            if self.v_air_zigzag_zone > 0:
+                ratio = v_t / self.v_air_zigzag_zone
+                # Probability of going to fines (single stage)
+                # Simple model: T1 = 1 / (1 + (v_t/v_zone)^2)
+                T1 = 1.0 / (1.0 + ratio ** 2)
+                # Multi-stage: T_total = T1^n / (T1^n + (1-T1)^n)
+                T1_n = T1 ** n_stages
+                T1_n_comp = (1.0 - T1) ** n_stages
+                T_total = T1_n / (T1_n + T1_n_comp + 1e-30)
+            else:
+                T_total = 1.0
+            fate = "FINES (protein)" if v_t < self.v_air_zigzag_zone else "COARSE (starch)"
+            print(f"      d = {d_um:3d} um: v_t = {v_t*1000:.2f} mm/s {'<' if v_t < self.v_air_zigzag_zone else '>'} v_zone = {self.v_air_zigzag_zone*1000:.2f} mm/s -> {fate} (P_fines={T_total:.1%})")
         
         print(f"\n  PARTICLE ZONES:")
         print(f"    Zone 20: Entering zigzag from below")
@@ -3710,36 +4096,56 @@ class ClassificationFlowPhysicsSimulator:
         print(f"    Position:    ({self.duct_zigzag_cyclone_end[0]*1000:.1f}, {self.duct_zigzag_cyclone_end[1]*1000:.1f}, {self.duct_zigzag_cyclone_end[2]*1000:.1f}) mm")
         print(f"    Direction:   (-1, 0, 0) - tangential entry")
         print(f"    Inlet vel:   {self.v_air_cyclone_inlet:.1f} m/s")
+
+        if not self.cyclone_vortex_ok:
+            print(f"\n  *** VORTEX FORMATION CHECK: FAILED ***")
+            print(f"    v_inlet = {self.v_air_cyclone_inlet:.1f} m/s < {self.cyclone_min_vortex_velocity:.0f} m/s minimum")
+            print(f"    At this velocity, NO stable vortex forms in the cyclone body.")
+            print(f"    The Lapple d50 = {self.cyclone_d50*1e6:.1f} um shown below is PHYSICALLY MEANINGLESS.")
+            print(f"    Cyclone acts as a GRAVITY SETTLER — effective d50 >> Lapple d50.")
+            print(f"    Need inlet velocity > {self.cyclone_good_vortex_velocity:.0f} m/s for reliable centrifugal separation.")
+        elif not self.cyclone_d50_reliable:
+            print(f"\n  *** VORTEX FORMATION CHECK: MARGINAL ***")
+            print(f"    v_inlet = {self.v_air_cyclone_inlet:.1f} m/s — vortex exists but is weak")
+            print(f"    Lapple d50 = {self.cyclone_d50*1e6:.1f} um is UNRELIABLE (actual d50 will be coarser)")
+            print(f"    Need inlet velocity > {self.cyclone_good_vortex_velocity:.0f} m/s for accurate Lapple prediction.")
         
         cyclones = [
             ("PRIMARY", self.cyclone_primary_center, self.cyclone_primary_radius*2,
              self.cyclone_primary_cylinder_height, self.cyclone_primary_cone_height,
-             self.cyclone_primary_vf_radius*2, self.cyclone_primary_dust_y, 50, 55, "SECONDARY"),
+             self.cyclone_primary_vf_radius*2, self.cyclone_primary_dust_y,
+             self.v_air_cyclone_inlet, self.cyclone_primary_inlet_width, self.cyclone_primary_inlet_height,
+             self.cyclone_d50, self.cyclone_primary_cone_tip_ratio, 50, 55, "SECONDARY"),
             ("SECONDARY", self.cyclone_secondary_center, self.cyclone_secondary_radius*2,
              self.cyclone_secondary_cylinder_height, self.cyclone_secondary_cone_height,
-             self.cyclone_secondary_vf_radius*2, self.cyclone_secondary_dust_y, 51, 56, "TERTIARY"),
+             self.cyclone_secondary_vf_radius*2, self.cyclone_secondary_dust_y,
+             self.v_air_cyclone_secondary_inlet, self.cyclone_secondary_inlet_width, self.cyclone_secondary_inlet_height,
+             self.cyclone_secondary_d50, self.cyclone_secondary_cone_tip_ratio, 51, 56, "TERTIARY"),
             ("TERTIARY", self.cyclone_tertiary_center, self.cyclone_tertiary_radius*2,
              self.cyclone_tertiary_cylinder_height, self.cyclone_tertiary_cone_height,
-             self.cyclone_tertiary_vf_radius*2, self.cyclone_tertiary_dust_y, 52, 57, "BAG FILTER"),
+             self.cyclone_tertiary_vf_radius*2, self.cyclone_tertiary_dust_y,
+             self.v_air_cyclone_tertiary_inlet, self.cyclone_tertiary_inlet_width, self.cyclone_tertiary_inlet_height,
+             self.cyclone_tertiary_d50, self.cyclone_tertiary_cone_tip_ratio, 52, 57, "BAG FILTER"),
         ]
-        
-        for name, center, D, H_cyl, H_cone, D_vf, dust_y, zone_in, zone_dust, next_stage in cyclones:
+
+        for name, center, D, H_cyl, H_cone, D_vf, dust_y, v_in, W_in, H_in, d50, tip_ratio, zone_in, zone_dust, next_stage in cyclones:
             print(f"\n  {name} CYCLONE:")
             print(f"    Center:           ({center[0]*1000:.1f}, {center[1]*1000:.1f}, {center[2]*1000:.1f}) mm")
             print(f"    Body diameter:    {D*1000:.0f} mm")
             print(f"    Cylinder height:  {H_cyl*1000:.0f} mm")
-            print(f"    Cone height:      {H_cone*1000:.0f} mm")
+            print(f"    Cone height:      {H_cone*1000:.0f} mm (tip ratio: {tip_ratio:.3f})")
             print(f"    Vortex finder D:  {D_vf*1000:.0f} mm")
             print(f"    Dust outlet Y:    {dust_y*1000:.1f} mm")
-            
+            print(f"    Inlet:            {W_in*1000:.0f}x{H_in*1000:.0f}mm  v={v_in:.1f} m/s")
+
             # Cyclone separation physics
-            v_tan = self.v_air_cyclone_inlet * (0.8 if "SECONDARY" in name else 0.6 if "TERTIARY" in name else 1.0)
             R = D / 2
-            omega = v_tan / R
+            omega = v_in / R
             print(f"\n    SEPARATION PHYSICS:")
-            print(f"      Tangential velocity: v_tan ~ {v_tan:.1f} m/s")
+            print(f"      Inlet velocity:      {v_in:.1f} m/s (tangential)")
             print(f"      Angular velocity:    w = v/R = {omega:.1f} rad/s")
             print(f"      Centrifugal accel:   a_c = w^2*R = {omega**2*R:.0f} m/s2 ({omega**2*R/g:.0f}g)")
+            print(f"      Lapple d50:          {d50*1e6:.1f} um")
             
             print(f"\n    PARTICLE ZONES:")
             print(f"      Zone {zone_in}: In cyclone body (swirling flow)")
@@ -3850,10 +4256,20 @@ class ClassificationFlowPhysicsSimulator:
         print(f"      +---> Clean air [Zone 80] -> EXHAUST")
         
         print(f"\n  KEY PARAMETERS:")
-        print(f"    Total air flow:      {Q*3600:.0f} m3/h = {Q*1000:.1f} L/s")
-        print(f"    Zigzag cut size d50: {self.zigzag_d50*1e6:.1f} um")
-        print(f"    Cyclone cut size:    {self.cyclone_d50*1e6:.2f} um")
-        
+        if self._bypass_ratio > 0:
+            print(f"    Total air flow:      {self._Q_total*3600:.0f} m3/h (blower)")
+            print(f"    Classification flow: {Q*3600:.1f} m3/h ({(1-self._bypass_ratio)*100:.1f}% through zigzag)")
+            print(f"    Cyclone flow:        {self._Q_total*3600:.0f} m3/h (after merge)")
+        else:
+            print(f"    Total air flow:      {Q*3600:.0f} m3/h = {Q*1000:.1f} L/s")
+        print(f"    Zigzag cut size d50: {self.zigzag_d50*1e6:.1f} um (using zone velocity)")
+        print(f"    Zigzag zone velocity:{self.v_air_zigzag_zone:.2f} m/s ({self.zigzag_velocity_ratio_zone:.0%} of {self.v_air_zigzag:.2f} m/s bulk)")
+        if self.cyclone_vortex_ok:
+            reliability = " (unreliable)" if not self.cyclone_d50_reliable else ""
+            print(f"    Cyclone cut size:    {self.cyclone_d50*1e6:.2f} um{reliability}")
+        else:
+            print(f"    Cyclone cut size:    {self.cyclone_d50*1e6:.2f} um (INVALID - no vortex at {self.v_air_cyclone_inlet:.1f} m/s)")
+
         print(f"\n  EXPECTED SEPARATION (at current conditions):")
         # Determine actual separation based on d50 values
         if self.zigzag_d50 > 200e-6:  # d50 > 200um means all flour passes
@@ -3861,9 +4277,12 @@ class ClassificationFlowPhysicsSimulator:
             print(f"    Only large fiber (>{self.zigzag_d50*1e6:.0f}um) -> Coarse")
             if self.cyclone_d50 < 5e-6:  # Very fine cyclone cut
                 print(f"    ALL fines collected in PRIMARY cyclone (d50={self.cyclone_d50*1e6:.1f}um)")
+        elif self.zigzag_d50 > 60e-6:
+            print(f"    Coarse starch (>{self.zigzag_d50*1e6:.0f}um): -> Zigzag coarse [Zone 30]")
+            print(f"    Protein + fine starch (<{self.zigzag_d50*1e6:.0f}um): -> Cyclones")
         else:
             print(f"    Starch (>{self.zigzag_d50*1e6:.0f}um): -> Zigzag coarse [Zone 30]")
-            print(f"    Fines (<{self.zigzag_d50*1e6:.0f}um):  -> Cyclones for staged separation")
+            print(f"    Protein (<{self.zigzag_d50*1e6:.0f}um):  -> Cyclones for collection")
         
         # =====================================================================
         # INDUSTRIAL OPERATING ANALYSIS
@@ -3878,76 +4297,134 @@ class ClassificationFlowPhysicsSimulator:
         rho_f = self._rho_f
         g = self._g
         zz_area = self._A_zigzag
-        cyclone_inlet_area = 0.075 * 0.15  # 75x150 mm
+        cyclone_inlet_area = self._A_cyclone_inlet
         
         print(f"\n  CURRENT OPERATING POINT:")
-        print(f"    Air flow: {Q*3600:.0f} m3/h ({Q*1000:.1f} L/s)")
-        print(f"    Zigzag d50: {self.zigzag_d50*1e6:.1f} um")
-        print(f"    Cyclone inlet velocity: {self.v_air_cyclone_inlet:.1f} m/s")
-        print(f"    Cyclone d50: {self.cyclone_d50*1e6:.2f} um")
-        
+        if self._bypass_ratio > 0:
+            print(f"    Blower output:       {self._Q_total*3600:.0f} m3/h")
+            print(f"    Bypass ratio:        {self._bypass_ratio*100:.1f}%")
+            print(f"    Classification flow: {Q*3600:.1f} m3/h (through venturi+zigzag)")
+            print(f"    Cyclone flow:        {self._Q_total*3600:.0f} m3/h (after bypass merge)")
+        else:
+            print(f"    Air flow: {Q*3600:.0f} m3/h ({Q*1000:.1f} L/s)")
+        print(f"    Zigzag bulk velocity: {self.v_air_zigzag:.2f} m/s")
+        print(f"    Zigzag zone velocity: {self.v_air_zigzag_zone:.2f} m/s ({self.zigzag_velocity_ratio_zone:.0%} of bulk)")
+        print(f"    Zigzag d50: {self.zigzag_d50*1e6:.1f} um (based on zone velocity)")
+        print(f"    Cyclone inlet velocity: {self.v_air_cyclone_inlet:.1f} m/s", end="")
+        if not self.cyclone_vortex_ok:
+            print(f"  *** NO VORTEX ***")
+        elif not self.cyclone_d50_reliable:
+            print(f"  *** WEAK VORTEX ***")
+        else:
+            print()
+        if self.cyclone_vortex_ok:
+            print(f"    Cyclone d50: {self.cyclone_d50*1e6:.2f} um", end="")
+            if not self.cyclone_d50_reliable:
+                print(f" (unreliable)")
+            else:
+                print()
+        else:
+            print(f"    Cyclone d50: {self.cyclone_d50*1e6:.2f} um (INVALID - no vortex, acts as gravity settler)")
+
         # Operating mode determination
         if self.zigzag_d50 > 200e-6:
             print(f"\n  OPERATING MODE: BYPASS ZIGZAG")
             print(f"    At this flow, zigzag passes all material to cyclones.")
             print(f"    Zigzag acts as transport duct, not separator.")
-        elif self.zigzag_d50 > 100e-6:
-            print(f"\n  OPERATING MODE: FIBER REJECTION")
-            print(f"    Zigzag removes large fiber (>{self.zigzag_d50*1e6:.0f}um) to coarse.")
-            print(f"    All flour components pass to cyclones.")
+        elif self.zigzag_d50 > 60e-6:
+            print(f"\n  OPERATING MODE: COARSE SEPARATION")
+            print(f"    Zigzag removes large particles (>{self.zigzag_d50*1e6:.0f}um) to coarse.")
+            print(f"    Protein + fine starch pass to cyclones for further separation.")
+        elif self.zigzag_d50 > 25e-6:
+            print(f"\n  OPERATING MODE: PROTEIN SEPARATION")
+            print(f"    Zigzag separates at d50={self.zigzag_d50*1e6:.1f}um.")
+            print(f"    Good for protein/starch separation (target: 25-35um).")
         else:
             print(f"\n  OPERATING MODE: FINE SEPARATION")
             print(f"    Zigzag separates at d50={self.zigzag_d50*1e6:.1f}um.")
-        
+            print(f"    Very fine cut — most material goes to coarse.")
+
         if self.cyclone_d50 < 5e-6:
             print(f"    WARNING: Cyclone d50={self.cyclone_d50*1e6:.2f}um - all material collected in Cy1!")
-        
+
         # Calculate recommended operating ranges
+        # NOTE: d50 is based on zone velocity, so:
+        # v_zone = v_bulk * ratio -> v_bulk = v_zone / ratio
+        # d50 = sqrt(18*mu*v_zone / (g*delta_rho))
+        # v_zone = d50^2 * g * delta_rho / (18*mu)
+        # Q = v_bulk * A = (v_zone / ratio) * A
+        vzr = self.zigzag_velocity_ratio_zone
+
         print(f"\n  RECOMMENDED OPERATING RANGES:")
-        
+        print(f"    (Zone velocity = {vzr:.0%} of bulk, accounts for deflector plate effect)")
+
         # For d50 = 35 um (protein/starch boundary)
         d50_target_ps = 35e-6
-        v_air_ps = (d50_target_ps**2 * g * (rho_p - rho_f)) / (18 * mu)
-        Q_ps = v_air_ps * zz_area
+        v_zone_ps = (d50_target_ps**2 * g * (rho_p - rho_f)) / (18 * mu)
+        v_bulk_ps = v_zone_ps / vzr
+        Q_ps = v_bulk_ps * zz_area
         v_cyc_ps = Q_ps / cyclone_inlet_area
-        
+
+        # For d50 = 50 um (moderate separation)
+        d50_target_mod = 50e-6
+        v_zone_mod = (d50_target_mod**2 * g * (rho_p - rho_f)) / (18 * mu)
+        v_bulk_mod = v_zone_mod / vzr
+        Q_mod = v_bulk_mod * zz_area
+        v_cyc_mod = Q_mod / cyclone_inlet_area
+
         # For d50 = 100 um (fiber rejection)
         d50_target_fiber = 100e-6
-        v_air_fiber = (d50_target_fiber**2 * g * (rho_p - rho_f)) / (18 * mu)
-        Q_fiber = v_air_fiber * zz_area
+        v_zone_fiber = (d50_target_fiber**2 * g * (rho_p - rho_f)) / (18 * mu)
+        v_bulk_fiber = v_zone_fiber / vzr
+        Q_fiber = v_bulk_fiber * zz_area
         v_cyc_fiber = Q_fiber / cyclone_inlet_area
-        
+
         # For cyclone at 20 m/s (typical industrial)
         Q_cyc_20 = 20.0 * cyclone_inlet_area
-        v_zz_at_20 = Q_cyc_20 / zz_area
-        d50_at_20 = np.sqrt(18 * mu * v_zz_at_20 / (g * (rho_p - rho_f))) * 1e6
-        
+        v_zz_bulk_at_20 = Q_cyc_20 / zz_area
+        v_zz_zone_at_20 = v_zz_bulk_at_20 * vzr
+        d50_at_20 = np.sqrt(18 * mu * v_zz_zone_at_20 / (g * (rho_p - rho_f))) * 1e6
+
         print(f"\n    For protein/starch separation (d50=35um):")
+        print(f"      v_zone = {v_zone_ps:.3f} m/s, v_bulk = {v_bulk_ps:.3f} m/s")
         print(f"      Q = {Q_ps*3600:.1f} m3/h, v_cyclone = {v_cyc_ps:.2f} m/s")
         if v_cyc_ps < 10:
-            print(f"      ISSUE: Cyclone velocity too low for effective separation")
-        
+            print(f"      NOTE: Cyclone velocity low — consider smaller cyclone or staged approach")
+
+        print(f"\n    For moderate separation (d50=50um):")
+        print(f"      v_zone = {v_zone_mod:.3f} m/s, v_bulk = {v_bulk_mod:.3f} m/s")
+        print(f"      Q = {Q_mod*3600:.1f} m3/h, v_cyclone = {v_cyc_mod:.2f} m/s")
+
         print(f"\n    For fiber rejection (d50=100um):")
+        print(f"      v_zone = {v_zone_fiber:.3f} m/s, v_bulk = {v_bulk_fiber:.3f} m/s")
         print(f"      Q = {Q_fiber*3600:.1f} m3/h, v_cyclone = {v_cyc_fiber:.2f} m/s")
         if v_cyc_fiber < 10:
-            print(f"      ISSUE: Cyclone velocity too low for effective separation")
-        
-        print(f"\n    For optimal cyclone operation (v=20 m/s):")
-        print(f"      Q = {Q_cyc_20*3600:.0f} m3/h, d50 = {d50_at_20:.0f} um")
+            print(f"      NOTE: Cyclone velocity low for this flow rate")
+
+        print(f"\n    For optimal cyclone operation (v_cyc=20 m/s):")
+        print(f"      Q = {Q_cyc_20*3600:.0f} m3/h, zigzag d50 = {d50_at_20:.0f} um")
         if d50_at_20 > 200:
             print(f"      MODE: All flour to fines, cyclones do staged separation")
-        
+        elif d50_at_20 > 60:
+            print(f"      MODE: Coarse separation, cyclones handle fine fractions")
+        else:
+            print(f"      MODE: Effective protein/starch separation")
+
         # Practical recommendation
         print(f"\n  PRACTICAL RECOMMENDATION:")
-        if Q > 0.2:  # High flow mode
-            print(f"    Current high-flow mode ({Q*3600:.0f} m3/h) is suitable for:")
-            print(f"    - High throughput processing")
-            print(f"    - When zigzag bypass is acceptable")
-            print(f"    - Cyclone-only separation of fine fractions")
-            print(f"    Note: All material <{self.zigzag_d50*1e6:.0f}um goes to cyclones")
+        if self.zigzag_d50 > 200e-6:
+            print(f"    Current conditions ({Q*3600:.0f} m3/h) give d50={self.zigzag_d50*1e6:.0f}um")
+            print(f"    Zigzag acts as transport — all flour to cyclones")
+            print(f"    Options:")
+            print(f"    1. Reduce air flow to ~{Q_ps*3600:.0f} m3/h for protein separation")
+            print(f"    2. Increase channel size to reduce velocity at this flow")
+            print(f"    3. Use cyclone-only separation (current bypass mode)")
+        elif self.zigzag_d50 > 60e-6:
+            print(f"    Current d50={self.zigzag_d50*1e6:.0f}um — coarse separation")
+            print(f"    Reduce air flow or channel size for protein range (25-35um)")
         else:
-            print(f"    Current flow ({Q*3600:.0f} m3/h) provides d50={self.zigzag_d50*1e6:.0f}um")
-            print(f"    Adjust --air-flow to tune separation point")
+            print(f"    Current d50={self.zigzag_d50*1e6:.0f}um — in protein separation range")
+            print(f"    Adjust --air-flow to fine-tune separation point")
         
         print(f"\n{'=' * 80}")
     
@@ -4394,6 +4871,13 @@ class ClassificationFlowPhysicsSimulator:
                 float(self.v_air_venturi_inlet),
                 float(self.v_air_zigzag),
                 float(self.v_air_cyclone_inlet),
+                float(self.v_air_cyclone_secondary_inlet),
+                float(self.v_air_cyclone_tertiary_inlet),
+
+                # Cyclone cone tip ratios
+                float(self.cyclone_primary_cone_tip_ratio),
+                float(self.cyclone_secondary_cone_tip_ratio),
+                float(self.cyclone_tertiary_cone_tip_ratio),
                 
                 # Turbulence
                 float(cfg.turbulent_intensity),

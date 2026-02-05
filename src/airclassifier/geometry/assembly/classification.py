@@ -924,16 +924,22 @@ class ClassificationSystemAssembly:
         return self._combined_indices
 
 
-def create_standard_classification_system(device: str = "cpu") -> ClassificationSystemAssembly:
+def create_standard_classification_system(
+    device: str = "cpu",
+    params: ClassificationSystemParams = None,
+) -> ClassificationSystemAssembly:
     """
-    Create a standard classification system with default parameters.
+    Create a classification system with default or custom parameters.
 
     Args:
         device: Warp device
+        params: Optional custom parameters (uses defaults if None)
 
     Returns:
         ClassificationSystemAssembly instance
     """
+    if params is not None:
+        return ClassificationSystemAssembly(params=params, device=device)
     return ClassificationSystemAssembly(device=device)
 
 

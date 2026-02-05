@@ -129,9 +129,18 @@ class AirFlowPhysicsConfig:
     sph_viscosity: float = 0.01     # SPH artificial viscosity coefficient
     xsph_factor: float = 0.1        # XSPH velocity smoothing factor
     
+    # Downstream system restriction (e.g. venturi throat)
+    # K-factor where dP = K * Q² [Pa / (m³/s)²]
+    # Set from venturi geometry: K = 0.5 * rho * (1/A_throat² - 1/A_inlet²)
+    downstream_k_factor: float = 0.0
+
+    # Maximum flow rate limit (e.g. from choked venturi throat) [m³/s]
+    # 0 = no limit
+    downstream_flow_limit_m3s: float = 0.0
+
     # Device
     device: str = "cuda"
-    
+
     def __post_init__(self):
         """Apply FluidConfig properties if provided."""
         if self.fluid_config is not None:
@@ -705,6 +714,52 @@ def calculate_damper_pressure_drop(
     dP = 0.5 * rho * velocity ** 2 * k
     
     return dP
+
+
+def calculate_venturi_system_resistance(
+    throat_diameter: float,
+    inlet_diameter: float,
+    rho: float = 1.204,
+) -> Dict[str, float]:
+    """
+    Calculate venturi throat system resistance for blower operating point.
+
+    The venturi throat creates a restriction where:
+        dP = 0.5 * rho * (v_throat² - v_inlet²)
+           = 0.5 * rho * Q² * (1/A_throat² - 1/A_inlet²)
+           = K_venturi * Q²
+
+    Also computes the maximum (choked) flow at Mach 1.
+
+    Args:
+        throat_diameter: Venturi throat diameter [m]
+        inlet_diameter: Venturi inlet diameter [m]
+        rho: Air density [kg/m³]
+
+    Returns:
+        Dict with k_factor [Pa/(m³/s)²], choked_flow_m3s, choked_flow_m3h,
+        and throat_area_m2.
+    """
+    A_throat = PI * (throat_diameter / 2) ** 2
+    A_inlet = PI * (inlet_diameter / 2) ** 2
+
+    # K-factor: dP = K * Q²
+    k_factor = 0.5 * rho * (1.0 / A_throat**2 - 1.0 / A_inlet**2) if A_throat > 0 else 0.0
+
+    # Choked flow limit (Ma = 1 at throat, with discharge coefficient)
+    speed_of_sound = 343.0  # m/s at ~20°C
+    Cd = 0.985  # Well-designed venturi (ISO 5167)
+    Q_choked = A_throat * speed_of_sound * Cd
+
+    return {
+        "k_factor": k_factor,
+        "choked_flow_m3s": Q_choked,
+        "choked_flow_m3h": Q_choked * 3600.0,
+        "throat_area_m2": A_throat,
+        "inlet_area_m2": A_inlet,
+        "throat_diameter_m": throat_diameter,
+        "inlet_diameter_m": inlet_diameter,
+    }
 
 
 def calculate_blower_performance(
@@ -1835,7 +1890,12 @@ class AirFlowPhysicsSimulator:
             dp_damper = calculate_damper_pressure_drop(damper_geo, Q_estimate, rho)
             dp_dampers += dp_damper
         total_dp += dp_dampers
-        
+
+        # Downstream restriction (e.g. venturi throat): dP = K * Q²
+        if cfg.downstream_k_factor > 0:
+            dp_downstream = cfg.downstream_k_factor * Q_estimate ** 2
+            total_dp += dp_downstream
+
         # =================================================================
         # ITERATE TO FIND OPERATING POINT
         # =================================================================
@@ -1848,7 +1908,21 @@ class AirFlowPhysicsSimulator:
                 rho
             )
             Q_estimate = 0.5 * (Q_estimate + Q_new)
-        
+
+            # Recalculate total_dp at new Q for next iteration
+            total_dp = dp_filter
+            velocity = Q_estimate / self.duct_area if self.duct_area > 0 else 0.0
+            for duct in self.geometry['ducts']:
+                total_dp += calculate_duct_pressure_drop(duct, velocity, rho, mu)
+            for damper_geo in self.geometry['dampers']:
+                total_dp += calculate_damper_pressure_drop(damper_geo, Q_estimate, rho)
+            if cfg.downstream_k_factor > 0:
+                total_dp += cfg.downstream_k_factor * Q_estimate ** 2
+
+        # Apply choked flow limit (e.g. from venturi throat at Ma=1)
+        if cfg.downstream_flow_limit_m3s > 0 and Q_estimate > cfg.downstream_flow_limit_m3s:
+            Q_estimate = cfg.downstream_flow_limit_m3s
+
         # =================================================================
         # UPDATE STATE
         # =================================================================

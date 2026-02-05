@@ -15,7 +15,7 @@ duct connections between:
 3. Bag Filter clean_air_outlet → Exhaust silencer
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple, Optional, Dict, Any, List
 import numpy as np
 
@@ -68,6 +68,9 @@ class CompleteSystemParams:
     include_ductwork: bool = True
     include_support_structure: bool = False
     include_exhaust: bool = True
+
+    # Optional custom classification system params (venturi throat, cyclone sizes, etc.)
+    classification_params: Optional[Any] = None
 
     # Sizing parameters
     classifier_width: float = 0.15
@@ -144,7 +147,9 @@ class CompleteClassifierAssembly:
         # Y is the vertical axis, so add elevation to Y
         class_y = cy + 0.5
 
-        classification = create_standard_classification_system(device="cpu")
+        classification = create_standard_classification_system(
+            device="cpu", params=p.classification_params
+        )
         self._subsystems['classification'] = classification
 
         # Store position offset for mesh transformation
