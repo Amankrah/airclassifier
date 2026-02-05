@@ -103,9 +103,12 @@ class ClassificationSystemParams:
     """
 
     # Zigzag classifier parameters (pilot scale)
-    zigzag_channel_width: float = 0.12      # [m] 120mm - typical pilot scale
+    # Cross-section sized to match venturi outlet area (~41 cm²) so flow
+    # velocity is maintained through the transition (avoids 6× expansion
+    # that kills particle transport).  60×80mm = 48 cm².
+    zigzag_channel_width: float = 0.060     # [m] 60mm width
     zigzag_num_stages: int = 5              # 5 stages for good separation
-    zigzag_channel_depth: float = 0.20      # [m] 200mm depth
+    zigzag_channel_depth: float = 0.080     # [m] 80mm depth
 
     # Venturi eductor parameters
     venturi_inlet_diameter: float = 0.08    # [m] 80mm - matches air supply
@@ -132,7 +135,7 @@ class ClassificationSystemParams:
 
     # Coarse collection hardware (rotary airlocks below discharge points)
     include_coarse_collection: bool = True   # Airlock below zigzag coarse outlet
-    coarse_airlock_rotor_d: float = 0.08     # [m] 80mm rotor diameter
+    coarse_airlock_rotor_d: float = 0.05     # [m] 50mm rotor diameter (sized for 30mm coarse outlet)
 
     # Dropout collection hardware (only active if include_dropout=True)
     include_dropout_collection: bool = True  # Airlock below dropout hopper discharge
