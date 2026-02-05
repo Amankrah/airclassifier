@@ -222,21 +222,20 @@ def main():
     
     args = parser.parse_args()
 
-    # VFD: convert blower RPM to air flow via fan law
+    # VFD: convert blower RPM to air flow via actual operating point
     if args.blower_rpm is not None:
-        # Fan law: Q ∝ N → Q = Q_design × (N / N_design)
-        # Design point: 3000 m³/h at 3000 RPM
-        Q_DESIGN_M3H = 3000.0
-        RPM_DESIGN = 3000.0
-        Q_vfd_m3h = Q_DESIGN_M3H * (args.blower_rpm / RPM_DESIGN)
-        args.air_flow = Q_vfd_m3h / 3600.0  # convert to m³/s
+        from airclassifier.simulation.airclass_flow_physics import compute_blower_operating_point
+        op = compute_blower_operating_point(args.blower_rpm)
+        args.air_flow = op["Q_m3_s"]
 
     print("=" * 70)
     print("PHYSICS-BASED CLASSIFICATION FLOW SIMULATION")
     print("  Protein/Starch Separation via Air Classification")
     print("=" * 70)
     if args.blower_rpm is not None:
-        print(f"  VFD: {args.blower_rpm:.0f} RPM -> {args.air_flow * 3600:.0f} m³/h (fan law)")
+        print(f"  VFD: {args.blower_rpm:.0f} RPM -> {op['Q_m3_h']:.0f} m³/h (operating point)")
+        print(f"       Fan law would give {op['Q_fan_law_m3_h']:.0f} m³/h (overestimate)")
+        print(f"       P = {op['P_operating_Pa']:.0f} Pa, eff = {op['efficiency']:.1%}, W = {op['shaft_power_W']:.0f} W")
     if args.bypass_ratio > 0:
         print(f"  Bypass: {args.bypass_ratio*100:.1f}% around venturi+zigzag")
     

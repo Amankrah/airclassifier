@@ -65,8 +65,8 @@ def parse_args():
         help="Time step in seconds (default: 0.001)"
     )
     parser.add_argument(
-        "--rpm", type=float, default=3000.0,
-        help="Target blower RPM (default: 3000)"
+        "--rpm", type=float, default=350.0,
+        help="Target blower RPM (default: 350)"
     )
     parser.add_argument(
         "--flow-rate", type=float, default=3000.0,

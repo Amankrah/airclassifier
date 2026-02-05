@@ -188,28 +188,57 @@ class ClassificationFlowConfig:
                 solids_mass_flow_kg_s, particle_density, particle_dia_m
             )
 
-        # Cap feed rate to venturi entrainment capacity (loading ratio limit)
-        # mu = m_dot_solids / m_dot_air; m_dot_solids = particle_feed_rate * m_per_particle
+        # Venturi entrainment capacity (loading ratio limit)
+        # mu = m_dot_solids / m_dot_air
         max_loading = kwargs.pop("max_loading_ratio", 2.0)
         continuous = kwargs.pop("continuous_feeding", True)
         m_dot_air = Q_m3s * rho_air
-        if particle_feed_rate > 0 and m_dot_air > 0:
-            m_per_particle = particle_density * (np.pi / 6.0) * particle_dia_m**3
+        m_per_particle = particle_density * (np.pi / 6.0) * particle_dia_m**3
+
+        if particle_feed_rate > 0 and m_dot_air > 0 and m_per_particle > 0:
             m_dot_solids_requested = particle_feed_rate * m_per_particle
             m_dot_solids_max = max_loading * m_dot_air
+            m_dot_solids_capped = min(m_dot_solids_requested, m_dot_solids_max)
             if m_dot_solids_requested > m_dot_solids_max:
-                capped_rate = m_dot_solids_max / m_per_particle
-                print(f"  [Feed cap] Requested {particle_feed_rate:.0f} particles/s "
-                      f"({m_dot_solids_requested*3600:.1f} kg/h) exceeds venturi capacity "
-                      f"({m_dot_solids_max*3600:.1f} kg/h at mu={max_loading:.1f})")
-                print(f"             Capped to {capped_rate:.0f} particles/s "
-                      f"({m_dot_solids_max*3600:.1f} kg/h)")
-                particle_feed_rate = capped_rate
+                print(f"  [Feed cap] Requested {m_dot_solids_requested*3600:.1f} kg/h "
+                      f"exceeds venturi capacity {m_dot_solids_max*3600:.1f} kg/h (mu={max_loading:.1f})")
+                print(f"             Capped to {m_dot_solids_capped*3600:.1f} kg/h")
+        else:
+            m_dot_solids_capped = 0.0
 
-        # Capacity: from caller or from feed rate * simulation time (with headroom)
+        # Capacity: from caller or auto-sized
         n_cap = num_particles_capacity
         if n_cap is None or n_cap <= 0:
-            n_cap = max(5000, int(particle_feed_rate * simulation_time_s * 1.2)) if particle_feed_rate > 0 else 10000
+            if particle_feed_rate > 0:
+                n_cap = max(5000, int(particle_feed_rate * simulation_time_s * 1.2))
+            else:
+                n_cap = 10000
+
+        # Simulation feed rate: spread N sim particles over a feeding window
+        # Each sim particle is a statistical representative; the physical rate
+        # (~billions/s for 50um particles) would dump them all in < 1 ms.
+        # Instead, compute feed duration from: total sim mass / capped mass flow rate
+        # then cap to a reasonable window (e.g., half the simulation time).
+        sim_feed_rate = 0.0
+        if continuous and n_cap > 0 and m_per_particle > 0:
+            total_sim_mass = n_cap * m_per_particle
+            if m_dot_solids_capped > 0:
+                # Physical feed time for the sim particle mass
+                phys_feed_time = total_sim_mass / m_dot_solids_capped
+                # But sim particles are a tiny fraction of real mass;
+                # scale feed duration so particles trickle in over meaningful time.
+                # Use: feed all particles in first half of sim, max 120s
+                feed_duration = min(simulation_time_s * 0.5, 120.0)
+                feed_duration = max(feed_duration, 1.0)  # at least 1s
+            else:
+                feed_duration = min(simulation_time_s * 0.5, 120.0)
+                feed_duration = max(feed_duration, 1.0)
+            sim_feed_rate = n_cap / feed_duration
+            print(f"  [Continuous feed] {n_cap} sim particles over {feed_duration:.0f}s "
+                  f"= {sim_feed_rate:.0f} particles/s")
+            if m_dot_solids_capped > 0:
+                print(f"  [Physical rate] {m_dot_solids_capped*3600:.1f} kg/h "
+                      f"(capped at mu={max_loading:.1f})")
 
         return cls(
             air_flow_rate_m3s=Q_m3s,
@@ -219,7 +248,7 @@ class ClassificationFlowConfig:
             visual_particle_diameter=particle_dia_m,
             sphericity=sphericity,
             num_particles=n_cap,
-            particle_feed_rate=particle_feed_rate,
+            particle_feed_rate=sim_feed_rate if continuous else particle_feed_rate,
             continuous_feeding=continuous,
             max_loading_ratio=max_loading,
             fluid_config=fluid_config or FluidConfig.air_at_stp(),

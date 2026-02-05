@@ -44,10 +44,12 @@ import numpy as np
 from ..geometry.assembly.complete_system import CompleteClassifierAssembly, CompleteSystemParams
 from .air_flow_physics import (
     DuctSegment,
+    BlowerGeometry,
     calculate_friction_factor,
     calculate_duct_pressure_drop,
+    calculate_blower_performance,
 )
-from ..utils.constants import PI
+from ..utils.constants import PI, TWO_PI
 from ..particles import FluidConfig
 
 # Default air properties (STP)
@@ -122,6 +124,76 @@ def _segment_from_component(duct, index: int) -> Optional[DuctSegmentResult]:
             k_factor=0.15 if p.is_contraction else 0.4,
         )
     return None
+
+
+def compute_blower_operating_point(
+    rpm: float,
+    rho: float = RHO_AIR,
+) -> Dict[str, float]:
+    """
+    Compute the actual blower operating point at a given RPM.
+
+    Uses the blower's parabolic pressure-flow curve intersected with
+    the system resistance curve (K = P_design / Q_design²) to find
+    the actual delivered flow rate — NOT the naive fan-law Q ∝ N.
+
+    Args:
+        rpm: Blower shaft speed [RPM].
+        rho: Air density [kg/m³].
+
+    Returns:
+        Dict with keys:
+            rpm, omega_rad_s,
+            Q_m3_s, Q_m3_h          — actual operating-point flow
+            Q_fan_law_m3_h          — naive fan-law flow (for comparison)
+            P_operating_Pa          — pressure at operating point
+            shaft_power_W           — shaft power
+            efficiency              — total efficiency
+    """
+    from ..geometry.components.centrifugal_blower import CentrifugalBlowerParams
+
+    bp = CentrifugalBlowerParams(
+        impeller_diameter=0.300,
+        impeller_width=0.060,
+        inlet_diameter=0.200,
+        hub_diameter=0.080,
+        num_blades=10,
+    )
+
+    blower_geo = BlowerGeometry(
+        impeller_diameter=bp.impeller_diameter,
+        impeller_width=bp.impeller_width,
+        inlet_diameter=bp.inlet_diameter,
+        hub_diameter=bp.hub_diameter,
+        num_blades=bp.num_blades,
+        blade_type=bp.blade_type,
+        scroll_diameter=bp.impeller_diameter * 1.2,
+        outlet_width=bp.outlet_width or bp.impeller_width,
+        outlet_height=bp.outlet_height or bp.impeller_width * 1.5,
+        design_rpm=bp.rpm,
+        design_flow_rate=bp.flow_rate,
+        design_pressure_rise=bp.pressure_rise,
+    )
+
+    omega = TWO_PI * rpm / 60.0
+    Q_op, P_op, W_shaft, eta = calculate_blower_performance(
+        blower_geo, omega, system_pressure_drop=0.0, rho=rho,
+    )
+
+    # Naive fan-law for comparison
+    n_ratio = rpm / bp.rpm
+    Q_fan_law_m3h = bp.flow_rate * n_ratio
+
+    return {
+        "rpm": rpm,
+        "omega_rad_s": omega,
+        "Q_m3_s": Q_op,
+        "Q_m3_h": Q_op * 3600.0,
+        "Q_fan_law_m3_h": Q_fan_law_m3h,
+        "P_operating_Pa": P_op,
+        "shaft_power_W": W_shaft,
+        "efficiency": eta,
+    }
 
 
 def extract_air_to_venturi_segments(
