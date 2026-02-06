@@ -13,9 +13,16 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QLineEdit, QLabel, QHBoxLayout, QPushButton, QDialog,
     QFormLayout, QComboBox, QDialogButtonBox, QGroupBox,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+    QAbstractItemView,
 )
-from PySide6.QtCore import Qt, Signal, QMimeData
-from PySide6.QtGui import QDrag, QIcon, QColor
+from PySide6.QtCore import Qt, Signal, QMimeData, QSize, QRect, QModelIndex
+from PySide6.QtGui import (
+    QDrag, QIcon, QColor, QPainter, QFont, QPen, QBrush,
+    QFontMetrics, QPainterPath,
+)
+
+from ..theme import COLORS
 
 
 @dataclass
@@ -254,6 +261,116 @@ COMPONENT_LIBRARY: List[ComponentInfo] = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Category metadata
+# --------------------------------------------------------------------------
+
+CATEGORY_ORDER = [
+    "Classification",
+    "Cyclones",
+    "Filtration",
+    "Feed System",
+    "Air System",
+    "Ductwork",
+    "Exhaust",
+]
+
+CATEGORY_COLORS = {
+    "Classification": QColor(COLORS.CAT_CLASSIFICATION),
+    "Cyclones":       QColor(COLORS.CAT_CYCLONES),
+    "Filtration":     QColor(COLORS.CAT_FILTRATION),
+    "Feed System":    QColor(COLORS.CAT_FEED),
+    "Air System":     QColor(COLORS.CAT_AIR),
+    "Ductwork":       QColor(COLORS.CAT_DUCTWORK),
+    "Exhaust":        QColor(COLORS.CAT_EXHAUST),
+}
+
+
+# --------------------------------------------------------------------------
+# Custom delegate for two-line rendering (name + description)
+# --------------------------------------------------------------------------
+
+class _ComponentItemDelegate(QStyledItemDelegate):
+    """Renders component items with name + description in a compact two-line card."""
+
+    _ROW_HEIGHT = 48  # total height per component item
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._name_font = QFont("Segoe UI", 10)
+        self._name_font.setWeight(QFont.Weight.DemiBold)
+        self._desc_font = QFont("Segoe UI", 8)
+
+    # -- sizing --
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        comp = index.data(Qt.ItemDataRole.UserRole)
+        if comp is not None:
+            return QSize(option.rect.width(), self._ROW_HEIGHT)
+        return super().sizeHint(option, index)
+
+    # -- painting --
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
+        comp: ComponentInfo = index.data(Qt.ItemDataRole.UserRole)
+        if comp is None:
+            # Category header -- let default painting handle it
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect: QRect = option.rect
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        is_hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+
+        # Background
+        if is_selected:
+            bg = QColor(COLORS.ACCENT_MUTED)
+        elif is_hovered:
+            bg = QColor(COLORS.BG_HOVER)
+        else:
+            bg = QColor(0, 0, 0, 0)  # transparent
+
+        if bg.alpha() > 0:
+            painter.setPen(Qt.PenStyle.NoPen)
+            path = QPainterPath()
+            path.addRoundedRect(rect.adjusted(2, 1, -2, -1).toRectF(), 5, 5)
+            painter.fillPath(path, QBrush(bg))
+
+        # Category color pip
+        cat_color = CATEGORY_COLORS.get(comp.category, QColor(COLORS.TEXT_MUTED))
+        pip_rect = QRect(rect.left() + 8, rect.top() + 10, 4, rect.height() - 20)
+        painter.setPen(Qt.PenStyle.NoPen)
+        pip_path = QPainterPath()
+        pip_path.addRoundedRect(pip_rect.toRectF(), 2, 2)
+        painter.fillPath(pip_path, QBrush(cat_color))
+
+        text_left = rect.left() + 20
+        text_right = rect.right() - 8
+
+        # Name
+        painter.setFont(self._name_font)
+        name_color = QColor(COLORS.ACCENT_HOVER) if is_selected else QColor(COLORS.TEXT_PRIMARY)
+        painter.setPen(QPen(name_color))
+        name_rect = QRect(text_left, rect.top() + 6, text_right - text_left, 20)
+        painter.drawText(name_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, comp.name)
+
+        # Description
+        painter.setFont(self._desc_font)
+        painter.setPen(QPen(QColor(COLORS.TEXT_MUTED)))
+        desc_rect = QRect(text_left, rect.top() + 26, text_right - text_left, 18)
+        elided = QFontMetrics(self._desc_font).elidedText(comp.description, Qt.TextElideMode.ElideRight, desc_rect.width())
+        painter.drawText(desc_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided)
+
+        painter.restore()
+
+
+# --------------------------------------------------------------------------
+# Main widget
+# --------------------------------------------------------------------------
+
 class ComponentPalette(QWidget):
     """
     Tree view panel showing available components organized by category.
@@ -273,19 +390,15 @@ class ComponentPalette(QWidget):
     def _setup_ui(self):
         """Setup the panel UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
 
-        # Search box
-        search_layout = QHBoxLayout()
-        search_label = QLabel("Search:")
+        # Search box -- icon hint inside
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Filter components...")
+        self.search_edit.setPlaceholderText("Search components...")
         self.search_edit.textChanged.connect(self._filter_tree)
         self.search_edit.setClearButtonEnabled(True)
-        search_layout.addWidget(search_label)
-        search_layout.addWidget(self.search_edit)
-        layout.addLayout(search_layout)
+        layout.addWidget(self.search_edit)
 
         # Component tree
         self.tree = QTreeWidget()
@@ -294,12 +407,23 @@ class ComponentPalette(QWidget):
         self.tree.setDragDropMode(QTreeWidget.DragDropMode.DragOnly)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.tree.setExpandsOnDoubleClick(False)
+        self.tree.setAnimated(True)
+        self.tree.setIndentation(14)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setUniformRowHeights(False)
+        self.tree.setMouseTracking(True)  # enable hover
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.tree.setToolTipDuration(5000)
+
+        # Custom delegate for rich item painting
+        self._delegate = _ComponentItemDelegate(self.tree)
+        self.tree.setItemDelegate(self._delegate)
+
         layout.addWidget(self.tree)
 
-        # Quick add button
+        # Quick-add button
         self.add_button = QPushButton("Add Selected")
+        self.add_button.setProperty("cssClass", "primary")
         self.add_button.clicked.connect(self._add_selected)
         layout.addWidget(self.add_button)
 
@@ -314,48 +438,30 @@ class ComponentPalette(QWidget):
                 categories[comp.category] = []
             categories[comp.category].append(comp)
 
-        # Define category order and colors
-        category_order = [
-            "Classification",
-            "Cyclones",
-            "Filtration",
-            "Feed System",
-            "Air System",
-            "Ductwork",
-            "Exhaust",
-        ]
-        category_colors = {
-            "Classification": QColor(100, 149, 237),  # Cornflower blue
-            "Cyclones": QColor(144, 238, 144),        # Light green
-            "Filtration": QColor(255, 182, 193),      # Light pink
-            "Feed System": QColor(255, 218, 185),     # Peach
-            "Air System": QColor(173, 216, 230),      # Light blue
-            "Ductwork": QColor(192, 192, 192),        # Silver
-            "Exhaust": QColor(221, 160, 221),         # Plum
-        }
-
         # Create tree items
-        for category in category_order:
+        for category in CATEGORY_ORDER:
             if category not in categories:
                 continue
 
-            # Category item
-            cat_item = QTreeWidgetItem([category])
+            count = len(categories[category])
+            cat_item = QTreeWidgetItem([f"{category}  ({count})"])
             cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+
             font = cat_item.font(0)
             font.setBold(True)
+            font.setPointSize(9)
             cat_item.setFont(0, font)
 
-            color = category_colors.get(category, QColor(200, 200, 200))
-            cat_item.setBackground(0, color.darker(200))
+            color = CATEGORY_COLORS.get(category, QColor(200, 200, 200))
+            cat_item.setForeground(0, QBrush(color))
 
             self.tree.addTopLevelItem(cat_item)
 
             # Component items
             for comp in categories[category]:
-                comp_item = QTreeWidgetItem([comp.name])
+                comp_item = QTreeWidgetItem([""])
                 comp_item.setData(0, Qt.ItemDataRole.UserRole, comp)
-                comp_item.setToolTip(0, comp.description)
+                comp_item.setToolTip(0, f"{comp.name}\n{comp.description}")
                 cat_item.addChild(comp_item)
 
             cat_item.setExpanded(True)
@@ -372,7 +478,6 @@ class ComponentPalette(QWidget):
                 comp_item = cat_item.child(j)
                 comp: ComponentInfo = comp_item.data(0, Qt.ItemDataRole.UserRole)
 
-                # Match against name, category, or description
                 visible = (
                     text in comp.name.lower() or
                     text in comp.category.lower() or
@@ -445,7 +550,7 @@ class ComponentAddDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("Add Component")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(420)
 
         self._selected_comp: Optional[ComponentInfo] = None
         self._param_widgets: Dict[str, QWidget] = {}
@@ -538,6 +643,8 @@ class ComponentAddDialog(QDialog):
         """Get the selected component and parameters."""
         if not self._selected_comp:
             return "", {}
+
+        from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
 
         params = {}
         for param_name, widget in self._param_widgets.items():

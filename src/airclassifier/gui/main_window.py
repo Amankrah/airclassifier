@@ -12,10 +12,14 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QDockWidget, QToolBar, QStatusBar, QMenuBar,
     QMenu, QMessageBox, QFileDialog, QSplitter,
-    QLabel, QProgressBar,
+    QLabel, QProgressBar, QFrame, QPushButton,
+    QGraphicsOpacityEffect, QSizePolicy,
 )
-from PySide6.QtCore import Qt, QSettings, Signal, Slot, QTimer
-from PySide6.QtGui import QAction, QIcon, QKeySequence, QCloseEvent
+from PySide6.QtCore import (
+    Qt, QSettings, Signal, Slot, QTimer,
+    QPropertyAnimation, QEasingCurve, QParallelAnimationGroup,
+)
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QCloseEvent, QFont
 
 from .panels.component_palette import ComponentPalette
 from .panels.property_editor import PropertyEditor
@@ -23,6 +27,134 @@ from .panels.simulation_control import SimulationControlPanel
 from .panels.results_panel import ResultsPanel
 from .widgets.viewport_3d import Viewport3D
 from .widgets.assembly_canvas import AssemblyCanvas
+from .theme import COLORS
+
+
+class _WelcomeOverlay(QWidget):
+    """
+    Translucent overlay shown when no project is loaded.
+
+    Provides quick-start actions and guides new users.
+    """
+
+    new_project_clicked = Signal()
+    open_project_clicked = Signal()
+    load_preset_clicked = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setStyleSheet(f"background: rgba(20, 20, 23, 210); border-radius: 0;")
+
+        outer = QVBoxLayout(self)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        card = QFrame()
+        card.setFixedSize(480, 380)
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {COLORS.BG_ELEVATED};
+                border: 1px solid {COLORS.BORDER};
+                border-radius: 12px;
+            }}
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(36, 32, 36, 32)
+        card_layout.setSpacing(8)
+
+        # Title
+        title = QLabel("Air Classifier Designer")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(f"font-size: 18pt; font-weight: 700; color: {COLORS.TEXT_PRIMARY}; border: none; background: transparent;")
+        card_layout.addWidget(title)
+
+        subtitle = QLabel("Interactive design & simulation for air classification systems")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(f"font-size: 10pt; color: {COLORS.TEXT_SECONDARY}; border: none; margin-bottom: 16px; background: transparent;")
+        card_layout.addWidget(subtitle)
+
+        card_layout.addSpacing(10)
+
+        # Quick-start buttons
+        btn_style_primary = f"""
+            QPushButton {{
+                background: {COLORS.ACCENT};
+                color: {COLORS.TEXT_INVERSE};
+                border: none;
+                border-radius: 6px;
+                padding: 10px 20px;
+                font-size: 11pt;
+                font-weight: 600;
+                min-height: 28px;
+            }}
+            QPushButton:hover {{ background: {COLORS.ACCENT_HOVER}; }}
+            QPushButton:pressed {{ background: {COLORS.ACCENT_PRESSED}; }}
+        """
+        btn_style_secondary = f"""
+            QPushButton {{
+                background: {COLORS.BG_SURFACE};
+                color: {COLORS.TEXT_PRIMARY};
+                border: 1px solid {COLORS.BORDER};
+                border-radius: 6px;
+                padding: 10px 20px;
+                font-size: 10pt;
+                min-height: 28px;
+            }}
+            QPushButton:hover {{ background: {COLORS.BG_HOVER}; border-color: {COLORS.TEXT_MUTED}; }}
+        """
+
+        new_btn = QPushButton("  New Project")
+        new_btn.setStyleSheet(btn_style_primary)
+        new_btn.clicked.connect(self.new_project_clicked.emit)
+        card_layout.addWidget(new_btn)
+
+        open_btn = QPushButton("  Open Existing Project...")
+        open_btn.setStyleSheet(btn_style_secondary)
+        open_btn.clicked.connect(self.open_project_clicked.emit)
+        card_layout.addWidget(open_btn)
+
+        preset_btn = QPushButton("  Load Preset Configuration")
+        preset_btn.setStyleSheet(btn_style_secondary)
+        preset_btn.clicked.connect(self.load_preset_clicked.emit)
+        card_layout.addWidget(preset_btn)
+
+        card_layout.addSpacing(10)
+
+        hint = QLabel("Tip: Drag components from the palette on the left into the assembly canvas")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"font-size: 9pt; color: {COLORS.TEXT_MUTED}; border: none; background: transparent;")
+        card_layout.addWidget(hint)
+
+        outer.addWidget(card)
+
+    def fade_out(self, duration: int = 350):
+        """Animate the overlay away."""
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity")
+        anim.setDuration(duration)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.finished.connect(self._on_fade_finished)
+        anim.start()
+        self._anim = anim          # prevent GC
+
+    def _on_fade_finished(self):
+        self.hide()
+        self.setParent(None)
+        self.deleteLater()
+
+
+class _StatusSeparator(QFrame):
+    """Thin vertical line for the status bar."""
+    def __init__(self):
+        super().__init__()
+        self.setFrameShape(QFrame.Shape.VLine)
+        self.setFixedWidth(1)
+        self.setStyleSheet(f"color: {COLORS.BORDER};")
 
 
 class MainWindow(QMainWindow):
@@ -30,26 +162,25 @@ class MainWindow(QMainWindow):
     Main application window for Air Classifier Designer.
 
     Layout:
-    ┌─────────────────────────────────────────────────────────────────┐
-    │  Menu Bar                                                       │
-    ├─────────────────────────────────────────────────────────────────┤
-    │  Tool Bar                                                       │
-    ├────────────┬────────────────────────────────┬───────────────────┤
-    │            │                                │                   │
-    │ Component  │     Central Area               │   Property        │
-    │ Palette    │  ┌──────────────────────────┐  │   Editor          │
-    │            │  │   3D Viewport            │  │                   │
-    │            │  │                          │  │                   │
-    │            │  ├──────────────────────────┤  │                   │
-    │            │  │   Assembly Canvas        │  │                   │
-    │            │  │   (Node Editor)          │  │                   │
-    │            │  └──────────────────────────┘  │                   │
-    │            │                                │                   │
-    ├────────────┴────────────────────────────────┴───────────────────┤
-    │  Simulation Control / Results Panel (Tabbed)                    │
-    ├─────────────────────────────────────────────────────────────────┤
-    │  Status Bar                                                     │
-    └─────────────────────────────────────────────────────────────────┘
+    +-------------------------------------------------------------+
+    |  Menu Bar                                                     |
+    +-------------------------------------------------------------+
+    |  Tool Bar                                                     |
+    +------------+-------------------------------+-----------------+
+    |            |                               |                 |
+    | Components |     Central Area              |  Properties     |
+    |            |  +-------------------------+  |                 |
+    |            |  |   3D Viewport           |  |                 |
+    |            |  |                         |  |                 |
+    |            |  +-------------------------+  |                 |
+    |            |  |   Assembly Canvas       |  |                 |
+    |            |  |   (Node Editor)         |  |                 |
+    |            |  +-------------------------+  |                 |
+    +------------+-------------------------------+-----------------+
+    |  Simulation Control / Results Panel (Tabbed)                  |
+    +-------------------------------------------------------------+
+    |  Status Bar                                                   |
+    +-------------------------------------------------------------+
     """
 
     # Signals
@@ -84,6 +215,11 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.timeout.connect(self._auto_save)
         self._auto_save_timer.start(60000)  # Auto-save every minute
 
+        # Show welcome overlay after UI is ready
+        QTimer.singleShot(0, self._show_welcome_overlay)
+
+    # ------------------------------------------------------------------ setup
+
     def _setup_window(self):
         """Configure main window properties."""
         self.setWindowTitle("Air Classifier Designer")
@@ -96,6 +232,41 @@ class MainWindow(QMainWindow):
             QMainWindow.DockOption.AllowTabbedDocks |
             QMainWindow.DockOption.AnimatedDocks
         )
+
+    def _show_welcome_overlay(self):
+        """Show the welcome overlay on top of the central widget."""
+        self._welcome = _WelcomeOverlay(self)
+        self._welcome.new_project_clicked.connect(self._dismiss_welcome_and_new)
+        self._welcome.open_project_clicked.connect(self._dismiss_welcome_and_open)
+        self._welcome.load_preset_clicked.connect(self._dismiss_welcome_and_preset)
+        self._welcome.setGeometry(self.centralWidget().geometry())
+        self._welcome.show()
+        self._welcome.raise_()
+
+    def _dismiss_welcome(self):
+        if hasattr(self, "_welcome") and self._welcome is not None:
+            self._welcome.fade_out()
+            self._welcome = None
+
+    def _dismiss_welcome_and_new(self):
+        self._dismiss_welcome()
+        self.new_project()
+
+    def _dismiss_welcome_and_open(self):
+        self._dismiss_welcome()
+        self.open_project()
+
+    def _dismiss_welcome_and_preset(self):
+        self._dismiss_welcome()
+        self.load_preset()
+
+    def resizeEvent(self, event):
+        """Keep overlay sized to the central area."""
+        super().resizeEvent(event)
+        if hasattr(self, "_welcome") and self._welcome is not None and self._welcome.isVisible():
+            self._welcome.setGeometry(self.centralWidget().geometry())
+
+    # --------------------------------------------------------------- actions
 
     def _create_actions(self):
         """Create all application actions."""
@@ -208,6 +379,8 @@ class MainWindow(QMainWindow):
         self.action_about = QAction("&About", self)
         self.action_about.triggered.connect(self.show_about)
 
+    # ----------------------------------------------------------------- menus
+
     def _create_menus(self):
         """Create application menus."""
         menubar = self.menuBar()
@@ -265,12 +438,15 @@ class MainWindow(QMainWindow):
         help_menu.addSeparator()
         help_menu.addAction(self.action_about)
 
+    # -------------------------------------------------------------- toolbars
+
     def _create_toolbars(self):
-        """Create application toolbars."""
+        """Create application toolbars with descriptive labels."""
         # Main toolbar
         main_toolbar = QToolBar("Main", self)
         main_toolbar.setMovable(True)
         main_toolbar.setObjectName("MainToolbar")
+        main_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
         main_toolbar.addAction(self.action_new)
         main_toolbar.addAction(self.action_open)
@@ -285,6 +461,7 @@ class MainWindow(QMainWindow):
         sim_toolbar = QToolBar("Simulation", self)
         sim_toolbar.setMovable(True)
         sim_toolbar.setObjectName("SimulationToolbar")
+        sim_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
         sim_toolbar.addAction(self.action_run_sim)
         sim_toolbar.addAction(self.action_pause_sim)
@@ -295,6 +472,8 @@ class MainWindow(QMainWindow):
 
         self.addToolBar(sim_toolbar)
 
+    # --------------------------------------------------------- central widget
+
     def _create_central_widget(self):
         """Create the central widget with viewport and assembly canvas."""
         central_widget = QWidget()
@@ -304,67 +483,78 @@ class MainWindow(QMainWindow):
 
         # Create splitter for viewport and assembly canvas
         self.main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter.setHandleWidth(3)
 
         # 3D Viewport (top) - give it more space
         self.viewport_3d = Viewport3D()
-        self.viewport_3d.setMinimumHeight(400)  # Ensure minimum height for viewport
+        self.viewport_3d.setMinimumHeight(400)
         self.main_splitter.addWidget(self.viewport_3d)
 
         # Assembly Canvas (bottom) - node editor for schematic view
         self.assembly_canvas = AssemblyCanvas()
         self.assembly_canvas.setMinimumHeight(150)
-        self.assembly_canvas.setMaximumHeight(300)  # Limit canvas height
+        self.assembly_canvas.setMaximumHeight(300)
         self.main_splitter.addWidget(self.assembly_canvas)
 
         # Set initial sizes (80% viewport, 20% canvas)
         self.main_splitter.setSizes([800, 200])
-        self.main_splitter.setStretchFactor(0, 4)  # Viewport gets 4x stretch
-        self.main_splitter.setStretchFactor(1, 1)  # Canvas gets 1x stretch
+        self.main_splitter.setStretchFactor(0, 4)
+        self.main_splitter.setStretchFactor(1, 1)
 
         layout.addWidget(self.main_splitter)
         self.setCentralWidget(central_widget)
 
+    # ------------------------------------------------------------- dock area
+
     def _create_dock_widgets(self):
         """Create all dock widgets."""
-        # Component Palette (left) - constrain width to give more room to viewport
+        # Component Palette (left) -- constrain width to give more room to viewport
         self.component_palette = ComponentPalette()
-        self.component_palette.setMinimumWidth(180)
-        self.component_palette.setMaximumWidth(280)
+        self.component_palette.setMinimumWidth(200)
+        self.component_palette.setMaximumWidth(310)
         palette_dock = QDockWidget("Components", self)
         palette_dock.setObjectName("ComponentPaletteDock")
         palette_dock.setWidget(self.component_palette)
-        palette_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        palette_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, palette_dock)
         self._view_menu.addAction(palette_dock.toggleViewAction())
 
-        # Property Editor (right) - constrain width to give more room to viewport
+        # Property Editor (right)
         self.property_editor = PropertyEditor()
-        self.property_editor.setMinimumWidth(200)
-        self.property_editor.setMaximumWidth(320)
+        self.property_editor.setMinimumWidth(220)
+        self.property_editor.setMaximumWidth(340)
         property_dock = QDockWidget("Properties", self)
         property_dock.setObjectName("PropertyEditorDock")
         property_dock.setWidget(self.property_editor)
-        property_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        property_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, property_dock)
         self._view_menu.addAction(property_dock.toggleViewAction())
 
-        # Simulation Control (bottom) - constrain height to give more room to viewport
+        # Simulation Control (bottom)
         self.sim_control = SimulationControlPanel()
-        self.sim_control.setMaximumHeight(350)  # Limit panel height
+        self.sim_control.setMaximumHeight(350)
         sim_dock = QDockWidget("Simulation", self)
         sim_dock.setObjectName("SimulationDock")
         sim_dock.setWidget(self.sim_control)
-        sim_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.TopDockWidgetArea)
+        sim_dock.setAllowedAreas(
+            Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.TopDockWidgetArea
+        )
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, sim_dock)
         self._view_menu.addAction(sim_dock.toggleViewAction())
 
         # Results Panel (bottom, tabbed with simulation)
         self.results_panel = ResultsPanel()
-        self.results_panel.setMaximumHeight(350)  # Limit panel height
+        self.results_panel.setMaximumHeight(350)
         results_dock = QDockWidget("Results", self)
         results_dock.setObjectName("ResultsDock")
         results_dock.setWidget(self.results_panel)
-        results_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.TopDockWidgetArea)
+        results_dock.setAllowedAreas(
+            Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.TopDockWidgetArea
+        )
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, results_dock)
         self.tabifyDockWidget(sim_dock, results_dock)
         self._view_menu.addAction(results_dock.toggleViewAction())
@@ -372,18 +562,34 @@ class MainWindow(QMainWindow):
         # Raise simulation dock by default
         sim_dock.raise_()
 
+    # -------------------------------------------------------------- statusbar
+
     def _create_status_bar(self):
-        """Create the status bar."""
+        """Create a segmented status bar with clear zones."""
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
 
+        # Left: transient messages (handled by Qt automatically)
+
+        # Right permanent section: GPU | components | progress
+        self._component_count_label = QLabel("0 components")
+        self._component_count_label.setStyleSheet(f"color: {COLORS.TEXT_MUTED};")
+        status_bar.addPermanentWidget(self._component_count_label)
+
+        status_bar.addPermanentWidget(_StatusSeparator())
+
         # GPU status
         self.gpu_status_label = QLabel("GPU: Checking...")
+        self.gpu_status_label.setStyleSheet(f"color: {COLORS.TEXT_MUTED};")
         status_bar.addPermanentWidget(self.gpu_status_label)
+
+        status_bar.addPermanentWidget(_StatusSeparator())
 
         # Simulation progress
         self.sim_progress = QProgressBar()
-        self.sim_progress.setMaximumWidth(200)
+        self.sim_progress.setFixedWidth(140)
+        self.sim_progress.setFixedHeight(14)
+        self.sim_progress.setTextVisible(False)
         self.sim_progress.setVisible(False)
         status_bar.addPermanentWidget(self.sim_progress)
 
@@ -399,16 +605,24 @@ class MainWindow(QMainWindow):
             cuda_devices = [d for d in devices if "cuda" in str(d).lower()]
             if cuda_devices:
                 self.gpu_status_label.setText(f"GPU: {cuda_devices[0]} Ready")
-                self.gpu_status_label.setStyleSheet("color: #4ec9b0;")
+                self.gpu_status_label.setStyleSheet(f"color: {COLORS.SUCCESS};")
             else:
                 self.gpu_status_label.setText("GPU: CPU Mode (No CUDA)")
-                self.gpu_status_label.setStyleSheet("color: #dcdcaa;")
+                self.gpu_status_label.setStyleSheet(f"color: {COLORS.WARNING};")
         except ImportError:
             self.gpu_status_label.setText("GPU: Warp Not Installed")
-            self.gpu_status_label.setStyleSheet("color: #f14c4c;")
+            self.gpu_status_label.setStyleSheet(f"color: {COLORS.DANGER};")
         except Exception as e:
             self.gpu_status_label.setText(f"GPU: Error - {str(e)[:30]}")
-            self.gpu_status_label.setStyleSheet("color: #f14c4c;")
+            self.gpu_status_label.setStyleSheet(f"color: {COLORS.DANGER};")
+
+    def _update_component_count(self):
+        """Refresh the component count label in the status bar."""
+        count = len(self.assembly_canvas._nodes)
+        suffix = "component" if count == 1 else "components"
+        self._component_count_label.setText(f"{count} {suffix}")
+
+    # --------------------------------------------------------- state save/restore
 
     def _restore_state(self):
         """Restore window state from settings."""
@@ -426,6 +640,8 @@ class MainWindow(QMainWindow):
         settings = QSettings()
         settings.setValue("MainWindow/geometry", self.saveGeometry())
         settings.setValue("MainWindow/state", self.saveState())
+
+    # --------------------------------------------------------- signal wiring
 
     def _connect_signals(self):
         """Connect internal signals."""
@@ -449,6 +665,11 @@ class MainWindow(QMainWindow):
             self.viewport_3d.update_assembly
         )
 
+        # Assembly canvas changes -> update status bar count
+        self.assembly_canvas.assembly_changed.connect(
+            lambda _: self._update_component_count()
+        )
+
         # Simulation control signals
         self.sim_control.run_requested.connect(self.run_simulation)
         self.sim_control.pause_requested.connect(self.pause_simulation)
@@ -468,7 +689,9 @@ class MainWindow(QMainWindow):
         self._is_modified = modified
         self._update_window_title()
 
-    # --- File Operations ---
+    # ================================================================
+    #  File Operations
+    # ================================================================
 
     @Slot()
     def new_project(self):
@@ -494,6 +717,7 @@ class MainWindow(QMainWindow):
         self.viewport_3d.clear()
         self.property_editor.clear()
         self._update_window_title()
+        self._update_component_count()
         self.statusBar().showMessage("New project created", 3000)
 
     @Slot()
@@ -520,6 +744,7 @@ class MainWindow(QMainWindow):
             self.viewport_3d.load_state(data.get("viewport", {}))
             self._is_modified = False
             self._update_window_title()
+            self._update_component_count()
             self.project_changed.emit(str(path))
             self.statusBar().showMessage(f"Opened: {path.name}", 3000)
         except Exception as e:
@@ -609,7 +834,9 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Export Error", str(e))
 
-    # --- Edit Operations ---
+    # ================================================================
+    #  Edit Operations
+    # ================================================================
 
     @Slot()
     def undo(self):
@@ -628,12 +855,13 @@ class MainWindow(QMainWindow):
         dialog = PreferencesDialog(self)
         dialog.exec()
 
-    # --- View Operations ---
+    # ================================================================
+    #  View Operations
+    # ================================================================
 
     @Slot()
     def reset_layout(self):
         """Reset window layout to default."""
-        # Remove saved state
         settings = QSettings()
         settings.remove("MainWindow/state")
         settings.remove("MainWindow/geometry")
@@ -651,7 +879,9 @@ class MainWindow(QMainWindow):
         else:
             self.showNormal()
 
-    # --- Assembly Operations ---
+    # ================================================================
+    #  Assembly Operations
+    # ================================================================
 
     @Slot()
     def add_component(self):
@@ -677,7 +907,7 @@ class MainWindow(QMainWindow):
         """Validate the current assembly."""
         errors = self.assembly_canvas.validate()
         if errors:
-            error_text = "\n".join(f"- {e}" for e in errors)
+            error_text = "\n".join(f"  - {e}" for e in errors)
             QMessageBox.warning(
                 self, "Validation Errors",
                 f"Assembly has the following issues:\n\n{error_text}"
@@ -698,26 +928,19 @@ class MainWindow(QMainWindow):
             self.assembly_canvas.load_preset(preset)
             self.viewport_3d.rebuild_from_canvas(self.assembly_canvas)
             self._set_modified(True)
+            self._update_component_count()
             self.statusBar().showMessage(f"Loaded preset: {preset['name']}", 3000)
 
     @Slot()
     def build_full_system(self):
-        """
-        Build and display the complete classifier assembly in 3D viewport.
-
-        This creates the actual CompleteClassifierAssembly from complete_system.py
-        based on current settings (with or without preclassification) and displays
-        the full 3D geometry including feed system, air system, and exhaust.
-        """
+        """Build and display the complete classifier assembly in 3D viewport."""
         from .simulation_backend import SimulationConfig, SimulationBackend
 
         self.statusBar().showMessage("Building complete system...")
 
         try:
-            # Get settings from simulation control panel
             settings = self.sim_control.get_settings()
 
-            # Create config from current settings
             config = SimulationConfig(
                 assembly_data=self.assembly_canvas.get_assembly_data(),
                 use_preclassification=settings.use_preclassification,
@@ -726,14 +949,12 @@ class MainWindow(QMainWindow):
                 include_feed_system=settings.include_feed_system,
                 include_air_system=settings.include_air_system,
                 include_exhaust=settings.include_exhaust,
-                device="cpu",  # Use CPU for geometry only
+                device="cpu",
             )
 
-            # Create backend and build assembly (geometry only, no simulation)
             backend = SimulationBackend(config)
             backend._build_assembly_from_gui()
 
-            # Get mesh and display in viewport
             vertices, indices = backend.get_mesh()
             if vertices is not None and len(vertices) > 0:
                 self.viewport_3d.update_from_backend_mesh(vertices, indices)
@@ -742,7 +963,6 @@ class MainWindow(QMainWindow):
                 msg = f"Built {mode}: {len(vertices):,} vertices, {len(indices)//3:,} triangles"
                 self.statusBar().showMessage(msg, 5000)
 
-                # Show summary
                 summary = backend.get_system_summary()
                 self.sim_control._log(f"System built: {summary.get('mode', 'unknown')}")
             else:
@@ -756,12 +976,13 @@ class MainWindow(QMainWindow):
             )
             self.statusBar().showMessage("Build failed", 3000)
 
-    # --- Simulation Operations ---
+    # ================================================================
+    #  Simulation Operations
+    # ================================================================
 
     @Slot()
     def run_simulation(self):
         """Start or resume simulation."""
-        # Validate first
         errors = self.assembly_canvas.validate()
         if errors:
             QMessageBox.warning(
@@ -778,7 +999,6 @@ class MainWindow(QMainWindow):
         self.sim_progress.setVisible(True)
         self.sim_progress.setValue(0)
 
-        # Start simulation in sim control panel
         assembly_data = self.assembly_canvas.get_assembly_data()
         self.sim_control.start_simulation(assembly_data)
 
@@ -810,7 +1030,9 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.sim_control.set_settings(dialog.get_settings())
 
-    # --- Help Operations ---
+    # ================================================================
+    #  Help Operations
+    # ================================================================
 
     @Slot()
     def show_help(self):
@@ -824,7 +1046,7 @@ class MainWindow(QMainWindow):
         """Show about dialog."""
         QMessageBox.about(
             self, "About Air Classifier Designer",
-            """<h2>Air Classifier Designer</h2>
+            f"""<h2>Air Classifier Designer</h2>
             <p>Version 1.0.0</p>
             <p>Interactive design and simulation tool for air classification systems.</p>
             <p>Powered by NVIDIA Warp for GPU-accelerated multiphysics simulation.</p>
@@ -839,7 +1061,9 @@ class MainWindow(QMainWindow):
             """
         )
 
-    # --- Event Handlers ---
+    # ================================================================
+    #  Event Handlers
+    # ================================================================
 
     def closeEvent(self, event: QCloseEvent):
         """Handle window close event."""

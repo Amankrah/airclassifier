@@ -12,9 +12,12 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
     QPushButton, QLabel, QProgressBar, QSpinBox, QDoubleSpinBox,
     QComboBox, QCheckBox, QFrame, QTabWidget, QTextEdit,
+    QGridLayout, QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QThread, QObject
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont, QTextCursor
+
+from ..theme import COLORS
 
 
 @dataclass
@@ -110,12 +113,10 @@ class SimulationWorker(QObject):
 
     def _setup_simulation(self):
         """Setup simulation from assembly data."""
-        # This would initialize the Warp simulation
         pass
 
     def _step_simulation(self):
         """Execute one simulation step."""
-        # This would call the Warp kernels
         pass
 
     def _get_stats(self) -> Dict[str, Any]:
@@ -137,18 +138,53 @@ class SimulationWorker(QObject):
         }
 
     def pause(self):
-        """Pause the simulation."""
         self._is_paused = True
 
     def resume(self):
-        """Resume the simulation."""
         self._is_paused = False
 
     def stop(self):
-        """Stop the simulation."""
         self._is_running = False
         self._is_paused = False
 
+
+# --------------------------------------------------------------------------
+# Reusable KPI / stat card widget
+# --------------------------------------------------------------------------
+
+class _StatCard(QFrame):
+    """A compact metric card showing a value with a label."""
+
+    def __init__(self, label: str, initial_value: str = "--", accent: str = COLORS.TEXT_PRIMARY, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: {COLORS.BG_DARK};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 6px;
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(2)
+
+        self._value_label = QLabel(initial_value)
+        self._value_label.setStyleSheet(f"font-size: 16pt; font-weight: 700; color: {accent}; border: none; background: transparent;")
+        self._value_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._value_label)
+
+        title = QLabel(label)
+        title.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED}; border: none; background: transparent;")
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(title)
+
+    def set_value(self, text: str):
+        self._value_label.setText(text)
+
+
+# --------------------------------------------------------------------------
+# Main panel
+# --------------------------------------------------------------------------
 
 class SimulationControlPanel(QWidget):
     """
@@ -180,8 +216,8 @@ class SimulationControlPanel(QWidget):
     def _setup_ui(self):
         """Setup the panel UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
 
         # Create tab widget
         tabs = QTabWidget()
@@ -199,79 +235,77 @@ class SimulationControlPanel(QWidget):
         log_tab = self._create_log_tab()
         tabs.addTab(log_tab, "Log")
 
+    # ---------------------------------------------------------------- control
+
     def _create_control_tab(self) -> QWidget:
-        """Create the simulation control tab."""
+        """Create the simulation control tab with dashboard cards."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
 
-        # Control buttons
+        # --- button row ---
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(6)
 
-        self.run_btn = QPushButton("Run")
-        self.run_btn.setMinimumHeight(36)
-        self.run_btn.setStyleSheet("background-color: #4CAF50; font-weight: bold;")
+        self.run_btn = QPushButton("  Run")
+        self.run_btn.setProperty("cssClass", "success")
+        self.run_btn.setMinimumHeight(34)
         self.run_btn.clicked.connect(self._on_run_clicked)
         button_layout.addWidget(self.run_btn)
 
-        self.pause_btn = QPushButton("Pause")
-        self.pause_btn.setMinimumHeight(36)
+        self.pause_btn = QPushButton("  Pause")
+        self.pause_btn.setMinimumHeight(34)
         self.pause_btn.setEnabled(False)
         self.pause_btn.clicked.connect(self._on_pause_clicked)
         button_layout.addWidget(self.pause_btn)
 
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setMinimumHeight(36)
+        self.stop_btn = QPushButton("  Stop")
+        self.stop_btn.setProperty("cssClass", "danger")
+        self.stop_btn.setMinimumHeight(34)
         self.stop_btn.setEnabled(False)
-        self.stop_btn.setStyleSheet("background-color: #f44336;")
         self.stop_btn.clicked.connect(self._on_stop_clicked)
         button_layout.addWidget(self.stop_btn)
 
         layout.addLayout(button_layout)
 
-        # Progress
-        progress_group = QGroupBox("Progress")
-        progress_layout = QFormLayout(progress_group)
-
+        # --- progress ---
         self.progress_bar = QProgressBar()
         self.progress_bar.setTextVisible(True)
-        progress_layout.addRow("Overall:", self.progress_bar)
+        self.progress_bar.setFixedHeight(18)
+        self.progress_bar.setFormat("%p%")
+        layout.addWidget(self.progress_bar)
 
-        self.time_label = QLabel("0.000 s")
-        progress_layout.addRow("Simulation Time:", self.time_label)
+        # --- KPI cards grid ---
+        cards_grid = QGridLayout()
+        cards_grid.setSpacing(6)
 
-        self.step_label = QLabel("0")
-        progress_layout.addRow("Step:", self.step_label)
+        self.card_time = _StatCard("Simulation Time", "0.000 s", COLORS.ACCENT)
+        cards_grid.addWidget(self.card_time, 0, 0)
 
-        self.fps_label = QLabel("-- fps")
-        progress_layout.addRow("Performance:", self.fps_label)
+        self.card_particles = _StatCard("Active Particles", "0", COLORS.INFO)
+        cards_grid.addWidget(self.card_particles, 0, 1)
 
-        layout.addWidget(progress_group)
+        self.card_fines = _StatCard("Fines Collected", "0", COLORS.SUCCESS)
+        cards_grid.addWidget(self.card_fines, 1, 0)
 
-        # Live statistics
-        stats_group = QGroupBox("Statistics")
-        stats_layout = QFormLayout(stats_group)
+        self.card_coarse = _StatCard("Coarse Collected", "0", COLORS.WARNING)
+        cards_grid.addWidget(self.card_coarse, 1, 1)
 
-        self.active_particles_label = QLabel("0")
-        stats_layout.addRow("Active Particles:", self.active_particles_label)
+        self.card_efficiency = _StatCard("Separation Efficiency", "--", COLORS.CAT_CLASSIFICATION)
+        cards_grid.addWidget(self.card_efficiency, 2, 0, 1, 2)
 
-        self.fines_collected_label = QLabel("0")
-        stats_layout.addRow("Fines Collected:", self.fines_collected_label)
-
-        self.coarse_collected_label = QLabel("0")
-        stats_layout.addRow("Coarse Collected:", self.coarse_collected_label)
-
-        self.efficiency_label = QLabel("--")
-        stats_layout.addRow("Separation Efficiency:", self.efficiency_label)
-
-        layout.addWidget(stats_group)
+        layout.addLayout(cards_grid)
 
         layout.addStretch()
         return widget
+
+    # --------------------------------------------------------------- settings
 
     def _create_settings_tab(self) -> QWidget:
         """Create the simulation settings tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(8)
 
         # Time settings
         time_group = QGroupBox("Time Settings")
@@ -390,6 +424,8 @@ class SimulationControlPanel(QWidget):
         mode_name = "Full System" if index == 0 else "Wheel-Only"
         self._log(f"Assembly mode: {mode_name}")
 
+    # ------------------------------------------------------------------- log
+
     def _create_log_tab(self) -> QWidget:
         """Create the simulation log tab."""
         widget = QWidget()
@@ -397,28 +433,36 @@ class SimulationControlPanel(QWidget):
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet("font-family: Consolas, monospace; font-size: 10px;")
+        self.log_text.setStyleSheet(f"""
+            QTextEdit {{
+                font-family: 'Cascadia Code', 'Consolas', monospace;
+                font-size: 9pt;
+                background: {COLORS.BG_DARKEST};
+                color: {COLORS.TEXT_SECONDARY};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 4px;
+            }}
+        """)
         layout.addWidget(self.log_text)
 
         clear_btn = QPushButton("Clear Log")
+        clear_btn.setProperty("cssClass", "ghost")
         clear_btn.clicked.connect(self.log_text.clear)
         layout.addWidget(clear_btn)
 
         return widget
 
+    # ----------------------------------------------------------- button handlers
+
     def _on_run_clicked(self):
-        """Handle run button click."""
         if self._worker and self._worker._is_paused:
-            # Resume
             self._worker.resume()
             self.run_btn.setEnabled(False)
             self.pause_btn.setEnabled(True)
         else:
-            # Start new simulation
             self.run_requested.emit()
 
     def _on_pause_clicked(self):
-        """Handle pause button click."""
         if self._worker:
             self._worker.pause()
         self.run_btn.setEnabled(True)
@@ -426,7 +470,6 @@ class SimulationControlPanel(QWidget):
         self.pause_requested.emit()
 
     def _on_stop_clicked(self):
-        """Handle stop button click."""
         if self._worker:
             self._worker.stop()
         self._cleanup_thread()
@@ -434,6 +477,8 @@ class SimulationControlPanel(QWidget):
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.stop_requested.emit()
+
+    # ----------------------------------------------------------- simulation
 
     def start_simulation(self, assembly_data: Dict[str, Any]):
         """Start a new simulation."""
@@ -464,20 +509,17 @@ class SimulationControlPanel(QWidget):
         self._update_timer.start(100)
 
     def pause_simulation(self):
-        """Pause the running simulation."""
         if self._worker:
             self._worker.pause()
         self._log("Simulation paused")
 
     def stop_simulation(self):
-        """Stop the simulation."""
         if self._worker:
             self._worker.stop()
         self._cleanup_thread()
         self._log("Simulation stopped")
 
     def _cleanup_thread(self):
-        """Clean up worker thread."""
         self._update_timer.stop()
         if self._thread:
             self._thread.quit()
@@ -487,23 +529,18 @@ class SimulationControlPanel(QWidget):
 
     @Slot(int, float, dict)
     def _on_progress(self, progress: int, time: float, stats: Dict[str, Any]):
-        """Handle progress update from worker."""
         self.progress_bar.setValue(progress)
-        self.time_label.setText(f"{time:.3f} s")
-        self.step_label.setText(str(int(time / self._settings.dt)))
-
-        # Update statistics
-        self.active_particles_label.setText(str(stats.get("active_particles", 0)))
-        self.fines_collected_label.setText(str(stats.get("collected_fines", 0)))
-        self.coarse_collected_label.setText(str(stats.get("collected_coarse", 0)))
+        self.card_time.set_value(f"{time:.3f} s")
+        self.card_particles.set_value(str(stats.get("active_particles", 0)))
+        self.card_fines.set_value(str(stats.get("collected_fines", 0)))
+        self.card_coarse.set_value(str(stats.get("collected_coarse", 0)))
 
         eff = stats.get("separation_efficiency", 0)
         if eff > 0:
-            self.efficiency_label.setText(f"{eff:.1f}%")
+            self.card_efficiency.set_value(f"{eff:.1f}%")
 
     @Slot(dict)
     def _on_completed(self, results: Dict[str, Any]):
-        """Handle simulation completion."""
         self._cleanup_thread()
         self.run_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
@@ -515,7 +552,6 @@ class SimulationControlPanel(QWidget):
 
     @Slot(str)
     def _on_error(self, error: str):
-        """Handle simulation error."""
         self._cleanup_thread()
         self.run_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
@@ -524,23 +560,20 @@ class SimulationControlPanel(QWidget):
         self._log(f"ERROR: {error}")
 
     def _update_display(self):
-        """Update display during simulation."""
-        # Update FPS estimate
         pass
 
     def _log(self, message: str):
-        """Add message to log."""
         self.log_text.append(message)
+        # Auto-scroll to bottom
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.log_text.setTextCursor(cursor)
 
     def get_settings(self) -> SimulationSettings:
-        """Get current simulation settings."""
         return self._settings
 
     def set_settings(self, settings: SimulationSettings):
-        """Set simulation settings."""
         self._settings = settings
-
-        # Update UI
         self.total_time_spin.setValue(settings.total_time)
         self.dt_spin.setValue(settings.dt)
         self.output_spin.setValue(settings.output_interval)

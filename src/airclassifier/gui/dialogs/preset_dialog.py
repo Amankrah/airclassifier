@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from ..theme import COLORS
+
 
 # Predefined classifier configurations
 PRESETS: List[Dict[str, Any]] = [
@@ -254,7 +256,7 @@ class PresetDialog(QDialog):
 
         # Header
         header = QLabel("Select a predefined classifier configuration:")
-        header.setStyleSheet("font-weight: bold; font-size: 12px;")
+        header.setStyleSheet(f"font-weight: 600; font-size: 11pt; color: {COLORS.TEXT_PRIMARY}; padding: 4px 0;")
         layout.addWidget(header)
 
         # Main content with splitter
@@ -273,11 +275,22 @@ class PresetDialog(QDialog):
         desc_layout.setContentsMargins(0, 0, 0, 0)
 
         self.desc_title = QLabel()
-        self.desc_title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.desc_title.setStyleSheet(f"font-weight: 700; font-size: 13pt; color: {COLORS.TEXT_PRIMARY};")
         desc_layout.addWidget(self.desc_title)
 
         self.desc_text = QTextEdit()
         self.desc_text.setReadOnly(True)
+        self.desc_text.setStyleSheet(f"""
+            QTextEdit {{
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 10pt;
+                color: {COLORS.TEXT_SECONDARY};
+                background: {COLORS.BG_DARK};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 4px;
+                padding: 8px;
+            }}
+        """)
         desc_layout.addWidget(self.desc_text)
 
         splitter.addWidget(desc_widget)

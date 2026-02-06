@@ -12,10 +12,12 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QLabel, QFrame,
     QFormLayout, QLineEdit, QDoubleSpinBox, QSpinBox,
     QComboBox, QCheckBox, QGroupBox, QPushButton,
-    QHBoxLayout, QSlider, QColorDialog,
+    QHBoxLayout, QSlider, QColorDialog, QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
+
+from ..theme import COLORS
 
 
 @dataclass
@@ -104,6 +106,41 @@ COMPONENT_PROPERTIES: Dict[str, List[PropertyDefinition]] = {
     ],
 }
 
+# Category -> accent colour  (matches palette)
+_CATEGORY_FOR_TYPE = {
+    "Venturi Eductor": "Classification",
+    "Zigzag Classifier": "Classification",
+    "Wheel Classifier": "Classification",
+    "Cyclone (Primary)": "Cyclones",
+    "Cyclone (Secondary)": "Cyclones",
+    "Cyclone (Tertiary)": "Cyclones",
+    "Multi-Cyclone System": "Cyclones",
+    "Bag Filter": "Filtration",
+    "Feed Hopper": "Feed System",
+    "Rotary Airlock": "Feed System",
+    "Screw Feeder": "Feed System",
+    "Deagglomerator": "Feed System",
+    "Centrifugal Blower": "Air System",
+    "Air Filter": "Air System",
+    "Damper": "Air System",
+    "Round Duct": "Ductwork",
+    "Duct Elbow": "Ductwork",
+    "Rect-to-Round Transition": "Ductwork",
+    "Tee Junction": "Ductwork",
+    "Silencer": "Exhaust",
+    "Exhaust Stack": "Exhaust",
+}
+
+_CATEGORY_COLORS_HEX = {
+    "Classification": COLORS.CAT_CLASSIFICATION,
+    "Cyclones":       COLORS.CAT_CYCLONES,
+    "Filtration":     COLORS.CAT_FILTRATION,
+    "Feed System":    COLORS.CAT_FEED,
+    "Air System":     COLORS.CAT_AIR,
+    "Ductwork":       COLORS.CAT_DUCTWORK,
+    "Exhaust":        COLORS.CAT_EXHAUST,
+}
+
 
 class PropertyEditor(QWidget):
     """
@@ -128,19 +165,46 @@ class PropertyEditor(QWidget):
     def _setup_ui(self):
         """Setup the panel UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(0)
 
-        # Header
+        # Header card (colored bar + title)
+        self._header_frame = QFrame()
+        self._header_frame.setFixedHeight(52)
+        self._header_frame.setStyleSheet(f"""
+            QFrame {{
+                background: {COLORS.BG_SURFACE};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 6px;
+            }}
+        """)
+        header_layout = QHBoxLayout(self._header_frame)
+        header_layout.setContentsMargins(0, 0, 12, 0)
+        header_layout.setSpacing(10)
+
+        # Accent bar
+        self._accent_bar = QFrame()
+        self._accent_bar.setFixedWidth(5)
+        self._accent_bar.setStyleSheet(f"background: {COLORS.TEXT_MUTED}; border-radius: 3px; border: none;")
+        header_layout.addWidget(self._accent_bar)
+
+        # Text
+        header_text_layout = QVBoxLayout()
+        header_text_layout.setContentsMargins(0, 6, 0, 6)
+        header_text_layout.setSpacing(1)
+
         self.header_label = QLabel("No Selection")
-        self.header_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        layout.addWidget(self.header_label)
+        self.header_label.setStyleSheet(f"font-weight: 600; font-size: 11pt; color: {COLORS.TEXT_PRIMARY}; border: none; background: transparent;")
+        header_text_layout.addWidget(self.header_label)
 
-        # Separator
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(line)
+        self._category_label = QLabel("")
+        self._category_label.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED}; border: none; background: transparent;")
+        header_text_layout.addWidget(self._category_label)
+
+        header_layout.addLayout(header_text_layout, 1)
+        layout.addWidget(self._header_frame)
+
+        layout.addSpacing(6)
 
         # Scroll area for properties
         scroll = QScrollArea()
@@ -150,16 +214,19 @@ class PropertyEditor(QWidget):
         self.props_widget = QWidget()
         self.props_layout = QVBoxLayout(self.props_widget)
         self.props_layout.setContentsMargins(0, 0, 0, 0)
-        self.props_layout.setSpacing(8)
+        self.props_layout.setSpacing(6)
         self.props_layout.addStretch()
 
         scroll.setWidget(self.props_widget)
-        layout.addWidget(scroll)
+        layout.addWidget(scroll, 1)
 
         # Reset button
         reset_btn = QPushButton("Reset to Defaults")
+        reset_btn.setProperty("cssClass", "ghost")
         reset_btn.clicked.connect(self._reset_to_defaults)
         layout.addWidget(reset_btn)
+
+    # ------------------------------------------------------------------
 
     def clear(self):
         """Clear the property editor."""
@@ -167,6 +234,8 @@ class PropertyEditor(QWidget):
         self._current_component_type = None
         self._widgets.clear()
         self.header_label.setText("No Selection")
+        self._category_label.setText("")
+        self._accent_bar.setStyleSheet(f"background: {COLORS.TEXT_MUTED}; border-radius: 3px; border: none;")
 
         # Remove all widgets except the stretch
         while self.props_layout.count() > 1:
@@ -189,12 +258,16 @@ class PropertyEditor(QWidget):
         self._current_component_id = component_id
         self._current_component_type = component_type
 
-        self.header_label.setText(f"{component_type}")
+        # Header
+        self.header_label.setText(component_type)
+        category = _CATEGORY_FOR_TYPE.get(component_type, "")
+        self._category_label.setText(category)
+        accent_color = _CATEGORY_COLORS_HEX.get(category, COLORS.TEXT_MUTED)
+        self._accent_bar.setStyleSheet(f"background: {accent_color}; border-radius: 3px; border: none;")
 
         # Get property definitions
         prop_defs = COMPONENT_PROPERTIES.get(component_type, [])
         if not prop_defs:
-            # Create generic properties from params
             prop_defs = self._create_generic_properties(params)
 
         # Group properties
@@ -209,14 +282,19 @@ class PropertyEditor(QWidget):
             group_box = QGroupBox(group_name)
             group_layout = QFormLayout(group_box)
             group_layout.setSpacing(6)
+            group_layout.setContentsMargins(10, 14, 10, 10)
 
             for prop in props:
                 widget = self._create_widget(prop, params.get(prop.name, prop.default))
                 if widget:
-                    label = f"{prop.display_name}"
+                    # Build label with unit in muted colour
                     if prop.unit:
-                        label += f" [{prop.unit}]"
-                    group_layout.addRow(label + ":", widget)
+                        label_widget = QLabel(f"{prop.display_name} <span style='color:{COLORS.TEXT_MUTED}; font-size:8pt;'>[{prop.unit}]</span>")
+                        label_widget.setTextFormat(Qt.TextFormat.RichText)
+                    else:
+                        label_widget = QLabel(f"{prop.display_name}")
+
+                    group_layout.addRow(label_widget, widget)
                     self._widgets[prop.name] = widget
 
             # Insert before the stretch
@@ -289,7 +367,7 @@ class PropertyEditor(QWidget):
         elif prop.type == "color":
             widget = QPushButton()
             color = QColor(value) if value else QColor(prop.default)
-            widget.setStyleSheet(f"background-color: {color.name()};")
+            widget.setStyleSheet(f"background-color: {color.name()}; border-radius: 4px; min-height: 24px;")
             widget.clicked.connect(lambda checked, n=prop.name, w=widget: self._pick_color(n, w))
 
         else:  # string
@@ -311,7 +389,7 @@ class PropertyEditor(QWidget):
         """Show color picker dialog."""
         color = QColorDialog.getColor()
         if color.isValid():
-            button.setStyleSheet(f"background-color: {color.name()};")
+            button.setStyleSheet(f"background-color: {color.name()}; border-radius: 4px; min-height: 24px;")
             self._on_value_changed(param_name, color.name())
 
     def _reset_to_defaults(self):
