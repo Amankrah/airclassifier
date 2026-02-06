@@ -2,8 +2,12 @@
 Three-point pipe junction for wheel-only classification.
 
 Geometry:
-- 90° elbow from Y (air, vertical) to X (wheel, horizontal). Top closed (no open port at +Y).
-- Solids inlet: circular cut on the elbow with 15° stub welded.
+- 90° elbow from +Y (air, vertical from above) curving DOWN to +X (wheel, horizontal).
+  Bottom closed (no open port at -Y).
+- Solids inlet: circular cut on the upper part of the elbow with 15° stub welded.
+
+Air enters from above, curves downward through the elbow, exits horizontally to the wheel.
+Feed solids enter via the angled stub on the outer surface of the elbow.
 
 Used when use_preclassification=False to merge air and solids before the wheel.
 """
@@ -44,12 +48,13 @@ class ThreePointJunctionParams:
 
 class ThreePointJunction:
     """
-    Three-point connector: 90° elbow (Y air -> X wheel), top closed;
-    solids inlet via circular cut on the elbow with 15° welded stub.
+    Three-point connector: 90° elbow (+Y air -> +X wheel), bottom closed;
+    air enters from above, curves down to horizontal toward wheel.
+    Solids inlet via circular cut on the upper elbow with 15° welded stub.
 
     Ports:
-        air:    (0, -1, 0)   - bottom of vertical leg
-        solids: (0, sin(15°), cos(15°)) - end of 15° stub
+        air:    (0, +1, 0)   - top of vertical leg (air enters from above)
+        solids: (0, sin(15°), cos(15°)) - end of 15° stub on upper elbow
         wheel:  (1, 0, 0)    - end of horizontal leg
     """
 
@@ -86,20 +91,20 @@ class ThreePointJunction:
         L = p.stub_length
         angle_rad = np.radians(p.solids_angle_deg)
         L_leg = max(0.001, p.stub_length - R)
-        # Air port: bottom of vertical leg
-        air_pos = (cx, cy - R - L_leg, cz)
+        # Air port: top of vertical leg (air enters from above, curving down to wheel)
+        air_pos = (cx, cy + R + L_leg, cz)
         # Wheel port: end of horizontal leg
         wheel_pos = (cx + R + L_leg, cy, cz)
-        # Solids port: end of 15° stub (on elbow, outer side toward +Z)
+        # Solids port: end of 15° stub (on upper part of elbow, outer side toward +Z)
         mid = 0.5 ** 0.5
         r_tube = max(p.air_diameter, p.wheel_diameter) / 2 + p.wall_thickness
-        hole_center = np.array([cx + R * mid, cy - R * mid, cz + r_tube])
+        hole_center = np.array([cx + R * mid, cy + R * mid, cz + r_tube])
         dir_solids = np.array([0.0, np.sin(angle_rad), np.cos(angle_rad)])
         solids_pos = tuple(hole_center + L * dir_solids)
         return {
             'air': ConnectionPort(
                 position=air_pos,
-                direction=(0.0, -1.0, 0.0),
+                direction=(0.0, 1.0, 0.0),
                 diameter=p.air_diameter,
                 port_type=PortType.CIRCULAR,
                 name="air",
@@ -225,7 +230,8 @@ class ThreePointJunction:
 
     def _add_quarter_torus(self, all_v: list, all_i: list, all_n: list,
                           R: float, r_tube: float, center: np.ndarray) -> None:
-        """90° torus bend in XY plane: from -Y to +X. Outer and inner surface.
+        """90° torus bend in XY plane: from +Y curving DOWN to +X.
+        Air enters from above (+Y), curves downward through the elbow, exits horizontal (+X).
         R must be > r_tube for a valid elbow (centerline radius of the bend).
         """
         p = self.params
@@ -237,12 +243,13 @@ class ThreePointJunction:
             base_idx = len(all_v)
             for i in range(n_arc + 1):
                 theta = 0.5 * np.pi * i / n_arc
-                xc = cx + R * np.cos(theta)
-                yc = cy - R * np.sin(theta)
+                # Sweep from +Y (theta=0) to +X (theta=π/2)
+                xc = cx + R * np.sin(theta)
+                yc = cy + R * np.cos(theta)
                 for j in range(n_seg + 1):
                     phi = 2 * np.pi * j / n_seg
-                    dx = np.cos(theta) * np.cos(phi)
-                    dy = -np.sin(theta) * np.cos(phi)
+                    dx = np.sin(theta) * np.cos(phi)
+                    dy = np.cos(theta) * np.cos(phi)
                     dz = np.sin(phi)
                     pt = [xc + surf * dx, yc + surf * dy, cz + surf * dz]
                     all_v.append(pt)
@@ -261,16 +268,16 @@ class ThreePointJunction:
                         else:
                             all_i.extend([i0, i1, i2])
                             all_i.extend([i1, i3, i2])
-        # End caps (annular) at inlet (theta=0) and outlet (theta=90°)
-        for theta, normal_along in [(0.0, [0.0, 1.0, 0.0]), (0.5 * np.pi, [-1.0, 0.0, 0.0])]:
+        # End caps (annular) at air end (theta=0, +Y) and wheel end (theta=π/2, +X)
+        for theta, normal_along in [(0.0, [-1.0, 0.0, 0.0]), (0.5 * np.pi, [0.0, -1.0, 0.0])]:
             base_idx = len(all_v)
-            xc = cx + R * np.cos(theta)
-            yc = cy - R * np.sin(theta)
+            xc = cx + R * np.sin(theta)
+            yc = cy + R * np.cos(theta)
             for r in [r_tube, r_tube + t]:
                 for j in range(n_seg):
                     phi = 2 * np.pi * j / n_seg
-                    ax = np.cos(theta) * np.cos(phi)
-                    ay = -np.sin(theta) * np.cos(phi)
+                    ax = np.sin(theta) * np.cos(phi)
+                    ay = np.cos(theta) * np.cos(phi)
                     az = np.sin(phi)
                     pt = [xc + r * ax, yc + r * ay, cz + r * az]
                     all_v.append(pt)
@@ -289,7 +296,7 @@ class ThreePointJunction:
             base_idx += 2 * n_seg
 
     def generate_mesh(self):
-        """90° elbow (Y->X, top closed) + solids stub at 15° welded to elbow via circular cut."""
+        """90° elbow (+Y->+X, bottom closed) + solids stub at 15° welded to upper elbow."""
         p = self.params
         all_v: list = []
         all_i: list = []
@@ -304,19 +311,19 @@ class ThreePointJunction:
         L = p.stub_length
         angle_rad = np.radians(p.solids_angle_deg)
 
-        # --- Air leg: vertical cylinder from bend inlet downward (top closed by bend) ---
-        bend_inlet = center + np.array([0.0, -R, 0.0])
+        # --- Air leg: vertical cylinder from bend upward (air enters from above) ---
+        bend_inlet = center + np.array([0.0, R, 0.0])
         self._add_cylinder(
             all_v, all_i, all_n,
             radius=r_air,
             length=L_leg,
-            direction=np.array([0.0, -1.0, 0.0]),
+            direction=np.array([0.0, 1.0, 0.0]),
             origin=bend_inlet,
             cap_start=False,
             cap_end=True,
         )
 
-        # --- 90° bend (quarter torus): -Y to +X, top closed ---
+        # --- 90° bend (quarter torus): +Y curving DOWN to +X, bottom closed ---
         self._add_quarter_torus(all_v, all_i, all_n, R, r_tube, center)
 
         # --- Wheel leg: horizontal cylinder from bend outlet toward +X ---
@@ -331,9 +338,9 @@ class ThreePointJunction:
             cap_end=True,
         )
 
-        # --- Solids: circular cut on elbow (outer side toward +Z) with 15° welded stub ---
+        # --- Solids: circular cut on upper elbow (outer side toward +Z) with 15° welded stub ---
         mid = 0.5 ** 0.5
-        hole_center = center + np.array([R * mid, -R * mid, r_tube + p.wall_thickness])
+        hole_center = center + np.array([R * mid, R * mid, r_tube + p.wall_thickness])
         dir_solids = np.array([0.0, np.sin(angle_rad), np.cos(angle_rad)])
         self._add_cylinder(
             all_v, all_i, all_n,

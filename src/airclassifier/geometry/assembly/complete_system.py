@@ -226,10 +226,14 @@ class CompleteClassifierAssembly:
             solids_port = venturi.ports['solids_inlet']
             solids_inlet_world = venturi_pos + np.array(solids_port.position)
             target_x, target_y, target_z = solids_inlet_world
-        elif classification is not None and getattr(classification, '_wheel_only_solids_inlet_pos', None) is not None:
-            # Wheel-only: align to three-point junction solids inlet
-            solids_inlet_world = class_offset + np.array(classification._wheel_only_solids_inlet_pos)
-            target_x, target_y, target_z = solids_inlet_world
+        elif classification is not None and getattr(classification, 'wheel_classifier', None) is not None:
+            # Wheel-only: align to three-point junction solids inlet (junction built in _build_ductwork)
+            ports = self._get_wheel_only_junction_ports(classification, class_offset)
+            if ports is not None:
+                solids_inlet_world = ports['solids']
+                target_x, target_y, target_z = solids_inlet_world
+            else:
+                target_x = target_y = target_z = None
         else:
             target_x = target_y = target_z = None
 
@@ -282,9 +286,11 @@ class CompleteClassifierAssembly:
                 venturi_pos = np.array(class_positions['venturi']) + class_offset
                 air_inlet_port = venturi.ports['air_inlet']
                 target_x, target_y, target_z = venturi_pos + np.array(air_inlet_port.position)
-            elif classification is not None and getattr(classification, '_wheel_only_air_inlet_pos', None) is not None:
-                air_inlet_world = class_offset + np.array(classification._wheel_only_air_inlet_pos)
-                target_x, target_y, target_z = air_inlet_world
+            elif classification is not None and getattr(classification, 'wheel_classifier', None) is not None:
+                ports = self._get_wheel_only_junction_ports(classification, class_offset)
+                if ports is not None:
+                    air_inlet_world = ports['air']
+                    target_x, target_y, target_z = air_inlet_world
             if target_x is not None:
                 stub = 0.15
                 x_offset = getattr(p, 'air_duct_x_offset', 0.0)
@@ -345,16 +351,66 @@ class CompleteClassifierAssembly:
             if p.include_feed_system and 'feed_system' in self._subsystems:
                 self._build_feed_to_solids_inlet(venturi, venturi_pos)
         else:
-            # Without preclassification (wheel-only): connect to three-point junction
-            if p.include_air_system and 'air_system' in self._subsystems:
-                self._build_air_to_wheel_only_connection(classification, class_offset)
-            if p.include_feed_system and 'feed_system' in self._subsystems:
-                self._build_feed_to_wheel_only_connection(classification, class_offset)
+            # Without preclassification (wheel-only): build three-point junction in complete_system
+            # and connect air, feed, and wheel dynamically aligned to wheel classifier inlet
+            ports = self._get_wheel_only_junction_ports(classification, class_offset)
+            if ports is not None:
+                self._build_wheel_only_junction_and_ducts(classification, class_offset, ports)
+                if p.include_air_system and 'air_system' in self._subsystems:
+                    self._build_air_to_wheel_only_connection(classification, class_offset, ports)
+                if p.include_feed_system and 'feed_system' in self._subsystems:
+                    self._build_feed_to_wheel_only_connection(classification, class_offset, ports)
 
         # 3. Bag Filter -> Exhaust silencer (clean air exhaust)
         if p.include_exhaust and 'silencer' in self._components:
             self._build_bagfilter_to_exhaust_connection(classification, class_offset)
-    
+
+    def _get_wheel_only_junction_ports(self, classification, class_offset: np.ndarray):
+        """
+        Compute three-point junction center and port positions (world) from wheel inlet.
+        Used for feed/air positioning and ductwork; junction is built in _build_ductwork.
+        Returns dict with 'center', 'air', 'solids', 'wheel' (world) or None if no wheel.
+        """
+        if not getattr(classification, 'wheel_classifier', None):
+            return None
+        positions = classification.get_component_positions()
+        if 'wheel_classifier' not in positions:
+            return None
+        wheel_pos = np.array(positions['wheel_classifier'])
+        wheel_inlet = classification.wheel_classifier.ports['inlet']
+        wheel_inlet_world = class_offset + wheel_pos + np.array(wheel_inlet.position)
+        # Junction params (match ThreePointJunction geometry)
+        junction_stub = 0.06
+        bend_radius = 0.045
+        L_leg = max(0.001, junction_stub - bend_radius)
+        from ..components.three_point_junction import ThreePointJunction, ThreePointJunctionParams
+        cp = getattr(classification, 'params', None)
+        wheel_d = getattr(cp, 'wheel_diameter', self.params.wheel_diameter) if cp else self.params.wheel_diameter
+        air_d = wheel_d * 0.35
+        solids_d = getattr(cp, 'wheel_only_solids_chute_diameter', 0.05) if cp else 0.05
+        solids_angle = getattr(cp, 'solids_chute_angle_deg', 15.0) if cp else 15.0
+        duct_to_wheel_d = np.sqrt(4 * wheel_inlet.width * wheel_inlet.height / np.pi)
+        tmp = ThreePointJunction(ThreePointJunctionParams(
+            air_diameter=air_d,
+            solids_diameter=solids_d,
+            wheel_diameter=duct_to_wheel_d,
+            stub_length=junction_stub,
+            bend_radius=bend_radius,
+            solids_angle_deg=solids_angle,
+            wall_thickness=0.002,
+            center=(0.0, 0.0, 0.0),
+            resolution=24,
+        ))
+        ports_local = tmp.ports
+        wheel_offset = np.array(ports_local['wheel'].position)
+        junction_center_world = wheel_inlet_world - wheel_offset
+        return {
+            'center': junction_center_world,
+            'air': junction_center_world + np.array(ports_local['air'].position),
+            'solids': junction_center_world + np.array(ports_local['solids'].position),
+            'wheel': junction_center_world + np.array(ports_local['wheel'].position),
+        }
+
     def _build_air_to_venturi_connection(self, venturi, venturi_pos: np.ndarray):
         """
         Build ductwork from Air System outlet to Venturi air_inlet.
@@ -661,52 +717,179 @@ class CompleteClassifierAssembly:
         self._duct_connections.append((trans, (target_x, trans_pos_y, target_z)))
         self._air_to_venturi_ducts.append((trans, (target_x, trans_pos_y, target_z)))
 
-    def _build_air_to_wheel_only_connection(self, classification, class_offset: np.ndarray):
-        """Build ductwork from Air System outlet to wheel-only junction air inlet (Y leg at origin)."""
-        from ..components.ductwork import RoundDuct, RoundDuctParams
+    def _build_wheel_only_junction_and_ducts(self, classification, class_offset: np.ndarray, ports: Dict[str, np.ndarray]):
+        """Create three-point junction and duct from junction wheel port to wheel inlet (transition)."""
+        from ..components.three_point_junction import ThreePointJunction, ThreePointJunctionParams
+        from ..components.transitions import Transition, TransitionParams
 
         p = self.params
-        gap = 0.005
-        duct_d = p.main_duct_diameter
+        gap = 0.002
+        cp = getattr(classification, 'params', None)
+        wheel_d = getattr(cp, 'wheel_diameter', p.wheel_diameter) if cp else p.wheel_diameter
+        air_d = wheel_d * 0.35
+        solids_d = getattr(cp, 'wheel_only_solids_chute_diameter', 0.05) if cp else 0.05
+        solids_angle = getattr(cp, 'solids_chute_angle_deg', 15.0) if cp else 15.0
+        junction_stub = 0.06
+        bend_radius = 0.045
+        wheel_inlet = classification.wheel_classifier.ports['inlet']
+        duct_to_wheel_d = np.sqrt(4 * wheel_inlet.width * wheel_inlet.height / np.pi)
+
+        junction_center = ports['center']
+        three_pt = ThreePointJunction(ThreePointJunctionParams(
+            air_diameter=air_d,
+            solids_diameter=solids_d,
+            wheel_diameter=duct_to_wheel_d,
+            stub_length=junction_stub,
+            bend_radius=bend_radius,
+            solids_angle_deg=solids_angle,
+            wall_thickness=0.002,
+            center=(0.0, 0.0, 0.0),
+            resolution=24,
+        ))
+        self._duct_connections.append((three_pt, tuple(junction_center)))
+
+        # Transition round -> rect from junction wheel port to wheel inlet (+X direction)
+        wheel_port_world = ports['wheel']
+        trans_len = 0.08
+        trans = Transition(TransitionParams(
+            transition_type="round_to_rect",
+            inlet_dimensions=(duct_to_wheel_d,),
+            outlet_dimensions=(wheel_inlet.height, wheel_inlet.width),
+            length=trans_len,
+            concentric=True,
+            wall_thickness=0.002,
+            direction=(1.0, 0.0, 0.0),
+            center=(0, 0, 0),
+        ))
+        trans_pos = (float(wheel_port_world[0]) + gap, float(wheel_port_world[1]), float(wheel_port_world[2]))
+        self._duct_connections.append((trans, trans_pos))
+
+        # Set on classification (local coords) for physics extract_geometry
+        classification._wheel_only_junction = np.array(junction_center) - class_offset
+        classification._wheel_only_air_inlet_pos = np.array(ports['air']) - class_offset
+        classification._wheel_only_solids_inlet_pos = np.array(ports['solids']) - class_offset
+
+    def _build_air_to_wheel_only_connection(self, classification, class_offset: np.ndarray, ports: Dict[str, np.ndarray]):
+        """
+        Build ductwork from Air System outlet to wheel-only junction air port.
+        Same path as with preclassification: horizontal duct, elbow (damper to vertical), vertical duct to junction.
+        """
+        from ..components.ductwork import RoundDuct, RoundDuctParams, DuctElbow, DuctElbowParams
+        from ..components.transitions import Transition, TransitionParams
+
+        p = self.params
+        gap = 0.002
+        layout = getattr(p, 'air_duct_layout', 'standard')
+
         air_system = self._subsystems['air_system']
         air_offset = np.array(self._subsystems.get('air_system_offset', (0, 0, 0)))
         if hasattr(air_system, 'dampers') and air_system.dampers:
             last_damper = air_system.dampers[-1]
             damper_pos = np.array(air_system._damper_positions[-1])
             air_outlet_port = last_damper.ports['outlet']
-            start = air_offset + damper_pos + np.array(air_outlet_port.position)
+            air_outlet_world = air_offset + damper_pos + np.array(air_outlet_port.position)
+            air_outlet_d = air_outlet_port.diameter
         else:
-            start = air_offset + np.array([1.0, 0.0, 0.0])
-        target = class_offset + np.array(getattr(classification, '_wheel_only_air_inlet_pos', (0, 0, 0)))
-        delta = target - start
-        length = max(np.linalg.norm(delta) - gap, 0.05)
-        direction = delta / (np.linalg.norm(delta) + 1e-12)
-        duct = RoundDuct(RoundDuctParams(
-            diameter=duct_d, length=length, wall_thickness=0.002,
-            direction=tuple(direction), center=(0, 0, 0), flanged=True,
-        ))
-        self._duct_connections.append((duct, tuple(start)))
-        self._air_to_venturi_ducts.append((duct, tuple(start)))
+            air_outlet_world = air_offset + np.array([1.0, 0.0, 0.0])
+            air_outlet_d = p.main_duct_diameter
 
-    def _build_feed_to_wheel_only_connection(self, classification, class_offset: np.ndarray):
-        """Build ductwork from Feed System outlet to wheel-only solids inlet (15° chute)."""
+        target_x, target_y, target_z = ports['air']
+        junction_air_d = classification.wheel_classifier.params.wheel_diameter * 0.35 if hasattr(classification.wheel_classifier, 'params') else p.wheel_diameter * 0.35
+        duct_d = min(air_outlet_d, p.main_duct_diameter)
+        R = duct_d * 1.0
+        trans_len = 0.12
+        start_x, start_y, start_z = air_outlet_world
+
+        if layout == "compact":
+            elbow_inlet_x = target_x + R
+            if start_x >= elbow_inlet_x + gap:
+                d1_len = max(start_x - (elbow_inlet_x + gap), 0.05)
+                d1_pos = (start_x + gap, start_y, start_z)
+                duct1 = RoundDuct(RoundDuctParams(
+                    diameter=duct_d, length=d1_len, wall_thickness=0.002,
+                    direction=(-1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
+                ))
+                e1_inlet = (start_x + gap - d1_len - gap, start_y, start_z)
+                elbow_inlet_dir = (-1.0, 0.0, 0.0)
+                elbow_rot_axis = (0.0, 0.0, 1.0)
+            else:
+                elbow_inlet_x_left = target_x - R
+                d1_len = max((elbow_inlet_x_left - gap) - (start_x + gap), 0.05)
+                d1_pos = (start_x + gap, start_y, start_z)
+                duct1 = RoundDuct(RoundDuctParams(
+                    diameter=duct_d, length=d1_len, wall_thickness=0.002,
+                    direction=(1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
+                ))
+                e1_inlet = (elbow_inlet_x_left, start_y, start_z)
+                elbow_inlet_dir = (1.0, 0.0, 0.0)
+                elbow_rot_axis = (0.0, 0.0, -1.0)
+            self._duct_connections.append((duct1, d1_pos))
+            self._air_to_venturi_ducts.append((duct1, d1_pos))
+
+            elbow1 = DuctElbow(DuctElbowParams(
+                diameter=duct_d, bend_radius=R, angle=90.0, wall_thickness=0.002,
+                flanged=True, center=(0, 0, 0),
+                inlet_direction=elbow_inlet_dir, rotation_axis=elbow_rot_axis,
+            ))
+            self._duct_connections.append((elbow1, e1_inlet))
+            self._air_to_venturi_ducts.append((elbow1, e1_inlet))
+
+            e1_outlet_y = start_y + R
+            d2_len = max(target_y - trans_len - gap - (e1_outlet_y + gap), 0.05)
+            d2_pos = (target_x, e1_outlet_y + gap, target_z)
+            duct2 = RoundDuct(RoundDuctParams(
+                diameter=duct_d, length=d2_len, wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
+            ))
+            self._duct_connections.append((duct2, d2_pos))
+            self._air_to_venturi_ducts.append((duct2, d2_pos))
+
+            trans_pos_y = e1_outlet_y + gap + d2_len + gap
+            trans = Transition(TransitionParams(
+                transition_type="round_to_round",
+                inlet_dimensions=(duct_d,), outlet_dimensions=(junction_air_d,),
+                length=trans_len, concentric=True, wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
+            ))
+            self._duct_connections.append((trans, (target_x, trans_pos_y, target_z)))
+            self._air_to_venturi_ducts.append((trans, (target_x, trans_pos_y, target_z)))
+        else:
+            delta = ports['air'] - air_outlet_world
+            length = max(np.linalg.norm(delta) - gap, 0.05)
+            direction = delta / (np.linalg.norm(delta) + 1e-12)
+            duct = RoundDuct(RoundDuctParams(
+                diameter=duct_d, length=length, wall_thickness=0.002,
+                direction=tuple(direction), center=(0, 0, 0), flanged=True,
+            ))
+            self._duct_connections.append((duct, tuple(air_outlet_world)))
+            self._air_to_venturi_ducts.append((duct, tuple(air_outlet_world)))
+
+    def _build_feed_to_wheel_only_connection(self, classification, class_offset: np.ndarray, ports: Dict[str, np.ndarray]):
+        """Build ductwork from Feed System outlet to wheel-only junction solids port (dynamically aligned)."""
         from ..components.ductwork import RoundDuct, RoundDuctParams
+        from ..components.transitions import Transition, TransitionParams
 
         p = self.params
         gap = 0.005
+
         feed_system = self._subsystems['feed_system']
         feed_offset = np.array(self._subsystems.get('feed_system_offset', (0, 0, 0)))
         feed_positions = feed_system.get_component_positions()
         deagg_local_pos = np.array(feed_positions['deagglomerator'])
         deagg_outlet = feed_system.deagglomerator.ports['outlet']
         start = feed_offset + deagg_local_pos + np.array(deagg_outlet.position)
-        solids_d = deagg_outlet.diameter
-        target = class_offset + np.array(getattr(classification, '_wheel_only_solids_inlet_pos', (0, 0.5, 0.3)))
+        feed_outlet_d = deagg_outlet.diameter
+
+        target = np.array(ports['solids'])
+        solids_inlet_d = getattr(classification.params, 'wheel_only_solids_chute_diameter', 0.05) if hasattr(classification, 'params') else 0.05
+
         delta = target - start
         length = max(np.linalg.norm(delta) - gap, 0.05)
         direction = delta / (np.linalg.norm(delta) + 1e-12)
+        shaft_d = max(min(feed_outlet_d * 0.5, solids_inlet_d * 1.5), 0.035)
+
         duct = RoundDuct(RoundDuctParams(
-            diameter=solids_d, length=length, wall_thickness=0.002,
+            diameter=shaft_d, length=length, wall_thickness=0.002,
             direction=tuple(direction), center=(0, 0, 0), flanged=True,
         ))
         self._duct_connections.append((duct, tuple(start)))

@@ -1264,9 +1264,9 @@ class ClassificationSystemAssembly:
         """
         Build wheel-only classification system (no zigzag, venturi, dropout).
         World-class wheel classifier with:
-        - Air inlet at bottom (vertical duct from origin)
-        - Solids inlet at 15° chute angle (like venturi solids inlet)
-        - Both merge at a junction; combined flow to wheel inlet
+        - Wheel classifier positioned so its inlet is at a fixed local position.
+        - Three-point junction and air/solids ductwork are built in complete_system.py
+          and dynamically aligned to wheel inlet, feed, and air system.
         - Wheel classifier → fines to cyclones → bag filter; coarse to airlock
         """
         from ..components import (
@@ -1279,48 +1279,10 @@ class ClassificationSystemAssembly:
             DuctElbow, DuctElbowParams,
         )
         from ..components.transitions import Transition, TransitionParams
-        from ..components.three_point_junction import ThreePointJunction, ThreePointJunctionParams
 
         p = self.params
         gap = p.flange_gap
         H = p.wheel_only_air_duct_height
-        L_chute = p.wheel_only_solids_chute_length
-        chute_angle_rad = np.radians(p.solids_chute_angle_deg)
-        # Chute descends from +Z toward junction (0, H, 0): direction (0, -sin(angle), -cos(angle))
-        chute_dy = -np.sin(chute_angle_rad)
-        chute_dz = -np.cos(chute_angle_rad)
-
-        # Junction stub length (three-point connector at Y, 15° Z, X)
-        junction_stub = 0.06
-        # Air inlet at origin (0, 0, 0) - blower connects here; ends below junction
-        air_duct_d = p.wheel_diameter * 0.35  # Proportional to wheel
-        air_duct = RoundDuct(RoundDuctParams(
-            diameter=air_duct_d,
-            length=H - junction_stub,
-            wall_thickness=0.002,
-            direction=(0.0, 1.0, 0.0),
-            center=(0, 0, 0),
-            flanged=True,
-        ))
-        self._duct_sections.append((air_duct, (0.0, 0.0, 0.0)))
-
-        # Solids chute at 15°: from high end down to junction solids port (stub)
-        chute_start = (0.0, H + L_chute * np.sin(chute_angle_rad), L_chute * np.cos(chute_angle_rad))
-        solids_chute = RoundDuct(RoundDuctParams(
-            diameter=p.wheel_only_solids_chute_diameter,
-            length=max(0.01, L_chute - junction_stub),
-            wall_thickness=0.002,
-            direction=(0.0, chute_dy, chute_dz),
-            center=(0, 0, 0),
-            flanged=True,
-        ))
-        self._duct_sections.append((solids_chute, chute_start))
-        # Store for physics: solids inlet position (high end of chute) and junction
-        self._wheel_only_junction = np.array([0.0, H, 0.0])
-        self._wheel_only_solids_inlet_pos = np.array([
-            chute_start[0], chute_start[1], chute_start[2]
-        ])
-        self._wheel_only_air_inlet_pos = np.array([0.0, 0.0, 0.0])
 
         # Create wheel classifier (same geometry as preclassification path)
         wheel_params = WheelClassifierParams(
@@ -1351,63 +1313,14 @@ class ClassificationSystemAssembly:
         )
         self.wheel_classifier = WheelClassifier(wheel_params)
         wheel_inlet = self.wheel_classifier.ports['inlet']
-        wheel_housing_radius = wheel_params.volute_outer_radius
-        duct_to_wheel_length = wheel_housing_radius + wheel_params.feed_inlet_length + 0.08
-
-        # Round duct from junction to wheel inlet (horizontal +X)
-        duct_to_wheel_d = np.sqrt(4 * wheel_inlet.width * wheel_inlet.height / np.pi)
-        # Three-point connector at (0, H, 0): Y=air, 15° Z=solids, X=wheel
-        three_pt = ThreePointJunction(ThreePointJunctionParams(
-            air_diameter=air_duct_d,
-            solids_diameter=p.wheel_only_solids_chute_diameter,
-            wheel_diameter=duct_to_wheel_d,
-            stub_length=junction_stub,
-            bend_radius=0.045,  # Visible 90° elbow (R > r_tube; leaves ~15 mm leg length)
-            solids_angle_deg=p.solids_chute_angle_deg,
-            wall_thickness=0.002,
-            center=(0.0, 0.0, 0.0),
-            resolution=24,
-        ))
-        self._duct_sections.append((three_pt, (0.0, H, 0.0)))
-        duct_to_wheel_start = (junction_stub + gap, H, 0.0)
-        duct_to_wheel = RoundDuct(RoundDuctParams(
-            diameter=duct_to_wheel_d,
-            length=duct_to_wheel_length - junction_stub - gap,
-            wall_thickness=0.002,
-            direction=(1.0, 0.0, 0.0),
-            center=(0, 0, 0),
-            flanged=True,
-        ))
-        self._duct_sections.append((duct_to_wheel, duct_to_wheel_start))
-
-        # Transition round → rect at wheel inlet
-        trans_wheel_inlet_length = 0.08
-        trans_wheel_inlet_start = (
-            duct_to_wheel_start[0] + (duct_to_wheel_length - junction_stub - gap) + gap,
-            duct_to_wheel_start[1],
-            duct_to_wheel_start[2],
-        )
-        trans_wheel_inlet = Transition(TransitionParams(
-            transition_type="round_to_rect",
-            inlet_dimensions=(duct_to_wheel_d,),
-            outlet_dimensions=(wheel_inlet.height, wheel_inlet.width),
-            length=trans_wheel_inlet_length,
-            concentric=True,
-            wall_thickness=0.002,
-            direction=(1.0, 0.0, 0.0),
-            center=(0, 0, 0),
-        ))
-        self._duct_sections.append((trans_wheel_inlet, trans_wheel_inlet_start))
-
-        wheel_inlet_target = (
-            trans_wheel_inlet_start[0] + trans_wheel_inlet_length + gap,
-            trans_wheel_inlet_start[1],
-            trans_wheel_inlet_start[2],
-        )
+        # Position wheel so its inlet is at fixed local (X_WHEEL_INLET, H, 0).
+        # Three-point junction and ductwork from feed/air are built in complete_system.py
+        # and aligned to this wheel inlet.
+        X_WHEEL_INLET = 0.5
         self._component_positions['wheel_classifier'] = np.array([
-            wheel_inlet_target[0] - wheel_inlet.position[0],
-            wheel_inlet_target[1] - wheel_inlet.position[1],
-            wheel_inlet_target[2] - wheel_inlet.position[2],
+            X_WHEEL_INLET - wheel_inlet.position[0],
+            H - wheel_inlet.position[1],
+            -wheel_inlet.position[2],
         ])
 
         wheel_fines = self.wheel_classifier.ports['fines_outlet']
