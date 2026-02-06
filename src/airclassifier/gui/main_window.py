@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         self._is_modified: bool = False
         self._assembly_config: Dict[str, Any] = {}
         self._simulation_state: str = "idle"
+        self._built_backend = None  # set by Build Full System
 
         # Initialize UI
         self._setup_window()
@@ -713,6 +714,7 @@ class MainWindow(QMainWindow):
         self._project_path = None
         self._assembly_config = {}
         self._is_modified = False
+        self._built_backend = None
         self.assembly_canvas.clear()
         self.viewport_3d.clear()
         self.property_editor.clear()
@@ -959,13 +961,18 @@ class MainWindow(QMainWindow):
             if vertices is not None and len(vertices) > 0:
                 self.viewport_3d.update_from_backend_mesh(vertices, indices)
 
+                # Keep reference so Run Simulation can skip canvas validation
+                self._built_backend = backend
+
                 mode = "Full System" if settings.use_preclassification else "Wheel-Only"
                 msg = f"Built {mode}: {len(vertices):,} vertices, {len(indices)//3:,} triangles"
                 self.statusBar().showMessage(msg, 5000)
 
                 summary = backend.get_system_summary()
                 self.sim_control._log(f"System built: {summary.get('mode', 'unknown')}")
+                self.sim_control._log("Ready to run simulation.")
             else:
+                self._built_backend = None
                 QMessageBox.warning(self, "Build Failed", "Could not generate mesh geometry.")
 
         except Exception as e:
@@ -982,15 +989,41 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def run_simulation(self):
-        """Start or resume simulation."""
+        """Start or resume simulation.
+
+        Two paths:
+        1. If the user has built a full system (via Build Full System), run
+           using the backend config -- canvas validation is skipped because
+           the backend already built a valid assembly from settings.
+        2. Otherwise fall back to the canvas assembly, validating first.
+        """
+        # Path 1: a system was already built via "Build Full System"
+        if hasattr(self, "_built_backend") and self._built_backend is not None:
+            self._start_simulation_run()
+            assembly_data = self.assembly_canvas.get_assembly_data()
+            self.sim_control.start_simulation(assembly_data)
+            return
+
+        # Path 2: canvas-based -- validate first
         errors = self.assembly_canvas.validate()
         if errors:
+            error_text = "\n".join(f"  \u2022 {e}" for e in errors)
             QMessageBox.warning(
-                self, "Cannot Run",
-                "Please fix assembly errors before running simulation."
+                self,
+                "Cannot Run Simulation",
+                f"The assembly has {len(errors)} issue(s):\n\n"
+                f"{error_text}\n\n"
+                "Either fix the canvas connections or use\n"
+                "Build Full System first, then Run."
             )
             return
 
+        self._start_simulation_run()
+        assembly_data = self.assembly_canvas.get_assembly_data()
+        self.sim_control.start_simulation(assembly_data)
+
+    def _start_simulation_run(self):
+        """Shared UI state change when a simulation run begins."""
         self._simulation_state = "running"
         self.simulation_state_changed.emit("running")
         self.action_run_sim.setEnabled(False)
@@ -998,9 +1031,6 @@ class MainWindow(QMainWindow):
         self.action_stop_sim.setEnabled(True)
         self.sim_progress.setVisible(True)
         self.sim_progress.setValue(0)
-
-        assembly_data = self.assembly_canvas.get_assembly_data()
-        self.sim_control.start_simulation(assembly_data)
 
     @Slot()
     def pause_simulation(self):
