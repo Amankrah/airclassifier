@@ -4,6 +4,9 @@ Simulation Control Panel
 
 Panel for controlling simulation execution and displaying progress.
 Uses the real ClassificationFlowPhysicsSimulator from classification_flow_physics.py.
+
+Settings are aligned with ClassificationFlowConfig and run_classification_flow.py
+defaults so the GUI produces the same results as the CLI example.
 """
 
 from typing import Optional, Dict, Any
@@ -23,70 +26,87 @@ from ..theme import COLORS
 
 
 # ============================================================================
-# Settings dataclass
+# Settings dataclass -- aligned with ClassificationFlowConfig + CLI defaults
 # ============================================================================
 
 @dataclass
 class SimulationSettings:
-    """Settings for simulation execution."""
-    # Time settings
-    total_time: float = 10.0            # [s] Total simulation time
-    dt: float = 0.001                   # [s] Time step
-    output_interval: float = 0.1        # [s] Output interval
+    """
+    Settings for simulation execution.
 
-    # Particle settings
-    num_particles: int = 5000           # Number of particles
-    particle_feed_rate: float = 1000.0  # [particles/s]
-    continuous_feeding: bool = True
+    Defaults match ``run_classification_flow.py`` and ``ClassificationFlowConfig``
+    so the GUI produces identical results to the CLI.
+    """
 
-    # Physics settings
-    turbulence_intensity: float = 0.15
-    restitution: float = 0.3
-    friction: float = 0.4
+    # --- Time (CLI: --time 360, --dt 0.001) ---
+    total_time: float = 360.0           # [s]  CLI default 360
+    dt: float = 0.001                   # [s]  ClassificationFlowConfig default
+    output_interval: float = 1.0        # [s]  GUI refresh rate (every 1000 steps)
 
-    # Compute settings
-    device: str = "cuda"                # "cuda" or "cpu"
-    precision: str = "float32"          # "float32" or "float64"
+    # --- Particles (CLI: --particles 100000) ---
+    num_particles: int = 5000           # GUI-friendly default (CLI is 100k)
+    particle_feed_rate: float = 0.0     # [/s]  0 = auto (engine computes from mass flow)
+    continuous_feeding: bool = True      # CLI --full-system default
 
-    # Material selection
-    material_source: str = "yellow_pea"
-    material_fraction: str = "whole"
+    # --- Particle size (CLI: --particle-dia 50, --particle-std 30) ---
+    particle_diameter_um: float = 50.0  # [um]  mean diameter when no material preset
+    particle_std_um: float = 30.0       # [um]  std dev when no material preset
 
-    # Visualization
+    # --- Physics (ClassificationFlowConfig defaults) ---
+    turbulence_intensity: float = 0.15  # CLI --turbulence 0.15
+    restitution: float = 0.3            # ClassificationFlowConfig default
+    friction: float = 0.4               # ClassificationFlowConfig default
+    bypass_ratio: float = 0.0           # CLI --bypass-ratio 0.0
+    max_loading_ratio: float = 2.0      # CLI --max-loading 2.0
+
+    # --- Compute (CLI: --device cuda) ---
+    device: str = "cuda"
+    precision: str = "float32"
+
+    # --- Material (CLI: --material yellow_pea) ---
+    material_source: str = "yellow_pea" # yellow_pea, faba_bean, oat, or "none"
+    material_fraction: str = "whole"    # whole, protein, starch, fiber
+
+    # --- Visualization ---
     show_particles: bool = True
     show_velocity_field: bool = False
-    particle_color_mode: str = "velocity"  # "velocity", "size", "type", "zone"
+    particle_color_mode: str = "velocity"
 
-    # Assembly mode
-    use_preclassification: bool = True  # True = venturi+zigzag+wheel, False = wheel-only
+    # --- Assembly mode (CLI: default preclassification, --wheel-only) ---
+    use_preclassification: bool = True
 
-    # Wheel classifier parameters
+    # --- Wheel classifier (CLI: --wheel-rpm defaults from geometry ~8000) ---
     wheel_diameter: float = 0.20        # [m]
     wheel_rpm: float = 8000.0           # [RPM]
 
-    # Air flow
-    air_flow_m3s: float = 0.491         # [m3/s] default ~1768 m3/h
+    # --- Air flow (CLI default: 1768 m³/h ≈ 0.491 m³/s) ---
+    air_flow_m3s: float = 0.491         # [m³/s]
 
-    # Complete system options
+    # --- Complete system (used by Build Full System) ---
     include_feed_system: bool = True
     include_air_system: bool = True
     include_exhaust: bool = True
 
 
 # ============================================================================
-# Worker that uses the REAL simulation engine
+# Worker -- uses the REAL ClassificationFlowPhysicsSimulator
 # ============================================================================
 
 class SimulationWorker(QObject):
     """
     Worker that runs ClassificationFlowPhysicsSimulator on a background thread.
 
-    Emits progress at output_interval so the GUI stays responsive.
+    Follows the same orchestration as ``run_classification_flow.py``:
+    1. Build ClassificationSystemAssembly
+    2. Create ClassificationFlowConfig
+    3. Create ClassificationFlowPhysicsSimulator
+    4. Initialize particles (whole flour / material / generic)
+    5. Step loop with progress reporting
     """
 
     progress_updated = Signal(int, float, dict)  # (percent, sim_time, stats)
-    simulation_completed = Signal(dict)           # (results)
-    simulation_error = Signal(str)                # (error_message)
+    simulation_completed = Signal(dict)           # final results
+    simulation_error = Signal(str)                # error + traceback
     log_message = Signal(str)
 
     def __init__(self, settings: SimulationSettings):
@@ -95,15 +115,16 @@ class SimulationWorker(QObject):
         self._is_running = False
         self._is_paused = False
 
+    # ----------------------------------------------------------------
+
     def run(self):
-        """Build assembly + config, then run the simulation loop."""
+        """Build assembly, init particles, run simulation -- matching CLI flow."""
         try:
             self._is_running = True
             s = self.settings
 
             self.log_message.emit("Importing simulation engine...")
 
-            from ..simulation_backend import SimulationBackend, SimulationConfig
             from ...simulation.classification_flow_physics import (
                 ClassificationFlowPhysicsSimulator,
                 ClassificationFlowConfig,
@@ -114,27 +135,44 @@ class SimulationWorker(QObject):
             )
             from ...particles import FluidConfig, ParticleMaterial
 
-            # --- Build classification assembly ---
+            # ==============================================================
+            # 1. Build classification assembly
+            # ==============================================================
             self.log_message.emit("Building classification assembly...")
             params = ClassificationSystemParams()
             params.use_preclassification = s.use_preclassification
             assembly = ClassificationSystemAssembly(params=params)
 
-            # --- Material ---
+            mode_str = "Full System" if s.use_preclassification else "Wheel-Only"
+            self.log_message.emit(f"  Mode: {mode_str}")
+            if assembly.venturi is not None:
+                self.log_message.emit("  Components: Venturi + Zigzag + Wheel + Cyclones + Bag")
+            else:
+                self.log_message.emit("  Components: Junction + Wheel + Cyclones + Bag")
+
+            # ==============================================================
+            # 2. Material + FluidConfig
+            # ==============================================================
             material = None
             fluid = FluidConfig.air_at_stp()
-            if s.material_source in ("yellow_pea", "faba_bean", "oat"):
-                fraction = s.material_fraction if s.material_fraction != "whole" else "whole"
-                material = ParticleMaterial.create_food_powder(s.material_source, fraction)
-                self.log_message.emit(f"Material: {material.name} ({fraction})")
-            elif s.material_source in ("protein", "starch", "fiber"):
-                material = ParticleMaterial.create_food_powder(s.material_source, s.material_source)
-                self.log_message.emit(f"Material: {material.name}")
+            use_material = s.material_source not in ("none", "")
 
-            # --- Config ---
+            if use_material:
+                if s.material_source in ("yellow_pea", "faba_bean", "oat"):
+                    fraction = s.material_fraction if s.material_fraction != "whole" else "whole"
+                    material = ParticleMaterial.create_food_powder(s.material_source, fraction)
+                elif s.material_source in ("protein", "starch", "fiber"):
+                    material = ParticleMaterial.create_food_powder("yellow_pea", s.material_source)
+                if material:
+                    self.log_message.emit(f"  Material: {material.name}")
+
+            # ==============================================================
+            # 3. Build ClassificationFlowConfig (same fields as CLI)
+            # ==============================================================
             config = ClassificationFlowConfig(
                 num_particles=s.num_particles,
                 air_flow_rate_m3s=s.air_flow_m3s,
+                bypass_ratio=s.bypass_ratio,
                 dt=s.dt,
                 turbulent_intensity=s.turbulence_intensity,
                 restitution=s.restitution,
@@ -142,25 +180,75 @@ class SimulationWorker(QObject):
                 device=s.device,
                 continuous_feeding=s.continuous_feeding,
                 particle_feed_rate=s.particle_feed_rate,
+                max_loading_ratio=s.max_loading_ratio,
                 fluid_config=fluid,
                 material=material,
-                wheel_rpm=s.wheel_rpm if s.wheel_rpm else None,
+                wheel_rpm=s.wheel_rpm,
             )
 
             self.log_message.emit(
-                f"Config: {s.num_particles} particles, dt={s.dt}s, "
-                f"Q={s.air_flow_m3s:.3f} m3/s, device={s.device}"
+                f"  Particles: {s.num_particles:,}   dt={s.dt}s   "
+                f"Q={s.air_flow_m3s:.3f} m\u00b3/s ({s.air_flow_m3s * 3600:.0f} m\u00b3/h)"
+            )
+            self.log_message.emit(
+                f"  Device: {s.device}   Wheel: {s.wheel_rpm:.0f} RPM   "
+                f"Bypass: {s.bypass_ratio:.0%}"
             )
 
-            # --- Create simulator ---
+            # ==============================================================
+            # 4. Create simulator
+            # ==============================================================
             self.log_message.emit("Initializing Warp simulator...")
             sim = ClassificationFlowPhysicsSimulator(assembly, config)
 
+            # ==============================================================
+            # 5. Initialize particles (critical -- same as run_classification_flow.py)
+            # ==============================================================
+            if s.use_preclassification:
+                self.log_message.emit("Initializing particles at venturi solids inlet...")
+            else:
+                self.log_message.emit("Initializing particles at wheel inlet (15\u00b0 solids chute)...")
+
+            if use_material and material is not None:
+                if s.material_source in ("yellow_pea", "faba_bean", "oat") and s.material_fraction == "whole":
+                    # Whole flour population (protein + starch + fiber)
+                    sim.initialize_whole_flour_population(
+                        source=s.material_source,
+                        num_particles=s.num_particles,
+                        initial_velocity=(0.0, 0.5, 0.0),
+                    )
+                    self.log_message.emit(f"  Whole flour population: {s.material_source}")
+                else:
+                    # Single fraction via material
+                    sim.initialize_particles_from_material(
+                        material=material,
+                        num_particles=s.num_particles,
+                        initial_velocity=(0.0, 0.5, 0.0),
+                    )
+                    self.log_message.emit(f"  Material population: {material.name}")
+            else:
+                # Generic particles from diameter/std
+                mean_dia_m = s.particle_diameter_um * 1e-6
+                std_dia_m = s.particle_std_um * 1e-6
+                sim.initialize_particles(
+                    num_particles=s.num_particles,
+                    mean_diameter=mean_dia_m,
+                    diameter_std=std_dia_m,
+                    initial_velocity=(0.0, 0.5, 0.0),
+                )
+                self.log_message.emit(
+                    f"  Generic particles: d={s.particle_diameter_um:.0f} \u00b1 "
+                    f"{s.particle_std_um:.0f} \u00b5m"
+                )
+
+            # ==============================================================
+            # 6. Step loop
+            # ==============================================================
             total_steps = int(s.total_time / s.dt)
             output_steps = max(1, int(s.output_interval / s.dt))
 
             self.log_message.emit(
-                f"Running {total_steps:,} steps ({s.total_time}s at dt={s.dt}s)..."
+                f"Running {total_steps:,} steps ({s.total_time:.0f}s)..."
             )
 
             import time as _time
@@ -175,20 +263,12 @@ class SimulationWorker(QObject):
 
                 sim.step()
 
-                if step % output_steps == 0:
+                # Progress report at output_interval
+                if step > 0 and step % output_steps == 0:
                     progress = int(100 * step / total_steps)
                     sim_time = step * s.dt
 
                     counts = sim.get_separation_counts()
-                    total_collected = (
-                        counts.get("coarse", 0)
-                        + counts.get("wheel_coarse", 0)
-                        + counts.get("cyclone_1", 0)
-                        + counts.get("cyclone_2", 0)
-                        + counts.get("cyclone_3_protein", 0)
-                        + counts.get("bagfilter", 0)
-                    )
-                    active = counts.get("active", 0)
                     fines = (
                         counts.get("cyclone_1", 0)
                         + counts.get("cyclone_2", 0)
@@ -196,9 +276,9 @@ class SimulationWorker(QObject):
                         + counts.get("bagfilter", 0)
                     )
                     coarse = counts.get("coarse", 0) + counts.get("wheel_coarse", 0)
-                    eff = 0.0
-                    if total_collected > 0:
-                        eff = 100.0 * fines / total_collected
+                    total_collected = fines + coarse
+                    active = counts.get("active", 0)
+                    eff = 100.0 * fines / total_collected if total_collected > 0 else 0.0
 
                     stats = {
                         "active_particles": active,
@@ -209,7 +289,9 @@ class SimulationWorker(QObject):
                     }
                     self.progress_updated.emit(progress, sim_time, stats)
 
-            # --- Done ---
+            # ==============================================================
+            # 7. Final results
+            # ==============================================================
             elapsed = _time.perf_counter() - t_start
             counts = sim.get_separation_counts()
             fines = (
@@ -235,6 +317,8 @@ class SimulationWorker(QObject):
 
         except Exception as e:
             self.simulation_error.emit(f"{e}\n{traceback.format_exc()}")
+
+    # ----------------------------------------------------------------
 
     def pause(self):
         self._is_paused = True
@@ -289,10 +373,11 @@ class _StatCard(QFrame):
 
 
 # ============================================================================
-# Helper: wrap any widget in a QScrollArea
+# Helper
 # ============================================================================
 
 def _scrollable(widget: QWidget) -> QScrollArea:
+    """Wrap *widget* in a frameless QScrollArea."""
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -308,7 +393,8 @@ class SimulationControlPanel(QWidget):
     """
     Panel for controlling simulation execution.
 
-    Uses ClassificationFlowPhysicsSimulator for real physics.
+    Uses ClassificationFlowPhysicsSimulator for real Warp-based physics.
+    Settings mirror ``run_classification_flow.py`` CLI parameters.
     """
 
     run_requested = Signal()
@@ -339,7 +425,9 @@ class SimulationControlPanel(QWidget):
         tabs.addTab(_scrollable(self._create_settings_tab()), "Settings")
         tabs.addTab(self._create_log_tab(), "Log")
 
-    # ---------------------------------------------------------------- control
+    # ================================================================
+    # Control tab
+    # ================================================================
 
     def _create_control_tab(self) -> QWidget:
         widget = QWidget()
@@ -401,25 +489,28 @@ class SimulationControlPanel(QWidget):
         layout.addStretch()
         return widget
 
-    # --------------------------------------------------------------- settings
+    # ================================================================
+    # Settings tab (scrollable)
+    # ================================================================
 
     def _create_settings_tab(self) -> QWidget:
-        """Create the scrollable settings tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(8)
+        _M = (10, 14, 10, 10)
 
-        # --- Time ---
-        time_group = QGroupBox("Time Settings")
-        time_form = QFormLayout(time_group)
-        time_form.setContentsMargins(10, 14, 10, 10)
+        # ---- Time ----
+        g = QGroupBox("Time Settings")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
 
         self.total_time_spin = QDoubleSpinBox()
-        self.total_time_spin.setRange(0.1, 600.0)
+        self.total_time_spin.setRange(0.1, 3600.0)
+        self.total_time_spin.setDecimals(1)
+        self.total_time_spin.setSingleStep(10)
         self.total_time_spin.setValue(self._settings.total_time)
         self.total_time_spin.setSuffix(" s")
         self.total_time_spin.valueChanged.connect(lambda v: setattr(self._settings, 'total_time', v))
-        time_form.addRow("Total Time:", self.total_time_spin)
+        f.addRow("Total Time:", self.total_time_spin)
 
         self.dt_spin = QDoubleSpinBox()
         self.dt_spin.setRange(0.0001, 0.01)
@@ -427,107 +518,90 @@ class SimulationControlPanel(QWidget):
         self.dt_spin.setValue(self._settings.dt)
         self.dt_spin.setSuffix(" s")
         self.dt_spin.valueChanged.connect(lambda v: setattr(self._settings, 'dt', v))
-        time_form.addRow("Time Step:", self.dt_spin)
+        f.addRow("Time Step (dt):", self.dt_spin)
 
         self.output_spin = QDoubleSpinBox()
-        self.output_spin.setRange(0.01, 10.0)
+        self.output_spin.setRange(0.01, 60.0)
+        self.output_spin.setDecimals(2)
         self.output_spin.setValue(self._settings.output_interval)
         self.output_spin.setSuffix(" s")
         self.output_spin.valueChanged.connect(lambda v: setattr(self._settings, 'output_interval', v))
-        time_form.addRow("Output Interval:", self.output_spin)
+        f.addRow("Output Interval:", self.output_spin)
 
-        layout.addWidget(time_group)
+        layout.addWidget(g)
 
-        # --- Particles ---
-        particle_group = QGroupBox("Particle Settings")
-        particle_form = QFormLayout(particle_group)
-        particle_form.setContentsMargins(10, 14, 10, 10)
+        # ---- Particles ----
+        g = QGroupBox("Particles")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
 
         self.num_particles_spin = QSpinBox()
         self.num_particles_spin.setRange(100, 500000)
         self.num_particles_spin.setSingleStep(1000)
         self.num_particles_spin.setValue(self._settings.num_particles)
         self.num_particles_spin.valueChanged.connect(lambda v: setattr(self._settings, 'num_particles', v))
-        particle_form.addRow("Number of Particles:", self.num_particles_spin)
+        f.addRow("Count:", self.num_particles_spin)
 
-        self.feed_rate_spin = QDoubleSpinBox()
-        self.feed_rate_spin.setRange(10, 100000)
-        self.feed_rate_spin.setValue(self._settings.particle_feed_rate)
-        self.feed_rate_spin.setSuffix(" /s")
-        self.feed_rate_spin.valueChanged.connect(lambda v: setattr(self._settings, 'particle_feed_rate', v))
-        particle_form.addRow("Feed Rate:", self.feed_rate_spin)
-
-        self.continuous_check = QCheckBox("Enable")
+        self.continuous_check = QCheckBox("Continuous")
         self.continuous_check.setChecked(self._settings.continuous_feeding)
+        self.continuous_check.setToolTip("Activate particles gradually at feed rate instead of all at t=0")
         self.continuous_check.stateChanged.connect(
             lambda s: setattr(self._settings, 'continuous_feeding', s == Qt.CheckState.Checked.value)
         )
-        particle_form.addRow("Continuous Feeding:", self.continuous_check)
+        f.addRow("Feeding:", self.continuous_check)
 
-        layout.addWidget(particle_group)
+        self.feed_rate_spin = QDoubleSpinBox()
+        self.feed_rate_spin.setRange(0, 500000)
+        self.feed_rate_spin.setDecimals(0)
+        self.feed_rate_spin.setSingleStep(100)
+        self.feed_rate_spin.setValue(self._settings.particle_feed_rate)
+        self.feed_rate_spin.setSuffix("  /s")
+        self.feed_rate_spin.setToolTip("0 = auto-compute from mass flow (recommended)")
+        self.feed_rate_spin.valueChanged.connect(lambda v: setattr(self._settings, 'particle_feed_rate', v))
+        f.addRow("Feed Rate:", self.feed_rate_spin)
 
-        # --- Material ---
-        material_group = QGroupBox("Material")
-        material_form = QFormLayout(material_group)
-        material_form.setContentsMargins(10, 14, 10, 10)
+        self.particle_dia_spin = QDoubleSpinBox()
+        self.particle_dia_spin.setRange(1.0, 500.0)
+        self.particle_dia_spin.setDecimals(1)
+        self.particle_dia_spin.setSingleStep(5)
+        self.particle_dia_spin.setValue(self._settings.particle_diameter_um)
+        self.particle_dia_spin.setSuffix(" \u00b5m")
+        self.particle_dia_spin.setToolTip("Mean diameter (used only when Material = none)")
+        self.particle_dia_spin.valueChanged.connect(lambda v: setattr(self._settings, 'particle_diameter_um', v))
+        f.addRow("Mean Diameter:", self.particle_dia_spin)
+
+        self.particle_std_spin = QDoubleSpinBox()
+        self.particle_std_spin.setRange(0.0, 200.0)
+        self.particle_std_spin.setDecimals(1)
+        self.particle_std_spin.setSingleStep(5)
+        self.particle_std_spin.setValue(self._settings.particle_std_um)
+        self.particle_std_spin.setSuffix(" \u00b5m")
+        self.particle_std_spin.setToolTip("Std deviation (used only when Material = none)")
+        self.particle_std_spin.valueChanged.connect(lambda v: setattr(self._settings, 'particle_std_um', v))
+        f.addRow("Diameter Std Dev:", self.particle_std_spin)
+
+        layout.addWidget(g)
+
+        # ---- Material ----
+        g = QGroupBox("Material")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
 
         self.material_combo = QComboBox()
-        self.material_combo.addItems(["yellow_pea", "faba_bean", "oat"])
-        self.material_combo.currentTextChanged.connect(lambda v: setattr(self._settings, 'material_source', v))
-        material_form.addRow("Source:", self.material_combo)
+        self.material_combo.addItems(["yellow_pea", "faba_bean", "oat", "none"])
+        self.material_combo.setToolTip("Food powder preset (provides realistic size distribution)")
+        self.material_combo.currentTextChanged.connect(self._on_material_changed)
+        f.addRow("Source:", self.material_combo)
 
         self.fraction_combo = QComboBox()
         self.fraction_combo.addItems(["whole", "protein", "starch", "fiber"])
+        self.fraction_combo.setToolTip("Whole flour or single fraction")
         self.fraction_combo.currentTextChanged.connect(lambda v: setattr(self._settings, 'material_fraction', v))
-        material_form.addRow("Fraction:", self.fraction_combo)
+        f.addRow("Fraction:", self.fraction_combo)
 
-        layout.addWidget(material_group)
+        layout.addWidget(g)
 
-        # --- Physics ---
-        physics_group = QGroupBox("Physics")
-        physics_form = QFormLayout(physics_group)
-        physics_form.setContentsMargins(10, 14, 10, 10)
-
-        self.turbulence_spin = QDoubleSpinBox()
-        self.turbulence_spin.setRange(0.0, 0.5)
-        self.turbulence_spin.setDecimals(2)
-        self.turbulence_spin.setSingleStep(0.01)
-        self.turbulence_spin.setValue(self._settings.turbulence_intensity)
-        self.turbulence_spin.valueChanged.connect(lambda v: setattr(self._settings, 'turbulence_intensity', v))
-        physics_form.addRow("Turbulence Intensity:", self.turbulence_spin)
-
-        self.restitution_spin = QDoubleSpinBox()
-        self.restitution_spin.setRange(0.0, 1.0)
-        self.restitution_spin.setDecimals(2)
-        self.restitution_spin.setValue(self._settings.restitution)
-        self.restitution_spin.valueChanged.connect(lambda v: setattr(self._settings, 'restitution', v))
-        physics_form.addRow("Restitution:", self.restitution_spin)
-
-        self.friction_spin = QDoubleSpinBox()
-        self.friction_spin.setRange(0.0, 1.0)
-        self.friction_spin.setDecimals(2)
-        self.friction_spin.setValue(self._settings.friction)
-        self.friction_spin.valueChanged.connect(lambda v: setattr(self._settings, 'friction', v))
-        physics_form.addRow("Friction:", self.friction_spin)
-
-        layout.addWidget(physics_group)
-
-        # --- Compute ---
-        compute_group = QGroupBox("Compute")
-        compute_form = QFormLayout(compute_group)
-        compute_form.setContentsMargins(10, 14, 10, 10)
-
-        self.device_combo = QComboBox()
-        self.device_combo.addItems(["cuda", "cpu"])
-        self.device_combo.currentTextChanged.connect(lambda v: setattr(self._settings, 'device', v))
-        compute_form.addRow("Device:", self.device_combo)
-
-        layout.addWidget(compute_group)
-
-        # --- Assembly Mode ---
-        assembly_group = QGroupBox("Assembly Mode")
-        assembly_form = QFormLayout(assembly_group)
-        assembly_form.setContentsMargins(10, 14, 10, 10)
+        # ---- Air / Assembly ----
+        g = QGroupBox("Air & Assembly")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
 
         self.assembly_mode_combo = QComboBox()
         self.assembly_mode_combo.addItems([
@@ -535,44 +609,122 @@ class SimulationControlPanel(QWidget):
             "Wheel-Only (Direct Feed)"
         ])
         self.assembly_mode_combo.currentIndexChanged.connect(self._on_assembly_mode_changed)
-        assembly_form.addRow("Mode:", self.assembly_mode_combo)
+        f.addRow("Mode:", self.assembly_mode_combo)
+
+        self.air_flow_spin = QDoubleSpinBox()
+        self.air_flow_spin.setRange(0.001, 5.0)
+        self.air_flow_spin.setDecimals(3)
+        self.air_flow_spin.setSingleStep(0.01)
+        self.air_flow_spin.setValue(self._settings.air_flow_m3s)
+        self.air_flow_spin.setSuffix("  m\u00b3/s")
+        self.air_flow_spin.setToolTip("Default 0.491 = 1768 m\u00b3/h (air system at 2500 RPM)")
+        self.air_flow_spin.valueChanged.connect(lambda v: setattr(self._settings, 'air_flow_m3s', v))
+        f.addRow("Air Flow Rate:", self.air_flow_spin)
+
+        self.bypass_spin = QDoubleSpinBox()
+        self.bypass_spin.setRange(0.0, 0.99)
+        self.bypass_spin.setDecimals(3)
+        self.bypass_spin.setSingleStep(0.01)
+        self.bypass_spin.setValue(self._settings.bypass_ratio)
+        self.bypass_spin.setToolTip("Fraction of air bypassing venturi+zigzag (0 = no bypass)")
+        self.bypass_spin.valueChanged.connect(lambda v: setattr(self._settings, 'bypass_ratio', v))
+        f.addRow("Bypass Ratio:", self.bypass_spin)
 
         self.wheel_rpm_spin = QDoubleSpinBox()
-        self.wheel_rpm_spin.setRange(1000, 20000)
+        self.wheel_rpm_spin.setRange(500, 20000)
         self.wheel_rpm_spin.setSingleStep(500)
+        self.wheel_rpm_spin.setDecimals(0)
         self.wheel_rpm_spin.setValue(self._settings.wheel_rpm)
-        self.wheel_rpm_spin.setSuffix(" RPM")
+        self.wheel_rpm_spin.setSuffix("  RPM")
         self.wheel_rpm_spin.valueChanged.connect(lambda v: setattr(self._settings, 'wheel_rpm', v))
-        assembly_form.addRow("Wheel Speed:", self.wheel_rpm_spin)
+        f.addRow("Wheel Speed:", self.wheel_rpm_spin)
 
         self.wheel_diameter_spin = QDoubleSpinBox()
         self.wheel_diameter_spin.setRange(0.05, 0.50)
         self.wheel_diameter_spin.setDecimals(3)
         self.wheel_diameter_spin.setSingleStep(0.01)
         self.wheel_diameter_spin.setValue(self._settings.wheel_diameter)
-        self.wheel_diameter_spin.setSuffix(" m")
+        self.wheel_diameter_spin.setSuffix("  m")
         self.wheel_diameter_spin.valueChanged.connect(lambda v: setattr(self._settings, 'wheel_diameter', v))
-        assembly_form.addRow("Wheel Diameter:", self.wheel_diameter_spin)
+        f.addRow("Wheel Diameter:", self.wheel_diameter_spin)
 
-        self.air_flow_spin = QDoubleSpinBox()
-        self.air_flow_spin.setRange(0.01, 2.0)
-        self.air_flow_spin.setDecimals(3)
-        self.air_flow_spin.setSingleStep(0.01)
-        self.air_flow_spin.setValue(self._settings.air_flow_m3s)
-        self.air_flow_spin.setSuffix(" m\u00b3/s")
-        self.air_flow_spin.valueChanged.connect(lambda v: setattr(self._settings, 'air_flow_m3s', v))
-        assembly_form.addRow("Air Flow Rate:", self.air_flow_spin)
+        layout.addWidget(g)
 
-        layout.addWidget(assembly_group)
+        # ---- Physics ----
+        g = QGroupBox("Physics")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
+
+        self.turbulence_spin = QDoubleSpinBox()
+        self.turbulence_spin.setRange(0.0, 0.5)
+        self.turbulence_spin.setDecimals(2)
+        self.turbulence_spin.setSingleStep(0.01)
+        self.turbulence_spin.setValue(self._settings.turbulence_intensity)
+        self.turbulence_spin.setToolTip("Fraction of mean velocity for zigzag mixing (15% typical)")
+        self.turbulence_spin.valueChanged.connect(lambda v: setattr(self._settings, 'turbulence_intensity', v))
+        f.addRow("Turbulence Intensity:", self.turbulence_spin)
+
+        self.restitution_spin = QDoubleSpinBox()
+        self.restitution_spin.setRange(0.0, 1.0)
+        self.restitution_spin.setDecimals(2)
+        self.restitution_spin.setSingleStep(0.05)
+        self.restitution_spin.setValue(self._settings.restitution)
+        self.restitution_spin.setToolTip("Particle-wall restitution (0=perfectly inelastic, 1=elastic)")
+        self.restitution_spin.valueChanged.connect(lambda v: setattr(self._settings, 'restitution', v))
+        f.addRow("Restitution:", self.restitution_spin)
+
+        self.friction_spin = QDoubleSpinBox()
+        self.friction_spin.setRange(0.0, 1.0)
+        self.friction_spin.setDecimals(2)
+        self.friction_spin.setSingleStep(0.05)
+        self.friction_spin.setValue(self._settings.friction)
+        self.friction_spin.setToolTip("Particle-wall friction coefficient")
+        self.friction_spin.valueChanged.connect(lambda v: setattr(self._settings, 'friction', v))
+        f.addRow("Friction:", self.friction_spin)
+
+        self.max_loading_spin = QDoubleSpinBox()
+        self.max_loading_spin.setRange(0.1, 10.0)
+        self.max_loading_spin.setDecimals(1)
+        self.max_loading_spin.setSingleStep(0.5)
+        self.max_loading_spin.setValue(self._settings.max_loading_ratio)
+        self.max_loading_spin.setToolTip("Max solids/air mass ratio for venturi entrainment cap")
+        self.max_loading_spin.valueChanged.connect(lambda v: setattr(self._settings, 'max_loading_ratio', v))
+        f.addRow("Max Loading Ratio:", self.max_loading_spin)
+
+        layout.addWidget(g)
+
+        # ---- Compute ----
+        g = QGroupBox("Compute")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
+
+        self.device_combo = QComboBox()
+        self.device_combo.addItems(["cuda", "cpu"])
+        self.device_combo.currentTextChanged.connect(lambda v: setattr(self._settings, 'device', v))
+        f.addRow("Device:", self.device_combo)
+
+        layout.addWidget(g)
 
         return widget
 
+    # ---- settings callbacks ----
+
+    def _on_material_changed(self, source: str):
+        self._settings.material_source = source
+        use_material = source not in ("none", "")
+        # Enable/disable diameter fields based on material selection
+        self.particle_dia_spin.setEnabled(not use_material)
+        self.particle_std_spin.setEnabled(not use_material)
+        self.fraction_combo.setEnabled(use_material)
+
     def _on_assembly_mode_changed(self, index: int):
         self._settings.use_preclassification = (index == 0)
+        # Bypass only relevant with preclassification
+        self.bypass_spin.setEnabled(index == 0)
         mode_name = "Full System" if index == 0 else "Wheel-Only"
         self._log(f"Assembly mode: {mode_name}")
 
-    # ------------------------------------------------------------------- log
+    # ================================================================
+    # Log tab
+    # ================================================================
 
     def _create_log_tab(self) -> QWidget:
         widget = QWidget()
@@ -599,7 +751,9 @@ class SimulationControlPanel(QWidget):
 
         return widget
 
-    # --------------------------------------------------------- button handlers
+    # ================================================================
+    # Button handlers
+    # ================================================================
 
     def _on_run_clicked(self):
         if self._worker and self._worker._is_paused:
@@ -625,21 +779,29 @@ class SimulationControlPanel(QWidget):
         self.stop_btn.setEnabled(False)
         self.stop_requested.emit()
 
-    # ----------------------------------------------------------- simulation
+    # ================================================================
+    # Simulation lifecycle
+    # ================================================================
 
     def start_simulation(self, assembly_data: Dict[str, Any]):
         """Start a new simulation using the real physics engine."""
-        self._log("=" * 50)
-        self._log("Starting ClassificationFlowPhysicsSimulator...")
-        self._log(f"  Device:     {self._settings.device}")
-        self._log(f"  Particles:  {self._settings.num_particles:,}")
-        self._log(f"  Time:       {self._settings.total_time}s  (dt={self._settings.dt}s)")
-        self._log(f"  Air flow:   {self._settings.air_flow_m3s:.3f} m\u00b3/s "
-                   f"({self._settings.air_flow_m3s * 3600:.0f} m\u00b3/h)")
-        self._log(f"  Material:   {self._settings.material_source} / {self._settings.material_fraction}")
-        mode = "Full System" if self._settings.use_preclassification else "Wheel-Only"
+        s = self._settings
+        self._log("=" * 56)
+        self._log("CLASSIFICATION FLOW PHYSICS SIMULATION")
+        self._log("=" * 56)
+        self._log(f"  Device:     {s.device}")
+        self._log(f"  Particles:  {s.num_particles:,}")
+        self._log(f"  Time:       {s.total_time:.0f}s  (dt={s.dt}s, "
+                   f"{int(s.total_time / s.dt):,} steps)")
+        self._log(f"  Air flow:   {s.air_flow_m3s:.3f} m\u00b3/s "
+                   f"({s.air_flow_m3s * 3600:.0f} m\u00b3/h)")
+        self._log(f"  Material:   {s.material_source} / {s.material_fraction}")
+        mode = "Full System" if s.use_preclassification else "Wheel-Only"
         self._log(f"  Mode:       {mode}")
-        self._log("=" * 50)
+        if s.bypass_ratio > 0:
+            self._log(f"  Bypass:     {s.bypass_ratio:.1%}")
+        self._log(f"  Wheel:      {s.wheel_rpm:.0f} RPM, \u00d8{s.wheel_diameter*1000:.0f} mm")
+        self._log("=" * 56)
 
         # UI state
         self.run_btn.setEnabled(False)
@@ -700,14 +862,23 @@ class SimulationControlPanel(QWidget):
         self.stop_btn.setEnabled(False)
         self.progress_bar.setValue(100)
 
-        self._log("=" * 50)
-        self._log("Simulation completed!")
-        self._log(f"  Wall time:  {results.get('wall_time_s', 0):.1f}s")
-        self._log(f"  Processed:  {results.get('particles_processed', 0):,}")
-        self._log(f"  Fines:      {results.get('fines_collected', 0):,}")
-        self._log(f"  Coarse:     {results.get('coarse_collected', 0):,}")
-        self._log(f"  Efficiency: {results.get('separation_efficiency', 0):.1f}%")
-        self._log("=" * 50)
+        wall = results.get('wall_time_s', 0)
+        steps = int(self._settings.total_time / self._settings.dt)
+        self._log("=" * 56)
+        self._log("SIMULATION COMPLETED")
+        self._log(f"  Wall time:   {wall:.1f}s  ({steps / wall:.0f} steps/s)" if wall > 0 else "  Wall time:   --")
+        self._log(f"  Processed:   {results.get('particles_processed', 0):,}")
+        self._log(f"  Fines:       {results.get('fines_collected', 0):,}")
+        self._log(f"    Cyclone 1: {results.get('cyclone_1', 0):,}")
+        self._log(f"    Cyclone 2: {results.get('cyclone_2', 0):,}")
+        self._log(f"    Cyclone 3: {results.get('cyclone_3_protein', 0):,}")
+        self._log(f"    Bag filter: {results.get('bagfilter', 0):,}")
+        self._log(f"  Coarse:      {results.get('coarse_collected', 0):,}")
+        self._log(f"    Zigzag:    {results.get('coarse', 0):,}")
+        self._log(f"    Wheel:     {results.get('wheel_coarse', 0):,}")
+        self._log(f"  Escaped:     {results.get('escaped', 0):,}")
+        self._log(f"  Efficiency:  {results.get('separation_efficiency', 0):.1f}%")
+        self._log("=" * 56)
 
     @Slot(str)
     def _on_error(self, error: str):
@@ -715,7 +886,6 @@ class SimulationControlPanel(QWidget):
         self.run_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
-
         self._log(f"ERROR:\n{error}")
 
     def _update_display(self):
@@ -727,19 +897,34 @@ class SimulationControlPanel(QWidget):
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.log_text.setTextCursor(cursor)
 
-    # ----------------------------------------------------------- get/set
+    # ================================================================
+    # Get / Set
+    # ================================================================
 
     def get_settings(self) -> SimulationSettings:
         return self._settings
 
     def set_settings(self, settings: SimulationSettings):
         self._settings = settings
+        # Sync all widgets
         self.total_time_spin.setValue(settings.total_time)
         self.dt_spin.setValue(settings.dt)
         self.output_spin.setValue(settings.output_interval)
         self.num_particles_spin.setValue(settings.num_particles)
         self.feed_rate_spin.setValue(settings.particle_feed_rate)
         self.continuous_check.setChecked(settings.continuous_feeding)
+        self.particle_dia_spin.setValue(settings.particle_diameter_um)
+        self.particle_std_spin.setValue(settings.particle_std_um)
         self.device_combo.setCurrentText(settings.device)
         self.material_combo.setCurrentText(settings.material_source)
         self.fraction_combo.setCurrentText(settings.material_fraction)
+        self.air_flow_spin.setValue(settings.air_flow_m3s)
+        self.bypass_spin.setValue(settings.bypass_ratio)
+        self.wheel_rpm_spin.setValue(settings.wheel_rpm)
+        self.wheel_diameter_spin.setValue(settings.wheel_diameter)
+        self.turbulence_spin.setValue(settings.turbulence_intensity)
+        self.restitution_spin.setValue(settings.restitution)
+        self.friction_spin.setValue(settings.friction)
+        self.max_loading_spin.setValue(settings.max_loading_ratio)
+        idx = 0 if settings.use_preclassification else 1
+        self.assembly_mode_combo.setCurrentIndex(idx)
