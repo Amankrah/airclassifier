@@ -13,7 +13,7 @@ This package simulates the operation of cyclone air classifiers, which separate 
 
 ## Project Structure
 
-```
+```text
 airclassifier/
 ├── src/airclassifier/
 │   ├── geometry/       # Cyclone geometry and mesh generation
@@ -51,7 +51,12 @@ pip install -e .
 ## Quick Start
 
 Remove-Item -Path "C:\Users\Windows\AppData\Local\NVIDIA\warp\Cache\1.11.0" -Recurse -Force -ErrorAction SilentlyContinue
-python examples/run_classification_flow.py --blower-rpm 250 --bypass-ratio 0.967 --full-system --material yellow_pea
+
+```bash
+# Full-system classification (air -> feed -> venturi -> classification)
+# Bench-scale geometry (40 mm venturi, 200 mm wheel): use blower 400–600 RPM and wheel 2000–4000 RPM for best protein/starch separation without venturi choke.
+python examples/run_classification_flow.py --blower-rpm 500 --wheel-rpm 3000 --full-system --material yellow_pea
+```
 
 ```python
 import warp as wp

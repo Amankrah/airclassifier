@@ -241,6 +241,10 @@ from .tee_junction import (
     TeeJunction,
     TeeJunctionParams,
 )
+from .three_point_junction import (
+    ThreePointJunction,
+    ThreePointJunctionParams,
+)
 
 # Wheel Classifier (centrifugal)
 from .wheel_classifier import (
@@ -422,6 +426,8 @@ __all__ = [
     # Tee Junction
     "TeeJunction",
     "TeeJunctionParams",
+    "ThreePointJunction",
+    "ThreePointJunctionParams",
     # Wheel Classifier
     "WheelClassifier",
     "WheelClassifierParams",

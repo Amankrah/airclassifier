@@ -158,7 +158,8 @@ class WheelClassifierParams:
 
     @property
     def omega(self) -> float:
-        """Angular velocity [rad/s]."""
+        """Angular velocity [rad/s]. Used by the physics kernel and by visualize_geometry.py
+        for animation (rotation angle = omega * time)."""
         return TWO_PI * self.rpm / 60.0
 
     @property
@@ -778,9 +779,9 @@ class WheelClassifier:
         # CURVED TRANSITION ZONE (blends volute curve to rectangular duct)
         # ================================================================
         # The transition wraps around a portion of the volute at theta
-        # and blends from circular arc to rectangular cross-section
-
-        blend_length = r_volute * 0.3  # Length of blend zone
+        # and blends from circular arc to rectangular cross-section.
+        # Short blend so feed duct meets volute body flush (fit and weld).
+        blend_length = min(r_volute * 0.08, 0.015)  # Short transition at volute
         angle_span = PI / 5  # Angular extent of blend on volute (36 degrees)
 
         transition_start = len(vertices) // 3
@@ -845,9 +846,9 @@ class WheelClassifier:
                 indices.extend([v0, v2, v3])
 
         # ================================================================
-        # RECTANGULAR DUCT (extends from blend zone to inlet opening)
+        # RECTANGULAR DUCT (extends from blend to inlet flange; fit and weld)
         # ================================================================
-        duct_start_r = r_volute + blend_length
+        duct_start_r = r_volute + blend_length  # Starts at end of short blend
         duct_end_r = r_volute + length
 
         # Start position (connected to blend zone)

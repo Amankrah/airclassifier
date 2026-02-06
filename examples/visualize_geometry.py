@@ -4,8 +4,7 @@ Geometry Visualization Example Script
 
 This script demonstrates how to visualize air classifier geometries:
 - Individual components with --color (color-coded) or --mesh (wireframe) modes
-- Assembled systems (feed, air, classification)
-- Complete core system with duct connections
+- Assembled systems (feed, air, classification with or without preclassification)
 
 Coordinate System (Y-up):
 - X: Horizontal (width)
@@ -26,14 +25,19 @@ Individual Component Modes:
 Assembly Modes:
     python examples/visualize_geometry.py --feed       # Feed system assembly
     python examples/visualize_geometry.py --air        # Air system assembly
-    python examples/visualize_geometry.py --classification  # Classification system
+    python examples/visualize_geometry.py --with-preclassification   # Classification with venturi, zigzag
+    python examples/visualize_geometry.py --without-preclassification # Wheel-only (no venturi/zigzag)
+    python examples/visualize_geometry.py --without-preclassification --animate-wheel  # Wheel-only with rotating wheel
+    python examples/visualize_geometry.py --wheel --animate  # Standalone wheel rotating at params.omega (physics-coupled)
+    python examples/visualize_geometry.py --wheel --animate --color  # Standalone wheel with color
 
-System Modes:
-    python examples/visualize_geometry.py --core       # Core system (3 duct connections)
-    python examples/visualize_geometry.py --pilot      # Pilot-scale system
-    python examples/visualize_geometry.py --production # Production-scale system
+Complete core system:
+    python examples/visualize_geometry.py --core-with-preclassification   # Full core (venturi, zigzag, ductwork)
+    python examples/visualize_geometry.py --core-without-preclassification  # Core wheel-only (ductwork)
+
+Other:
     python examples/visualize_geometry.py --export     # Export all to STL files
-    python examples/visualize_geometry.py --all        # All visualizations
+    python examples/visualize_geometry.py --all       # Feed + air + classification (with preclassification)
 
 Requirements:
     pip install pyvista  # For high-quality 3D (recommended)
@@ -457,7 +461,7 @@ def visualize_zigzag(use_mesh: bool = False):
     return result
 
 
-def visualize_wheel_classifier(use_mesh: bool = False):
+def visualize_wheel_classifier(use_mesh: bool = False, animate: bool = False):
     """
     Visualize a centrifugal wheel classifier using the actual geometry mesh.
 
@@ -467,6 +471,9 @@ def visualize_wheel_classifier(use_mesh: bool = False):
     - Fine particles (low inertia) pass through blade gaps -> fines outlet
     - Coarse particles (high inertia) rejected -> coarse outlet
     - Achieves d50 = 20-25 um (vs zigzag's 30-150 um limit)
+
+    When animate=True, the wheel and motor rotate at params.omega (rad/s), i.e.
+    the same angular velocity used by the physics kernel (omega = 2*pi*rpm/60).
     """
     print("\n" + "=" * 60)
     print("WHEEL CLASSIFIER VISUALIZATION")
@@ -476,6 +483,7 @@ def visualize_wheel_classifier(use_mesh: bool = False):
         create_standard_wheel_classifier
     )
     import numpy as np
+    import time
 
     # Create classifier using factory function
     classifier = create_standard_wheel_classifier()
@@ -522,20 +530,25 @@ def visualize_wheel_classifier(use_mesh: bool = False):
             plotter.add_mesh(mesh, style='wireframe', color='black',
                            line_width=1, label='Wheel Classifier')
             plotter.add_title('Wheel Classifier - Mesh View (Actual Geometry)')
-        else:
-            # Solid color mode with edges visible
+        elif not animate:
+            # Solid color mode (no animation)
             plotter.add_mesh(mesh, color=COMPONENT_COLORS['wheel'], opacity=0.85,
                            show_edges=True, edge_color='gray',
                            label='Wheel Classifier')
             plotter.add_title('Wheel Classifier - Actual Geometry (Centrifugal)')
 
-        # Add flow direction arrows
+        # Add flow direction arrows (use feed_angular_position so label is on feed, not motor)
         p = classifier.params
         housing_r = p.volute_outer_radius
-
-        # Feed enters (blue arrow) - from side (tangential inlet)
-        arrow_start = np.array([[housing_r + 0.05, 0, 0]])
-        arrow_dir = np.array([[-0.1, 0, 0]])
+        theta = p.feed_angular_position  # PI = -X side (feed); motor is on +Y (top)
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        # Feed opening (flange) is at volute_outer_radius + feed_inlet_length, at angle theta
+        feed_r = housing_r + p.feed_inlet_length
+        feed_x = cos_t * feed_r
+        feed_z = sin_t * feed_r
+        # Arrow at feed opening, pointing INTO classifier (toward center)
+        arrow_start = np.array([[feed_x - cos_t * 0.03, 0, feed_z - sin_t * 0.03]])
+        arrow_dir = np.array([[cos_t * 0.1, 0, sin_t * 0.1]])  # toward center
         plotter.add_arrows(arrow_start, arrow_dir, color='blue', mag=1.0)
 
         # Fines flow up (green arrow) - through hub
@@ -550,9 +563,10 @@ def visualize_wheel_classifier(use_mesh: bool = False):
         arrow_dir3 = np.array([[0, -0.08, 0]])
         plotter.add_arrows(arrow_start3, arrow_dir3, color='orange', mag=1.0)
 
-        # Add text labels for flow
+        # Feed label at feed inlet (same side as feed, not on motor)
+        label_offset = 0.06
         plotter.add_point_labels(
-            [[housing_r + 0.12, 0, 0]],
+            [[feed_x - cos_t * label_offset, 0, feed_z - sin_t * label_offset]],
             ['Feed\n(tangential)'],
             font_size=10, text_color='blue', shape_opacity=0
         )
@@ -575,11 +589,35 @@ def visualize_wheel_classifier(use_mesh: bool = False):
         plotter.camera.azimuth = -170
         plotter.camera.elevation = -20
 
-        print("\nOpening visualization window...")
+        if animate:
+            # Physics-coupled animation: omega from component (same as kernel uses)
+            omega = classifier.params.omega  # rad/s = 2*pi*rpm/60 (WheelClassifierParams.omega)
+            wheel_center = np.array([0.0, 0.0, 0.0])  # local center (component origin)
+            base_mesh = mesh.copy(deep=True)
+            start_time = time.time()
+            wheel_actor = [None]  # use list so callback can rebind
+
+            def update_rotation(step):
+                t = time.time() - start_time
+                angle_deg = np.degrees(omega * t)
+                mesh_rot = base_mesh.copy(deep=True).rotate_y(angle_deg, point=wheel_center, inplace=False)
+                if wheel_actor[0] is not None:
+                    plotter.remove_actor(wheel_actor[0])
+                wheel_actor[0] = plotter.add_mesh(mesh_rot, color=COMPONENT_COLORS['wheel'], opacity=0.85,
+                                                  show_edges=True, edge_color='gray', label='Wheel Classifier')
+
+            wheel_actor[0] = plotter.add_mesh(base_mesh, color=COMPONENT_COLORS['wheel'], opacity=0.85,
+                                             show_edges=True, edge_color='gray', label='Wheel Classifier')
+            # Timer (not render callback) to avoid re-entrant loop when remove_actor triggers render
+            plotter.add_timer_event(max_steps=10**9, duration=33, callback=update_rotation)
+            plotter.add_title(f'Wheel Classifier - {classifier.params.rpm:.0f} RPM (omega={omega:.1f} rad/s, physics-coupled)')
+            print("\nOpening visualization window (wheel + motor rotating at kernel omega)...")
+        else:
+            print("\nOpening visualization window...")
         print("(Close the window to continue)")
         plotter.show(interactive=True)
 
-        result = {'success': True, 'message': 'Wheel classifier visualized with actual geometry'}
+        result = {'success': True, 'message': 'Wheel classifier visualized with actual geometry' + (' (animated)' if animate else '')}
     else:
         # Fallback to basic visualization
         result = render_component(classifier, "Wheel Classifier",
@@ -843,24 +881,45 @@ def visualize_air_system_assembly():
     return result
 
 
-def visualize_classification_system():
-    """Visualize the classification system assembly with color-coded components."""
+def visualize_classification_system(wheel_only: bool = False, animate_wheel: bool = False):
+    """Visualize the classification system assembly with color-coded components.
+
+    When wheel_only=True, uses assembly without preclassification (no venturi, zigzag, dropout):
+    air inlet + 15° solids chute -> wheel -> cyclones -> bag filter.
+    When animate_wheel=True, the wheel and motor rotate at the assembly wheel's params.omega
+    (same angular velocity as the physics kernel).
+    """
     print("\n" + "=" * 60)
     print("CLASSIFICATION SYSTEM ASSEMBLY VISUALIZATION")
     print("=" * 60)
 
-    from airclassifier.geometry.assembly.classification import create_standard_classification_system
+    from airclassifier.geometry.assembly.classification import (
+        ClassificationSystemAssembly,
+        ClassificationSystemParams,
+        create_standard_classification_system,
+    )
     import numpy as np
+    import time
 
     try:
-        print("Creating classification system...")
-        cls = create_standard_classification_system()
+        if wheel_only:
+            print("Creating classification system (wheel-only, no preclassification)...")
+            params = ClassificationSystemParams(use_preclassification=False)
+            cls = ClassificationSystemAssembly(params=params)
+        else:
+            print("Creating classification system...")
+            cls = create_standard_classification_system()
         print("Building mesh...")
         vertices, indices = cls.build_mesh()
 
         print("Classification System Assembly includes:")
-        print("  - Venturi Eductor (particle entrainment)")
-        print("  - Zigzag Classifier (primary separation)")
+        if cls.venturi is not None:
+            print("  - Venturi Eductor (particle entrainment)")
+        if cls.zigzag is not None:
+            print("  - Zigzag Classifier (primary separation)")
+        if wheel_only:
+            print("  - Air inlet + 15° solids chute -> wheel inlet")
+        print("  - Wheel Classifier (centrifugal fine cut)")
         print("  - Multi-Cyclone System (staged collection)")
         print("  - Bag Filter (fine particle capture)")
         print("  - Connecting Ductwork")
@@ -897,23 +956,25 @@ def visualize_classification_system():
                 'wheel': '#FF6B6B',        # Coral Red (wheel classifier)
             }
 
-            # Add Venturi
-            print("  Adding Venturi mesh...")
-            v, i, _ = cls.venturi.generate_mesh()
-            v = v + cls._component_positions['venturi']
-            faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
-            mesh = pv.PolyData(v, faces)
-            plotter.add_mesh(mesh, color=colors['venturi'],
-                            label='Venturi Eductor', opacity=0.85)
+            # Add Venturi (only when present)
+            if cls.venturi is not None:
+                print("  Adding Venturi mesh...")
+                v, i, _ = cls.venturi.generate_mesh()
+                v = v + np.array(cls._component_positions['venturi'])
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['venturi'],
+                                label='Venturi Eductor', opacity=0.85)
 
-            # Add Zigzag
-            print("  Adding Zigzag mesh...")
-            v, i, _ = cls.zigzag.generate_mesh()
-            v = v + cls._component_positions['zigzag']
-            faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
-            mesh = pv.PolyData(v, faces)
-            plotter.add_mesh(mesh, color=colors['zigzag'],
-                            label='Zigzag Classifier', opacity=0.85)
+            # Add Zigzag (only when present)
+            if cls.zigzag is not None:
+                print("  Adding Zigzag mesh...")
+                v, i, _ = cls.zigzag.generate_mesh()
+                v = v + np.array(cls._component_positions['zigzag'])
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['zigzag'],
+                                label='Zigzag Classifier', opacity=0.85)
 
             # Add Multi-Cyclone
             print("  Adding Multi-Cyclone mesh...")
@@ -933,16 +994,37 @@ def visualize_classification_system():
             plotter.add_mesh(mesh, color=colors['bag_filter'],
                             label='Bag Filter', opacity=0.85)
 
-            # Add Wheel Classifier (if present)
+            # Add Wheel Classifier (always present) with optional physics-coupled animation
             wheel_classifier = cls.get_component('wheel_classifier')
             if wheel_classifier is not None:
-                print("  Adding Wheel Classifier mesh...")
+                print("  Adding Wheel Classifier mesh" + (" (animated)" if animate_wheel else "") + "...")
                 v, i, _ = wheel_classifier.generate_mesh()
-                v = v + cls._component_positions['wheel_classifier']
-                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
-                mesh = pv.PolyData(v, faces)
-                plotter.add_mesh(mesh, color=colors['wheel'],
-                                label='Wheel Classifier', opacity=0.85)
+                wheel_pos = np.array(cls._component_positions['wheel_classifier'])
+                v_wheel = v + wheel_pos
+                faces_wheel = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                wheel_mesh_base = pv.PolyData(v_wheel, faces_wheel)
+                if animate_wheel:
+                    omega = wheel_classifier.params.omega  # rad/s, same as kernel
+                    wheel_center_world = wheel_pos.copy()
+                    start_time = time.time()
+                    wheel_actor_ref = [None]
+
+                    def update_wheel_rotation(step):
+                        t = time.time() - start_time
+                        angle_deg = np.degrees(omega * t)
+                        mesh_rot = wheel_mesh_base.copy(deep=True).rotate_y(angle_deg, point=wheel_center_world, inplace=False)
+                        if wheel_actor_ref[0] is not None:
+                            plotter.remove_actor(wheel_actor_ref[0])
+                        wheel_actor_ref[0] = plotter.add_mesh(mesh_rot, color=colors['wheel'],
+                                                             label='Wheel Classifier', opacity=0.85)
+
+                    wheel_actor_ref[0] = plotter.add_mesh(wheel_mesh_base, color=colors['wheel'],
+                                                         label='Wheel Classifier', opacity=0.85)
+                    # Timer (not render callback) to avoid re-entrant loop when remove_actor triggers render
+                    plotter.add_timer_event(max_steps=10**9, duration=33, callback=update_wheel_rotation)
+                else:
+                    plotter.add_mesh(wheel_mesh_base, color=colors['wheel'],
+                                    label='Wheel Classifier', opacity=0.85)
 
             # Add Ducts (new format: list of (duct_component, position) tuples)
             # Color-code by component type: dropout hopper, tee junctions, regular duct
@@ -950,7 +1032,7 @@ def visualize_classification_system():
             if hasattr(cls, '_collection_duct_sections'):
                 all_duct_sections.extend(cls._collection_duct_sections)
             print(f"  Adding {len(all_duct_sections)} duct sections ({len(cls._duct_sections)} main + {len(getattr(cls, '_collection_duct_sections', []))} collection)...")
-            label_added = {'duct': False, 'dropout': False, 'tee': False, 'airlock': False}
+            label_added = {'duct': False, 'dropout': False, 'tee': False, 'three_pt': False, 'airlock': False}
             for idx, (duct, position) in enumerate(all_duct_sections):
                 v, i, _ = duct.generate_mesh()
                 v = v + np.array(position)  # Apply position offset
@@ -968,6 +1050,11 @@ def visualize_classification_system():
                     label = "Tee Junction" if not label_added['tee'] else None
                     label_added['tee'] = True
                     opacity = 0.85
+                elif type_name == 'ThreePointJunction':
+                    color = colors['tee']
+                    label = "Three-Point Connector (Y, 15° Z, X)" if not label_added['three_pt'] else None
+                    label_added['three_pt'] = True
+                    opacity = 0.85
                 elif type_name == 'RotaryAirlock':
                     color = colors['airlock']
                     label = "Rotary Airlock" if not label_added['airlock'] else None
@@ -982,7 +1069,12 @@ def visualize_classification_system():
                 plotter.add_mesh(mesh, color=color, label=label, opacity=opacity)
 
             plotter.add_legend(bcolor='white', face='circle')
-            plotter.add_title('Classification System - Port-Based Assembly')
+            title = 'Classification System - Port-Based Assembly'
+            if wheel_only:
+                title += ' (Wheel-Only)'
+            if animate_wheel:
+                title += ' - Wheel Animated (physics-coupled)'
+            plotter.add_title(title)
             plotter.add_axes()
             
             # Reset camera to fit entire scene and set isometric view
@@ -1020,28 +1112,38 @@ def visualize_classification_system():
         return {'success': False, 'message': f'Error: {e}'}
 
 
-def visualize_core_system():
+def visualize_core_system(use_preclassification: bool = True):
     """
-    Visualize the core system with all three duct connections.
+    Visualize the complete core system with all three duct connections.
+
+    Args:
+        use_preclassification: If True, classification has venturi + zigzag;
+            if False, wheel-only (air + 15° solids -> three-point junction -> wheel).
 
     Shows the main flow path with ductwork connections:
-    1. Air System -> Venturi air_inlet
-    2. Feed System -> Venturi solids_inlet
+    1. Air System -> Venturi (or wheel-only air inlet)
+    2. Feed System -> Venturi solids_inlet (or wheel-only solids chute)
     3. Bag Filter -> Exhaust (Silencer)
     """
+    mode = "with preclassification (venturi, zigzag)" if use_preclassification else "without preclassification (wheel-only)"
     print("\n" + "=" * 60)
     print("CORE SYSTEM VISUALIZATION")
     print("=" * 60)
+    print(f"Mode: {mode}")
     print("Focus: 3 Main Ductwork Connections")
-    print("  1. Air System -> Venturi (air_inlet)")
-    print("  2. Feed System -> Venturi (solids_inlet)")
+    if use_preclassification:
+        print("  1. Air System -> Venturi (air_inlet)")
+        print("  2. Feed System -> Venturi (solids_inlet)")
+    else:
+        print("  1. Air System -> Wheel-only junction (Y leg)")
+        print("  2. Feed System -> Wheel-only junction (15° solids chute)")
     print("  3. Bag Filter -> Exhaust (Silencer)")
     print("=" * 60)
 
     from airclassifier.geometry.assembly import create_core_connections_system
     import numpy as np
 
-    system = create_core_connections_system()
+    system = create_core_connections_system(use_preclassification=use_preclassification)
 
     # Print summary
     system.print_summary()
@@ -1342,14 +1444,14 @@ def interactive_menu():
         print("\nAssemblies:")
         print("  F. Feed System Assembly")
         print("  A. Air System Assembly")
-        print("  S. Classification System Assembly")
-        print("\nComplete Systems:")
-        print("  C. Core System (3 Duct Connections)")
-        print("  P. Pilot-Scale System (100 kg/h)")
-        print("  R. Production-Scale System (2000 kg/h)")
+        print("  S. Classification (with preclassification: venturi, zigzag)")
+        print("  W. Classification (without preclassification: wheel-only)")
+        print("\nComplete Core System:")
+        print("  C. Core (with preclassification)")
+        print("  K. Core (without preclassification, wheel-only)")
         print("\nOther:")
         print("  E. Export All to Files")
-        print("  X. Run All Visualizations")
+        print("  X. Run All Visualizations (feed + air + classification with preclassification)")
         print("  0. Exit")
         print()
 
@@ -1402,14 +1504,13 @@ def interactive_menu():
         elif choice == "A":
             visualize_air_system_assembly()
         elif choice == "S":
-            visualize_classification_system()
-        # Complete systems
+            visualize_classification_system(wheel_only=False)
+        elif choice == "W":
+            visualize_classification_system(wheel_only=True)
         elif choice == "C":
-            visualize_core_system()
-        elif choice == "P":
-            visualize_pilot_scale()
-        elif choice == "R":
-            visualize_production_scale()
+            visualize_core_system(use_preclassification=True)
+        elif choice == "K":
+            visualize_core_system(use_preclassification=False)
         # Other
         elif choice == "E":
             export_all_geometries()
@@ -1420,12 +1521,11 @@ def interactive_menu():
 
 
 def run_all_visualizations():
-    """Run the 3 system assemblies and the complete core system."""
+    """Run the three system assemblies (feed, air, classification with preclassification)."""
     print("\nRunning system visualizations...")
     print("  1. Feed System Assembly")
     print("  2. Air System Assembly")
-    print("  3. Classification System Assembly")
-    print("  4. Complete Core System")
+    print("  3. Classification (with preclassification)")
     print()
 
     visualize_feed_system_assembly()
@@ -1434,10 +1534,7 @@ def run_all_visualizations():
     visualize_air_system_assembly()
     input("\nPress Enter to continue to next visualization...")
 
-    visualize_classification_system()
-    input("\nPress Enter to continue to next visualization...")
-
-    visualize_core_system()
+    visualize_classification_system(wheel_only=False)
 
     print("\n" + "=" * 60)
     print("ALL SYSTEM VISUALIZATIONS COMPLETE")
@@ -1467,12 +1564,13 @@ Examples:
   # Assemblies
   python visualize_geometry.py --feed
   python visualize_geometry.py --air
-  python visualize_geometry.py --classification
+  python visualize_geometry.py --with-preclassification
+  python visualize_geometry.py --without-preclassification
+  python visualize_geometry.py --without-preclassification --animate-wheel
 
-  # Complete systems
-  python visualize_geometry.py --core
-  python visualize_geometry.py --pilot
-  python visualize_geometry.py --production
+  # Complete core system (feed + air + classification + ductwork + exhaust)
+  python visualize_geometry.py --core-with-preclassification
+  python visualize_geometry.py --core-without-preclassification
 
   # Export and run all
   python visualize_geometry.py --export
@@ -1522,6 +1620,11 @@ Examples:
         action="store_true",
         help="Visualize centrifugal wheel classifier"
     )
+    component_group.add_argument(
+        "--animate",
+        action="store_true",
+        help="With --wheel: animate wheel and motor at params.omega (same as physics kernel)"
+    )
 
     # Rendering mode options
     render_group = parser.add_argument_group('Rendering Mode (for individual components)')
@@ -1549,28 +1652,35 @@ Examples:
         action="store_true",
         help="Visualize air system assembly"
     )
-    assembly_group.add_argument(
-        "--classification", "-cls",
+    classification_mode = assembly_group.add_mutually_exclusive_group()
+    classification_mode.add_argument(
+        "--with-preclassification",
         action="store_true",
-        help="Visualize classification system assembly"
+        help="Visualize classification system with preclassification (venturi, zigzag, dropout)"
+    )
+    classification_mode.add_argument(
+        "--without-preclassification",
+        action="store_true",
+        help="Visualize classification system without preclassification (wheel-only: 15° solids chute + air inlet)"
+    )
+    assembly_group.add_argument(
+        "--animate-wheel",
+        action="store_true",
+        help="With classification: animate wheel and motor at assembly wheel RPM (physics-coupled)"
     )
 
-    # System options
-    system_group = parser.add_argument_group('Complete Systems')
-    system_group.add_argument(
-        "--core",
+    # Complete core system (feed + air + classification + ductwork + exhaust)
+    core_group = parser.add_argument_group('Complete Core System')
+    core_mode = core_group.add_mutually_exclusive_group()
+    core_mode.add_argument(
+        "--core-with-preclassification",
         action="store_true",
-        help="Visualize core system with 3 duct connections"
+        help="Visualize complete core system with preclassification (venturi, zigzag, ductwork)"
     )
-    system_group.add_argument(
-        "--pilot",
+    core_mode.add_argument(
+        "--core-without-preclassification",
         action="store_true",
-        help="Visualize pilot-scale system (100 kg/h)"
-    )
-    system_group.add_argument(
-        "--production",
-        action="store_true",
-        help="Visualize production-scale system (2000 kg/h)"
+        help="Visualize complete core system without preclassification (wheel-only, ductwork)"
     )
 
     # Other options
@@ -1597,12 +1707,12 @@ Examples:
     has_component = any([args.cyclone, args.multicyclone, args.blower,
                         args.deagglomerator, args.hopper, args.airlock, args.zigzag,
                         args.wheel])
-    has_assembly = any([args.feed, args.air, args.classification])
-    has_system = any([args.core, args.pilot, args.production])
+    has_assembly = any([args.feed, args.air, args.with_preclassification, args.without_preclassification])
+    has_core = any([args.core_with_preclassification, args.core_without_preclassification])
     has_other = any([args.all, args.export])
 
     # If nothing specified, run interactive menu
-    if not any([has_component, has_assembly, has_system, has_other]):
+    if not any([has_component, has_assembly, has_core, has_other]):
         interactive_menu()
         return
 
@@ -1634,7 +1744,7 @@ Examples:
         visualize_zigzag(use_mesh=use_mesh)
 
     if args.wheel:
-        visualize_wheel_classifier(use_mesh=use_mesh)
+        visualize_wheel_classifier(use_mesh=use_mesh, animate=getattr(args, 'animate', False))
 
     # Assemblies
     if args.feed:
@@ -1643,18 +1753,17 @@ Examples:
     if args.air:
         visualize_air_system_assembly()
 
-    if args.classification:
-        visualize_classification_system()
+    if args.with_preclassification:
+        visualize_classification_system(wheel_only=False, animate_wheel=args.animate_wheel)
 
-    # Systems
-    if args.core:
-        visualize_core_system()
+    if args.without_preclassification:
+        visualize_classification_system(wheel_only=True, animate_wheel=args.animate_wheel)
 
-    if args.pilot:
-        visualize_pilot_scale()
-
-    if args.production:
-        visualize_production_scale()
+    # Complete core system
+    if args.core_with_preclassification:
+        visualize_core_system(use_preclassification=True)
+    if args.core_without_preclassification:
+        visualize_core_system(use_preclassification=False)
 
     # Other
     if args.all:

@@ -214,68 +214,42 @@ class CompleteClassifierAssembly:
         feed = create_standard_feed_system(device="cpu")
         self._subsystems['feed_system'] = feed
         
-        # Get classification system's venturi position for alignment
+        # Get classification system position for alignment
         classification = self._subsystems.get('classification')
         class_offset = np.array(self._subsystems.get('classification_offset', (0, 0, 0)))
-        
-        if classification is not None and hasattr(classification, 'venturi'):
-            # Get venturi's solids_inlet position
-            venturi = classification.venturi
+        venturi = getattr(classification, 'venturi', None) if classification is not None else None
+
+        if classification is not None and venturi is not None:
+            # With preclassification: align to venturi solids_inlet
             class_positions = classification.get_component_positions()
             venturi_pos = np.array(class_positions['venturi']) + class_offset
-            
             solids_port = venturi.ports['solids_inlet']
             solids_inlet_world = venturi_pos + np.array(solids_port.position)
-            
-            # Calculate feed position based on 15-degree angle
+            target_x, target_y, target_z = solids_inlet_world
+        elif classification is not None and getattr(classification, '_wheel_only_solids_inlet_pos', None) is not None:
+            # Wheel-only: align to three-point junction solids inlet
+            solids_inlet_world = class_offset + np.array(classification._wheel_only_solids_inlet_pos)
+            target_x, target_y, target_z = solids_inlet_world
+        else:
+            target_x = target_y = target_z = None
+
+        if target_x is not None and target_y is not None and target_z is not None:
+            # Calculate feed position based on 15-degree angle from target
             angle_deg = 15.0
             angle_rad = np.radians(angle_deg)
-            
-            # Get feed system outlet position relative to feed origin
             feed_positions = feed.get_component_positions()
             deagg_local_pos = np.array(feed_positions['deagglomerator'])
             deagg_outlet = feed.deagglomerator.ports['outlet']
             outlet_offset = deagg_local_pos + np.array(deagg_outlet.position)
-            
-            # Target position (venturi solids_inlet)
-            target_x, target_y, target_z = solids_inlet_world
-            
-            # ============================================================
-            # Position feed at 15-degree angle from venturi solids_inlet
-            # 
-            # Z_distance: Horizontal distance away from classification system
-            # Y_rise: Vertical elevation = Z_distance × tan(15°)
-            # 
-            # The feed is positioned:
-            # - At same X as target (aligned along X axis)
-            # - Above target in Y (elevated)
-            # - Away from target in Z (positive Z, away from classifier)
-            # ============================================================
-            
-            # Horizontal distance in Z (away from classification system)
-            z_distance = 1.0  # meters - distance from classifier in Z direction
-            
-            # Vertical rise (Y) based on 15-degree angle
-            # Y_rise = Z_distance × tan(15°)
-            y_rise = z_distance * np.tan(angle_rad)  # ~0.27m for 1.0m Z distance
-            
-            # Add extra clearance for elbows and duct routing
-            elbow_clearance = 0.2  # clearance for elbow turns
-            
-            # Feed outlet desired world position:
-            # - Same X as target
-            # - Above target in Y by the calculated rise + clearance
-            # - Away from target in +Z direction
+            z_distance = 1.0
+            y_rise = z_distance * np.tan(angle_rad)
+            elbow_clearance = 0.2
             feed_outlet_target_x = target_x
             feed_outlet_target_y = target_y + y_rise + elbow_clearance
             feed_outlet_target_z = target_z + z_distance
-            
-            # Calculate feed system origin position
-            # (subtract outlet offset from desired outlet position)
             feed_x = feed_outlet_target_x - outlet_offset[0]
             feed_y = feed_outlet_target_y - outlet_offset[1]
             feed_z = feed_outlet_target_z - outlet_offset[2]
-            
         else:
             # Fallback to default position if classification not available
             # Y-up coordinate system: Y is vertical (height)
@@ -299,20 +273,22 @@ class CompleteClassifierAssembly:
         self._subsystems['air_system'] = air
 
         if getattr(p, 'air_duct_layout', 'standard') == "compact":
-            # Position air system so outlet is directly under venturi (same X, Z).
-            # Short duct path: one elbow + vertical riser; leaves -X/+X clear for dropout outlets.
             classification = self._subsystems.get('classification')
             class_offset = np.array(self._subsystems.get('classification_offset', (0, 0, 0)))
-            if classification is not None and hasattr(classification, 'venturi'):
-                venturi = classification.venturi
+            venturi = getattr(classification, 'venturi', None) if classification is not None else None
+            target_x = target_y = target_z = None
+            if classification is not None and venturi is not None:
                 class_positions = classification.get_component_positions()
                 venturi_pos = np.array(class_positions['venturi']) + class_offset
                 air_inlet_port = venturi.ports['air_inlet']
                 target_x, target_y, target_z = venturi_pos + np.array(air_inlet_port.position)
-                # Desired outlet: shifted in X- by air_duct_x_offset to allow space for elbow (damper 2 → vertical duct)
-                stub = 0.15  # m; short horizontal run to elbow
+            elif classification is not None and getattr(classification, '_wheel_only_air_inlet_pos', None) is not None:
+                air_inlet_world = class_offset + np.array(classification._wheel_only_air_inlet_pos)
+                target_x, target_y, target_z = air_inlet_world
+            if target_x is not None:
+                stub = 0.15
                 x_offset = getattr(p, 'air_duct_x_offset', 0.0)
-                vertical_rise = 1.0   # m; height of vertical duct to venturi
+                vertical_rise = 1.0
                 if air.dampers:
                     last_damper = air.dampers[-1]
                     damper_pos = np.array(air._damper_positions[-1])
@@ -350,26 +326,30 @@ class CompleteClassifierAssembly:
         # Feed system (deagglomerator) -> Venturi solids_inlet path only (for flow physics)
         self._feed_to_venturi_ducts: List[Tuple[Any, Tuple[float, float, float]]] = []
 
-        # Get classification system's venturi ports
+        # Get classification system
         classification = self._subsystems.get('classification')
         if classification is None:
             return
 
-        # Get venturi from classification system
-        venturi = classification.venturi
         class_offset = np.array(self._subsystems.get('classification_offset', (0, 0, 0)))
+        venturi = getattr(classification, 'venturi', None)
 
-        # Get component positions from classification system
-        class_positions = classification.get_component_positions()
-        venturi_pos = np.array(class_positions['venturi']) + class_offset
-
-        # 1. Air System -> Venturi air_inlet (primary air supply from -Y direction)
-        if p.include_air_system and 'air_system' in self._subsystems:
-            self._build_air_to_venturi_connection(venturi, venturi_pos)
-
-        # 2. Feed System -> Venturi solids_inlet (gravity feed from +Z direction)
-        if p.include_feed_system and 'feed_system' in self._subsystems:
-            self._build_feed_to_solids_inlet(venturi, venturi_pos)
+        if venturi is not None:
+            # With preclassification: connect to venturi
+            class_positions = classification.get_component_positions()
+            venturi_pos = np.array(class_positions['venturi']) + class_offset
+            # 1. Air System -> Venturi air_inlet
+            if p.include_air_system and 'air_system' in self._subsystems:
+                self._build_air_to_venturi_connection(venturi, venturi_pos)
+            # 2. Feed System -> Venturi solids_inlet
+            if p.include_feed_system and 'feed_system' in self._subsystems:
+                self._build_feed_to_solids_inlet(venturi, venturi_pos)
+        else:
+            # Without preclassification (wheel-only): connect to three-point junction
+            if p.include_air_system and 'air_system' in self._subsystems:
+                self._build_air_to_wheel_only_connection(classification, class_offset)
+            if p.include_feed_system and 'feed_system' in self._subsystems:
+                self._build_feed_to_wheel_only_connection(classification, class_offset)
 
         # 3. Bag Filter -> Exhaust silencer (clean air exhaust)
         if p.include_exhaust and 'silencer' in self._components:
@@ -680,6 +660,57 @@ class CompleteClassifierAssembly:
         # Place transition aligned with venturi air inlet
         self._duct_connections.append((trans, (target_x, trans_pos_y, target_z)))
         self._air_to_venturi_ducts.append((trans, (target_x, trans_pos_y, target_z)))
+
+    def _build_air_to_wheel_only_connection(self, classification, class_offset: np.ndarray):
+        """Build ductwork from Air System outlet to wheel-only junction air inlet (Y leg at origin)."""
+        from ..components.ductwork import RoundDuct, RoundDuctParams
+
+        p = self.params
+        gap = 0.005
+        duct_d = p.main_duct_diameter
+        air_system = self._subsystems['air_system']
+        air_offset = np.array(self._subsystems.get('air_system_offset', (0, 0, 0)))
+        if hasattr(air_system, 'dampers') and air_system.dampers:
+            last_damper = air_system.dampers[-1]
+            damper_pos = np.array(air_system._damper_positions[-1])
+            air_outlet_port = last_damper.ports['outlet']
+            start = air_offset + damper_pos + np.array(air_outlet_port.position)
+        else:
+            start = air_offset + np.array([1.0, 0.0, 0.0])
+        target = class_offset + np.array(getattr(classification, '_wheel_only_air_inlet_pos', (0, 0, 0)))
+        delta = target - start
+        length = max(np.linalg.norm(delta) - gap, 0.05)
+        direction = delta / (np.linalg.norm(delta) + 1e-12)
+        duct = RoundDuct(RoundDuctParams(
+            diameter=duct_d, length=length, wall_thickness=0.002,
+            direction=tuple(direction), center=(0, 0, 0), flanged=True,
+        ))
+        self._duct_connections.append((duct, tuple(start)))
+        self._air_to_venturi_ducts.append((duct, tuple(start)))
+
+    def _build_feed_to_wheel_only_connection(self, classification, class_offset: np.ndarray):
+        """Build ductwork from Feed System outlet to wheel-only solids inlet (15° chute)."""
+        from ..components.ductwork import RoundDuct, RoundDuctParams
+
+        p = self.params
+        gap = 0.005
+        feed_system = self._subsystems['feed_system']
+        feed_offset = np.array(self._subsystems.get('feed_system_offset', (0, 0, 0)))
+        feed_positions = feed_system.get_component_positions()
+        deagg_local_pos = np.array(feed_positions['deagglomerator'])
+        deagg_outlet = feed_system.deagglomerator.ports['outlet']
+        start = feed_offset + deagg_local_pos + np.array(deagg_outlet.position)
+        solids_d = deagg_outlet.diameter
+        target = class_offset + np.array(getattr(classification, '_wheel_only_solids_inlet_pos', (0, 0.5, 0.3)))
+        delta = target - start
+        length = max(np.linalg.norm(delta) - gap, 0.05)
+        direction = delta / (np.linalg.norm(delta) + 1e-12)
+        duct = RoundDuct(RoundDuctParams(
+            diameter=solids_d, length=length, wall_thickness=0.002,
+            direction=tuple(direction), center=(0, 0, 0), flanged=True,
+        ))
+        self._duct_connections.append((duct, tuple(start)))
+        self._feed_to_venturi_ducts.append((duct, tuple(start)))
 
     def _build_feed_to_solids_inlet(self, venturi, venturi_pos: np.ndarray):
         """
@@ -1765,9 +1796,15 @@ def create_minimal_classifier_system() -> CompleteClassifierAssembly:
     return CompleteClassifierAssembly(params)
 
 
-def create_core_connections_system() -> CompleteClassifierAssembly:
+def create_core_connections_system(
+    use_preclassification: bool = True,
+) -> CompleteClassifierAssembly:
     """
     Create a system focused on the three main duct connections.
+
+    Args:
+        use_preclassification: If True, classification includes venturi + zigzag;
+            if False, wheel-only (air + 15° solids chute -> three-point junction -> wheel).
 
     Optimized for protein separation with steep gravity-fed chute (~20°).
     Support structure is excluded to focus on core flow components.
@@ -1813,9 +1850,18 @@ def create_core_connections_system() -> CompleteClassifierAssembly:
     Returns:
         CompleteClassifierAssembly instance
     """
+    from .classification import ClassificationSystemParams
+
+    classification_params = ClassificationSystemParams(
+        use_preclassification=use_preclassification,
+        wheel_diameter=0.20,
+        wheel_rpm=8000.0,
+        wheel_target_d50=25e-6,
+    )
     params = CompleteSystemParams(
         throughput_kg_h=500,
         air_flow_m3_h=3000,
+        classification_params=classification_params,
         # Core systems - all enabled
         include_feed_system=True,
         include_air_system=True,

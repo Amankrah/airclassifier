@@ -66,6 +66,10 @@ Usage:
     python examples/run_classification_flow.py --zigzag-width 100 --zigzag-depth 150
     python examples/run_classification_flow.py --zigzag-width 120 --diagnostics
 
+    # Wheel classifier RPM (main classifier; overrides geometry default)
+    python examples/run_classification_flow.py --wheel-rpm 6000
+    python examples/run_classification_flow.py --wheel-rpm 10000 --diagnostics
+
     # Turbulence intensity
     python examples/run_classification_flow.py --turbulence 0.2
 
@@ -83,6 +87,14 @@ Usage:
     python examples/run_classification_flow.py --material yellow_pea --air-flow 0.2 -n 1000 -t 5 -v
     python examples/run_classification_flow.py --no-sim --material faba_bean --diagnostics
 
+Operating point (bench-scale geometry: 40 mm venturi, 200 mm wheel):
+    - Low blower (e.g. 350 RPM): air cannot carry fines through the wheel; most go to wheel coarse.
+    - Medium blower (400–600 RPM): enough flow to transport fines; pair with wheel 2000–4000 RPM for
+      real protein/starch selectivity (wheel d50 ~10–25 µm). Best balance for this geometry.
+    - High blower (e.g. 2500 RPM): venturi can choke at the throat (Ma≈1). Use `--throat-diameter`
+      to raise choked-flow limit if needed, but be aware high flow can break the cyclone cascade.
+    Example: --blower-rpm 500 --wheel-rpm 3000 --full-system --material yellow_pea
+
 Options:
     -n, --particles N     Number of particles (default: 1000)
     -t, --time T          Simulation time in seconds (default: 5)
@@ -99,6 +111,7 @@ Options:
     --target-d50          Target cut size in microns (auto air flow)
     --zigzag-width        Override zigzag channel width in mm
     --zigzag-depth        Override zigzag channel depth in mm
+    --wheel-rpm           Wheel classifier RPM (main classifier; default: from geometry, e.g. 8000)
     --turbulence          Turbulent intensity (default: 0.15)
     --device              cuda or cpu (default: cuda)
 """
@@ -192,7 +205,7 @@ def main():
     parser.add_argument(
         "--throat-diameter", type=float, default=None,
         help="Override venturi throat diameter in mm (default: 40mm = 80mm inlet × 0.5 ratio). "
-             "Controls flow restriction and system operating point."
+             "Smaller throat increases throat velocity/shear at moderate flow; larger throat raises choked-flow limit."
     )
     parser.add_argument(
         "--zigzag-width", type=float, default=None,
@@ -201,6 +214,14 @@ def main():
     parser.add_argument(
         "--zigzag-depth", type=float, default=None,
         help="Override zigzag channel depth in mm (default: 200mm from geometry)"
+    )
+    parser.add_argument(
+        "--wheel-rpm", type=float, default=None,
+        help="Wheel classifier speed in RPM (main classifier; default: from geometry, e.g. 8000)"
+    )
+    parser.add_argument(
+        "--wheel-only", action="store_true",
+        help="Use wheel-only assembly (no zigzag, venturi, dropout): air inlet + 15° solids chute -> wheel -> cyclones -> bag"
     )
     parser.add_argument(
         "--validate", action="store_true",
@@ -238,6 +259,8 @@ def main():
         print(f"       P = {op['P_operating_Pa']:.0f} Pa, eff = {op['efficiency']:.1%}, W = {op['shaft_power_W']:.0f} W")
     if args.bypass_ratio > 0:
         print(f"  Bypass: {args.bypass_ratio*100:.1f}% around venturi+zigzag")
+    if getattr(args, 'wheel_rpm', None) is not None:
+        print(f"  Wheel RPM (main classifier): {args.wheel_rpm:.0f} (override)")
     
     # Import modules
     from airclassifier.simulation.classification_flow_physics import (
@@ -247,6 +270,7 @@ def main():
     )
     from airclassifier.geometry.assembly.classification import (
         ClassificationSystemAssembly,
+        ClassificationSystemParams,
     )
     from airclassifier.particles import FluidConfig, ParticleMaterial
     
@@ -270,7 +294,12 @@ def main():
         if args.material:
             fraction = "whole" if args.material in ("yellow_pea", "faba_bean", "oat") else args.material
             material = ParticleMaterial.create_food_powder(args.material, fraction)
-        particle_dia_m = args.particle_dia * 1e-6
+        # Particle size for feed ductwork: from material size distribution when available, else args
+        if material is not None and getattr(material, "size_distribution", None) is not None:
+            sd = material.size_distribution
+            particle_dia_m = getattr(sd, "d50", None) or (sd.d_min + sd.d_max) / 2.0
+        else:
+            particle_dia_m = args.particle_dia * 1e-6
         particle_density = material.density if material else 1420.0
         Q_m3s = args.air_flow
         # Build classification params with optional throat diameter override
@@ -312,6 +341,25 @@ def main():
             sphericity=sphericity,
         )
         print_feed_ductwork_summary(feed_result)
+        # Material / feed properties used for classification validation (full-system)
+        print("\n  Material / feed properties (used for classification validation):")
+        if material is not None:
+            sd = getattr(material, "size_distribution", None)
+            if sd is not None:
+                d_min_um = sd.d_min * 1e6
+                d_max_um = sd.d_max * 1e6
+                d50_um = getattr(sd, "d50", None)
+                d50_um = (d50_um * 1e6) if d50_um is not None else (d_min_um + d_max_um) / 2.0
+                print(f"    Material:        {material.name} (density={material.density:.0f} kg/m³, sphericity={getattr(material, 'sphericity', 0.75):.2f})")
+                print(f"    Size range:      {d_min_um:.1f} – {d_max_um:.1f} µm   d50={d50_um:.1f} µm")
+            else:
+                print(f"    Material:        {material.name} (density={material.density:.0f} kg/m³, sphericity={getattr(material, 'sphericity', 0.75):.2f})")
+            print(f"    Feed rep. d:     {particle_dia_m * 1e6:.1f} µm (feed ductwork and entry rate)")
+            if feed_result.get("particle_feed_rate_per_s"):
+                print(f"    Particle rate:   {feed_result['particle_feed_rate_per_s']:.0f} particles/s (solids mass flow + rep. d)")
+        else:
+            print(f"    Material:        generic (density={particle_density:.0f} kg/m³)")
+            print(f"    Particle d:       {particle_dia_m * 1e6:.1f} µm")
         classification_assembly = complete_assembly.get_subsystem("classification")
         venturi_physics = compute_venturi_physics_from_air_and_feed(
             air_result, feed_result, classification_assembly,
@@ -345,6 +393,7 @@ def main():
             bypass_ratio=args.bypass_ratio,
             continuous_feeding=not args.batch_feed,
             max_loading_ratio=args.max_loading,
+            wheel_rpm=args.wheel_rpm,
         )
         print("\nCreating classification system assembly (from full system)...")
     else:
@@ -358,9 +407,13 @@ def main():
         custom_params = None
         has_overrides = (args.zigzag_width is not None or
                          args.zigzag_depth is not None or
-                         args.throat_diameter is not None)
+                         args.throat_diameter is not None or
+                         getattr(args, 'wheel_only', False))
         if has_overrides:
             custom_params = ClassificationSystemParams()
+            if getattr(args, 'wheel_only', False):
+                custom_params.use_preclassification = False
+                print(f"  [Mode] Wheel-only assembly (no zigzag, venturi, dropout); 15° solids chute + air inlet -> wheel")
             if args.throat_diameter is not None:
                 throat_m = args.throat_diameter / 1000.0  # mm to m
                 custom_params.venturi_throat_ratio = throat_m / custom_params.venturi_inlet_diameter
@@ -378,15 +431,20 @@ def main():
         
         # Print assembly info
         print(f"\n  Components:")
-        print(f"    - Venturi eductor (particle entrainment)")
-        print(f"    - Zigzag classifier (primary separation)")
+        if assembly.venturi is not None:
+            print(f"    - Venturi eductor (particle entrainment)")
+        if assembly.zigzag is not None:
+            print(f"    - Zigzag classifier (primary separation)")
+        if getattr(assembly.params, 'use_preclassification', True) is False:
+            print(f"    - Air inlet + 15° solids chute -> wheel inlet")
+        print(f"    - Wheel classifier (centrifugal fine cut)")
         print(f"    - Multi-cyclone system (staged separation)")
         print(f"    - Bag filter (final collection)")
         
         # =========================================================================
         # CALCULATE OPTIMAL AIR FLOW FOR TARGET D50
         # =========================================================================
-        if args.target_d50 is not None:
+        if args.target_d50 is not None and assembly.zigzag is not None:
             # Physics constants
             g = 9.81  # m/s^2
             mu = 1.81e-5  # Pa.s (air viscosity)
@@ -487,6 +545,7 @@ def main():
                 turbulent_intensity=args.turbulence,
                 material=material,
                 fluid_config=fluid,
+                wheel_rpm=args.wheel_rpm,
             )
             print(f"  Using FluidConfig + {args.material} whole flour")
         elif args.material:
@@ -503,6 +562,7 @@ def main():
                 turbulent_intensity=args.turbulence,
                 material=material,
                 fluid_config=FluidConfig.air_at_stp(),
+                wheel_rpm=args.wheel_rpm,
             )
             print(f"  Using FluidConfig + material: {material.name}")
         else:
@@ -513,6 +573,7 @@ def main():
                 num_particles=args.particles,
                 device=args.device,
                 turbulent_intensity=args.turbulence,
+                wheel_rpm=args.wheel_rpm,
             )
     
     # Run operating-condition validation when requested
@@ -577,7 +638,10 @@ def main():
             return
     
     # Initialize particles (use integrated particle module when --material set)
-    print("\nInitializing particles at venturi inlet...")
+    if getattr(assembly.params, 'use_preclassification', True):
+        print("\nInitializing particles at venturi solids inlet...")
+    else:
+        print("\nInitializing particles at wheel inlet (15° solids chute)...")
     
     if args.material and args.material in ("yellow_pea", "faba_bean", "oat"):
         # Whole flour population (protein + starch + fiber) via reusable module
@@ -624,24 +688,40 @@ def main():
         comp_positions = assembly.get_component_positions()
         
         # ============================================
-        # VENTURI EDUCTOR (actual geometry)
+        # VENTURI EDUCTOR (when present)
         # ============================================
-        print("  Adding venturi eductor...")
-        v_vent, i_vent, _ = assembly.venturi.generate_mesh()
-        v_vent = v_vent + np.array(comp_positions['venturi'])
-        faces_vent = np.hstack([[3] + list(face) for face in i_vent.reshape(-1, 3)])
-        venturi_mesh = pv.PolyData(v_vent, faces_vent)
-        plotter.add_mesh(venturi_mesh, color='#3498DB', opacity=0.5, label='Venturi')
+        if assembly.venturi is not None:
+            print("  Adding venturi eductor...")
+            v_vent, i_vent, _ = assembly.venturi.generate_mesh()
+            v_vent = v_vent + np.array(comp_positions['venturi'])
+            faces_vent = np.hstack([[3] + list(face) for face in i_vent.reshape(-1, 3)])
+            venturi_mesh = pv.PolyData(v_vent, faces_vent)
+            plotter.add_mesh(venturi_mesh, color='#3498DB', opacity=0.5, label='Venturi')
         
         # ============================================
-        # ZIGZAG CLASSIFIER (actual geometry)
+        # ZIGZAG CLASSIFIER (when present)
         # ============================================
-        print("  Adding zigzag classifier...")
-        v_zz, i_zz, _ = assembly.zigzag.generate_mesh()
-        v_zz = v_zz + np.array(comp_positions['zigzag'])
-        faces_zz = np.hstack([[3] + list(face) for face in i_zz.reshape(-1, 3)])
-        zigzag_mesh = pv.PolyData(v_zz, faces_zz)
-        plotter.add_mesh(zigzag_mesh, color='#2ECC71', opacity=0.5, label='Zigzag')
+        if assembly.zigzag is not None:
+            print("  Adding zigzag classifier...")
+            v_zz, i_zz, _ = assembly.zigzag.generate_mesh()
+            v_zz = v_zz + np.array(comp_positions['zigzag'])
+            faces_zz = np.hstack([[3] + list(face) for face in i_zz.reshape(-1, 3)])
+            zigzag_mesh = pv.PolyData(v_zz, faces_zz)
+            plotter.add_mesh(zigzag_mesh, color='#2ECC71', opacity=0.5, label='Zigzag')
+        
+        # ============================================
+        # WHEEL CLASSIFIER (with animation: rotation = omega * time)
+        # ============================================
+        print("  Adding wheel classifier (animated)...")
+        v_wheel, i_wheel, _ = assembly.wheel_classifier.generate_mesh()
+        wheel_pos = np.array(comp_positions['wheel_classifier'])
+        wheel_center = wheel_pos + np.array([0, 0, 0])  # center of wheel in world (housing center)
+        # Wheel classifier center from params (local 0,0,0 is housing center)
+        v_wheel_base = v_wheel + wheel_pos
+        wheel_center_world = wheel_pos.copy()
+        faces_wheel = np.hstack([[3] + list(face) for face in i_wheel.reshape(-1, 3)])
+        wheel_mesh_base = pv.PolyData(v_wheel_base, faces_wheel)
+        wheel_actor = plotter.add_mesh(wheel_mesh_base, color='#9B59B6', opacity=0.6, label='Wheel')
         
         # ============================================
         # MULTI-CYCLONE SYSTEM (actual geometry)
@@ -682,15 +762,19 @@ def main():
         
         # Get port positions from assembly
         try:
-            coarse_pos = assembly.get_port_world_position('zigzag', 'coarse_outlet')
-            plotter.add_point_labels([coarse_pos - np.array([0, 0.1, 0])], 
-                                    ["COARSE\n(Starch)"], font_size=12, 
-                                    text_color='#8B4513', point_size=0)
+            if assembly.zigzag is not None:
+                coarse_pos = assembly.get_port_world_position('zigzag', 'coarse_outlet')
+                plotter.add_point_labels([coarse_pos - np.array([0, 0.1, 0])], 
+                                        ["COARSE\n(Starch)"], font_size=12, 
+                                        text_color='#8B4513', point_size=0)
         except (KeyError, AttributeError):
             pass
         
         try:
-            fines_pos = assembly.get_port_world_position('zigzag', 'fines_outlet')
+            if assembly.zigzag is not None:
+                fines_pos = assembly.get_port_world_position('zigzag', 'fines_outlet')
+            else:
+                fines_pos = assembly.get_port_world_position('wheel_classifier', 'fines_outlet')
             plotter.add_point_labels([fines_pos + np.array([0, 0.1, 0])], 
                                     ["FINES"], font_size=10,
                                     text_color='#2ECC71', point_size=0)
@@ -755,7 +839,9 @@ def main():
               f"{args.bypass_ratio*100:.1f}% bypass")
     else:
         print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h")
-    print(f"  Zigzag d50: {simulator.zigzag_d50 * 1e6:.1f} µm")
+    if getattr(simulator, 'use_preclassification', True):
+        print(f"  Zigzag d50: {simulator.zigzag_d50 * 1e6:.1f} µm")
+    print(f"  Wheel d50: {simulator.wheel_d50 * 1e6:.1f} µm")
     if config.continuous_feeding:
         print(f"  Feeding: continuous at {config.particle_feed_rate:.0f} particles/s")
         m_per_particle = config.particle_density * (np.pi / 6.0) * config.visual_particle_diameter**3
@@ -796,7 +882,8 @@ def main():
             progress = 100.0 * step / total_steps
             
             active = sep_counts['active']
-            coarse = sep_counts['coarse']
+            coarse = sep_counts['coarse']           # Zigzag coarse (starch)
+            wheel_coarse = sep_counts.get('wheel_coarse', 0)  # Wheel coarse (starch)
             cy1 = sep_counts['cyclone_1']
             cy2 = sep_counts['cyclone_2']
             cy3 = sep_counts['cyclone_3_protein']
@@ -808,17 +895,20 @@ def main():
                 fed = simulator.state.particles_fed
                 total_to_feed = simulator.state.total_particles_to_feed
                 status += f" | Fed:{fed:5d}/{total_to_feed}"
-            status += f" | Active:{active:5d} Coarse:{coarse:5d}"
+            status += f" | Active:{active:5d} Zc:{coarse:5d} Wc:{wheel_coarse:5d}"
             status += f" Cy1:{cy1:5d} Cy2:{cy2:5d} Cy3:{cy3:5d} Bag:{bag:5d}"
-            # Show zone breakdown for active particles
+            # Show zone breakdown for active particles (path: venturi -> duct -> zigzag -> fines_path -> wheel -> cyclones)
             zz = zone_counts.get('zigzag', 0)
             fp = zone_counts.get('fines_path', 0)
             vent = zone_counts.get('venturi', 0)
             duct_vz = zone_counts.get('duct_v_z', 0)
+            wh = zone_counts.get('wheel_housing', 0)
+            wf = zone_counts.get('wheel_fines', 0)
+            wch = zone_counts.get('wheel_coarse_hopper', 0)
             cy1_z = zone_counts.get('cyclone_1', 0)
             cy2_z = zone_counts.get('cyclone_2', 0)
             cy3_z = zone_counts.get('cyclone_3', 0)
-            status += f"  [zz:{zz:5d} fp:{fp:4d} v:{vent:3d} d:{duct_vz:3d} c1:{cy1_z:4d} c2:{cy2_z:4d} c3:{cy3_z:4d}]"
+            status += f"  [zz:{zz:4d} fp:{fp:4d} wh:{wh:4d} wf:{wf:4d} wch:{wch:4d} c1:{cy1_z:4d} c2:{cy2_z:4d} c3:{cy3_z:4d}]"
             print(status)
         
         # Update visualization every frame
@@ -883,6 +973,21 @@ def main():
                         pass  # Keep previous frame
             
             # ============================================
+            # UPDATE WHEEL AND MOTOR ROTATION (coupled to physics omega * time)
+            # ============================================
+            try:
+                omega = getattr(simulator, 'wheel_omega', 0.0)
+                t = simulator.state.time
+                angle_rad = omega * t
+                angle_deg = np.degrees(angle_rad)
+                wheel_mesh_rotated = wheel_mesh_base.copy(deep=True)
+                wheel_mesh_rotated.rotate_y(angle_deg, point=wheel_center_world, in_place=True)
+                plotter.remove_actor(wheel_actor)
+                wheel_actor = plotter.add_mesh(wheel_mesh_rotated, color='#9B59B6', opacity=0.6, label='Wheel')
+            except Exception:
+                pass
+            
+            # ============================================
             # UPDATE INFO TEXT
             # ============================================
             info_text = (
@@ -904,30 +1009,31 @@ def main():
             # ============================================
             # UPDATE SEPARATION STATS
             # ============================================
-            total_collected = (sep_counts['coarse'] + sep_counts['cyclone_1'] + 
-                             sep_counts['cyclone_2'] + sep_counts['cyclone_3_protein'] +
-                             sep_counts['bagfilter'])
+            total_collected = (sep_counts['coarse'] + sep_counts.get('wheel_coarse', 0) +
+                             sep_counts['cyclone_1'] + sep_counts['cyclone_2'] +
+                             sep_counts['cyclone_3_protein'] + sep_counts['bagfilter'])
             
             if total_collected > 0:
                 pct_coarse = 100 * sep_counts['coarse'] / total_collected
+                pct_wc = 100 * sep_counts.get('wheel_coarse', 0) / total_collected
                 pct_cy1 = 100 * sep_counts['cyclone_1'] / total_collected
                 pct_cy2 = 100 * sep_counts['cyclone_2'] / total_collected
                 pct_cy3 = 100 * sep_counts['cyclone_3_protein'] / total_collected
                 pct_bag = 100 * sep_counts['bagfilter'] / total_collected
             else:
-                pct_coarse = pct_cy1 = pct_cy2 = pct_cy3 = pct_bag = 0
+                pct_coarse = pct_wc = pct_cy1 = pct_cy2 = pct_cy3 = pct_bag = 0
             
             sep_text = (
                 f"SEPARATION\n"
                 f"----------\n"
-                f"Coarse: {sep_counts['coarse']:4d} ({pct_coarse:4.1f}%)\n"
-                f"Cy1:    {sep_counts['cyclone_1']:4d} ({pct_cy1:4.1f}%)\n"
-                f"Cy2:    {sep_counts['cyclone_2']:4d} ({pct_cy2:4.1f}%)\n"
-                f"Cy3:    {sep_counts['cyclone_3_protein']:4d} ({pct_cy3:4.1f}%)\n"
-                f"Bag:    {sep_counts['bagfilter']:4d} ({pct_bag:4.1f}%)\n"
+                f"Zc (zigzag): {sep_counts['coarse']:4d} ({pct_coarse:4.1f}%)\n"
+                f"Wc (wheel):  {sep_counts.get('wheel_coarse', 0):4d} ({pct_wc:4.1f}%)\n"
+                f"Cy1:         {sep_counts['cyclone_1']:4d} ({pct_cy1:4.1f}%)\n"
+                f"Cy2:         {sep_counts['cyclone_2']:4d} ({pct_cy2:4.1f}%)\n"
+                f"Cy3:         {sep_counts['cyclone_3_protein']:4d} ({pct_cy3:4.1f}%)\n"
+                f"Bag:         {sep_counts['bagfilter']:4d} ({pct_bag:4.1f}%)\n"
                 f"----------\n"
-                f"Protein: Cy3+Bag\n"
-                f"Starch:  Coarse"
+                f"Protein: Cy3+Bag | Starch: Zc+Wc"
             )
             plotter.add_text(sep_text, position='upper_right', font_size=10,
                             color='black', name='sep_info')
@@ -966,18 +1072,19 @@ def main():
             if count > 0:
                 print(f"    {zone_name:20s}: {count:5d}")
         
-        # Print detailed separation analysis
+        # Print detailed separation analysis (path order; balance = sum of all)
         sep = simulator.get_separation_counts()
-        total = sum(sep.values()) - sep['active']  # Exclude still-active particles
+        total = sum(sep.values())  # Full balance: every particle in exactly one bucket
         
         if total > 0:
-            print(f"\n  Separation Analysis:")
-            print(f"    Total collected:     {total:5d} particles")
-            print(f"    Still in system:     {sep['active']:5d} particles")
+            print(f"\n  Separation Analysis (particle balance):")
+            print(f"    Total (all destinations): {total:5d} particles")
+            print(f"    Still in system:          {sep['active']:5d} particles")
             
-            print(f"\n  Collection by Outlet:")
+            print(f"\n  Collection by Outlet (path order):")
             outlets = [
-                ('Coarse (Starch)', 'coarse', '#8B4513'),
+                ('Zigzag coarse (starch)', 'coarse', '#8B4513'),
+                ('Wheel coarse (starch)', 'wheel_coarse', '#A0522D'),
                 ('Cyclone 1', 'cyclone_1', '#E74C3C'),
                 ('Cyclone 2', 'cyclone_2', '#E67E22'),
                 ('Cyclone 3 (Protein)', 'cyclone_3_protein', '#9B59B6'),
@@ -994,10 +1101,29 @@ def main():
             
             # Protein recovery estimate
             protein_outlets = sep['cyclone_3_protein'] + sep['bagfilter']
-            starch_outlets = sep['coarse']
+            starch_outlets = sep['coarse'] + sep.get('wheel_coarse', 0)
             print(f"\n  Protein Recovery Estimate:")
             print(f"    Protein-rich fractions (Cy3 + Bag): {protein_outlets:5d} ({100*protein_outlets/max(1,total):.1f}%)")
-            print(f"    Starch-rich fractions (Coarse):     {starch_outlets:5d} ({100*starch_outlets/max(1,total):.1f}%)")
+            print(f"    Starch-rich fractions (Zc + Wc):     {starch_outlets:5d} ({100*starch_outlets/max(1,total):.1f}%)")
+
+            # Cyclone particle sizes (design d50 vs actual)
+            try:
+                cy_stats = simulator.get_cyclone_particle_size_stats()
+                print(f"\n  Cyclone particle sizes (design d50 vs collected):")
+                for key, title in [('cyclone_1', 'Cy1 (coarse fines)'), ('cyclone_2', 'Cy2 (medium)'), ('cyclone_3_protein', 'Cy3 (protein)')]:
+                    s = cy_stats.get(key, {})
+                    n = s.get('count', 0)
+                    design = s.get('design_d50_um')
+                    mean_d = s.get('mean_d_um')
+                    med_d = s.get('median_d_um')
+                    design_str = f"design d50={design:.0f} µm" if design is not None else "design d50=N/A"
+                    if n > 0 and mean_d is not None:
+                        med_str = f"  median={med_d:.1f} µm" if med_d is not None else ""
+                        print(f"    {title:22s}: N={n:5d}  {design_str}  →  mean={mean_d:.1f} µm{med_str}")
+                    else:
+                        print(f"    {title:22s}: N={n:5d}  {design_str}")
+            except Exception:
+                pass
 
         # Per-zone particle size analysis
         zones_arr = simulator.get_zones()
