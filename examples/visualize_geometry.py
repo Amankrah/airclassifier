@@ -21,6 +21,7 @@ Individual Component Modes:
     python examples/visualize_geometry.py --hopper --mesh
     python examples/visualize_geometry.py --airlock --color
     python examples/visualize_geometry.py --zigzag --mesh
+    python examples/visualize_geometry.py --wheel --color      # Wheel classifier
 
 Assembly Modes:
     python examples/visualize_geometry.py --feed       # Feed system assembly
@@ -65,6 +66,7 @@ COMPONENT_COLORS = {
     'zigzag': '#2ECC71',        # Emerald
     'venturi': '#1ABC9C',       # Teal
     'bagfilter': '#F39C12',     # Yellow-Orange
+    'wheel': '#FF6B6B',         # Coral Red (wheel classifier)
 }
 
 
@@ -455,6 +457,138 @@ def visualize_zigzag(use_mesh: bool = False):
     return result
 
 
+def visualize_wheel_classifier(use_mesh: bool = False):
+    """
+    Visualize a centrifugal wheel classifier using the actual geometry mesh.
+
+    The wheel classifier uses centrifugal force (1000-7000g) for fine separation:
+    - Feed enters tangentially or axially
+    - Spinning wheel creates high centrifugal acceleration
+    - Fine particles (low inertia) pass through blade gaps -> fines outlet
+    - Coarse particles (high inertia) rejected -> coarse outlet
+    - Achieves d50 = 20-25 um (vs zigzag's 30-150 um limit)
+    """
+    print("\n" + "=" * 60)
+    print("WHEEL CLASSIFIER VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.geometry.components.wheel_classifier import (
+        create_standard_wheel_classifier
+    )
+    import numpy as np
+
+    # Create classifier using factory function
+    classifier = create_standard_wheel_classifier()
+
+    print("Centrifugal Wheel Classifier:")
+    print(f"  Wheel diameter: {classifier.params.wheel_diameter * 1000:.0f}mm")
+    print(f"  Wheel width: {classifier.params.wheel_width * 1000:.0f}mm")
+    print(f"  Number of blades: {classifier.params.num_blades}")
+    print(f"  RPM: {classifier.params.rpm:.0f}")
+    print(f"\nCentrifugal Force:")
+    print(f"  Tip speed: {classifier.params.tip_speed:.1f} m/s")
+    print(f"  G-force at rim: {classifier.params.g_force:.0f} g")
+    print(f"\nSeparation Physics:")
+    print(f"  Target d50: {classifier.params.target_d50 * 1e6:.1f} um")
+    print(f"  Blade gap: {classifier.params.blade_gap * 1000:.2f}mm")
+    print(f"  Volute outer radius: {classifier.params.volute_outer_radius * 1000:.1f}mm")
+    print(f"\nPorts:")
+    print(f"  Inlet: {classifier.params.feed_inlet_width*1000:.0f}x{classifier.params.feed_inlet_height*1000:.0f}mm (rectangular)")
+    print(f"  Fines outlet: D={classifier.params.fines_outlet_diameter*1000:.0f}mm (+Y)")
+    print(f"  Coarse outlet: D={classifier.params.coarse_outlet_diameter*1000:.0f}mm (-Y)")
+
+    # Get actual mesh from component
+    vertices, indices, normals = classifier.generate_mesh()
+
+    print(f"\nMesh Statistics:")
+    print(f"  Vertices: {len(vertices):,}")
+    print(f"  Triangles: {len(indices)//3:,}")
+
+    if PYVISTA_AVAILABLE:
+        import pyvista as pv
+
+        plotter = pv.Plotter()
+        plotter.set_background('white')
+        plotter.camera.up = (0, 1, 0)  # Y-up coordinate system
+
+        # Create PyVista mesh from actual geometry
+        # Vertices from wheel classifier are flat (x,y,z,x,y,z,...); reshape to (N, 3)
+        pts = np.asarray(vertices).reshape(-1, 3)
+        faces = np.hstack([[3] + list(face) for face in indices.reshape(-1, 3)])
+        mesh = pv.PolyData(pts, faces)
+
+        if use_mesh:
+            # Wireframe mesh mode
+            plotter.add_mesh(mesh, style='wireframe', color='black',
+                           line_width=1, label='Wheel Classifier')
+            plotter.add_title('Wheel Classifier - Mesh View (Actual Geometry)')
+        else:
+            # Solid color mode with edges visible
+            plotter.add_mesh(mesh, color=COMPONENT_COLORS['wheel'], opacity=0.85,
+                           show_edges=True, edge_color='gray',
+                           label='Wheel Classifier')
+            plotter.add_title('Wheel Classifier - Actual Geometry (Centrifugal)')
+
+        # Add flow direction arrows
+        p = classifier.params
+        housing_r = p.volute_outer_radius
+
+        # Feed enters (blue arrow) - from side (tangential inlet)
+        arrow_start = np.array([[housing_r + 0.05, 0, 0]])
+        arrow_dir = np.array([[-0.1, 0, 0]])
+        plotter.add_arrows(arrow_start, arrow_dir, color='blue', mag=1.0)
+
+        # Fines flow up (green arrow) - through hub
+        fines_y = p.wheel_width / 2 + p.fines_outlet_length + 0.02
+        arrow_start2 = np.array([[0, fines_y, 0]])
+        arrow_dir2 = np.array([[0, 0.08, 0]])
+        plotter.add_arrows(arrow_start2, arrow_dir2, color='green', mag=1.0)
+
+        # Coarse flow down (orange arrow) - through hopper
+        coarse_y = -p.wheel_width / 2 - p.coarse_hopper_height - 0.02
+        arrow_start3 = np.array([[0, coarse_y, 0]])
+        arrow_dir3 = np.array([[0, -0.08, 0]])
+        plotter.add_arrows(arrow_start3, arrow_dir3, color='orange', mag=1.0)
+
+        # Add text labels for flow
+        plotter.add_point_labels(
+            [[housing_r + 0.12, 0, 0]],
+            ['Feed\n(tangential)'],
+            font_size=10, text_color='blue', shape_opacity=0
+        )
+        plotter.add_point_labels(
+            [[0.08, fines_y + 0.05, 0]],
+            ['Fines (Protein)\n(low inertia)'],
+            font_size=10, text_color='green', shape_opacity=0
+        )
+        plotter.add_point_labels(
+            [[0.08, coarse_y - 0.05, 0]],
+            ['Coarse (Starch)\n(high inertia)'],
+            font_size=10, text_color='orange', shape_opacity=0
+        )
+
+        plotter.add_axes()
+        plotter.add_legend(bcolor='white', face='circle')
+
+        # Reset camera to fit entire scene and set isometric view
+        plotter.reset_camera()
+        plotter.camera.azimuth = -170
+        plotter.camera.elevation = -20
+
+        print("\nOpening visualization window...")
+        print("(Close the window to continue)")
+        plotter.show(interactive=True)
+
+        result = {'success': True, 'message': 'Wheel classifier visualized with actual geometry'}
+    else:
+        # Fallback to basic visualization
+        result = render_component(classifier, "Wheel Classifier",
+                                 COMPONENT_COLORS['wheel'], use_mesh=use_mesh)
+
+    print(f"\nResult: {result['message']}")
+    return result
+
+
 def visualize_feed_system_assembly():
     """Visualize the feed system assembly with color-coded components."""
     print("\n" + "=" * 60)
@@ -760,6 +894,7 @@ def visualize_classification_system():
                 'dropout': '#8B4513',      # Saddle Brown (dropout hopper)
                 'tee': '#1ABC9C',          # Teal (tee junctions)
                 'airlock': '#CD853F',      # Peru/tan (rotary airlocks)
+                'wheel': '#FF6B6B',        # Coral Red (wheel classifier)
             }
 
             # Add Venturi
@@ -797,6 +932,17 @@ def visualize_classification_system():
             mesh = pv.PolyData(v, faces)
             plotter.add_mesh(mesh, color=colors['bag_filter'],
                             label='Bag Filter', opacity=0.85)
+
+            # Add Wheel Classifier (if present)
+            wheel_classifier = cls.get_component('wheel_classifier')
+            if wheel_classifier is not None:
+                print("  Adding Wheel Classifier mesh...")
+                v, i, _ = wheel_classifier.generate_mesh()
+                v = v + cls._component_positions['wheel_classifier']
+                faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                mesh = pv.PolyData(v, faces)
+                plotter.add_mesh(mesh, color=colors['wheel'],
+                                label='Wheel Classifier', opacity=0.85)
 
             # Add Ducts (new format: list of (duct_component, position) tuples)
             # Color-code by component type: dropout hopper, tee junctions, regular duct
@@ -955,14 +1101,21 @@ def visualize_core_system():
         # Add duct connections (the key part - render each duct with position offset!)
         if hasattr(system, '_duct_connections') and system._duct_connections:
             print(f"  Adding {len(system._duct_connections)} duct connection sections...")
+            first_elbow_labeled = False
             for idx, (duct, position) in enumerate(system._duct_connections):
                 try:
                     v, i, _ = duct.generate_mesh()
-                    v = v + np.array(position)  # Apply position offset
-                    faces = np.hstack([[3] + list(face) for face in i.reshape(-1, 3)])
+                    v = np.asarray(v).reshape(-1, 3) + np.array(position)
+                    faces = np.hstack([[3] + list(face) for face in np.asarray(i).reshape(-1, 3)])
                     mesh = pv.PolyData(v, faces)
-                    plotter.add_mesh(mesh, color=colors['ductwork'],
-                                    label="Ductwork" if idx == 0 else None, opacity=0.7)
+                    comp_type = type(duct).__name__
+                    label = None
+                    if idx == 0:
+                        label = "Ductwork"
+                    if comp_type == 'DuctElbow' and not first_elbow_labeled:
+                        label = "Elbow (damper 2 → vertical duct)"
+                        first_elbow_labeled = True
+                    plotter.add_mesh(mesh, color=colors['ductwork'], label=label, opacity=0.7)
                 except Exception as e:
                     print(f"    Warning: Failed to add duct section {idx}: {e}")
 
@@ -1185,6 +1338,7 @@ def interactive_menu():
         print("  5C/5M. Feed Hopper")
         print("  6C/6M. Rotary Airlock")
         print("  7C/7M. Zigzag Classifier")
+        print("  8C/8M. Wheel Classifier (centrifugal)")
         print("\nAssemblies:")
         print("  F. Feed System Assembly")
         print("  A. Air System Assembly")
@@ -1223,6 +1377,8 @@ def interactive_menu():
             visualize_airlock(use_mesh=False)
         elif choice == "7C":
             visualize_zigzag(use_mesh=False)
+        elif choice == "8C":
+            visualize_wheel_classifier(use_mesh=False)
         # Individual components - Mesh mode
         elif choice == "1M":
             visualize_cyclone(use_mesh=True)
@@ -1238,6 +1394,8 @@ def interactive_menu():
             visualize_airlock(use_mesh=True)
         elif choice == "7M":
             visualize_zigzag(use_mesh=True)
+        elif choice == "8M":
+            visualize_wheel_classifier(use_mesh=True)
         # Assemblies
         elif choice == "F":
             visualize_feed_system_assembly()
@@ -1359,6 +1517,11 @@ Examples:
         action="store_true",
         help="Visualize zigzag classifier"
     )
+    component_group.add_argument(
+        "--wheel",
+        action="store_true",
+        help="Visualize centrifugal wheel classifier"
+    )
 
     # Rendering mode options
     render_group = parser.add_argument_group('Rendering Mode (for individual components)')
@@ -1432,7 +1595,8 @@ Examples:
 
     # Determine if any visualization was requested
     has_component = any([args.cyclone, args.multicyclone, args.blower,
-                        args.deagglomerator, args.hopper, args.airlock, args.zigzag])
+                        args.deagglomerator, args.hopper, args.airlock, args.zigzag,
+                        args.wheel])
     has_assembly = any([args.feed, args.air, args.classification])
     has_system = any([args.core, args.pilot, args.production])
     has_other = any([args.all, args.export])
@@ -1468,6 +1632,9 @@ Examples:
 
     if args.zigzag:
         visualize_zigzag(use_mesh=use_mesh)
+
+    if args.wheel:
+        visualize_wheel_classifier(use_mesh=use_mesh)
 
     # Assemblies
     if args.feed:

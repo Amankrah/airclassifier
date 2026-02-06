@@ -50,6 +50,11 @@ class CompleteSystemParams:
         # Sizing
         classifier_width: Zigzag classifier width [m]
         cyclone_diameter: Primary cyclone diameter [m]
+
+        # Wheel classifier (centrifugal) - MANDATORY for protein separation
+        wheel_diameter: Wheel classifier diameter [m]
+        wheel_rpm: Wheel classifier speed [RPM]
+        wheel_target_d50: Target cut size for wheel [m]
     """
     throughput_kg_h: float = 500.0
     cut_size_um: float = 20.0
@@ -62,6 +67,13 @@ class CompleteSystemParams:
     classifier_position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     air_system_position: Tuple[float, float, float] = (0.0, -3.0, 0.0)
 
+    # Air duct layout: "compact" = short path directly under venturi (saves duct length,
+    # leaves -X/+X clear for zigzag coarse and dropout outlets); "standard" = original long path
+    air_duct_layout: str = "compact"
+    # In compact layout, shift air system in X- [m] so duct from damper reaches elbow inlet (aligns with vertical duct)
+    # Must be sufficiently negative (e.g. <= -0.24) so horizontal duct length is positive and connects to elbow
+    air_duct_x_offset: float = -0.45
+
     # Include flags
     include_feed_system: bool = True
     include_air_system: bool = True
@@ -70,6 +82,7 @@ class CompleteSystemParams:
     include_exhaust: bool = True
 
     # Optional custom classification system params (venturi throat, cyclone sizes, etc.)
+    # Pass a ClassificationSystemParams object to override defaults
     classification_params: Optional[Any] = None
 
     # Sizing parameters
@@ -81,6 +94,13 @@ class CompleteSystemParams:
     frame_depth: float = 3.0
     frame_height: float = 3.5
     stack_height: float = 4.0
+
+    # Wheel classifier (centrifugal) - MANDATORY for fine separation (d50 < 30 um)
+    # Required for protein/starch separation - provides 1000-5000g vs zigzag's 1g
+    # These params get merged into classification_params
+    wheel_diameter: float = 0.20      # [m] 200mm wheel
+    wheel_rpm: float = 8000.0         # [RPM] operating speed
+    wheel_target_d50: float = 25e-6   # [m] 25 um target cut
 
 
 class CompleteClassifierAssembly:
@@ -131,14 +151,18 @@ class CompleteClassifierAssembly:
     
     def _build_classification_system(self):
         """
-        Build the classification system (zigzag + cyclones + bag filter).
-        
+        Build the classification system (zigzag + wheel classifier + cyclones + bag filter).
+
+        The wheel classifier is MANDATORY for protein separation - it provides
+        the 1000-5000g centrifugal force needed for the 20-25 µm cut size that
+        gravity-based zigzag alone cannot achieve.
+
         Coordinate System (Y-up):
         - X: Horizontal (width)
         - Y: Vertical (height) - UP
         - Z: Horizontal (depth)
         """
-        from .classification import create_standard_classification_system
+        from .classification import create_standard_classification_system, ClassificationSystemParams
 
         p = self.params
         cx, cy, cz = p.classifier_position
@@ -147,8 +171,18 @@ class CompleteClassifierAssembly:
         # Y is the vertical axis, so add elevation to Y
         class_y = cy + 0.5
 
+        # Build classification params with wheel classifier settings
+        class_params = p.classification_params
+        if class_params is None:
+            # Create params with wheel classifier (mandatory)
+            class_params = ClassificationSystemParams(
+                wheel_diameter=p.wheel_diameter,
+                wheel_rpm=p.wheel_rpm,
+                wheel_target_d50=p.wheel_target_d50,
+            )
+
         classification = create_standard_classification_system(
-            device="cpu", params=p.classification_params
+            device="cpu", params=class_params
         )
         self._subsystems['classification'] = classification
 
@@ -263,9 +297,37 @@ class CompleteClassifierAssembly:
         
         air = create_standard_air_system(device="cpu")
         self._subsystems['air_system'] = air
-        # Move air system toward +Z (toward classifier/feeder) for proper elbow alignment
-        # The Z offset ensures the second elbow output aligns with target_z for the vertical duct
-        self._subsystems['air_system_offset'] = (ax, ay, az + 0.6)
+
+        if getattr(p, 'air_duct_layout', 'standard') == "compact":
+            # Position air system so outlet is directly under venturi (same X, Z).
+            # Short duct path: one elbow + vertical riser; leaves -X/+X clear for dropout outlets.
+            classification = self._subsystems.get('classification')
+            class_offset = np.array(self._subsystems.get('classification_offset', (0, 0, 0)))
+            if classification is not None and hasattr(classification, 'venturi'):
+                venturi = classification.venturi
+                class_positions = classification.get_component_positions()
+                venturi_pos = np.array(class_positions['venturi']) + class_offset
+                air_inlet_port = venturi.ports['air_inlet']
+                target_x, target_y, target_z = venturi_pos + np.array(air_inlet_port.position)
+                # Desired outlet: shifted in X- by air_duct_x_offset to allow space for elbow (damper 2 → vertical duct)
+                stub = 0.15  # m; short horizontal run to elbow
+                x_offset = getattr(p, 'air_duct_x_offset', 0.0)
+                vertical_rise = 1.0   # m; height of vertical duct to venturi
+                if air.dampers:
+                    last_damper = air.dampers[-1]
+                    damper_pos = np.array(air._damper_positions[-1])
+                    out_port = last_damper.ports['outlet']
+                    outlet_local = np.array(out_port.position)
+                    desired_outlet = (target_x + stub + x_offset, target_y - vertical_rise, target_z)
+                    air_offset = np.array(desired_outlet) - (damper_pos + outlet_local)
+                    self._subsystems['air_system_offset'] = tuple(air_offset)
+                else:
+                    self._subsystems['air_system_offset'] = (target_x + stub - 0.5, target_y - vertical_rise, target_z + 0.6)
+            else:
+                self._subsystems['air_system_offset'] = (ax, ay, az + 0.6)
+        else:
+            # Original placement
+            self._subsystems['air_system_offset'] = (ax, ay, az + 0.6)
     
     def _build_ductwork(self):
         """
@@ -320,18 +382,18 @@ class CompleteClassifierAssembly:
         The air system connects to the venturi's main air inlet (air_inlet port).
         For a vertical venturi (axis='y'), air enters from -Y direction.
 
-        Route:
-        - Air from blower outlet (+X) -> elbows -> approach venturi in +Y direction
-
-        Coordinates:
-        - Air Start: damper outlet, direction +X
-        - Target: venturi air_inlet, expects flow from -Y direction (duct approaches in +Y)
+        Layouts:
+        - "compact": Air system placed under venturi (same X, Z). Path: short -X duct,
+          one elbow (-X to +Y), vertical +Y duct, transition. Minimizes length and
+          keeps -X/+X clear for zigzag coarse and dropout outlets.
+        - "standard": Original multi-elbow path from fixed air_system_position.
         """
         from ..components.ductwork import RoundDuct, RoundDuctParams, DuctElbow, DuctElbowParams
         from ..components.transitions import Transition, TransitionParams
 
         p = self.params
-        gap = 0.005  # 5mm flange gap
+        gap = 0.002  # 2 mm flange gap (powder-tight)
+        layout = getattr(p, 'air_duct_layout', 'standard')
 
         # Get air system outlet position and diameter
         air_system = self._subsystems['air_system']
@@ -352,21 +414,79 @@ class CompleteClassifierAssembly:
         venturi_air_world = venturi_pos + np.array(venturi_air_port.position)
         venturi_air_d = venturi_air_port.diameter
 
-        # Duct dimensions
         duct_d = min(air_outlet_d, p.main_duct_diameter)
         R = duct_d * 1.0  # Bend radius
         trans_len = 0.12  # Transition length
-
-        # Reference coordinates
         start_x, start_y, start_z = air_outlet_world
         target_x, target_y, target_z = venturi_air_world
 
+        if layout == "compact":
+            # Damper 2 outlet -> horizontal duct -> one elbow (perfect connection) -> vertical duct (+Y) -> transition -> venturi
+            # With air_duct_x_offset (X-), air system is left of venturi; duct runs +X to elbow so elbow has room.
+            elbow_inlet_x = target_x + R  # elbow inlet at this X so outlet is at target_x (vertical duct aligned)
+            if start_x >= elbow_inlet_x + gap:
+                # Air system to the right: duct runs -X from damper to elbow
+                d1_len = max(start_x - (elbow_inlet_x + gap), 0.05)
+                d1_pos = (start_x + gap, start_y, start_z)
+                duct1 = RoundDuct(RoundDuctParams(
+                    diameter=duct_d, length=d1_len, wall_thickness=0.002,
+                    direction=(-1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
+                ))
+                e1_inlet = (start_x + gap - d1_len - gap, start_y, start_z)
+                elbow_inlet_dir = (-1.0, 0.0, 0.0)
+                elbow_rot_axis = (0.0, 0.0, 1.0)
+            else:
+                # Air system in X- (moved left): duct runs +X from damper to elbow; elbow receives +X flow (turn same way as duct)
+                # Elbow +X -> +Y: inlet_direction (1,0,0), rotation (0,0,-1); position so outlet is at target_x
+                elbow_inlet_x_left = target_x - R  # with +X inlet, outlet is at center + (R,R,0) so place at target_x - R
+                d1_len = max((elbow_inlet_x_left - gap) - (start_x + gap), 0.05)
+                d1_pos = (start_x + gap, start_y, start_z)
+                duct1 = RoundDuct(RoundDuctParams(
+                    diameter=duct_d, length=d1_len, wall_thickness=0.002,
+                    direction=(1.0, 0.0, 0.0), center=(0, 0, 0), flanged=True,
+                ))
+                e1_inlet = (elbow_inlet_x_left, start_y, start_z)
+                elbow_inlet_dir = (1.0, 0.0, 0.0)   # flow from damper arrives in +X
+                elbow_rot_axis = (0.0, 0.0, -1.0)   # bend from +X to +Y (correct orientation for duct→vertical)
+            self._duct_connections.append((duct1, d1_pos))
+            self._air_to_venturi_ducts.append((duct1, d1_pos))
+
+            # Elbow: horizontal to vertical duct (+Y); positioned so outlet is at target_x for venturi alignment
+            elbow1 = DuctElbow(DuctElbowParams(
+                diameter=duct_d, bend_radius=R, angle=90.0, wall_thickness=0.002,
+                flanged=True, center=(0, 0, 0),
+                inlet_direction=elbow_inlet_dir, rotation_axis=elbow_rot_axis,
+            ))
+            self._duct_connections.append((elbow1, e1_inlet))
+            self._air_to_venturi_ducts.append((elbow1, e1_inlet))
+
+            # Vertical duct from elbow outlet (at target_x) up to venturi transition
+            e1_outlet_y = start_y + R
+            d2_len = max(target_y - trans_len - gap - (e1_outlet_y + gap), 0.05)
+            d2_pos = (target_x, e1_outlet_y + gap, target_z)
+            duct2 = RoundDuct(RoundDuctParams(
+                diameter=duct_d, length=d2_len, wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
+            ))
+            self._duct_connections.append((duct2, d2_pos))
+            self._air_to_venturi_ducts.append((duct2, d2_pos))
+
+            trans_pos_y = e1_outlet_y + gap + d2_len + gap
+            trans = Transition(TransitionParams(
+                transition_type="round_to_round",
+                inlet_dimensions=(duct_d,), outlet_dimensions=(venturi_air_d,),
+                length=trans_len, concentric=True, wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0), center=(0, 0, 0), flanged=True,
+            ))
+            self._duct_connections.append((trans, (target_x, trans_pos_y, target_z)))
+            self._air_to_venturi_ducts.append((trans, (target_x, trans_pos_y, target_z)))
+            return
+
+        # ============================================================
+        # STANDARD layout: multi-elbow path (original)
         # ============================================================
         # TARGET-ALIGNED routing: Work backwards from venturi air_inlet
-        # to ensure the duct terminates exactly at the target position.
-        # 
         # Venturi air_inlet expects air from -Y, so final approach is +Y
-        # Final transition outlet must be at (target_x, target_y, target_z)
         # ============================================================
 
         # Work backwards from target:
@@ -1342,13 +1462,41 @@ class CompleteClassifierAssembly:
         """
         Get ductwork from Air System outlet to Venturi air_inlet only.
 
-        Returns list of (component, world_position) in flow order:
-        duct1 -> elbow1 -> duct2 -> elbow2 -> duct3 -> elbow3 -> duct4 -> elbow4 -> duct5? -> transition.
+        Returns list of (component, world_position) in flow order.
+        Compact layout: Damper 2 outlet -> duct (-X) -> elbow (damper→vertical) -> vertical duct (+Y) -> transition.
+        Standard layout: multiple ducts and elbows.
         Empty if ductwork was not built (e.g. air system or ductwork disabled).
         """
         if hasattr(self, '_air_to_venturi_ducts'):
             return list(self._air_to_venturi_ducts)
         return []
+
+    def get_air_to_venturi_path_description(self) -> str:
+        """
+        Human-readable path from last damper (Damper 2) to venturi, including the elbow transition to the vertical duct.
+        """
+        if not getattr(self, '_air_to_venturi_ducts', None):
+            return "Air-to-venturi ductwork not built."
+        parts = []
+        for i, (comp, pos) in enumerate(self._air_to_venturi_ducts):
+            name = type(comp).__name__
+            if name == "DuctElbow":
+                parts.append("elbow (→ vertical duct)")
+            elif name == "RoundDuct":
+                d = getattr(comp.params, "direction", (0, 0, 0))
+                if abs(d[1] - 1.0) < 0.1:
+                    parts.append("vertical duct (+Y)")
+                elif d[0] < -0.9:
+                    parts.append("duct (-X)")
+                elif d[0] > 0.9:
+                    parts.append("duct (+X)")
+                else:
+                    parts.append("duct")
+            elif "Transition" in name:
+                parts.append("transition → venturi")
+            else:
+                parts.append(name)
+        return "Damper 2 outlet → " + " → ".join(parts)
 
     def get_feed_to_venturi_ductwork(self) -> List[Tuple[Any, Tuple[float, float, float]]]:
         """

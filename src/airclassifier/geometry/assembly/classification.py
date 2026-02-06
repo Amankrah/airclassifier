@@ -124,7 +124,7 @@ class ClassificationSystemParams:
     bag_filter_air_to_cloth: float = 2.5    # [m³/min/m²] Typical for food dust
 
     # Layout parameters
-    flange_gap: float = 0.005               # [m] Gap between flanges (5mm gasket space)
+    flange_gap: float = 0.002               # [m] Gap between flanges (2mm, powder-tight to prevent particle escape)
     duct_spacing: float = 0.08              # [m] Minimum duct length between components
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
@@ -146,6 +146,18 @@ class ClassificationSystemParams:
     bypass_diameter: float = 0.06         # [m] Bypass duct diameter (or auto-size)
     bypass_stub_length: float = 0.05      # [m] Tee branch stub length
 
+    # Wheel classifier (centrifugal, for fine cut at 20-25 µm)
+    # MANDATORY - Placed between zigzag fines outlet and cyclone train
+    # The wheel classifier provides the critical 20-25 µm cut needed for
+    # protein/starch separation that gravity-based zigzag cannot achieve.
+    wheel_diameter: float = 0.20            # [m] Classifier wheel diameter
+    wheel_rpm: float = 8000.0               # [rpm] Operating speed
+    wheel_target_d50: float = 25e-6         # [m] Target cut size (25 µm)
+    wheel_num_blades: int = 24              # Number of classifier blades
+
+    # Wheel classifier collection (starch fraction 25-50 µm)
+    wheel_airlock_rotor_d: float = 0.06     # [m] 60mm rotor diameter
+
     # Mesh resolution
     resolution: int = 24
 
@@ -156,15 +168,23 @@ class ClassificationSystemAssembly:
 
     Combines all Phase 1 components with proper port-to-port connections:
     - Venturi Eductor: Particle entrainment (vertical, axis='y')
-    - Zigzag Classifier: Primary separation (vertical)
+    - Zigzag Classifier: Primary separation by size (vertical, gravity-based)
+    - Wheel Classifier: Fine cut separation (centrifugal, d50 ≈ 25 µm)
     - Multi-Cyclone System: Staged collection (vertical cyclones, series arrangement)
     - Bag Filter: Fine particle collection
 
-    Flow path connections:
+    FLOW PATH (with wheel classifier - mandatory for protein separation):
     1. Venturi outlet (+Y) → Duct → Zigzag air_inlet (-Y facing)
-    2. Zigzag fines_outlet (+Y) → Elbow (90°) → Duct → Cyclone inlet (tangential +X)
-    3. Cyclone overflow (+Y) → Elbow (90°) → Duct → Bag filter dirty_air_inlet (+X)
-    4. Bag filter clean_air_outlet (+Y) → To exhaust system
+    2. Zigzag fines_outlet (+Y) → Transition → Elbow → Wheel classifier inlet (tangential)
+    3. Wheel classifier fines_outlet (+Y) → Transition → Elbow → Cyclone inlet (tangential)
+    4. Cyclone overflow (+Y) → Elbow → Duct → Bag filter dirty_air_inlet (+X)
+    5. Bag filter clean_air_outlet (+Y) → To exhaust system
+    Collection: Wheel coarse_outlet (-Y) → Straight vertical duct (no elbow) → Rotary airlock
+
+    SEPARATION CASCADE:
+    - Zigzag: Removes coarse particles (>50 µm starch granules)
+    - Wheel classifier: Fine cut at 25 µm (protein <25 µm, starch 25-50 µm)
+    - Cyclones: Staged collection of protein-rich fines
 
     Coordinate system:
     - Origin at venturi air inlet (bottom of system)
@@ -187,6 +207,7 @@ class ClassificationSystemAssembly:
         # Component storage
         self.venturi = None
         self.zigzag = None
+        self.wheel_classifier = None  # Centrifugal classifier (mandatory, set during _create_components)
         self.multi_cyclone = None
         self.bag_filter = None
 
@@ -224,6 +245,7 @@ class ClassificationSystemAssembly:
         from ..components import (
             MultiCycloneSystem, MultiCycloneParams, CycloneStageParams,
             create_standard_bag_filter,
+            WheelClassifier, WheelClassifierParams,
         )
         from ..components.zigzag_classifier import ZigzagClassifierParams, ZigzagClassifier
         from ..components.venturi_eductor import VenturiEducatorParams, VenturiEducator
@@ -497,11 +519,10 @@ class ClassificationSystemAssembly:
             self._collection_duct_sections.append((coarse_airlock, coarse_airlock_pos))
 
         # ============================================================
-        # 2b. DROPOUT COLLECTION - Routed to -X side to clear venturi
+        # 2b. DROPOUT COLLECTION - Routed to +X side (opposite zigzag coarse on -X)
         # ============================================================
-        # The dropout hopper discharges directly above the venturi, so
-        # we route sideways (-X) with an elbow before the airlock.
-        # Route: dropout → 90° elbow (-Y to -X) → short duct → 90° elbow (-X to -Y) → airlock
+        # Zigzag coarse airlock is on -X; dropout airlock on +X so they are opposite.
+        # Route: dropout → 90° elbow (-Y to +X) → short duct → 90° elbow (+X to -Y) → airlock
         if p.include_dropout and p.include_dropout_collection:
             from ..components import RotaryAirlock, RotaryAirlockParams
 
@@ -510,7 +531,7 @@ class ClassificationSystemAssembly:
                 dropout_world = np.array(trans1_start) + np.array(dropout_port.position)
                 dropout_d = p.dropout_hopper_outlet_d  # 40mm
 
-                # Elbow 1: turns from -Y (down) to -X (left)
+                # Elbow 1: turns from -Y (down) to +X (right), opposite to zigzag coarse (-X)
                 dropout_elbow_R = dropout_d * 2.0  # Generous bend for powder flow
                 dropout_elbow1 = DuctElbow(DuctElbowParams(
                     diameter=dropout_d,
@@ -520,7 +541,7 @@ class ClassificationSystemAssembly:
                     flanged=True,
                     center=(0, 0, 0),
                     inlet_direction=(0.0, -1.0, 0.0),
-                    rotation_axis=(0.0, 0.0, 1.0),  # Turns -Y → -X
+                    rotation_axis=(0.0, 0.0, -1.0),  # Turns -Y → +X
                 ))
                 dropout_elbow1_inlet = (
                     dropout_world[0],
@@ -535,24 +556,24 @@ class ClassificationSystemAssembly:
                 )
                 self._collection_duct_sections.append((dropout_elbow1, dropout_elbow1_inlet))
 
-                # Short horizontal duct going -X to clear venturi envelope
+                # Short horizontal duct going +X (right side, opposite zigzag coarse)
                 dropout_duct_length = 0.10  # 100mm
                 dropout_duct = RoundDuct(RoundDuctParams(
                     diameter=dropout_d,
                     length=dropout_duct_length,
                     wall_thickness=0.002,
-                    direction=(-1.0, 0.0, 0.0),
+                    direction=(1.0, 0.0, 0.0),
                     center=(0, 0, 0),
                     flanged=True,
                 ))
                 dropout_duct_start = (
-                    elbow1_outlet[0] - gap,
+                    elbow1_outlet[0] + gap,
                     elbow1_outlet[1],
                     elbow1_outlet[2],
                 )
                 self._collection_duct_sections.append((dropout_duct, dropout_duct_start))
 
-                # Elbow 2: turns from -X to -Y (downward to airlock)
+                # Elbow 2: turns from +X to -Y (downward to airlock)
                 dropout_elbow2 = DuctElbow(DuctElbowParams(
                     diameter=dropout_d,
                     bend_radius=dropout_elbow_R,
@@ -560,11 +581,11 @@ class ClassificationSystemAssembly:
                     wall_thickness=0.002,
                     flanged=True,
                     center=(0, 0, 0),
-                    inlet_direction=(-1.0, 0.0, 0.0),
-                    rotation_axis=(0.0, 0.0, -1.0),  # Turns -X → -Y
+                    inlet_direction=(1.0, 0.0, 0.0),
+                    rotation_axis=(0.0, 0.0, 1.0),  # Turns +X → -Y
                 ))
                 dropout_elbow2_inlet = (
-                    dropout_duct_start[0] - dropout_duct_length - gap,
+                    dropout_duct_start[0] + dropout_duct_length + gap,
                     dropout_duct_start[1],
                     dropout_duct_start[2],
                 )
@@ -576,7 +597,7 @@ class ClassificationSystemAssembly:
                 )
                 self._collection_duct_sections.append((dropout_elbow2, dropout_elbow2_inlet))
 
-                # Rotary airlock below elbow 2
+                # Rotary airlock below elbow 2 (on +X side, opposite zigzag coarse airlock)
                 dropout_airlock = RotaryAirlock(RotaryAirlockParams(
                     rotor_diameter=p.dropout_airlock_rotor_d,
                     rotor_length=p.dropout_airlock_rotor_d * 0.6,
@@ -599,9 +620,200 @@ class ClassificationSystemAssembly:
         zigzag_fines_world = self._get_port_world_pos('zigzag', zigzag_fines)
 
         # ============================================================
+        # 2c. WHEEL CLASSIFIER (Mandatory) - Between zigzag and cyclones
+        # ============================================================
+        # Centrifugal classifier for fine cut (d50 ≈ 25 µm)
+        # Provides 1000-5000g acceleration vs zigzag's 1g
+        # REQUIRED for protein/starch separation - zigzag alone cannot achieve
+        # the 20-25 µm cut size needed for effective protein concentration.
+        if True:  # Wheel classifier is mandatory
+            # Create wheel classifier (industrial centrifugal design)
+            # Parameters scaled from wheel_diameter for proportional geometry
+            wheel_params = WheelClassifierParams(
+                wheel_diameter=p.wheel_diameter,
+                wheel_width=p.wheel_diameter * 0.20,        # 20% of diameter
+                hub_diameter=p.wheel_diameter * 0.30,       # 30% of diameter
+                num_blades=p.wheel_num_blades,
+                blade_thickness=0.002,
+                shroud_thickness=0.003,
+                # Volute housing
+                housing_type="volute",
+                volute_clearance=p.wheel_diameter * 0.075,  # 7.5% clearance
+                volute_expansion=1.25,
+                housing_height=p.wheel_diameter * 0.60,     # 60% of diameter
+                wall_thickness=0.003,
+                # Feed inlet (tangential)
+                feed_inlet_width=p.wheel_diameter * 0.25,   # 25% of diameter
+                feed_inlet_height=p.wheel_diameter * 0.30,  # 30% of diameter
+                feed_inlet_length=p.wheel_diameter * 0.40,  # 40% of diameter
+                feed_angular_position=np.pi,                # -X side
+                # Fines outlet (through hub)
+                fines_outlet_diameter=p.wheel_diameter * 0.25,  # 25% of diameter
+                fines_outlet_length=p.wheel_diameter * 0.30,    # 30% of diameter
+                # Coarse hopper
+                include_coarse_hopper=True,
+                coarse_hopper_height=p.wheel_diameter * 0.40,   # 40% of diameter
+                coarse_hopper_angle=60.0,                       # 60° half-angle
+                coarse_outlet_diameter=p.wheel_diameter * 0.20, # 20% of diameter
+                coarse_outlet_length=p.wheel_diameter * 0.15,   # 15% of diameter
+                # Operating
+                rpm=p.wheel_rpm,
+                target_d50=p.wheel_target_d50,
+            )
+            self.wheel_classifier = WheelClassifier(wheel_params)
+
+            # Position wheel classifier above zigzag fines outlet
+            # Wheel inlet is on +X side (tangential entry)
+            wheel_inlet = self.wheel_classifier.ports['inlet']
+            wheel_housing_radius = wheel_params.volute_outer_radius
+
+            # Transition from zigzag fines (rect, +Y) to wheel inlet (rect, +X)
+            # Need 90° elbow first, then horizontal duct to wheel inlet
+            wheel_duct_d = np.sqrt(4 * zigzag_fines.width * zigzag_fines.height / np.pi)
+            wheel_elbow_radius = wheel_duct_d * 1.5
+
+            # Rect-to-round transition from zigzag fines
+            trans_wheel_length = 0.10
+            trans_wheel_start = (
+                zigzag_fines_world[0],
+                zigzag_fines_world[1] + gap,
+                zigzag_fines_world[2],
+            )
+            trans_wheel = Transition(TransitionParams(
+                transition_type="rect_to_round",
+                inlet_dimensions=(zigzag_fines.width, zigzag_fines.height),
+                outlet_dimensions=(wheel_duct_d,),
+                length=trans_wheel_length,
+                concentric=True,
+                wall_thickness=0.002,
+                direction=(0.0, 1.0, 0.0),
+                center=(0, 0, 0),
+            ))
+            self._duct_sections.append((trans_wheel, trans_wheel_start))
+
+            # 90° elbow from +Y to +X
+            wheel_elbow_inlet = (
+                trans_wheel_start[0],
+                trans_wheel_start[1] + trans_wheel_length + gap,
+                trans_wheel_start[2],
+            )
+            wheel_elbow = DuctElbow(DuctElbowParams(
+                diameter=wheel_duct_d,
+                bend_radius=wheel_elbow_radius,
+                angle=90.0,
+                wall_thickness=0.002,
+                flanged=True,
+                center=(0, 0, 0),
+                inlet_direction=(0.0, 1.0, 0.0),
+                rotation_axis=(0.0, 0.0, 1.0),
+            ))
+            wheel_elbow_outlet = wheel_elbow.get_outlet_position()
+            wheel_elbow_outlet_world = (
+                wheel_elbow_inlet[0] + wheel_elbow_outlet[0],
+                wheel_elbow_inlet[1] + wheel_elbow_outlet[1],
+                wheel_elbow_inlet[2] + wheel_elbow_outlet[2],
+            )
+            self._duct_sections.append((wheel_elbow, wheel_elbow_inlet))
+
+            # Horizontal duct to wheel inlet
+            wheel_duct_length = wheel_housing_radius + 0.1
+            wheel_duct_start = (
+                wheel_elbow_outlet_world[0] + gap,
+                wheel_elbow_outlet_world[1],
+                wheel_elbow_outlet_world[2],
+            )
+            wheel_duct = RoundDuct(RoundDuctParams(
+                diameter=wheel_duct_d,
+                length=wheel_duct_length,
+                wall_thickness=0.002,
+                direction=(1.0, 0.0, 0.0),
+                center=(0, 0, 0),
+                flanged=True,
+            ))
+            self._duct_sections.append((wheel_duct, wheel_duct_start))
+
+            # Round-to-rect transition to wheel inlet
+            trans_wheel_inlet_length = 0.08
+            trans_wheel_inlet_start = (
+                wheel_duct_start[0] + wheel_duct_length + gap,
+                wheel_duct_start[1],
+                wheel_duct_start[2],
+            )
+            trans_wheel_inlet = Transition(TransitionParams(
+                transition_type="round_to_rect",
+                inlet_dimensions=(wheel_duct_d,),
+                outlet_dimensions=(wheel_inlet.height, wheel_inlet.width),
+                length=trans_wheel_inlet_length,
+                concentric=True,
+                wall_thickness=0.002,
+                direction=(1.0, 0.0, 0.0),
+                center=(0, 0, 0),
+            ))
+            self._duct_sections.append((trans_wheel_inlet, trans_wheel_inlet_start))
+
+            # Position wheel classifier
+            wheel_inlet_target = (
+                trans_wheel_inlet_start[0] + trans_wheel_inlet_length + gap,
+                trans_wheel_inlet_start[1],
+                trans_wheel_inlet_start[2],
+            )
+            self._component_positions['wheel_classifier'] = np.array([
+                wheel_inlet_target[0] - wheel_inlet.position[0],
+                wheel_inlet_target[1] - wheel_inlet.position[1],
+                wheel_inlet_target[2] - wheel_inlet.position[2],
+            ])
+
+            # Wheel fines outlet becomes the input to cyclones
+            wheel_fines = self.wheel_classifier.ports['fines_outlet']
+            wheel_fines_world = self._get_port_world_pos('wheel_classifier', wheel_fines)
+
+            # Wheel coarse collection (starch fraction 25-50 µm)
+            # Always included since wheel classifier is mandatory.
+            # Route: coarse_outlet → straight vertical duct (no elbow) → airlock (powder-tight).
+            from ..components.rotary_airlock import RotaryAirlock, RotaryAirlockParams
+            wheel_coarse = self.wheel_classifier.ports['coarse_outlet']
+            wheel_coarse_world = self._get_port_world_pos('wheel_classifier', wheel_coarse)
+
+            # Straight vertical duct from wheel coarse outlet down to airlock (no elbow)
+            wheel_coarse_duct_length = 0.15  # 150 mm vertical chute
+            wheel_coarse_duct = RoundDuct(RoundDuctParams(
+                diameter=wheel_coarse.diameter,
+                length=wheel_coarse_duct_length,
+                wall_thickness=0.002,
+                flanged=True,
+                center=(0, 0, 0),
+                direction=(0.0, -1.0, 0.0),  # Straight down
+            ))
+            wheel_coarse_duct_pos = (
+                wheel_coarse_world[0],
+                wheel_coarse_world[1] - gap,
+                wheel_coarse_world[2],
+            )
+            self._collection_duct_sections.append((wheel_coarse_duct, wheel_coarse_duct_pos))
+            duct_outlet_y = wheel_coarse_duct_pos[1] - wheel_coarse_duct_length
+
+            # Airlock directly below straight duct (aligned, no elbow)
+            wheel_airlock = RotaryAirlock(RotaryAirlockParams(
+                rotor_diameter=p.wheel_airlock_rotor_d,
+                rotor_length=p.wheel_airlock_rotor_d * 0.6,
+                num_vanes=8,
+                vane_thickness=0.003,
+                vane_tip_clearance=0.0003,
+                inlet_diameter=wheel_coarse.diameter,
+                outlet_diameter=wheel_coarse.diameter * 0.85,
+            ))
+            wheel_airlock_inlet = wheel_airlock.ports['inlet']
+            wheel_airlock_pos = (
+                wheel_coarse_world[0] - wheel_airlock_inlet.position[0],
+                duct_outlet_y - gap - wheel_airlock_inlet.position[1],
+                wheel_coarse_world[2] - wheel_airlock_inlet.position[2],
+            )
+            self._collection_duct_sections.append((wheel_airlock, wheel_airlock_pos))
+
+        # ============================================================
         # 3. MULTI-CYCLONE SYSTEM - To the right (+X) of zigzag top
         # ============================================================
-        # Connection: zigzag fines (+Y) → 90° elbow → horizontal duct (+X) → cyclone inlet
+        # Connection: zigzag/wheel fines (+Y) → 90° elbow → horizontal duct (+X) → cyclone inlet
         # Cyclone inlet is on -X side of primary cyclone (tangential entry)
         cyclone_stages = [
             CycloneStageParams(
@@ -638,35 +850,34 @@ class ClassificationSystemAssembly:
         cyclone_inlet_area = cyclone_inlet_w * cyclone_inlet_h
         cyclone_inlet_equiv_d = np.sqrt(4 * cyclone_inlet_area / np.pi)
 
-        # Calculate zigzag fines equivalent diameter
-        zigzag_fines_area = zigzag_fines.width * zigzag_fines.height
-        zigzag_fines_equiv_d = np.sqrt(4 * zigzag_fines_area / np.pi)
+        # Cyclone source is always wheel classifier fines (wheel classifier is mandatory)
+        cyclone_source = self.wheel_classifier.ports['fines_outlet']
+        cyclone_source_world = wheel_fines_world
+        cyclone_source_diameter = cyclone_source.diameter
 
         # ============================================================
-        # Connection: Zigzag fines (rect) → rect-to-round transition →
-        #             elbow → duct → round-to-rect transition → cyclone inlet (rect)
+        # Connection: Source (zigzag or wheel fines) → transition/elbow → cyclone inlet
         # ============================================================
 
         # Use cyclone inlet equivalent diameter for the duct
-        # (flow accelerates into cyclone for better separation)
         duct2_diameter = cyclone_inlet_equiv_d
-        elbow2_bend_radius = duct2_diameter * 1.5  # R/D = 1.5
+        elbow2_bend_radius = duct2_diameter * 1.5
 
-        # STEP 1: Rect-to-round transition from zigzag fines to round duct
-        trans2a_length = 0.15  # 150mm transition
+        # Wheel fines outlet is +Y (vertical), need transition + elbow to cyclone
+        trans2a_length = 0.12
         trans2a_start = (
-            zigzag_fines_world[0],
-            zigzag_fines_world[1] + gap,
-            zigzag_fines_world[2],
+            cyclone_source_world[0],
+            cyclone_source_world[1] + gap,
+            cyclone_source_world[2],
         )
         trans2a = Transition(TransitionParams(
-            transition_type="rect_to_round",
-            inlet_dimensions=(zigzag_fines.width, zigzag_fines.height),
+            transition_type="round_to_round",
+            inlet_dimensions=(cyclone_source_diameter,),
             outlet_dimensions=(duct2_diameter,),
             length=trans2a_length,
             concentric=True,
             wall_thickness=0.002,
-            direction=(0.0, 1.0, 0.0),  # Vertical +Y
+            direction=(0.0, 1.0, 0.0),
             center=(0, 0, 0),
         ))
         self._duct_sections.append((trans2a, trans2a_start))
@@ -1043,6 +1254,7 @@ class ClassificationSystemAssembly:
         # Add main components
         add_component_mesh(self.venturi, self._component_positions['venturi'])
         add_component_mesh(self.zigzag, self._component_positions['zigzag'])
+        add_component_mesh(self.wheel_classifier, self._component_positions['wheel_classifier'])
         add_component_mesh(self.multi_cyclone, self._component_positions['multi_cyclone'])
         add_component_mesh(self.bag_filter, self._component_positions['bag_filter'])
 
@@ -1080,6 +1292,7 @@ class ClassificationSystemAssembly:
         components = {
             'venturi': self.venturi,
             'zigzag': self.zigzag,
+            'wheel_classifier': self.wheel_classifier,
             'multi_cyclone': self.multi_cyclone,
             'bag_filter': self.bag_filter,
         }
@@ -1193,9 +1406,9 @@ class ClassificationSystemAssembly:
         print("Classification System Assembly Summary")
         print("=" * 70)
         print("\nFLOW PATH:")
-        print("  Air Supply -> Venturi -> Zigzag -> Cyclones -> Bag Filter -> Clean Air")
-        print("                            |")
-        print("                      Coarse (starch) out")
+        print("  Air Supply -> Venturi -> Zigzag -> Wheel -> Cyclones -> Bag Filter -> Clean Air")
+        print("                            |          |")
+        print("                      Coarse >50um   Starch 25-50um")
 
         print("\n" + "-" * 70)
         print("1. VENTURI EDUCTOR (Particle Entrainment)")
@@ -1242,6 +1455,33 @@ class ClassificationSystemAssembly:
             print(f"\n   Dropout collection hardware:")
             print(f"     Hopper outlet:  D={p.dropout_hopper_outlet_d*1000:.0f}mm")
             print(f"     Airlock rotor:  D={p.dropout_airlock_rotor_d*1000:.0f}mm")
+
+        # Wheel classifier is mandatory
+        print("\n" + "-" * 70)
+        print("2b. WHEEL CLASSIFIER (Centrifugal Fine Cut)")
+        print("-" * 70)
+        pos = self._component_positions['wheel_classifier']
+        wp = self.wheel_classifier.params
+        print(f"   Position:       ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) m")
+        print(f"   Wheel diameter: {wp.wheel_diameter * 1000:.0f} mm")
+        print(f"   Wheel RPM:      {wp.rpm:.0f}")
+        print(f"   Target d50:     {wp.target_d50 * 1e6:.0f} um")
+        print(f"   Blades:         {wp.num_blades}")
+        print(f"   Tip speed:      {wp.tip_speed:.1f} m/s")
+        print(f"   G-force:        {wp.g_force:.0f} g")
+
+        print("\n   Ports:")
+        for port_name, port in self.wheel_classifier.ports.items():
+            world_pos = self.get_port_world_position('wheel_classifier', port_name)
+            if port.diameter > 0:
+                dim = f"D={port.diameter*1000:.0f}mm"
+            else:
+                dim = f"W={port.width*1000:.0f}mm H={port.height*1000:.0f}mm"
+            print(f"     {port_name:15s} pos=({world_pos[0]:.3f}, {world_pos[1]:.3f}, {world_pos[2]:.3f}) "
+                  f"dir={port.direction} {dim}")
+
+        print(f"\n   Wheel coarse collection (starch 25-50um):")
+        print(f"     Airlock rotor:  D={p.wheel_airlock_rotor_d*1000:.0f}mm")
 
         print("\n" + "-" * 70)
         print("3. MULTI-CYCLONE SYSTEM (Staged Collection)")
