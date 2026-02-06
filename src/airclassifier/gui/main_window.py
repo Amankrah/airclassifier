@@ -87,8 +87,8 @@ class MainWindow(QMainWindow):
     def _setup_window(self):
         """Configure main window properties."""
         self.setWindowTitle("Air Classifier Designer")
-        self.setMinimumSize(1200, 800)
-        self.resize(1600, 1000)
+        self.setMinimumSize(1400, 900)
+        self.resize(1800, 1100)
 
         # Enable docking features
         self.setDockOptions(
@@ -177,6 +177,11 @@ class MainWindow(QMainWindow):
         self.action_load_preset.setStatusTip("Load a predefined classifier configuration")
         self.action_load_preset.triggered.connect(self.load_preset)
 
+        self.action_build_system = QAction("&Build Full System", self)
+        self.action_build_system.setShortcut(QKeySequence("Ctrl+B"))
+        self.action_build_system.setStatusTip("Build and preview the complete classifier assembly in 3D")
+        self.action_build_system.triggered.connect(self.build_full_system)
+
         # Simulation actions
         self.action_run_sim = QAction("&Run Simulation", self)
         self.action_run_sim.setShortcut(QKeySequence("F5"))
@@ -244,6 +249,7 @@ class MainWindow(QMainWindow):
         assembly_menu.addAction(self.action_validate)
         assembly_menu.addSeparator()
         assembly_menu.addAction(self.action_load_preset)
+        assembly_menu.addAction(self.action_build_system)
 
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
@@ -285,6 +291,7 @@ class MainWindow(QMainWindow):
         sim_toolbar.addAction(self.action_stop_sim)
         sim_toolbar.addSeparator()
         sim_toolbar.addAction(self.action_validate)
+        sim_toolbar.addAction(self.action_build_system)
 
         self.addToolBar(sim_toolbar)
 
@@ -296,26 +303,33 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         # Create splitter for viewport and assembly canvas
-        splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # 3D Viewport (top)
+        # 3D Viewport (top) - give it more space
         self.viewport_3d = Viewport3D()
-        splitter.addWidget(self.viewport_3d)
+        self.viewport_3d.setMinimumHeight(400)  # Ensure minimum height for viewport
+        self.main_splitter.addWidget(self.viewport_3d)
 
-        # Assembly Canvas (bottom)
+        # Assembly Canvas (bottom) - node editor for schematic view
         self.assembly_canvas = AssemblyCanvas()
-        splitter.addWidget(self.assembly_canvas)
+        self.assembly_canvas.setMinimumHeight(150)
+        self.assembly_canvas.setMaximumHeight(300)  # Limit canvas height
+        self.main_splitter.addWidget(self.assembly_canvas)
 
-        # Set initial sizes (60% viewport, 40% canvas)
-        splitter.setSizes([600, 400])
+        # Set initial sizes (80% viewport, 20% canvas)
+        self.main_splitter.setSizes([800, 200])
+        self.main_splitter.setStretchFactor(0, 4)  # Viewport gets 4x stretch
+        self.main_splitter.setStretchFactor(1, 1)  # Canvas gets 1x stretch
 
-        layout.addWidget(splitter)
+        layout.addWidget(self.main_splitter)
         self.setCentralWidget(central_widget)
 
     def _create_dock_widgets(self):
         """Create all dock widgets."""
-        # Component Palette (left)
+        # Component Palette (left) - constrain width to give more room to viewport
         self.component_palette = ComponentPalette()
+        self.component_palette.setMinimumWidth(180)
+        self.component_palette.setMaximumWidth(280)
         palette_dock = QDockWidget("Components", self)
         palette_dock.setObjectName("ComponentPaletteDock")
         palette_dock.setWidget(self.component_palette)
@@ -323,8 +337,10 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, palette_dock)
         self._view_menu.addAction(palette_dock.toggleViewAction())
 
-        # Property Editor (right)
+        # Property Editor (right) - constrain width to give more room to viewport
         self.property_editor = PropertyEditor()
+        self.property_editor.setMinimumWidth(200)
+        self.property_editor.setMaximumWidth(320)
         property_dock = QDockWidget("Properties", self)
         property_dock.setObjectName("PropertyEditorDock")
         property_dock.setWidget(self.property_editor)
@@ -332,8 +348,9 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, property_dock)
         self._view_menu.addAction(property_dock.toggleViewAction())
 
-        # Simulation Control (bottom)
+        # Simulation Control (bottom) - constrain height to give more room to viewport
         self.sim_control = SimulationControlPanel()
+        self.sim_control.setMaximumHeight(350)  # Limit panel height
         sim_dock = QDockWidget("Simulation", self)
         sim_dock.setObjectName("SimulationDock")
         sim_dock.setWidget(self.sim_control)
@@ -343,6 +360,7 @@ class MainWindow(QMainWindow):
 
         # Results Panel (bottom, tabbed with simulation)
         self.results_panel = ResultsPanel()
+        self.results_panel.setMaximumHeight(350)  # Limit panel height
         results_dock = QDockWidget("Results", self)
         results_dock.setObjectName("ResultsDock")
         results_dock.setWidget(self.results_panel)
@@ -681,6 +699,62 @@ class MainWindow(QMainWindow):
             self.viewport_3d.rebuild_from_canvas(self.assembly_canvas)
             self._set_modified(True)
             self.statusBar().showMessage(f"Loaded preset: {preset['name']}", 3000)
+
+    @Slot()
+    def build_full_system(self):
+        """
+        Build and display the complete classifier assembly in 3D viewport.
+
+        This creates the actual CompleteClassifierAssembly from complete_system.py
+        based on current settings (with or without preclassification) and displays
+        the full 3D geometry including feed system, air system, and exhaust.
+        """
+        from .simulation_backend import SimulationConfig, SimulationBackend
+
+        self.statusBar().showMessage("Building complete system...")
+
+        try:
+            # Get settings from simulation control panel
+            settings = self.sim_control.get_settings()
+
+            # Create config from current settings
+            config = SimulationConfig(
+                assembly_data=self.assembly_canvas.get_assembly_data(),
+                use_preclassification=settings.use_preclassification,
+                wheel_diameter=settings.wheel_diameter,
+                wheel_rpm=settings.wheel_rpm,
+                include_feed_system=settings.include_feed_system,
+                include_air_system=settings.include_air_system,
+                include_exhaust=settings.include_exhaust,
+                device="cpu",  # Use CPU for geometry only
+            )
+
+            # Create backend and build assembly (geometry only, no simulation)
+            backend = SimulationBackend(config)
+            backend._build_assembly_from_gui()
+
+            # Get mesh and display in viewport
+            vertices, indices = backend.get_mesh()
+            if vertices is not None and len(vertices) > 0:
+                self.viewport_3d.update_from_backend_mesh(vertices, indices)
+
+                mode = "Full System" if settings.use_preclassification else "Wheel-Only"
+                msg = f"Built {mode}: {len(vertices):,} vertices, {len(indices)//3:,} triangles"
+                self.statusBar().showMessage(msg, 5000)
+
+                # Show summary
+                summary = backend.get_system_summary()
+                self.sim_control._log(f"System built: {summary.get('mode', 'unknown')}")
+            else:
+                QMessageBox.warning(self, "Build Failed", "Could not generate mesh geometry.")
+
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(
+                self, "Build Error",
+                f"Failed to build system:\n{e}\n\n{traceback.format_exc()}"
+            )
+            self.statusBar().showMessage("Build failed", 3000)
 
     # --- Simulation Operations ---
 

@@ -66,6 +66,11 @@ Usage:
     python examples/run_classification_flow.py --zigzag-width 100 --zigzag-depth 150
     python examples/run_classification_flow.py --zigzag-width 120 --diagnostics
 
+    # Without preclassification (wheel-only: no venturi, zigzag, dropout)
+    python examples/run_classification_flow.py --without-preclassification
+    python examples/run_classification_flow.py --full-system --material yellow_pea --without-preclassification
+    python examples/run_classification_flow.py --wheel-only  # alias for --without-preclassification
+
     # Wheel classifier RPM (main classifier; overrides geometry default)
     python examples/run_classification_flow.py --wheel-rpm 6000
     python examples/run_classification_flow.py --wheel-rpm 10000 --diagnostics
@@ -107,6 +112,7 @@ Options:
     -d, --diagnostics     Print detailed flow path with all calculations
     --validate            Run operating-condition validation (zigzag/cyclone vs flow)
     --full-system         Run airclass -> feedclass -> classification (no magic numbers)
+    --without-preclassification  Disable preclassification (wheel-only, same as --wheel-only)
     --no-sim              Print diagnostics only, skip simulation
     --target-d50          Target cut size in microns (auto air flow)
     --zigzag-width        Override zigzag channel width in mm
@@ -224,6 +230,11 @@ def main():
         help="Use wheel-only assembly (no zigzag, venturi, dropout): air inlet + 15° solids chute -> wheel -> cyclones -> bag"
     )
     parser.add_argument(
+        "--without-preclassification", action="store_true",
+        help="Disable preclassification (same as --wheel-only): no venturi, zigzag, or dropout. "
+             "Works with both --full-system and legacy paths."
+    )
+    parser.add_argument(
         "--validate", action="store_true",
         help="Run operating-condition validation (zigzag/cyclone cut sizes vs flow)"
     )
@@ -242,6 +253,9 @@ def main():
     )
     
     args = parser.parse_args()
+
+    # Unify --wheel-only and --without-preclassification into a single flag
+    skip_preclassification = args.wheel_only or args.without_preclassification
 
     # VFD: convert blower RPM to air flow via actual operating point
     if args.blower_rpm is not None:
@@ -288,7 +302,10 @@ def main():
             compute_feed_to_venturi_flow,
             print_feed_ductwork_summary,
         )
-        print("\n[FULL SYSTEM] Air -> Venturi -> Feed -> Venturi -> Classification")
+        if skip_preclassification:
+            print("\n[FULL SYSTEM] Air -> Wheel (no preclassification) -> Cyclones -> Bag Filter")
+        else:
+            print("\n[FULL SYSTEM] Air -> Venturi -> Feed -> Venturi -> Classification")
         fluid = FluidConfig.air_at_stp()
         material = None
         if args.material:
@@ -302,15 +319,19 @@ def main():
             particle_dia_m = args.particle_dia * 1e-6
         particle_density = material.density if material else 1420.0
         Q_m3s = args.air_flow
-        # Build classification params with optional throat diameter override
+        # Build classification params with optional overrides
         classification_params = None
-        if args.throat_diameter is not None:
+        if args.throat_diameter is not None or skip_preclassification:
             from airclassifier.geometry.assembly.classification import ClassificationSystemParams
             classification_params = ClassificationSystemParams()
-            throat_m = args.throat_diameter / 1000.0  # mm to m
-            classification_params.venturi_throat_ratio = throat_m / classification_params.venturi_inlet_diameter
-            print(f"  [Override] Venturi throat: {args.throat_diameter:.1f} mm "
-                  f"(ratio={classification_params.venturi_throat_ratio:.3f})")
+            if skip_preclassification:
+                classification_params.use_preclassification = False
+                print(f"  [Mode] Without preclassification (wheel-only): no venturi, zigzag, dropout")
+            if args.throat_diameter is not None:
+                throat_m = args.throat_diameter / 1000.0  # mm to m
+                classification_params.venturi_throat_ratio = throat_m / classification_params.venturi_inlet_diameter
+                print(f"  [Override] Venturi throat: {args.throat_diameter:.1f} mm "
+                      f"(ratio={classification_params.venturi_throat_ratio:.3f})")
         complete_params = CompleteSystemParams(
             air_flow_m3_h=Q_m3s * 3600.0,
             throughput_kg_h=500.0,
@@ -321,13 +342,19 @@ def main():
             classification_params=classification_params,
         )
         complete_assembly = CompleteClassifierAssembly(complete_params)
-        print("\n1. Air system -> Venturi air inlet (airclass)...")
+        if skip_preclassification:
+            print("\n1. Air system -> Wheel junction (airclass, no venturi)...")
+        else:
+            print("\n1. Air system -> Venturi air inlet (airclass)...")
         air_result = compute_air_to_venturi_flow(
             complete_assembly, Q_m3s,
             rho=fluid.density, mu=fluid.dynamic_viscosity,
         )
         print_ductwork_flow_summary(air_result)
-        print("\n2. Feed system -> Venturi solids inlet (feedclass)...")
+        if skip_preclassification:
+            print("\n2. Feed system -> Wheel junction solids inlet (feedclass, no venturi)...")
+        else:
+            print("\n2. Feed system -> Venturi solids inlet (feedclass)...")
         solids_mass_flow_kg_s = complete_assembly.params.throughput_kg_h / 3600.0
         sphericity = getattr(material, "sphericity", None) if material else None
         feed_result = compute_feed_to_venturi_flow(
@@ -361,24 +388,29 @@ def main():
             print(f"    Material:        generic (density={particle_density:.0f} kg/m³)")
             print(f"    Particle d:       {particle_dia_m * 1e6:.1f} µm")
         classification_assembly = complete_assembly.get_subsystem("classification")
-        venturi_physics = compute_venturi_physics_from_air_and_feed(
-            air_result, feed_result, classification_assembly,
-            solids_mass_flow_kg_s=solids_mass_flow_kg_s,
-            rho_air=fluid.density,
-        )
-        print("\n3. Venturi + classification (from geometry and air/feed results):")
-        print(f"   Throat velocity:    {venturi_physics['venturi_throat_velocity_m_s']:.1f} m/s")
-        print(f"   Mach at throat:     {venturi_physics['venturi_mach_throat']:.3f}")
-        if venturi_physics['venturi_flow_limited']:
-            print(f"   *** CHOKED FLOW *** Max: {venturi_physics['venturi_choked_flow_m3h']:.0f} m3/h")
-        elif venturi_physics['venturi_mach_throat'] > 0.3:
-            print(f"   *** COMPRESSIBLE *** Max: {venturi_physics['venturi_choked_flow_m3h']:.0f} m3/h")
-        print(f"   dP (Bernoulli):     {venturi_physics['pressure_drop_bernoulli_Pa']:.0f} Pa ({venturi_physics['pressure_drop_bernoulli_Pa']/1000:.1f} kPa)")
-        print(f"   K_venturi:          {venturi_physics['venturi_k_factor']:.1f} Pa/(m3/s)^2")
-        print(f"   Particle entry:     {venturi_physics['particle_entry_velocity_m_s']:.2f} m/s")
-        print(f"   Loading ratio:      {venturi_physics['loading_ratio']:.4f}")
-        print(f"   Momentum transfer: {venturi_physics['momentum_transfer_N']:.1f} N")
-        print(f"   dP (solids accel):  {venturi_physics['pressure_drop_solids_Pa']:.1f} Pa")
+        if not skip_preclassification:
+            venturi_physics = compute_venturi_physics_from_air_and_feed(
+                air_result, feed_result, classification_assembly,
+                solids_mass_flow_kg_s=solids_mass_flow_kg_s,
+                rho_air=fluid.density,
+            )
+            print("\n3. Venturi + classification (from geometry and air/feed results):")
+            print(f"   Throat velocity:    {venturi_physics['venturi_throat_velocity_m_s']:.1f} m/s")
+            print(f"   Mach at throat:     {venturi_physics['venturi_mach_throat']:.3f}")
+            if venturi_physics['venturi_flow_limited']:
+                print(f"   *** CHOKED FLOW *** Max: {venturi_physics['venturi_choked_flow_m3h']:.0f} m3/h")
+            elif venturi_physics['venturi_mach_throat'] > 0.3:
+                print(f"   *** COMPRESSIBLE *** Max: {venturi_physics['venturi_choked_flow_m3h']:.0f} m3/h")
+            print(f"   dP (Bernoulli):     {venturi_physics['pressure_drop_bernoulli_Pa']:.0f} Pa ({venturi_physics['pressure_drop_bernoulli_Pa']/1000:.1f} kPa)")
+            print(f"   K_venturi:          {venturi_physics['venturi_k_factor']:.1f} Pa/(m3/s)^2")
+            print(f"   Particle entry:     {venturi_physics['particle_entry_velocity_m_s']:.2f} m/s")
+            print(f"   Loading ratio:      {venturi_physics['loading_ratio']:.4f}")
+            print(f"   Momentum transfer: {venturi_physics['momentum_transfer_N']:.1f} N")
+            print(f"   dP (solids accel):  {venturi_physics['pressure_drop_solids_Pa']:.1f} Pa")
+        else:
+            print("\n3. Wheel-only classification (no venturi/zigzag):")
+            print(f"   Air flow:           {Q_m3s * 3600:.0f} m³/h ({Q_m3s:.3f} m³/s)")
+            print(f"   Solids mass flow:   {solids_mass_flow_kg_s * 3600:.1f} kg/h")
         assembly = classification_assembly
         config = ClassificationFlowConfig.from_air_and_feed_results(
             air_result, feed_result, classification_assembly,
@@ -408,12 +440,12 @@ def main():
         has_overrides = (args.zigzag_width is not None or
                          args.zigzag_depth is not None or
                          args.throat_diameter is not None or
-                         getattr(args, 'wheel_only', False))
+                         skip_preclassification)
         if has_overrides:
             custom_params = ClassificationSystemParams()
-            if getattr(args, 'wheel_only', False):
+            if skip_preclassification:
                 custom_params.use_preclassification = False
-                print(f"  [Mode] Wheel-only assembly (no zigzag, venturi, dropout); 15° solids chute + air inlet -> wheel")
+                print(f"  [Mode] Without preclassification (wheel-only): no zigzag, venturi, dropout; 15° solids chute + air inlet -> wheel")
             if args.throat_diameter is not None:
                 throat_m = args.throat_diameter / 1000.0  # mm to m
                 custom_params.venturi_throat_ratio = throat_m / custom_params.venturi_inlet_diameter
@@ -677,16 +709,30 @@ def main():
         plotter = pv.Plotter(title="Classification Flow - Protein Separation")
         plotter.set_background("white")
         plotter.camera.up = (0, 1, 0)
-        
+
+        # Transform from Z-up (geometry) to Y-up (viewport) coordinate system
+        def to_y_up(vertices):
+            """Transform vertices: (x, y, z) -> (x, z, -y) for Y-up display."""
+            v = np.array(vertices, dtype=np.float64)
+            result = v.copy()
+            result[:, 1] = v[:, 2]    # new Y = old Z (vertical)
+            result[:, 2] = -v[:, 1]   # new Z = -old Y (depth)
+            return result
+
+        def to_y_up_point(point):
+            """Transform single point: (x, y, z) -> (x, z, -y)."""
+            p = np.array(point, dtype=np.float64)
+            return np.array([p[0], p[2], -p[1]])
+
         # ============================================
         # BUILD MESH FROM ACTUAL ASSEMBLY
         # ============================================
         print("  Building assembly mesh...")
         assembly.build_mesh()
-        
+
         # Get component positions
         comp_positions = assembly.get_component_positions()
-        
+
         # ============================================
         # VENTURI EDUCTOR (when present)
         # ============================================
@@ -694,10 +740,11 @@ def main():
             print("  Adding venturi eductor...")
             v_vent, i_vent, _ = assembly.venturi.generate_mesh()
             v_vent = v_vent + np.array(comp_positions['venturi'])
+            v_vent = to_y_up(v_vent)
             faces_vent = np.hstack([[3] + list(face) for face in i_vent.reshape(-1, 3)])
             venturi_mesh = pv.PolyData(v_vent, faces_vent)
             plotter.add_mesh(venturi_mesh, color='#3498DB', opacity=0.5, label='Venturi')
-        
+
         # ============================================
         # ZIGZAG CLASSIFIER (when present)
         # ============================================
@@ -705,44 +752,47 @@ def main():
             print("  Adding zigzag classifier...")
             v_zz, i_zz, _ = assembly.zigzag.generate_mesh()
             v_zz = v_zz + np.array(comp_positions['zigzag'])
+            v_zz = to_y_up(v_zz)
             faces_zz = np.hstack([[3] + list(face) for face in i_zz.reshape(-1, 3)])
             zigzag_mesh = pv.PolyData(v_zz, faces_zz)
             plotter.add_mesh(zigzag_mesh, color='#2ECC71', opacity=0.5, label='Zigzag')
-        
+
         # ============================================
         # WHEEL CLASSIFIER (with animation: rotation = omega * time)
         # ============================================
         print("  Adding wheel classifier (animated)...")
         v_wheel, i_wheel, _ = assembly.wheel_classifier.generate_mesh()
         wheel_pos = np.array(comp_positions['wheel_classifier'])
-        wheel_center = wheel_pos + np.array([0, 0, 0])  # center of wheel in world (housing center)
         # Wheel classifier center from params (local 0,0,0 is housing center)
         v_wheel_base = v_wheel + wheel_pos
-        wheel_center_world = wheel_pos.copy()
+        v_wheel_base = to_y_up(v_wheel_base)
+        wheel_center_world = to_y_up_point(wheel_pos)
         faces_wheel = np.hstack([[3] + list(face) for face in i_wheel.reshape(-1, 3)])
         wheel_mesh_base = pv.PolyData(v_wheel_base, faces_wheel)
         wheel_actor = plotter.add_mesh(wheel_mesh_base, color='#9B59B6', opacity=0.6, label='Wheel')
-        
+
         # ============================================
         # MULTI-CYCLONE SYSTEM (actual geometry)
         # ============================================
         print("  Adding multi-cyclone system...")
         v_mc, i_mc, _ = assembly.multi_cyclone.generate_mesh()
         v_mc = v_mc + np.array(comp_positions['multi_cyclone'])
+        v_mc = to_y_up(v_mc)
         faces_mc = np.hstack([[3] + list(face) for face in i_mc.reshape(-1, 3)])
         cyclone_mesh = pv.PolyData(v_mc, faces_mc)
         plotter.add_mesh(cyclone_mesh, color='#E74C3C', opacity=0.5, label='Cyclones')
-        
+
         # ============================================
         # BAG FILTER (actual geometry)
         # ============================================
         print("  Adding bag filter...")
         v_bf, i_bf, _ = assembly.bag_filter.generate_mesh()
         v_bf = v_bf + np.array(comp_positions['bag_filter'])
+        v_bf = to_y_up(v_bf)
         faces_bf = np.hstack([[3] + list(face) for face in i_bf.reshape(-1, 3)])
         bagfilter_mesh = pv.PolyData(v_bf, faces_bf)
         plotter.add_mesh(bagfilter_mesh, color='#95A5A6', opacity=0.5, label='Bag Filter')
-        
+
         # ============================================
         # DUCTWORK (actual geometry)
         # ============================================
@@ -750,6 +800,7 @@ def main():
         for idx, (duct, position) in enumerate(assembly._duct_sections):
             v_duct, i_duct, _ = duct.generate_mesh()
             v_duct = v_duct + np.array(position)
+            v_duct = to_y_up(v_duct)
             faces_duct = np.hstack([[3] + list(face) for face in i_duct.reshape(-1, 3)])
             duct_mesh = pv.PolyData(v_duct, faces_duct)
             label = 'Ductwork' if idx == 0 else None
@@ -759,43 +810,47 @@ def main():
         # LABELS FOR KEY PORTS
         # ============================================
         print("  Adding port labels...")
-        
-        # Get port positions from assembly
+
+        # Get port positions from assembly and transform to Y-up
         try:
             if assembly.zigzag is not None:
                 coarse_pos = assembly.get_port_world_position('zigzag', 'coarse_outlet')
-                plotter.add_point_labels([coarse_pos - np.array([0, 0.1, 0])], 
-                                        ["COARSE\n(Starch)"], font_size=12, 
+                coarse_pos = to_y_up_point(coarse_pos)
+                plotter.add_point_labels([coarse_pos - np.array([0, 0.1, 0])],
+                                        ["COARSE\n(Starch)"], font_size=12,
                                         text_color='#8B4513', point_size=0)
         except (KeyError, AttributeError):
             pass
-        
+
         try:
             if assembly.zigzag is not None:
                 fines_pos = assembly.get_port_world_position('zigzag', 'fines_outlet')
             else:
                 fines_pos = assembly.get_port_world_position('wheel_classifier', 'fines_outlet')
-            plotter.add_point_labels([fines_pos + np.array([0, 0.1, 0])], 
+            fines_pos = to_y_up_point(fines_pos)
+            plotter.add_point_labels([fines_pos + np.array([0, 0.1, 0])],
                                     ["FINES"], font_size=10,
                                     text_color='#2ECC71', point_size=0)
         except (KeyError, AttributeError):
             pass
-        
+
         # Cyclone dust outlets
         try:
             for dust_name in ['primary_dust', 'secondary_dust', 'tertiary_dust']:
                 dust_pos = assembly.get_port_world_position('multi_cyclone', dust_name)
+                dust_pos = to_y_up_point(dust_pos)
                 label = "PROTEIN" if 'tertiary' in dust_name else dust_name.split('_')[0].title()
                 color = '#9B59B6' if 'tertiary' in dust_name else '#E74C3C'
-                plotter.add_point_labels([dust_pos - np.array([0, 0.1, 0])], 
+                plotter.add_point_labels([dust_pos - np.array([0, 0.1, 0])],
                                         [label], font_size=10,
                                         text_color=color, point_size=0)
         except (KeyError, AttributeError):
             pass
-        
+
         try:
             dust_pos = assembly.get_port_world_position('bag_filter', 'dust_outlet')
-            plotter.add_point_labels([dust_pos - np.array([0, 0.1, 0])], 
+            dust_pos = to_y_up_point(dust_pos)
+            plotter.add_point_labels([dust_pos - np.array([0, 0.1, 0])],
                                     ["Bag Dust"], font_size=10,
                                     text_color='#95A5A6', point_size=0)
         except (KeyError, AttributeError):
@@ -937,11 +992,14 @@ def main():
                     n_show = len(positions)
                 else:
                     n_show = 0
-                
+
                 if n_show > 0:
+                    # Transform positions to Y-up for display
+                    positions = to_y_up(positions)
+
                     # Create particle point cloud
                     speeds = np.linalg.norm(velocities, axis=1)
-                    
+
                     particle_mesh = pv.PolyData(positions)
                     particle_mesh['velocity'] = speeds
                     

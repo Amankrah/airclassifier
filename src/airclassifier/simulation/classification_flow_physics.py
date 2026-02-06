@@ -4,34 +4,66 @@ Classification Flow Physics Module
 
 Physics-based simulation for the classification system using NVIDIA Warp.
 
-This module simulates particle separation in the classification system:
-- Venturi Eductor: Particle entrainment into airstream
-- Zigzag Classifier: Primary separation by terminal velocity (d50 > 50 um)
-- Wheel Classifier: Centrifugal separation for fines (d50 ~ 25 um)
+TWO CLASSIFICATION PATHS
+------------------------
+
+1. WITH PRECLASSIFICATION (use_preclassification=True, default):
+   Air Supply -> Venturi -> Zigzag (pre-classifier) -> Dropout -> Wheel Classifier -> Cyclones -> Bag Filter
+
+   The zigzag is the pre-classifier (gravity-based coarse/fines split). The wheel
+   classifier is the MAIN classifier and provides the fine cut between zigzag
+   and cyclones. Particles enter at zone 0 (venturi solids inlet).
+
+2. WITHOUT PRECLASSIFICATION (use_preclassification=False, wheel-only):
+   Air+Solids -> Three-Point Junction -> Wheel Classifier -> Cyclones -> Bag Filter
+
+   No venturi, zigzag, or dropout. Air and solids meet at a junction (15° solids
+   chute + vertical air duct) and enter directly to the wheel classifier.
+   Particles enter at zone 34 (wheel housing).
+
+BYPASS vs USE_PRECLASSIFICATION
+-------------------------------
+- bypass_ratio: Fraction of air that bypasses venturi+zigzag (0.0-1.0). Only
+  applicable when use_preclassification=True. Bypass flow merges before cyclones.
+- use_preclassification: When False, venturi/zigzag/dropout don't exist. bypass_ratio
+  is forced to 0.
+
+ORCHESTRATION WITH AIR AND FEED SYSTEMS
+---------------------------------------
+When using the full system (CompleteClassifierAssembly):
+- airclass_flow_physics.py: Computes air flow from air system to venturi/junction
+- feedclass_flow_physics.py: Computes feed flow from feed system to venturi/junction
+- classification_flow_physics.py: Runs particle simulation through classification
+
+Both paths use the same methods (get_air_to_venturi_ductwork, get_feed_to_venturi_ductwork)
+which are correctly populated for either path by the complete_system assembly.
+
+COMPONENTS
+----------
+- Venturi Eductor: Particle entrainment into airstream (only with preclassification)
+- Zigzag Classifier: Primary separation by terminal velocity (only with preclassification)
+- Wheel Classifier: Centrifugal separation for fines (d50 ~ 25 um) - ALWAYS PRESENT
 - Multi-Cyclone System: Staged collection of fines
 - Bag Filter: Final fine particle capture
 
-Flow Path (mandatory):
-  Air Supply -> Venturi -> Zigzag (pre-classifier) -> Wheel Classifier (main) -> Cyclones -> Bag Filter
-
-The zigzag is the pre-classifier (gravity-based coarse/fines split). The wheel
-classifier is the MAIN classifier and provides the fine cut between zigzag
-and cyclones. It uses centrifugal force (1000-5000g) to achieve:
+The wheel classifier uses centrifugal force (1000-5000g) to achieve:
 - Coarse rejection: High-inertia particles (starch) -> wheel coarse outlet
 - Fine passage: Low-inertia particles (protein) -> wheel fines outlet -> cyclones
 
-Physics implemented:
+PHYSICS IMPLEMENTED
+-------------------
 - Two-phase flow: air velocity field + particle dynamics
 - Drag: Schiller-Naumann correlation with relative velocity
 - Gravity with buoyancy correction
 - Inelastic wall collisions with restitution and friction
 - Centrifugal effects in cyclones and wheel classifier
-- Turbulent dispersion in zigzag stages
+- Turbulent dispersion in zigzag stages (when preclassification enabled)
 - Wheel classifier blade collisions and separation physics
 
-Coordinate System (Y-up):
-- Origin at venturi air inlet (bottom of system)
-- Y-axis: Vertical (up) - main flow direction through venturi/zigzag
+COORDINATE SYSTEM (Y-up)
+------------------------
+- Origin at venturi air inlet (with preclassification) or junction (wheel-only)
+- Y-axis: Vertical (up) - main flow direction
 - X-axis: Horizontal (right)
 - Z-axis: Depth (into page)
 
@@ -3444,7 +3476,7 @@ if wp is not None:
         zones: wp.array(dtype=wp.int32),
         is_active: wp.array(dtype=wp.int32),
         num_particles: int,
-        # Solids inlet position (from venturi eductor)
+        # Solids inlet position (venturi solids inlet or wheel-only junction)
         inlet_center: wp.vec3,
         inlet_radius: float,
         # Initial velocity (from feed system)
@@ -3455,6 +3487,8 @@ if wp is not None:
         density: float,
         # Random seed
         random_seed: int,
+        # Initial zone (0=venturi inlet for preclassification, 34=wheel housing for wheel-only)
+        initial_zone: int,
     ):
         """
         Initialize particles at the venturi solids inlet.
@@ -3504,9 +3538,9 @@ if wp is not None:
         # Mass from density and volume
         vol = 3.14159265359 / 6.0 * d * d * d
         masses[tid] = density * vol
-        
-        # Start in zone 0 (venturi inlet)
-        zones[tid] = 0
+
+        # Start in initial zone (0=venturi inlet for preclassification, 34=wheel housing for wheel-only)
+        zones[tid] = initial_zone
         is_active[tid] = 1
 
 
@@ -4228,6 +4262,15 @@ class ClassificationFlowPhysicsSimulator:
         #
         Q_total = cfg.air_flow_rate_m3s
         bypass_ratio = cfg.bypass_ratio
+
+        # BYPASS ONLY APPLIES TO PRECLASSIFICATION PATH
+        # When use_preclassification=False (wheel-only), bypass is meaningless.
+        # Force bypass_ratio=0 and warn if user tried to set it.
+        if not self.use_preclassification and bypass_ratio > 0:
+            print(f"\n  WARNING: bypass_ratio={bypass_ratio:.2f} ignored (wheel-only mode).")
+            print(f"           Bypass only applies to venturi+zigzag preclassification path.")
+            bypass_ratio = 0.0
+
         Q_class = Q_total * (1.0 - bypass_ratio)  # through venturi + zigzag
         Q_bypass = Q_total * bypass_ratio           # around classification
         self._Q_total = Q_total
@@ -4410,7 +4453,8 @@ class ClassificationFlowPhysicsSimulator:
         # Tip speed
         self.wheel_tip_speed = self.wheel_omega * self.wheel_radius
 
-        wheel_rpm_display = (float(getattr(cfg, 'wheel_rpm', 0)) or wheel_geo['rpm'])
+        _wheel_rpm_raw = getattr(cfg, 'wheel_rpm', None)
+        wheel_rpm_display = float(_wheel_rpm_raw) if _wheel_rpm_raw is not None else wheel_geo['rpm']
         print(f"\n    Wheel Classifier (main classifier - centrifugal):")
         print(f"      Diameter:        {self.wheel_radius * 2 * 1000:.0f} mm")
         print(f"      RPM:             {wheel_rpm_display:.0f}")
@@ -4419,6 +4463,18 @@ class ClassificationFlowPhysicsSimulator:
         print(f"      d50:             {self.wheel_d50 * 1e6:.1f} um")
         print(f"      Hub radius:      {self.wheel_hub_radius * 1000:.1f} mm")
         print(f"      Blades:          {self.wheel_num_blades}")
+
+        # =====================================================================
+        # INITIAL PARTICLE ZONE (depends on path: preclassification vs wheel-only)
+        # =====================================================================
+        # With preclassification: particles start at venturi solids inlet (zone 0)
+        # Without preclassification (wheel-only): particles start at wheel inlet (zone 34)
+        if self.use_preclassification:
+            self.initial_particle_zone = 0  # VENTURI_INLET
+            print(f"\n    Particle Entry: Zone 0 (venturi solids inlet)")
+        else:
+            self.initial_particle_zone = 34  # WHEEL_HOUSING
+            print(f"\n    Particle Entry: Zone 34 (wheel housing - wheel-only mode)")
 
         # =====================================================================
         # SYSTEM BOUNDS
@@ -4589,7 +4645,10 @@ class ClassificationFlowPhysicsSimulator:
         
         def compute_Re_rectangular(v, W, H):
             """Reynolds number for rectangular duct using hydraulic diameter."""
-            D_h = 4 * W * H / (2 * (W + H))
+            perimeter = 2 * (W + H)
+            if perimeter <= 0:
+                return 0.0
+            D_h = 4 * W * H / perimeter
             return rho_f * v * D_h / mu
         
         def terminal_velocity(d_p):
@@ -4608,8 +4667,15 @@ class ClassificationFlowPhysicsSimulator:
         segment_num = 0
         
         # =====================================================================
-        # SEGMENT 1: VENTURI EDUCTOR
+        # SEGMENT 1: VENTURI EDUCTOR (only with preclassification)
         # =====================================================================
+        _has_preclass = self.use_preclassification
+        
+        if not _has_preclass:
+            print(f"\n  [Wheel-only mode] Preclassification disabled - no venturi, zigzag, or dropout.")
+            print(f"  Particles enter at wheel inlet via 15° solids chute + air inlet junction.")
+            print(f"  Segments 1-3 (venturi/duct/zigzag) show placeholder geometry.\n")
+        
         segment_num += 1
         print(f"\n{'-' * 80}")
         print(f"SEGMENT {segment_num}: VENTURI EDUCTOR (Particle Entrainment)")
@@ -4704,8 +4770,9 @@ class ClassificationFlowPhysicsSimulator:
         print(f"    Start: Circular D = {self.duct_venturi_zigzag_radius*2*1000:.1f} mm (A = {np.pi*(self.duct_venturi_zigzag_radius)**2*1e4:.2f} cm2)")
         print(f"    End:   Rectangular {self.zigzag_channel_width*1000:.0f} x {self.zigzag_channel_depth*1000:.0f} mm (A = {self._A_zigzag*1e4:.2f} cm2)")
         
-        v_duct_start = Q / (np.pi * self.duct_venturi_zigzag_radius**2)
-        v_duct_end = Q / self._A_zigzag
+        _A_duct_vz = np.pi * self.duct_venturi_zigzag_radius**2
+        v_duct_start = Q / _A_duct_vz if _A_duct_vz > 0 else 0.0
+        v_duct_end = Q / self._A_zigzag if self._A_zigzag > 0 else 0.0
         print(f"\n  VELOCITY CHANGE (continuity):")
         print(f"    Start: v = Q/A = {v_duct_start:.2f} m/s")
         print(f"    End:   v = Q/A = {v_duct_end:.2f} m/s")
@@ -4732,7 +4799,10 @@ class ClassificationFlowPhysicsSimulator:
         print(f"\n  DEFLECTOR PLATE GEOMETRY:")
         print(f"    Plate angle:         {np.degrees(self.zigzag_plate_angle):.0f} deg from vertical")
         print(f"    Plate length:        {self.zigzag_plate_length*1000:.1f} mm")
-        print(f"    Throat width:        {self.zigzag_throat_width*1000:.1f} mm ({100*self.zigzag_throat_width/self.zigzag_channel_width:.0f}% open)")
+        if self.zigzag_channel_width > 0:
+            print(f"    Throat width:        {self.zigzag_throat_width*1000:.1f} mm ({100*self.zigzag_throat_width/self.zigzag_channel_width:.0f}% open)")
+        else:
+            print(f"    Throat width:        {self.zigzag_throat_width*1000:.1f} mm (N/A - no zigzag)")
         print(f"    Blockage ratio:      {self.zigzag_blockage_ratio*100:.0f}%")
         print(f"    Throat velocity:     {self.zigzag_velocity_ratio_throat:.1f}x bulk")
         print(f"    Zone velocity:       {self.zigzag_velocity_ratio_zone:.0%} of bulk (separation)")
@@ -5223,19 +5293,22 @@ class ClassificationFlowPhysicsSimulator:
                 float(diameter_std),
                 float(cfg.particle_density),
                 42,  # Random seed
+                int(self.initial_particle_zone),  # 0=venturi, 34=wheel housing
             ],
             device=self.device
         )
         
         self.state.particles_active = n
-        
+
         # Get diameter stats for logging
         diameters = self.state.diameters.numpy()[:n]
-        
-        print(f"\n  Initialized {n} particles at venturi inlet")
+
+        inlet_name = "venturi inlet" if self.use_preclassification else "wheel inlet (wheel-only)"
+        print(f"\n  Initialized {n} particles at {inlet_name}")
         print(f"    Diameter range: {diameters.min()*1e6:.1f} - {diameters.max()*1e6:.1f} um")
         print(f"    Mean diameter:  {diameters.mean()*1e6:.1f} um")
         print(f"    Inlet position: ({self.venturi_solids_inlet_pos[0]*1000:.0f}, {self.venturi_solids_inlet_pos[1]*1000:.0f}, {self.venturi_solids_inlet_pos[2]*1000:.0f}) mm")
+        print(f"    Initial zone:   {self.initial_particle_zone}")
     
     # =========================================================================
     # FEED SYSTEM INTEGRATION (particles from feed_flow_physics)
@@ -5319,7 +5392,7 @@ class ClassificationFlowPhysicsSimulator:
         self.state.masses = wp.array(mass_full, dtype=float, device=self.device)
         
         zone_full = self.state.zones.numpy().copy()
-        zone_full[start:end] = 0  # VENTURI_INLET
+        zone_full[start:end] = self.initial_particle_zone  # 0=venturi, 34=wheel housing
         self.state.zones = wp.array(zone_full, dtype=wp.int32, device=self.device)
         
         active_full = self.state.is_active.numpy().copy()
@@ -5389,8 +5462,8 @@ class ClassificationFlowPhysicsSimulator:
         velocities_np[:] = initial_velocity
         velocities_np += rng.uniform(-0.05, 0.05, (n, 3))
         
-        # Zones: all VENTURI_INLET (0)
-        zones_np = np.zeros(n, dtype=np.int32)
+        # Zones: initial_particle_zone (0=venturi, 34=wheel housing for wheel-only)
+        zones_np = np.full(n, self.initial_particle_zone, dtype=np.int32)
         # Continuous feeding: start inactive
         if self.config.continuous_feeding:
             is_active_np = np.zeros(n, dtype=np.int32)
@@ -5434,10 +5507,12 @@ class ClassificationFlowPhysicsSimulator:
             print(f"    Feed rate: {self.config.particle_feed_rate:.0f} particles/s")
         else:
             self.state.particles_active = n
-            print(f"\n  Initialized {n} particles from material at venturi inlet (batch)")
+            inlet_name = "venturi inlet" if self.use_preclassification else "wheel inlet (wheel-only)"
+            print(f"\n  Initialized {n} particles from material at {inlet_name} (batch)")
         print(f"    Diameter range: {diameters_np.min()*1e6:.1f} - {diameters_np.max()*1e6:.1f} um")
         print(f"    Mean diameter:  {diameters_np.mean()*1e6:.1f} um")
-    
+        print(f"    Initial zone:   {self.initial_particle_zone}")
+
     def initialize_whole_flour_population(
         self,
         source: str = "yellow_pea",
@@ -5477,8 +5552,9 @@ class ClassificationFlowPhysicsSimulator:
         velocities_np = np.zeros((n, 3), dtype=np.float64)
         velocities_np[:] = initial_velocity
         velocities_np += rng.uniform(-0.05, 0.05, (n, 3))
-        
-        zones_np = np.zeros(n, dtype=np.int32)
+
+        # Zones: initial_particle_zone (0=venturi, 34=wheel housing for wheel-only)
+        zones_np = np.full(n, self.initial_particle_zone, dtype=np.int32)
         # Continuous feeding: all particles start inactive; step() activates them gradually
         if self.config.continuous_feeding:
             is_active_np = np.zeros(n, dtype=np.int32)
@@ -5531,10 +5607,12 @@ class ClassificationFlowPhysicsSimulator:
             print(f"    Time to feed all {n} particles: {fill_time:.1f} s")
         else:
             self.state.particles_active = n
-            print(f"\n  Initialized {n} particles as {source} whole flour at venturi inlet (batch)")
+            inlet_name = "venturi inlet" if self.use_preclassification else "wheel inlet (wheel-only)"
+            print(f"\n  Initialized {n} particles as {source} whole flour at {inlet_name} (batch)")
 
         print(f"    Protein: {n_protein} ({100*n_protein/n:.0f}%)  Starch: {n_starch} ({100*n_starch/n:.0f}%)  Fiber: {n_fiber} ({100*n_fiber/n:.0f}%)")
         print(f"    Diameter range: {diameters_np.min()*1e6:.1f} - {diameters_np.max()*1e6:.1f} um  Total mass: {total_mass*1000:.2f} g")
+        print(f"    Initial zone:   {self.initial_particle_zone}")
     
     def step(self):
         """Advance simulation by one time step."""

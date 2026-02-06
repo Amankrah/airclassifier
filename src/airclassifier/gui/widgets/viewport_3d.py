@@ -146,6 +146,9 @@ class Viewport3D(QWidget):
         # Set up lighting
         self.plotter.enable_shadows()
 
+        # Set Y as the vertical (up) axis
+        self.plotter.camera.up = (0, 1, 0)
+
         self.viewer_layout.addWidget(self.plotter.interactor)
 
         # Initial view
@@ -158,7 +161,7 @@ class Viewport3D(QWidget):
 
         Args:
             component_id: Unique identifier for the component
-            vertices: Nx3 array of vertex positions
+            vertices: Nx3 array of vertex positions (geometry uses Z-up, will be transformed to Y-up)
             faces: Mx3 array of face indices (triangles)
             color: Hex color string
             opacity: Mesh opacity (0-1)
@@ -170,6 +173,14 @@ class Viewport3D(QWidget):
             return False
 
         try:
+            # Transform from Z-up (geometry) to Y-up (viewport) coordinate system
+            # Geometry uses: X=right, Y=depth, Z=up
+            # Viewport uses: X=right, Y=up, Z=depth (into screen)
+            # Transform: (x, y, z) -> (x, z, -y) to maintain right-handedness
+            transformed_vertices = vertices.copy().astype(np.float64)
+            transformed_vertices[:, 1] = vertices[:, 2]   # new Y = old Z (up)
+            transformed_vertices[:, 2] = -vertices[:, 1]  # new Z = -old Y (depth, negated)
+
             # Create PyVista mesh
             # PyVista expects faces in format: [n_verts, v0, v1, v2, n_verts, v0, ...]
             n_faces = len(faces)
@@ -178,7 +189,7 @@ class Viewport3D(QWidget):
             pv_faces[:, 1:] = faces
             pv_faces = pv_faces.flatten()
 
-            mesh = pv.PolyData(vertices, pv_faces)
+            mesh = pv.PolyData(transformed_vertices, pv_faces)
             mesh.compute_normals(inplace=True)
 
             # Remove old mesh if exists
@@ -288,8 +299,14 @@ class Viewport3D(QWidget):
         if len(positions) == 0:
             return
 
+        # Transform from Z-up (simulation) to Y-up (viewport)
+        # (x, y, z) -> (x, z, -y) to maintain right-handedness
+        transformed_positions = positions.copy().astype(np.float64)
+        transformed_positions[:, 1] = positions[:, 2]   # new Y = old Z
+        transformed_positions[:, 2] = -positions[:, 1]  # new Z = -old Y
+
         # Create point cloud
-        points = pv.PolyData(positions)
+        points = pv.PolyData(transformed_positions)
 
         # Add scalar data for coloring
         if velocities is not None:
@@ -341,9 +358,19 @@ class Viewport3D(QWidget):
         if len(origins) == 0:
             return
 
+        # Transform from Z-up (simulation) to Y-up (viewport)
+        # (x, y, z) -> (x, z, -y) to maintain right-handedness
+        transformed_origins = origins.copy().astype(np.float64)
+        transformed_origins[:, 1] = origins[:, 2]   # new Y = old Z
+        transformed_origins[:, 2] = -origins[:, 1]  # new Z = -old Y
+
+        transformed_vectors = vectors.copy().astype(np.float64)
+        transformed_vectors[:, 1] = vectors[:, 2]   # new Y = old Z
+        transformed_vectors[:, 2] = -vectors[:, 1]  # new Z = -old Y
+
         # Create glyphs
-        points = pv.PolyData(origins)
-        points["vectors"] = vectors
+        points = pv.PolyData(transformed_origins)
+        points["vectors"] = transformed_vectors
         if magnitudes is not None:
             points["magnitude"] = magnitudes
 
@@ -428,30 +455,35 @@ class Viewport3D(QWidget):
             print(f"Error updating mesh from assembly: {e}")
 
     def _set_view(self, view_name: str):
-        """Set camera to predefined view."""
+        """Set camera to predefined view. Uses Y-up coordinate convention."""
         if not HAS_PYVISTA or self.plotter is None:
             return
 
+        # Y-up coordinate system view vectors:
+        # - Y is vertical (up/down)
+        # - Z is depth (front/back)
+        # - X is horizontal (left/right)
         views = {
-            "Isometric": (1, 1, 1),
-            "Front": (0, -1, 0),
-            "Back": (0, 1, 0),
-            "Left": (-1, 0, 0),
-            "Right": (1, 0, 0),
-            "Top": (0, 0, 1),
-            "Bottom": (0, 0, -1),
+            "Isometric": (1, 1, 1),     # View from above-front-right
+            "Front": (0, 0, 1),          # Looking toward -Z
+            "Back": (0, 0, -1),          # Looking toward +Z
+            "Left": (-1, 0, 0),          # Looking toward +X
+            "Right": (1, 0, 0),          # Looking toward -X
+            "Top": (0, 1, 0),            # Looking down from +Y
+            "Bottom": (0, -1, 0),        # Looking up from -Y
         }
 
         if view_name in views:
-            self.plotter.view_vector(views[view_name])
+            self.plotter.view_vector(views[view_name], viewup=(0, 1, 0))
             self._fit_all()
 
     def _reset_view(self):
-        """Reset to default isometric view."""
+        """Reset to default isometric view with Y as vertical axis."""
         if not HAS_PYVISTA or self.plotter is None:
             return
 
-        self.plotter.view_isometric()
+        # Set Y-up isometric view
+        self.plotter.view_vector((1, 1, 1), viewup=(0, 1, 0))
         self._fit_all()
         self.view_combo.setCurrentText("Isometric")
 
@@ -571,5 +603,6 @@ class Viewport3D(QWidget):
             cam = state["camera"]
             self.plotter.camera.position = cam["position"]
             self.plotter.camera.focal_point = cam["focal_point"]
-            self.plotter.camera.up = cam["up"]
+            # Use saved up vector, default to Y-up if not present
+            self.plotter.camera.up = cam.get("up", (0, 1, 0))
             self.plotter.render()

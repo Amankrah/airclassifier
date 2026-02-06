@@ -341,6 +341,8 @@ def get_venturi_air_inlet_from_assembly(assembly: CompleteClassifierAssembly) ->
     if classification is None or not hasattr(classification, "venturi"):
         return 0.0, 0.0
     venturi = classification.venturi
+    if venturi is None:
+        return 0.0, 0.0
     port = venturi.ports.get("air_inlet")
     if port is None:
         return 0.0, 0.0
