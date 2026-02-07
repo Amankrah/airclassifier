@@ -567,9 +567,38 @@ class Viewport3D(QWidget):
                 except Exception as e:
                     print(f"  Static: classification {comp_name} failed: {e}")
 
-            # Also try the wheel_classifier attribute name used in classification.py
+            # Wheel classifier: housing goes in static mesh, blades are animated.
             wheel = getattr(classification, 'wheel_classifier', None) or getattr(classification, 'wheel', None)
             wheel_pos_key = 'wheel_classifier' if 'wheel_classifier' in cls_positions else 'wheel'
+
+            if wheel is not None:
+                wpos = np.array(cls_positions.get(wheel_pos_key, (0, 0, 0)), dtype=np.float64) + cls_offset
+                rpm = getattr(wheel.params, 'rpm', 8000.0) if hasattr(wheel, 'params') else 8000.0
+
+                # Static: housing, motor, hopper, inlets, outlets (everything except blades)
+                try:
+                    if hasattr(wheel, 'get_static_mesh'):
+                        sv, si, _ = wheel.get_static_mesh()
+                    else:
+                        sv, si, _ = wheel.generate_mesh()
+                    if sv is not None and len(sv) > 0:
+                        _add_static(sv + wpos, si)
+                except Exception as e:
+                    print(f"  Static: wheel housing failed: {e}")
+
+                # Animated: only the classifier wheel (shrouds + blades + hub)
+                try:
+                    if hasattr(wheel, 'get_wheel_mesh'):
+                        wv, wi, _ = wheel.get_wheel_mesh()
+                    else:
+                        wv, wi, _ = wheel.generate_mesh()
+                    if wv is not None and len(wv) > 0:
+                        verts_world = wv.copy().astype(np.float64) + wpos
+                        wheel_pv = self._numpy_to_pv(verts_world, wi)
+                        controller.register_wheel(wheel_pv, wpos, rpm, color="#FF6B6B")
+                        print(f"  Animation: wheel blades ({rpm:.0f} RPM) [housing is static]")
+                except Exception as e:
+                    print(f"  Animation: wheel blades failed: {e}")
 
             # Duct sections (static only -- no animated parts)
             for duct_list_attr in ['_duct_sections', '_collection_duct_sections']:
@@ -580,20 +609,6 @@ class Viewport3D(QWidget):
                             _add_static(dv + np.array(position, dtype=np.float64) + cls_offset, di)
                     except Exception:
                         pass
-
-            # Register wheel for animation (NOT in static mesh)
-            if wheel is not None:
-                pos = np.array(cls_positions.get(wheel_pos_key, (0, 0, 0)), dtype=np.float64) + cls_offset
-                rpm = getattr(wheel.params, 'rpm', 8000.0) if hasattr(wheel, 'params') else 8000.0
-                try:
-                    verts, idx_w, _ = wheel.generate_mesh()
-                    if verts is not None and len(verts) > 0:
-                        verts_world = verts.copy().astype(np.float64) + pos
-                        wheel_mesh = self._numpy_to_pv(verts_world, idx_w)
-                        controller.register_wheel(wheel_mesh, pos, rpm, color="#FF6B6B")
-                        print(f"  Animation: wheel classifier ({rpm:.0f} RPM) [no static duplicate]")
-                except Exception as e:
-                    print(f"  Animation: wheel failed: {e}")
 
             # Classification airlocks
             for attr_name, label in [

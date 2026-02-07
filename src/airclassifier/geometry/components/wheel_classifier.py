@@ -372,6 +372,76 @@ class WheelClassifier:
 
         return self._vertices, self._indices, self._normals
 
+    def get_static_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Generate static mesh -- everything EXCEPT the rotating classifier wheel.
+
+        Includes: volute housing, feed inlet, secondary air inlet, fines outlet,
+        coarse hopper, motor/drive assembly.
+
+        The classifier wheel (shroud discs, radial blades, hub) is excluded;
+        use get_wheel_mesh() for the animated rotating part.
+
+        Returns:
+            Tuple of (vertices, indices, normals)
+        """
+        vertices = []
+        indices = []
+        normals = []
+        p = self.params
+
+        # Housing
+        if p.housing_type == "volute":
+            self._add_volute_housing(vertices, indices, normals)
+        else:
+            self._add_cylindrical_housing(vertices, indices, normals)
+
+        # Feed inlet
+        self._add_feed_inlet(vertices, indices, normals)
+
+        # Secondary air inlet (optional)
+        if p.include_secondary_air:
+            self._add_secondary_air_inlet(vertices, indices, normals)
+
+        # Fines outlet (axial, through hub)
+        self._add_fines_outlet(vertices, indices, normals)
+
+        # Coarse hopper (conical bottom)
+        if p.include_coarse_hopper:
+            self._add_coarse_hopper(vertices, indices, normals)
+
+        # Motor/drive assembly
+        if p.include_motor:
+            self._add_motor_drive(vertices, indices, normals)
+
+        v = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        i = np.array(indices, dtype=np.int32)
+        n = np.array(normals, dtype=np.float32).reshape(-1, 3)
+        return v, i, n
+
+    def get_wheel_mesh(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Generate mesh for ONLY the rotating classifier wheel.
+
+        Includes: top/bottom shroud discs, radial blades, central hub.
+
+        This is the part that spins at operating RPM. The housing and
+        everything else is returned by get_static_mesh().
+
+        Returns:
+            Tuple of (vertices, indices, normals)
+        """
+        vertices = []
+        indices = []
+        normals = []
+
+        self._add_classifier_wheel(vertices, indices, normals)
+
+        v = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        i = np.array(indices, dtype=np.int32)
+        n = np.array(normals, dtype=np.float32).reshape(-1, 3)
+        return v, i, n
+
     def _add_volute_housing(self, vertices: List, indices: List, normals: List):
         """
         Generate volute/scroll housing mesh.

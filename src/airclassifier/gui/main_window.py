@@ -924,7 +924,10 @@ class MainWindow(QMainWindow):
             if vertices is not None and len(vertices) > 0:
                 self.viewport_3d.update_from_backend_mesh(vertices, indices)
 
-                # Try to set up animation from the COMPLETE assembly (not classification-only)
+                # Set up animation controller from the COMPLETE assembly.
+                # This only REGISTERS the animated parts (wheel, blower, dampers,
+                # lid, etc.) -- it does NOT start any animation or physics.
+                # Animation begins only when the user clicks Run Simulation.
                 self._stop_animation()
                 assembly_obj = getattr(backend, '_complete_assembly', None) or getattr(backend, '_assembly', None)
                 if assembly_obj is not None:
@@ -932,31 +935,6 @@ class MainWindow(QMainWindow):
                     if ctrl is not None:
                         self._animation_controller = ctrl
                         self.sim_control._log("Animation: registered rotating components")
-
-                        # Attach subsidiary physics simulators so the build-time
-                        # preview animation uses real physics (VFD blower ramp,
-                        # damper servo, lid servo) instead of fixed timeline.
-                        try:
-                            subs = backend.create_subsidiary_simulators()
-                            air_s = subs.get("air_sim")
-                            feed_s = subs.get("feed_sim")
-                            if air_s or feed_s:
-                                ctrl.set_subsidiary_simulators(air_s, feed_s)
-                                parts = []
-                                if air_s:
-                                    parts.append("air (blower+dampers)")
-                                if feed_s:
-                                    parts.append("feed (lid servo)")
-                                self.sim_control._log(
-                                    f"Animation physics: {', '.join(parts)}"
-                                )
-                        except Exception as e:
-                            self.sim_control._log(f"Animation physics init skipped: {e}")
-
-                        # Auto-start the build-time preview animation
-                        from .widgets.animation_controller import AnimationTimeline
-                        ctrl.start(AnimationTimeline())
-                        self.sim_control._log("Animation preview started")
 
                 # Keep reference so Run Simulation can skip canvas validation
                 self._built_backend = backend
@@ -1004,20 +982,40 @@ class MainWindow(QMainWindow):
         self.sim_control.start_simulation({})
 
     def _start_animation(self):
-        """Start the mechanical animation sequence."""
-        if self._animation_controller is not None:
-            from .widgets.animation_controller import AnimationTimeline
-            timeline = AnimationTimeline(
-                air_start_time=0.0,
-                air_ramp_duration=2.0,
-                feed_start_time=3.0,
-                feed_ramp_duration=2.0,
-                classification_start_time=5.0,
-                classification_ramp_duration=2.0,
-                steady_time=8.0,
-            )
-            self._animation_controller.start(timeline)
-            self.sim_control._log("Animation started: Air \u2192 Feed \u2192 Classification")
+        """Start the mechanical animation sequence with physics-driven simulators."""
+        if self._animation_controller is None:
+            return
+
+        # Create subsidiary physics simulators from the built assembly
+        # so the animation uses real VFD ramp / damper / lid servo dynamics.
+        if self._built_backend is not None:
+            try:
+                subs = self._built_backend.create_subsidiary_simulators()
+                air_s = subs.get("air_sim")
+                feed_s = subs.get("feed_sim")
+                if air_s or feed_s:
+                    self._animation_controller.set_subsidiary_simulators(air_s, feed_s)
+                    parts = []
+                    if air_s:
+                        parts.append("air (blower+dampers)")
+                    if feed_s:
+                        parts.append("feed (lid servo)")
+                    self.sim_control._log(f"Animation physics: {', '.join(parts)}")
+            except Exception as e:
+                self.sim_control._log(f"Animation physics init skipped: {e}")
+
+        from .widgets.animation_controller import AnimationTimeline
+        timeline = AnimationTimeline(
+            air_start_time=0.0,
+            air_ramp_duration=2.0,
+            feed_start_time=3.0,
+            feed_ramp_duration=2.0,
+            classification_start_time=5.0,
+            classification_ramp_duration=2.0,
+            steady_time=8.0,
+        )
+        self._animation_controller.start(timeline)
+        self.sim_control._log("Animation started: Air \u2192 Feed \u2192 Classification")
 
     def _stop_animation(self):
         """Begin shutdown animation (dampers close, ramp down), then stop."""
