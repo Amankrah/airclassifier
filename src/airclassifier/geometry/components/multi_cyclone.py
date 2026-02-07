@@ -607,27 +607,32 @@ class MultiCycloneSystem:
                 "Cut sizes are not in expected order. Check cyclone sizing."
             )
 
+        # Cyclone series validation.  In this system the cyclones are
+        # COLLECTORS after the wheel classifier — a lower d50 than design
+        # means higher collection efficiency, which is desirable.
+        # Only flag errors when cyclone performance is physically degraded:
+        # - d50 ABOVE the incoming particle range (poor collection)
+        # - Inlet velocity below minimum for vortex formation (~4 m/s)
+        # - Inlet velocity above maximum causing re-entrainment (~30 m/s)
         primary_d50 = stage_perf[0]["actual_d50_um"]
-        if primary_d50 < 5:
-            result["errors"].append(
-                f"Primary cyclone d50 ({primary_d50:.1f} µm) is too small. "
-                "Will collect ALL material in first stage. Reduce flow rate."
-            )
-            result["valid"] = False
 
         for stage in stage_perf:
+            actual = stage["actual_d50_um"]
+            design = stage["design_d50_um"]
             ratio = stage["d50_ratio"]
-            if ratio < 0.1:
+            # d50 far above design means very low flow — vortex may not form
+            if ratio > 5.0:
                 result["errors"].append(
-                    f"{stage['name']}: actual d50 ({stage['actual_d50_um']:.1f} µm) is "
-                    f"{ratio*100:.0f}% of design ({stage['design_d50_um']:.0f} µm). "
-                    "Flow rate is much too high."
+                    f"{stage['name']}: actual d50 ({actual:.1f} µm) is "
+                    f"{ratio:.0f}x design ({design:.0f} µm). "
+                    "Flow too low for effective vortex separation."
                 )
                 result["valid"] = False
-            elif ratio < 0.5:
+            elif ratio > 3.0:
                 result["warnings"].append(
-                    f"{stage['name']}: actual d50 ({stage['actual_d50_um']:.1f} µm) is "
-                    f"only {ratio*100:.0f}% of design ({stage['design_d50_um']:.0f} µm)."
+                    f"{stage['name']}: actual d50 ({actual:.1f} µm) is "
+                    f"{ratio:.1f}x design ({design:.0f} µm). "
+                    "Low flow may reduce collection efficiency."
                 )
 
         Q_design = self.calculate_required_flow_for_design_d50(particle_density)

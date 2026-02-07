@@ -500,13 +500,17 @@ class SimulationWorker(QObject):
                     )
 
                     next_wheel = s.recirculate_wheel_rpm if s.recirculate_wheel_rpm > 0 else None
+                    # Particles return to feed hopper and trickle through
+                    # the feed system (~21s residence) before reaching
+                    # the venturi solids inlet — matching real machine.
                     sim.reinitialize_from_particles(
                         particle_data,
-                        initial_velocity=(0.0, 0.5, 0.0),
-                        continuous_feeding=False,
+                        initial_velocity=None,  # auto from feed kinetics
+                        continuous_feeding=None,  # auto (continuous)
                         wheel_rpm=next_wheel,
                         attrition_factor=s.attrition_factor,
                         attrition_min_diameter_m=s.attrition_min_um * 1e-6,
+                        feed_residence_time_s=21.0,  # gravity chute transit
                     )
 
             # ==============================================================

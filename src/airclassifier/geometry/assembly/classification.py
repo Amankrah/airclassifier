@@ -1687,11 +1687,19 @@ class ClassificationSystemAssembly:
             result["valid"] = False
             result["errors"].extend(cyclone_val["errors"])
 
-        flow_for_recommendation = cyclone_flow_m3_h if cyclone_flow_m3_h is not None else air_flow_m3_h
-        if not result["valid"] and "recommended_flow_m3_h" in cyclone_val:
+        # Build recommendation from actual errors (not cyclone d50 mismatch,
+        # since cyclones are collectors whose low d50 = high efficiency = good)
+        if not result["valid"]:
+            error_sources = []
+            if result.get("components", {}).get("zigzag", {}).get("errors"):
+                error_sources.append("zigzag preclassifier")
+            if result.get("components", {}).get("cyclones", {}).get("errors"):
+                error_sources.append("cyclone train")
+            flow_used = cyclone_flow_m3_h if cyclone_flow_m3_h is not None else air_flow_m3_h
             result["recommendation"] = (
-                f"Current flow ({flow_for_recommendation:.0f} m³/h) is incompatible with classification. "
-                f"Recommended: {cyclone_val['recommended_flow_m3_h']:.0f} m³/h for design cut sizes."
+                f"Operating issues in {', '.join(error_sources)} at {flow_used:.0f} m³/h. "
+                f"The wheel classifier is the main separator — zigzag and cyclones "
+                f"serve as pre-classifier and collectors respectively."
             )
 
         return result

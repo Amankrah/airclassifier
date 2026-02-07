@@ -2410,16 +2410,11 @@ if wp is not None:
         # =====================================================================
         if zone == 0:
             # Particle is entering through solids inlet tube
-            # Move toward throat region
+            # Move toward throat region via Coanda effect / suction
             
-            # Distance from solids inlet axis
-            to_inlet = pos - venturi_solids_inlet_pos
-            
-            # Simple model: particle moves toward venturi axis
-            # Air velocity at throat draws particle in
             local_y = pos[1] - venturi_center[1]
             
-            # Compute air velocity using continuity
+            # Compute air velocity using continuity (venturi acceleration)
             v_air = compute_venturi_air_velocity(
                 pos, venturi_center,
                 venturi_inlet_diameter, venturi_throat_diameter, venturi_outlet_diameter,
@@ -2427,13 +2422,50 @@ if wp is not None:
                 v_air_venturi_inlet, 1  # axis=Y
             )
             
-            # Transition: throat when in throat region; skip to divergent if already past throat; exit if past venturi
+            # RADIAL CONTAINMENT: Particles must stay inside the venturi body.
+            # Zone 0 covers the solids inlet tube AND the converging section.
+            # The local wall radius depends on axial position:
+            # - Below throat start: converging from inlet diameter to throat
+            # - In the throat region: will transition to zone 1
+            dx = pos[0] - venturi_center[0]
+            dz = pos[2] - venturi_center[2]
+            r = wp.sqrt(dx * dx + dz * dz)
+            
+            if local_y < 0.0:
+                # Below venturi inlet: constrain to solids inlet tube
+                wall_r = venturi_solids_inlet_radius
+            elif local_y < venturi_throat_start:
+                # Converging section: radius tapers from inlet to throat
+                t_conv = local_y / (venturi_throat_start + 1.0e-6)
+                t_conv = wp.clamp(t_conv, 0.0, 1.0)
+                wall_r = venturi_inlet_diameter / 2.0 - t_conv * (venturi_inlet_diameter - venturi_throat_diameter) / 2.0
+            else:
+                # At or past throat: use throat radius (will transition soon)
+                wall_r = venturi_throat_diameter / 2.0
+            
+            if r + particle_radius > wall_r:
+                if r > 1.0e-6:
+                    normal = wp.vec3(-dx / r, 0.0, -dz / r)
+                    push = r + particle_radius - wall_r + 0.001
+                    pos = pos + normal * push
+                    vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+            
+            # Y-axis containment: prevent falling below venturi inlet
+            if local_y < -particle_radius:
+                pos = wp.vec3(pos[0], venturi_center[1] - particle_radius + 0.001, pos[2])
+                if vel[1] < 0.0:
+                    vel = wp.vec3(vel[0], -vel[1] * restitution, vel[2])
+            
+            # Transition: move through venturi sections in order.
+            # Particles must be entrained (vel[1] > 0) before exiting to duct.
+            # This prevents batch-initialized particles from teleporting past
+            # the venturi before drag has accelerated them.
             if local_y >= venturi_throat_start and local_y <= venturi_throat_end:
                 zone = 1
-            elif local_y > venturi_throat_end:
-                zone = 2  # Already past throat (e.g. spawned at solids inlet downstream of throat)
-            if local_y > venturi_total_length - particle_radius:
-                zone = 10  # Already past venturi outlet
+            elif local_y > venturi_throat_end and local_y <= venturi_total_length:
+                zone = 2  # Past throat, in divergent section
+            elif local_y > venturi_total_length - particle_radius and vel[1] > 0.5:
+                zone = 10  # Past venturi outlet AND entrained (moving upward)
         
         # =====================================================================
         # ZONE 1: VENTURI THROAT (high velocity, entrainment)
@@ -2587,21 +2619,18 @@ if wp is not None:
             
             # Terminal velocity: can this particle be carried at this point in the duct?
             # v_air_duct is local (high in round section, drops to v_air_zigzag at zigzag).
-            # If v_t > local v_air_duct and particle is not moving up, it cannot progress
-            # and will oscillate or fall - send to coarse so the duct drains.
+            # If v_t > local v_air_duct and particle is moving downward, it cannot
+            # progress and will fall — send to coarse.  This is the ONLY physics-based
+            # coarse criterion in the duct: Stokes terminal velocity vs local air speed.
             v_t = compute_terminal_velocity(d, rho_p, rho_f, mu_f, gravity)
             if v_t > v_air_duct and vel[1] <= 0.0:
                 zone = 30  # Coarse (cannot be carried at this duct cross-section)
             # Transition to zigzag when reaching inlet
             elif pos[1] >= zigzag_inlet_y - particle_radius * 2.0:
                 zone = 20  # Enter zigzag
-            # Particles that fall back below duct start (very heavy, v_t > v_air_round)
+            # Particles that fall back below duct start (very heavy, v_t > v_air)
             elif pos[1] < duct_venturi_zigzag_start[1] - particle_radius:
                 zone = 30  # Coarse (fell through duct)
-            # Fallback: particles falling in lower duct (progress < 0.15) with
-            # downward velocity - pre-classified by duct expansion.
-            elif progress < 0.15 and vel[1] < -0.01:
-                zone = 30  # Coarse (pre-classified by duct expansion)
         
         # =====================================================================
         # ZONE 20-21: ZIGZAG CLASSIFIER (PRIMARY SEPARATION)
@@ -3860,11 +3889,9 @@ class ClassificationFlowPhysicsSimulator:
             )
             if not self._validation_result.get("valid", True):
                 rec = self._validation_result.get("recommendation", "")
-                msg = (rec[:80] + "...") if len(rec) > 80 else rec
-                print(f"\n  WARNING: Operating conditions mismatch. Run with --validate for details. {msg}")
-                # Bench-scale geometry (40 mm venturi, 200 mm wheel): sweet spot from analysis
-                print(f"  Operating point hint: For this geometry, try wheel RPM 2000–4000 and blower "
-                      f"400–600 RPM to get transport + selectivity without venturi choke or wheel overload.")
+                msg = (rec[:120] + "...") if len(rec) > 120 else rec
+                print(f"\n  NOTE: {msg}")
+                print(f"  Run with --validate for details.")
         except Exception:
             pass  # Validation is best-effort; do not block init
 
@@ -6032,12 +6059,13 @@ class ClassificationFlowPhysicsSimulator:
     def reinitialize_from_particles(
         self,
         particle_data: Dict[str, Any],
-        initial_velocity: Tuple[float, float, float] = (0.0, 0.5, 0.0),
+        initial_velocity: Optional[Tuple[float, float, float]] = None,
         continuous_feeding: Optional[bool] = None,
         wheel_rpm: Optional[float] = None,
         attrition_factor: float = 0.0,
         attrition_min_diameter_m: float = 5.0e-6,
         skip_preclassification: bool = False,
+        feed_residence_time_s: float = 0.0,
     ) -> int:
         """
         Reset simulation state and re-initialize with extracted particles for a new pass.
@@ -6050,8 +6078,13 @@ class ClassificationFlowPhysicsSimulator:
             particle_data: Dict from extract_collected_particles() with
                 diameters, densities, types, count.
             initial_velocity: Initial velocity for re-injected particles [m/s].
+                None (default) = auto-compute from feed system kinetics:
+                particles arrive at venturi solids inlet along the chute
+                direction at terminal velocity from the feed ductwork.
             continuous_feeding: Override continuous feeding for this pass.
-                None = use current config setting.
+                None = auto (True when feed_residence_time_s > 0, matching
+                the real feed system where particles trickle in over the
+                chute transit time).
             wheel_rpm: Optional wheel RPM override for this pass. None = keep current.
             attrition_factor: Fraction of breakable diameter removed per pass
                 (0.0 = no attrition, 0.10 = 10% per pass). Models venturi
@@ -6066,6 +6099,10 @@ class ClassificationFlowPhysicsSimulator:
                 through the venturi solids inlet, matching the physical
                 machine design where recirculated material returns to
                 the feed hopper. Set True only for experimental bypass.
+            feed_residence_time_s: Feed system residence time [s]. When > 0,
+                particles are fed continuously over this duration instead
+                of all at once, matching the real feed hopper → gravity
+                chute → venturi inlet transit. 0 = batch (all at t=0).
 
         Returns:
             Number of particles initialized.
@@ -6110,26 +6147,46 @@ class ClassificationFlowPhysicsSimulator:
             print(f"  [Recirculation] Wheel RPM override: {wheel_rpm:.0f} "
                   f"(omega={self.wheel_omega:.1f} rad/s, d50={self.wheel_d50*1e6:.1f} µm)")
 
-        # Override continuous feeding if requested
-        use_continuous = continuous_feeding if continuous_feeding is not None else self.config.continuous_feeding
+        # Determine feeding mode: continuous (matching real feed system) or batch
+        # When feed_residence_time_s > 0, particles trickle in over that duration
+        # (matches hopper → gravity chute → venturi inlet transit time ~20s)
+        if continuous_feeding is not None:
+            use_continuous = continuous_feeding
+        elif feed_residence_time_s > 0:
+            use_continuous = True  # Real feed system: continuous trickle
+        else:
+            use_continuous = self.config.continuous_feeding
 
         # Determine entry point: wheel inlet (zone 34) or venturi inlet (zone 0)
         if skip_preclassification and self.use_preclassification:
-            # Recirculation: enter directly at wheel classifier, bypassing
-            # venturi and zigzag. Particles are placed around the wheel
-            # housing inlet at the annular chamber entry.
             entry_zone = 34  # WHEEL_HOUSING
             entry_pos = np.array(self.wheel_inlet_pos, dtype=np.float64)
             entry_radius = self.wheel_housing_radius * 0.8
-            # Initial velocity: radially inward toward the wheel
-            # (matching the fines path air velocity at wheel entry)
             recirc_velocity = (0.0, self.v_air_zigzag * 0.3, 0.0)
             print(f"  [Recirculation] Skipping preclassification → wheel inlet (zone 34)")
         else:
             entry_zone = self.initial_particle_zone
             entry_pos = np.array(self.venturi_solids_inlet_pos, dtype=np.float64)
             entry_radius = self.venturi_solids_inlet_radius
-            recirc_velocity = initial_velocity
+
+            # Compute entry velocity from feed system kinetics:
+            # Particles arrive along the solids inlet direction at the
+            # terminal velocity from the gravity chute (typically ~0.05 m/s).
+            if initial_velocity is not None:
+                recirc_velocity = initial_velocity
+            else:
+                # Feed chute terminal velocity: gravity-driven through
+                # ~1m angled duct at 0.05 m/s (from feedclass kinetics)
+                feed_entry_speed = 0.05  # m/s — typical gravity chute exit
+                inlet_dir = np.array(self.venturi_solids_inlet_dir, dtype=np.float64)
+                norm = np.linalg.norm(inlet_dir)
+                if norm > 1e-9:
+                    inlet_dir = inlet_dir / norm
+                else:
+                    inlet_dir = np.array([0.0, 1.0, 0.0])
+                recirc_velocity = tuple((feed_entry_speed * inlet_dir).tolist())
+                print(f"  [Feed kinetics] Entry velocity: {feed_entry_speed:.2f} m/s "
+                      f"along ({inlet_dir[0]:.2f}, {inlet_dir[1]:.2f}, {inlet_dir[2]:.2f})")
 
         # Positions: randomly distributed around entry point
         # Use a pass-varying seed so each recirculation pass has unique
@@ -6141,7 +6198,6 @@ class ClassificationFlowPhysicsSimulator:
         cx, cy, cz = entry_pos[0], entry_pos[1], entry_pos[2]
         # Spread Y positions slightly along the inlet tube direction so
         # particles don't all start at the exact same cross-section.
-        # This prevents numerical pile-ups at zone boundaries.
         y_spread = rng.uniform(-0.01, 0.01, n)  # ±10mm along inlet axis
         positions_np = np.column_stack([
             cx + r * np.cos(theta),
@@ -6152,7 +6208,7 @@ class ClassificationFlowPhysicsSimulator:
         # Velocities
         velocities_np = np.zeros((n, 3), dtype=np.float64)
         velocities_np[:] = recirc_velocity
-        velocities_np += rng.uniform(-0.05, 0.05, (n, 3))
+        velocities_np += rng.uniform(-0.02, 0.02, (n, 3))  # small perturbation
 
         # Zones
         zones_np = np.full(n, entry_zone, dtype=np.int32)
@@ -6211,10 +6267,20 @@ class ClassificationFlowPhysicsSimulator:
             self.state.total_particles_to_feed = n
             self.state.particles_fed = 0
             self._feed_accumulator = 0.0
+            # Compute feed rate from feed residence time or fallback
+            if feed_residence_time_s > 0:
+                feed_rate = n / feed_residence_time_s
+            elif self.config.particle_feed_rate > 0:
+                feed_rate = self.config.particle_feed_rate
+            else:
+                # Default: spread over 30s
+                feed_rate = max(1.0, n / 30.0)
+            self.config.particle_feed_rate = feed_rate
         else:
             self.state.particles_active = n
             self.state.total_particles_to_feed = n
             self.state.particles_fed = n
+            feed_rate = 0.0
 
         if entry_zone == 34:
             inlet_name = "wheel inlet (zone 34, skip preclassification)"
@@ -6223,7 +6289,13 @@ class ClassificationFlowPhysicsSimulator:
         else:
             inlet_name = "wheel inlet (zone 34, wheel-only)"
         feed_mode = "continuous" if use_continuous else "batch"
-        print(f"  [Recirculation] Initialized {n} particles at {inlet_name} ({feed_mode})")
+        if use_continuous:
+            feed_dur = n / feed_rate if feed_rate > 0 else 0
+            print(f"  [Recirculation] Initialized {n} particles at {inlet_name}")
+            print(f"    Feeding: continuous at {feed_rate:.0f} /s over {feed_dur:.1f}s "
+                  f"(feed system residence time)")
+        else:
+            print(f"  [Recirculation] Initialized {n} particles at {inlet_name} ({feed_mode})")
         print(f"    Diameter range: {diameters_np.min()*1e6:.1f} – {diameters_np.max()*1e6:.1f} µm")
         print(f"    Mean diameter:  {diameters_np.mean()*1e6:.1f} µm")
         return n

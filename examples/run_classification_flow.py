@@ -1311,18 +1311,22 @@ def main():
             # Determine wheel RPM for next pass
             next_wheel_rpm = args.recirculate_wheel_rpm  # None = keep current
 
-            # Re-initialize simulator with extracted particles
-            # Use batch feeding for recirculation passes (smaller particle counts)
-            # Apply venturi attrition to model shear breakup at throat
-            # Default: skip preclassification (enter at wheel, not venturi+zigzag)
+            # Re-initialize: particles return to feed hopper and flow through
+            # the feed system (gravity chute ~21s) before arriving at venturi
+            # solids inlet. Use continuous feeding to match real trickle-in.
+            # Feed residence time from feedclass physics (if available).
+            _feed_res_time = 0.0
+            if args.full_system:
+                _feed_res_time = feed_result.get('total_residence_time_s', 21.0)
             n_recirc = simulator.reinitialize_from_particles(
                 particle_data,
-                initial_velocity=(0.0, 0.5, 0.0),
-                continuous_feeding=False,  # Batch for recirculation (fewer particles)
+                initial_velocity=None,  # auto from feed kinetics
+                continuous_feeding=None,  # auto (continuous when feed time > 0)
                 wheel_rpm=next_wheel_rpm,
                 attrition_factor=args.attrition,
                 attrition_min_diameter_m=args.attrition_min * 1e-6,  # µm to m
                 skip_preclassification=args.recirculate_to_wheel,
+                feed_residence_time_s=_feed_res_time,
             )
             if n_recirc == 0:
                 print("  Recirculation initialization failed — stopping.")
