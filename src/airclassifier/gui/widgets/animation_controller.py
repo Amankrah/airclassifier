@@ -429,10 +429,20 @@ class AnimationController(QObject):
             self._anim_time = sim_time
 
     def begin_shutdown(self, duration: float = 3.0):
-        """Begin the shutdown phase: dampers close, equipment ramps down."""
+        """
+        Begin the shutdown phase: dampers close, lid closes, blower ramps down.
+
+        Exits physics mode so the shutdown animation drives everything
+        back to the resting state (same as run_air_flow_physics.py shutdown).
+        """
         self._phase = AnimationPhase.SHUTDOWN
         self._shutdown_start = self._anim_time
         self._shutdown_duration = duration
+        # Exit physics mode -- shutdown is a local animation sequence
+        self._physics_mode = False
+        self._physics_state = None
+        # Capture current state for smooth ramp-down
+        self._shutdown_last_frac = 1.0
         self.phase_changed.emit(self._phase.value)
 
     def stop(self):
@@ -467,25 +477,24 @@ class AnimationController(QObject):
             return
 
         # --- Timeline mode (fallback when no subsidiary sims and no physics) ---
-        # During startup (before sim reports time), advance on wall clock;
-        # once sim is reporting, sync_to_sim_time drives _anim_time
-        if self._anim_time < self._timeline.steady_time:
-            self._anim_time += dt
+        # Always advance animation time (needed for both normal and shutdown)
+        self._anim_time += dt
         t = self._anim_time
         tl = self._timeline
 
-        # Phase transitions
-        old = self._phase
-        if t < tl.feed_start_time:
-            self._phase = AnimationPhase.AIR_STARTUP
-        elif t < tl.classification_start_time:
-            self._phase = AnimationPhase.FEED_STARTUP
-        elif t < tl.steady_time:
-            self._phase = AnimationPhase.CLASSIFICATION
-        else:
-            self._phase = AnimationPhase.STEADY_STATE
-        if self._phase != old:
-            self.phase_changed.emit(self._phase.value)
+        # Phase transitions -- don't overwrite SHUTDOWN (set by begin_shutdown)
+        if self._phase != AnimationPhase.SHUTDOWN:
+            old = self._phase
+            if t < tl.feed_start_time:
+                self._phase = AnimationPhase.AIR_STARTUP
+            elif t < tl.classification_start_time:
+                self._phase = AnimationPhase.FEED_STARTUP
+            elif t < tl.steady_time:
+                self._phase = AnimationPhase.CLASSIFICATION
+            else:
+                self._phase = AnimationPhase.STEADY_STATE
+            if self._phase != old:
+                self.phase_changed.emit(self._phase.value)
 
         # Update each part
         for part in self._parts.values():
@@ -603,12 +612,19 @@ class AnimationController(QObject):
                 pass
 
         # Step feed simulator (starts at feed_start_time)
+        # Lid sequence: opens at feed_start, closes after feed_duration
         if self._feed_sim is not None:
             try:
+                feed_close_time = self._feed_start_time + 4.0  # lid open for ~4s
                 if t >= self._feed_start_time:
-                    # Trigger lid open once
-                    if self._feed_sim.state.lid_state.value == "closed":
+                    lid_val = self._feed_sim.state.lid_state.value
+                    # Open lid at feed start
+                    if lid_val == "closed" and t < feed_close_time:
                         self._feed_sim.open_lid()
+                    # Close lid after feed duration
+                    elif lid_val == "open" and t >= feed_close_time:
+                        self._feed_sim.close_lid()
+
                     feed_dt = self._feed_sim.config.dt
                     target_feed_time = t - self._feed_start_time
                     while self._feed_sim.state.time < target_feed_time - feed_dt * 0.5:
@@ -695,6 +711,30 @@ class AnimationController(QObject):
                 # update_fn(dt, frac) -- frac is used as target_position
                 part.update(self.FRAME_MS / 1000.0, position)
             self._update_actor(part)
+        except Exception:
+            pass
+
+    def render_initial_state(self):
+        """
+        Render all registered animated parts at their initial resting position.
+
+        Called after all parts are registered (during build_with_animation)
+        so they are visible in the viewport even before animation starts.
+        Each part is rendered at frac=0 / angle=0 -- its default geometry.
+
+        When start() is called later, the animation tick takes over and
+        updates these actors each frame.
+        """
+        if self._plotter is None:
+            return
+        for part in self._parts.values():
+            if part.get_mesh is not None:
+                try:
+                    self._update_actor(part)
+                except Exception:
+                    pass
+        try:
+            self._plotter.render()
         except Exception:
             pass
 

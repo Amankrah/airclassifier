@@ -1018,19 +1018,24 @@ class MainWindow(QMainWindow):
         self.sim_control._log("Animation started: Air \u2192 Feed \u2192 Classification")
 
     def _stop_animation(self):
-        """Begin shutdown animation (dampers close, ramp down), then stop."""
+        """Begin shutdown animation (dampers close, lid closes, ramp down)."""
         if self._animation_controller is not None:
-            if self._animation_controller.phase.value == "steady_state":
-                # Graceful shutdown: ramp down over 3s, then stop
+            phase = self._animation_controller.phase.value
+            if phase in ("steady_state", "classification", "feed_startup", "air_startup"):
+                # Graceful shutdown: ramp everything to closed over 3s
                 self._animation_controller.begin_shutdown(duration=3.0)
                 QTimer.singleShot(3500, self._force_stop_animation)
             else:
                 self._animation_controller.stop()
+                self._animation_controller.render_initial_state()
 
     def _force_stop_animation(self):
-        """Force-stop after shutdown delay."""
+        """Force-stop after shutdown delay, render parts at resting state."""
         if self._animation_controller is not None:
             self._animation_controller.stop()
+            # Render all parts at rest (angle=0, closed) so the assembly
+            # stays visible after the simulation ends.
+            self._animation_controller.render_initial_state()
 
     @Slot(float)
     def _on_sim_time_updated(self, sim_time: float):

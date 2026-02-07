@@ -501,6 +501,12 @@ class Viewport3D(QWidget):
             except Exception:
                 pass
 
+        # Render all animated parts at their initial resting position (angle=0)
+        # so they are visible in the viewport immediately -- even before the
+        # user clicks Run Simulation.  When animation starts, the tick loop
+        # takes over and updates these same actors each frame.
+        controller.render_initial_state()
+
         self._fit_all()
         return controller
 
@@ -610,7 +616,7 @@ class Viewport3D(QWidget):
                     except Exception:
                         pass
 
-            # Classification airlocks
+            # Classification airlocks: static housing + animated rotor
             for attr_name, label in [
                 ('coarse_airlock', 'class_coarse_airlock'),
                 ('dropout_airlock', 'class_dropout_airlock'),
@@ -619,6 +625,17 @@ class Viewport3D(QWidget):
                 al = getattr(classification, attr_name, None)
                 if al is not None:
                     pos = np.array(cls_positions.get(attr_name, (0, 0, 0)), dtype=np.float64) + cls_offset
+                    # Static: airlock housing
+                    try:
+                        if hasattr(al, 'get_static_mesh'):
+                            sv, si, _ = al.get_static_mesh()
+                        else:
+                            sv, si, _ = al.generate_mesh()
+                        if sv is not None and len(sv) > 0:
+                            _add_static(sv + pos, si)
+                    except Exception:
+                        pass
+                    # Animated: rotor
                     rpm = getattr(al.params, 'rpm', 20.0) if hasattr(al, 'params') else 20.0
                     controller.register_airlock(al, pos, rpm, name=label, phase="classification", color="#3498DB")
                     print(f"  Animation: {label} ({rpm:.0f} RPM)")
@@ -691,12 +708,16 @@ class Viewport3D(QWidget):
                     print(f"  Static: deagg failed: {e}")
 
             # Feed system transition connectors (static only)
+            # Note: transition mesh positions are already baked into
+            # TransitionParams.center during feed assembly construction,
+            # so we only apply the feed_offset (subsystem offset within
+            # the complete assembly) -- NOT the connector_data[1] position.
+            # This matches feed_system.build_mesh() which uses (0,0,0) offset.
             try:
                 for connector_data in getattr(feed, '_transition_connectors', []):
                     connector = connector_data[0]
-                    conn_pos = np.array(connector_data[1], dtype=np.float64) if len(connector_data) > 1 else np.zeros(3)
                     cv, ci, _ = connector.generate_mesh()
-                    _add_static(cv + conn_pos + feed_offset, ci)
+                    _add_static(cv + feed_offset, ci)
             except Exception:
                 pass
 

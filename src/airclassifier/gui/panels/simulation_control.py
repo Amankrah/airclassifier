@@ -757,15 +757,21 @@ class SimulationWorker(QObject):
                 pass
 
         # --- Feed simulator: starts at FEED_START_TIME ---
+        # Lid sequence: opens at FEED_START_TIME, closes after FEED_DURATION
+        FEED_DURATION = 4.0  # lid stays open for ~4s
         if self._feed_sim is not None:
             try:
-                # Trigger lid open at feed start time
-                if sim_time >= FEED_START_TIME and self._feed_sim.state.lid_state.value == "closed":
-                    self._feed_sim.open_lid()
-
-                feed_dt = self._feed_sim.config.dt
-                # Only step if we're past feed start time
+                feed_close_time = FEED_START_TIME + FEED_DURATION
                 if sim_time >= FEED_START_TIME:
+                    lid_val = self._feed_sim.state.lid_state.value
+                    # Open lid at feed start
+                    if lid_val == "closed" and sim_time < feed_close_time:
+                        self._feed_sim.open_lid()
+                    # Close lid after feed duration
+                    elif lid_val == "open" and sim_time >= feed_close_time:
+                        self._feed_sim.close_lid()
+
+                    feed_dt = self._feed_sim.config.dt
                     target_feed_time = sim_time - FEED_START_TIME
                     while self._feed_sim.state.time < target_feed_time - feed_dt * 0.5:
                         self._feed_sim.step()
@@ -867,15 +873,24 @@ class SimulationWorker(QObject):
             component_state["deagg_omega"] = float(getattr(feed, 'deagg_omega', 0.0))
         else:
             # --- FALLBACK: computed ramp ---
+            # Lid opens at FEED_START, closes after FEED_DURATION
             feed_ramp = 2.0
-            lid_speed = 45.0
+            lid_speed = 45.0  # deg/s
+            feed_duration = 4.0
+            feed_close_time = FEED_START + feed_duration
             if sim_time < FEED_START:
                 lid_angle = 0.0
                 feed_frac = 0.0
-            else:
+            elif sim_time < feed_close_time:
+                # Opening / open phase
                 elapsed = sim_time - FEED_START
                 lid_angle = min(90.0, lid_speed * elapsed)
                 feed_frac = min(1.0, elapsed / feed_ramp)
+            else:
+                # Closing phase
+                closing_elapsed = sim_time - feed_close_time
+                lid_angle = max(0.0, 90.0 - lid_speed * closing_elapsed)
+                feed_frac = 1.0
             component_state["lid_angle_deg"] = float(lid_angle)
             component_state["feed_ramp_frac"] = float(feed_frac)
 
