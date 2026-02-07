@@ -2686,8 +2686,10 @@ if wp is not None:
             v_t = compute_terminal_velocity(d, rho_p, rho_f, mu_f, gravity)
             if v_t > v_air_duct and vel[1] <= 0.0:
                 zone = 30  # Coarse (cannot be carried at this duct cross-section)
-            # Transition to zigzag when reaching inlet
-            elif pos[1] >= zigzag_inlet_y - particle_radius * 2.0:
+            # Transition to zigzag when reaching inlet.
+            # Use a 5mm buffer (not particle_radius) so fine particles (d~7µm,
+            # buffer would be 7µm) don't oscillate at the boundary indefinitely.
+            elif pos[1] >= zigzag_inlet_y - 0.005:
                 zone = 20  # Enter zigzag
             # Particles that fall back below duct start (very heavy, v_t > v_air)
             elif pos[1] < duct_venturi_zigzag_start[1] - particle_radius:
@@ -3306,29 +3308,32 @@ if wp is not None:
                 # tip_ratio = dust_outlet_D / D, so tip_r = tip_ratio * R
                 wall_r = cyclone_primary_radius * (1.0 - (1.0 - cyclone_primary_cone_tip_ratio) * cone_progress)
 
-            # Radial containment
+            # Radial containment — track wall contact for collection
+            wall_contact = False
             if r + particle_radius > wall_r:
+                wall_contact = True
                 if r > 1.0e-6:
                     normal = wp.vec3(-dx / r, 0.0, -dz / r)
                     push = r + particle_radius - wall_r + 0.001
                     pos = pos + normal * push
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
 
-            # SEPARATION with grade efficiency (prevents false collection)
-            # In core = inside vortex finder radius (inner vortex -> overflow)
-            # At wall = at cyclone wall (spirals to dust outlet)
+            # SEPARATION with grade efficiency
+            # wall_contact: particle just bounced off wall (containment push)
+            # in_core: inside vortex finder radius (inner vortex → overflow)
+            # below_cylinder: in the cone section where collection occurs
             in_core = r <= cyclone_primary_vf_radius
-            at_wall = r >= wall_r * 0.99
             below_cylinder = local_y < -cyclone_primary_cylinder_height
             above_vf = local_y > 0.0
+            # Dust outlet: particle fell to bottom of cone
+            at_dust_outlet = local_y < -(cyclone_primary_cylinder_height + cyclone_primary_cone_height) + 0.005
 
-            if at_wall and below_cylinder:
-                # Grade efficiency: probability of collection depends on d/d50
+            if (wall_contact and below_cylinder) or at_dust_outlet:
+                # Wall contact in cone, or reached dust outlet → apply grade efficiency
                 eta = compute_cyclone_collection_probability(d, cyclone_primary_d50)
                 collect_state = wp.rand_init(random_seed + 7919, tid)
                 if wp.randf(collect_state) < eta:
                     zone = 55  # Collected in primary dust outlet
-                # else: particle stays in zone 50, re-entrained by inner vortex
             elif in_core and above_vf:
                 zone = 51  # Move to secondary cyclone
                 pos = wp.vec3(
@@ -3378,7 +3383,9 @@ if wp is not None:
                 cone_progress = wp.clamp(cone_progress, 0.0, 1.0)
                 wall_r = cyclone_secondary_radius * (1.0 - (1.0 - cyclone_secondary_cone_tip_ratio) * cone_progress)
 
+            wall_contact = False
             if r + particle_radius > wall_r:
+                wall_contact = True
                 if r > 1.0e-6:
                     normal = wp.vec3(-dx / r, 0.0, -dz / r)
                     push = r + particle_radius - wall_r + 0.001
@@ -3386,11 +3393,11 @@ if wp is not None:
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
 
             in_core = r <= cyclone_secondary_vf_radius
-            at_wall = r >= wall_r * 0.99
             below_cylinder = local_y < -cyclone_secondary_cylinder_height
             above_vf = local_y > 0.0
+            at_dust_outlet = local_y < -(cyclone_secondary_cylinder_height + cyclone_secondary_cone_height) + 0.005
 
-            if at_wall and below_cylinder:
+            if (wall_contact and below_cylinder) or at_dust_outlet:
                 eta = compute_cyclone_collection_probability(d, cyclone_secondary_d50)
                 collect_state = wp.rand_init(random_seed + 7919, tid)
                 if wp.randf(collect_state) < eta:
@@ -3445,7 +3452,9 @@ if wp is not None:
                 cone_progress = wp.clamp(cone_progress, 0.0, 1.0)
                 wall_r = cyclone_tertiary_radius * (1.0 - (1.0 - cyclone_tertiary_cone_tip_ratio) * cone_progress)
 
+            wall_contact = False
             if r + particle_radius > wall_r:
+                wall_contact = True
                 if r > 1.0e-6:
                     normal = wp.vec3(-dx / r, 0.0, -dz / r)
                     push = r + particle_radius - wall_r + 0.001
@@ -3453,11 +3462,11 @@ if wp is not None:
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
 
             in_core = r <= cyclone_tertiary_vf_radius
-            at_wall = r >= wall_r * 0.99
             below_cylinder = local_y < -cyclone_tertiary_cylinder_height
             above_vf = local_y > 0.0
+            at_dust_outlet = local_y < -(cyclone_tertiary_cylinder_height + cyclone_tertiary_cone_height) + 0.005
 
-            if at_wall and below_cylinder:
+            if (wall_contact and below_cylinder) or at_dust_outlet:
                 eta = compute_cyclone_collection_probability(d, cyclone_tertiary_d50)
                 collect_state = wp.rand_init(random_seed + 7919, tid)
                 if wp.randf(collect_state) < eta:
@@ -3470,7 +3479,7 @@ if wp is not None:
                     elbow_cyclone_bag_pos[1],
                     elbow_cyclone_bag_pos[2]
                 )
-                vel = wp.vec3(0.0, v_air_cyclone_inlet * 0.5, 0.0)
+                vel = wp.vec3(0.0, v_air_duct_cyclone_bag, 0.0)
         
         # =====================================================================
         # ZONES 55-57: CYCLONE DUST OUTLETS (collected)

@@ -592,10 +592,19 @@ class MainWindow(QMainWindow):
         self.sim_control.pause_requested.connect(self.pause_simulation)
         self.sim_control.stop_requested.connect(self.stop_simulation)
 
-        # Simulation results -> Results panel
+        # Simulation results -> Results panel + stop animation
         self.sim_control.simulation_results_ready.connect(
             self.results_panel.set_results
         )
+        self.sim_control.simulation_results_ready.connect(
+            self._on_simulation_finished
+        )
+
+        # Sync animation time with simulation progress
+        self.sim_control.sim_time_updated.connect(self._on_sim_time_updated)
+
+        # Physics-driven animation: forward component state from simulation to animation
+        self.sim_control.component_state_updated.connect(self._on_component_state_updated)
 
     def _update_window_title(self):
         """Update window title based on project state."""
@@ -924,6 +933,26 @@ class MainWindow(QMainWindow):
                         self._animation_controller = ctrl
                         self.sim_control._log("Animation: registered rotating components")
 
+                        # Attach subsidiary physics simulators so the build-time
+                        # preview animation uses real physics (VFD blower ramp,
+                        # damper servo, lid servo) instead of fixed timeline.
+                        try:
+                            subs = backend.create_subsidiary_simulators()
+                            air_s = subs.get("air_sim")
+                            feed_s = subs.get("feed_sim")
+                            if air_s or feed_s:
+                                ctrl.set_subsidiary_simulators(air_s, feed_s)
+                                parts = []
+                                if air_s:
+                                    parts.append("air (blower+dampers)")
+                                if feed_s:
+                                    parts.append("feed (lid servo)")
+                                self.sim_control._log(
+                                    f"Animation physics: {', '.join(parts)}"
+                                )
+                        except Exception as e:
+                            self.sim_control._log(f"Animation physics init skipped: {e}")
+
                 # Keep reference so Run Simulation can skip canvas validation
                 self._built_backend = backend
 
@@ -977,18 +1006,50 @@ class MainWindow(QMainWindow):
                 air_start_time=0.0,
                 air_ramp_duration=2.0,
                 feed_start_time=3.0,
-                lid_open_duration=1.0,
                 feed_ramp_duration=2.0,
                 classification_start_time=5.0,
+                classification_ramp_duration=2.0,
                 steady_time=8.0,
             )
             self._animation_controller.start(timeline)
             self.sim_control._log("Animation started: Air \u2192 Feed \u2192 Classification")
 
     def _stop_animation(self):
-        """Stop the mechanical animation."""
+        """Begin shutdown animation (dampers close, ramp down), then stop."""
+        if self._animation_controller is not None:
+            if self._animation_controller.phase.value == "steady_state":
+                # Graceful shutdown: ramp down over 3s, then stop
+                self._animation_controller.begin_shutdown(duration=3.0)
+                QTimer.singleShot(3500, self._force_stop_animation)
+            else:
+                self._animation_controller.stop()
+
+    def _force_stop_animation(self):
+        """Force-stop after shutdown delay."""
         if self._animation_controller is not None:
             self._animation_controller.stop()
+
+    @Slot(float)
+    def _on_sim_time_updated(self, sim_time: float):
+        """Sync animation time with simulation progress."""
+        if self._animation_controller is not None:
+            self._animation_controller.sync_to_sim_time(sim_time)
+
+    @Slot(dict)
+    def _on_component_state_updated(self, component_state: dict):
+        """Forward physics-driven component states to animation controller."""
+        if self._animation_controller is not None:
+            self._animation_controller.update_from_physics(component_state)
+
+    @Slot(dict)
+    def _on_simulation_finished(self, results: Dict[str, Any]):
+        """Called when simulation completes -- trigger shutdown animation."""
+        self._simulation_state = "idle"
+        self.action_run_sim.setEnabled(True)
+        self.action_pause_sim.setEnabled(False)
+        self.action_stop_sim.setEnabled(False)
+        self.sim_progress.setVisible(False)
+        self._stop_animation()
 
     def _start_simulation_run(self):
         """Shared UI state change when a simulation run begins."""

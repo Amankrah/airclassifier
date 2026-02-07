@@ -458,8 +458,18 @@ class Viewport3D(QWidget):
 
     def build_with_animation(self, complete_assembly) -> Optional["AnimationController"]:
         """
-        Build the assembly mesh and register animated components using
-        their native animation APIs (update_animation, get_impeller_mesh, etc.).
+        Build the assembly with animated parts separated from static geometry.
+
+        Two-pass approach:
+        1. Build all subsystem meshes, but for components that have animation
+           (blower, dampers, airlocks, screw, deagglomerator, hopper), use
+           get_static_mesh()/get_body_mesh() instead of generate_mesh() so
+           the static assembly mesh does NOT contain rotors/blades/lid.
+        2. Register the animated sub-meshes (rotors, blades, lid) separately
+           with the AnimationController.
+
+        This way the animated parts are the ONLY meshes at those locations --
+        no overlay/ghost of the static version underneath.
 
         Args:
             complete_assembly: CompleteClassifierAssembly instance
@@ -472,158 +482,120 @@ class Viewport3D(QWidget):
 
         from .animation_controller import AnimationController
 
-        # Build the static combined mesh
-        try:
-            vertices, indices = complete_assembly.build_mesh()
-            if vertices is None or len(vertices) == 0:
-                return None
-            self.clear()
-            faces = np.array(indices).reshape(-1, 3)
-            self.add_mesh("assembly_static", np.array(vertices), faces,
-                          color=COMPONENT_RENDER_COLORS["default"], opacity=0.85)
-        except Exception as e:
-            print(f"Error building static mesh: {e}")
-            return None
-
+        self.clear()
         controller = AnimationController(self.plotter, self)
 
         try:
-            self._register_animated_parts(complete_assembly, controller)
+            self._build_static_and_animated(complete_assembly, controller)
         except Exception as e:
-            print(f"Warning: Could not extract animated parts: {e}")
+            import traceback
+            print(f"Error building animated assembly: {e}")
+            traceback.print_exc()
+            # Fallback: build full combined mesh (no animation separation)
+            try:
+                vertices, indices = complete_assembly.build_mesh()
+                if vertices is not None and len(vertices) > 0:
+                    faces = np.array(indices).reshape(-1, 3)
+                    self.add_mesh("assembly_static", np.array(vertices), faces,
+                                  color=COMPONENT_RENDER_COLORS["default"], opacity=0.85)
+            except Exception:
+                pass
 
         self._fit_all()
         return controller
 
-    def _register_animated_parts(self, complete_assembly, controller):
+    def _build_static_and_animated(self, complete_assembly, controller):
         """
-        Extract actual component instances and register them with the
-        AnimationController using their native animation APIs.
-        """
-        # Helper to get component world position
-        def _get_offset(subsystem_name):
-            """Get subsystem offset from assembly params."""
-            p = complete_assembly.params
-            offsets = {
-                "feed_system": getattr(p, 'feed_position', (0, 0, 0)),
-                "classification": getattr(p, 'classifier_position', (0, 0, 0)),
-                "air_system": getattr(p, 'air_system_position', (0, 0, 0)),
-            }
-            return np.array(offsets.get(subsystem_name, (0, 0, 0)), dtype=np.float64)
+        Build the assembly in two layers:
+        - Static mesh: everything that doesn't move (housings, ducts, trough, etc.)
+        - Animated meshes: rotors, blades, lid, wheel (registered with controller)
 
+        For each animated component, we use get_static_mesh() for the static
+        layer and register get_rotor_mesh()/get_lid_mesh() with the controller.
+        For all other components, we use the full generate_mesh() / build_mesh().
+        """
+        subs = getattr(complete_assembly, '_subsystems', {})
         get_sub = getattr(complete_assembly, 'get_subsystem', None)
         if get_sub is None:
+            # No subsystem access -- fall back to combined mesh
+            vertices, indices = complete_assembly.build_mesh()
+            if vertices is not None and len(vertices) > 0:
+                faces = np.array(indices).reshape(-1, 3)
+                self.add_mesh("assembly_static", np.array(vertices), faces,
+                              color=COMPONENT_RENDER_COLORS["default"], opacity=0.85)
             return
 
-        # ---- Air system: blower + dampers ----
-        air = get_sub("air_system")
-        if air is not None:
-            air_offset = _get_offset("air_system")
+        all_static_verts = []
+        all_static_indices = []
+        vertex_offset = 0
+        C_default = COMPONENT_RENDER_COLORS["default"]
 
-            # Use get_component_positions() if available
-            air_positions = {}
-            if hasattr(air, 'get_component_positions'):
-                air_positions = air.get_component_positions()
+        def _add_static(verts, idx):
+            """Add a mesh chunk to the combined static mesh."""
+            nonlocal vertex_offset
+            if verts is None or len(verts) == 0:
+                return
+            all_static_verts.append(np.asarray(verts, dtype=np.float32))
+            all_static_indices.append(np.asarray(idx, dtype=np.int32) + vertex_offset)
+            vertex_offset += len(verts)
 
-            def _air_pos(key):
-                return np.array(air_positions.get(key, (0, 0, 0)), dtype=np.float64) + air_offset
+        def _sub_offset(name):
+            key = f"{name}_offset"
+            return np.array(subs.get(key, (0, 0, 0)), dtype=np.float64)
 
-            # Blower
-            blower = getattr(air, 'blower', None)
-            if blower is not None:
-                pos = _air_pos('blower')
-                rpm = getattr(blower.params, 'rpm', 3000.0) if hasattr(blower, 'params') else 3000.0
-                controller.register_blower(blower, pos, rpm, color="#27AE60")
-                print(f"  Animation: registered blower ({rpm:.0f} RPM)")
-
-            # Dampers
-            dampers = getattr(air, 'dampers', [])
-            if not dampers:
-                dampers = getattr(air, '_dampers', [])
-            for i, damper in enumerate(dampers):
-                if damper is not None:
-                    pos = _air_pos(f'damper_{i}')
-                    controller.register_damper(damper, pos, index=i, color="#B0BEC5")
-                    print(f"  Animation: registered damper {i}")
-
-        # ---- Feed system: hopper lid, airlock, screw feeder, deagglomerator ----
-        feed = get_sub("feed_system")
-        if feed is not None:
-            feed_offset = _get_offset("feed_system")
-
-            # Use FeedSystemAssembly.get_component_positions() for correct positions
-            feed_positions = {}
-            if hasattr(feed, 'get_component_positions'):
-                feed_positions = feed.get_component_positions()
-
-            def _feed_pos(key):
-                return np.array(feed_positions.get(key, (0, 0, 0)), dtype=np.float64) + feed_offset
-
-            # Hopper lid
-            hopper = getattr(feed, 'hopper', None)
-            if hopper is not None and hasattr(hopper, 'get_lid_mesh'):
-                pos = _feed_pos('hopper')
-                controller.register_hopper_lid(hopper, pos, color="#F0AD4E")
-                print(f"  Animation: registered hopper lid")
-
-            # Rotary airlock
-            airlock = getattr(feed, 'airlock', None)
-            if airlock is not None:
-                pos = _feed_pos('airlock')
-                rpm = getattr(airlock.params, 'rpm', 20.0) if hasattr(airlock, 'params') else 20.0
-                controller.register_airlock(airlock, pos, rpm, name="feed_airlock", phase="feed", color="#3498DB")
-                print(f"  Animation: registered feed airlock ({rpm:.0f} RPM)")
-
-            # Screw feeder  (attribute is `feed.feeder`, NOT `feed.screw_feeder`)
-            screw = getattr(feed, 'feeder', None)
-            if screw is not None:
-                pos = _feed_pos('feeder')
-                rpm = getattr(screw.params, 'rpm', 60.0) if hasattr(screw, 'params') else 60.0
-                controller.register_screw(screw, pos, rpm, color="#27AE60")
-                print(f"  Animation: registered screw feeder ({rpm:.0f} RPM)")
-
-            # Deagglomerator
-            deagg = getattr(feed, 'deagglomerator', None)
-            if deagg is not None:
-                pos = _feed_pos('deagglomerator')
-                rpm = getattr(deagg.params, 'rpm', 1500.0) if hasattr(deagg, 'params') else 1500.0
-                controller.register_deagglomerator(deagg, pos, rpm, color="#9B59B6")
-                print(f"  Animation: registered deagglomerator ({rpm:.0f} RPM)")
-
-        # ---- Classification: wheel classifier + collection airlocks ----
+        # ================================================================
+        # CLASSIFICATION SUBSYSTEM -- build component-by-component
+        # so the wheel classifier is EXCLUDED from the static mesh
+        # (only the animated version renders the wheel).
+        # ================================================================
         classification = get_sub("classification")
+        cls_offset = _sub_offset("classification")
         if classification is not None:
-            cls_offset = _get_offset("classification")
+            cls_positions = classification.get_component_positions() if hasattr(classification, 'get_component_positions') else {}
 
-            # Use get_component_positions() if available
-            cls_positions = {}
-            if hasattr(classification, 'get_component_positions'):
-                cls_positions = classification.get_component_positions()
+            # Static components: everything EXCEPT the wheel classifier
+            # (venturi, zigzag, multi_cyclone, bag_filter, ducts, collection hardware)
+            for comp_name in ['venturi', 'zigzag', 'multi_cyclone', 'bag_filter']:
+                comp = getattr(classification, comp_name, None) or getattr(classification, comp_name.replace('_', ''), None)
+                if comp is None:
+                    continue
+                cpos = np.array(cls_positions.get(comp_name, (0, 0, 0)), dtype=np.float64) + cls_offset
+                try:
+                    cv, ci, _ = comp.generate_mesh()
+                    if cv is not None and len(cv) > 0:
+                        _add_static(cv + cpos, ci)
+                except Exception as e:
+                    print(f"  Static: classification {comp_name} failed: {e}")
 
-            def _cls_pos(key):
-                return np.array(cls_positions.get(key, (0, 0, 0)), dtype=np.float64) + cls_offset
+            # Also try the wheel_classifier attribute name used in classification.py
+            wheel = getattr(classification, 'wheel_classifier', None) or getattr(classification, 'wheel', None)
+            wheel_pos_key = 'wheel_classifier' if 'wheel_classifier' in cls_positions else 'wheel'
 
-            # Wheel classifier
-            wheel = getattr(classification, 'wheel', None)
+            # Duct sections (static only -- no animated parts)
+            for duct_list_attr in ['_duct_sections', '_collection_duct_sections']:
+                for duct, position in getattr(classification, duct_list_attr, []):
+                    try:
+                        dv, di, _ = duct.generate_mesh()
+                        if dv is not None and len(dv) > 0:
+                            _add_static(dv + np.array(position, dtype=np.float64) + cls_offset, di)
+                    except Exception:
+                        pass
+
+            # Register wheel for animation (NOT in static mesh)
             if wheel is not None:
-                pos = _cls_pos('wheel')
+                pos = np.array(cls_positions.get(wheel_pos_key, (0, 0, 0)), dtype=np.float64) + cls_offset
                 rpm = getattr(wheel.params, 'rpm', 8000.0) if hasattr(wheel, 'params') else 8000.0
                 try:
-                    verts, indices_w, _ = wheel.generate_mesh()
+                    verts, idx_w, _ = wheel.generate_mesh()
                     if verts is not None and len(verts) > 0:
                         verts_world = verts.copy().astype(np.float64) + pos
-                        faces_w = indices_w.reshape(-1, 3)
-                        n = len(faces_w)
-                        pv_faces = np.zeros((n, 4), dtype=np.int64)
-                        pv_faces[:, 0] = 3
-                        pv_faces[:, 1:] = faces_w
-                        wheel_mesh = pv.PolyData(verts_world, pv_faces.flatten())
+                        wheel_mesh = self._numpy_to_pv(verts_world, idx_w)
                         controller.register_wheel(wheel_mesh, pos, rpm, color="#FF6B6B")
-                        print(f"  Animation: registered wheel classifier ({rpm:.0f} RPM)")
+                        print(f"  Animation: wheel classifier ({rpm:.0f} RPM) [no static duplicate]")
                 except Exception as e:
-                    print(f"  Animation: could not register wheel: {e}")
+                    print(f"  Animation: wheel failed: {e}")
 
-            # Classification collection airlocks
+            # Classification airlocks
             for attr_name, label in [
                 ('coarse_airlock', 'class_coarse_airlock'),
                 ('dropout_airlock', 'class_dropout_airlock'),
@@ -631,10 +603,198 @@ class Viewport3D(QWidget):
             ]:
                 al = getattr(classification, attr_name, None)
                 if al is not None:
-                    pos = _cls_pos(attr_name)
+                    pos = np.array(cls_positions.get(attr_name, (0, 0, 0)), dtype=np.float64) + cls_offset
                     rpm = getattr(al.params, 'rpm', 20.0) if hasattr(al, 'params') else 20.0
                     controller.register_airlock(al, pos, rpm, name=label, phase="classification", color="#3498DB")
-                    print(f"  Animation: registered {label} ({rpm:.0f} RPM)")
+                    print(f"  Animation: {label} ({rpm:.0f} RPM)")
+
+        # ================================================================
+        # FEED SYSTEM -- use get_body_mesh/get_static_mesh for animated parts
+        # ================================================================
+        feed = get_sub("feed_system")
+        feed_offset = _sub_offset("feed_system")
+        if feed is not None:
+            feed_positions = feed.get_component_positions() if hasattr(feed, 'get_component_positions') else {}
+
+            def _fpos(key):
+                return np.array(feed_positions.get(key, (0, 0, 0)), dtype=np.float64) + feed_offset
+
+            # Hopper: use get_body_mesh() (without lid) for static, register lid separately
+            hopper = getattr(feed, 'hopper', None)
+            if hopper is not None:
+                hp = _fpos('hopper')
+                try:
+                    if hasattr(hopper, 'get_body_mesh'):
+                        bv, bi, _ = hopper.get_body_mesh()
+                        _add_static(bv + hp, bi)
+                        # Register lid for animation
+                        controller.register_hopper_lid(hopper, hp, color="#F0AD4E")
+                        print(f"  Animation: hopper lid (hinge-open)")
+                    else:
+                        v, i, _ = hopper.generate_mesh()
+                        _add_static(v + hp, i)
+                except Exception as e:
+                    print(f"  Static: hopper failed: {e}")
+
+            # Airlock: use get_static_mesh() for housing, register rotor
+            airlock = getattr(feed, 'airlock', None)
+            if airlock is not None:
+                ap = _fpos('airlock')
+                try:
+                    sv, si, _ = airlock.get_static_mesh()
+                    _add_static(sv + ap, si)
+                    rpm = getattr(airlock.params, 'rpm', 20.0) if hasattr(airlock, 'params') else 20.0
+                    controller.register_airlock(airlock, ap, rpm, name="feed_airlock", phase="feed", color="#3498DB")
+                    print(f"  Animation: feed airlock ({rpm:.0f} RPM)")
+                except Exception as e:
+                    print(f"  Static: airlock failed: {e}")
+
+            # Screw feeder: use get_static_mesh() for trough, register screw
+            screw = getattr(feed, 'feeder', None)
+            if screw is not None:
+                sp = _fpos('feeder')
+                try:
+                    sv, si, _ = screw.get_static_mesh()
+                    _add_static(sv + sp, si)
+                    rpm = getattr(screw.params, 'rpm', 60.0) if hasattr(screw, 'params') else 60.0
+                    controller.register_screw(screw, sp, rpm, color="#2ECC71")
+                    print(f"  Animation: screw feeder ({rpm:.0f} RPM)")
+                except Exception as e:
+                    print(f"  Static: screw failed: {e}")
+
+            # Deagglomerator: use get_static_mesh() for housing, register rotor
+            deagg = getattr(feed, 'deagglomerator', None)
+            if deagg is not None:
+                dp = _fpos('deagglomerator')
+                try:
+                    sv, si, _ = deagg.get_static_mesh()
+                    _add_static(sv + dp, si)
+                    rpm = getattr(deagg.params, 'rpm', 1500.0) if hasattr(deagg, 'params') else 1500.0
+                    controller.register_deagglomerator(deagg, dp, rpm, color="#9B59B6")
+                    print(f"  Animation: deagglomerator ({rpm:.0f} RPM)")
+                except Exception as e:
+                    print(f"  Static: deagg failed: {e}")
+
+            # Feed system transition connectors (static only)
+            try:
+                for connector_data in getattr(feed, '_transition_connectors', []):
+                    connector = connector_data[0]
+                    conn_pos = np.array(connector_data[1], dtype=np.float64) if len(connector_data) > 1 else np.zeros(3)
+                    cv, ci, _ = connector.generate_mesh()
+                    _add_static(cv + conn_pos + feed_offset, ci)
+            except Exception:
+                pass
+
+        # ================================================================
+        # AIR SYSTEM -- build component-by-component so animated parts
+        # (blower impeller, damper blades) are EXCLUDED from static mesh.
+        # ================================================================
+        air = get_sub("air_system")
+        air_offset = _sub_offset("air_system")
+        if air is not None:
+            air_positions = air.get_component_positions() if hasattr(air, 'get_component_positions') else {}
+
+            def _apos(key):
+                return np.array(air_positions.get(key, (0, 0, 0)), dtype=np.float64) + air_offset
+
+            # --- Inlet filter: fully static ---
+            inlet_filter = getattr(air, 'inlet_filter', None)
+            if inlet_filter is not None:
+                fp = np.array(getattr(air, '_filter_position', (0, 0, 0)), dtype=np.float64) + air_offset
+                try:
+                    fv, fi, _ = inlet_filter.generate_mesh()
+                    if fv is not None and len(fv) > 0:
+                        _add_static(fv + fp, fi)
+                except Exception as e:
+                    print(f"  Static: air inlet_filter failed: {e}")
+
+            # --- Blower: static housing only (impeller is animated) ---
+            blower = getattr(air, 'blower', None)
+            if blower is not None:
+                bp = np.array(getattr(air, '_blower_position', (0, 0, 0)), dtype=np.float64) + air_offset
+                try:
+                    if hasattr(blower, 'get_static_mesh'):
+                        sv, si, _ = blower.get_static_mesh()
+                    else:
+                        sv, si, _ = blower.generate_mesh()
+                    if sv is not None and len(sv) > 0:
+                        _add_static(sv + bp, si)
+                except Exception as e:
+                    print(f"  Static: air blower housing failed: {e}")
+                # Register blower impeller for animation
+                rpm = getattr(blower.params, 'rpm', 3000.0) if hasattr(blower, 'params') else 3000.0
+                controller.register_blower(blower, bp, rpm, color="#27AE60")
+                print(f"  Animation: blower ({rpm:.0f} RPM) [no static duplicate]")
+
+            # --- Dampers: static housing only (blades are animated) ---
+            dampers = getattr(air, 'dampers', []) or getattr(air, '_dampers', [])
+            damper_positions_list = getattr(air, '_damper_positions', [])
+            for i, damper in enumerate(dampers):
+                if damper is None:
+                    continue
+                dp = np.array(damper_positions_list[i], dtype=np.float64) + air_offset if i < len(damper_positions_list) else _apos(f'damper_{i}')
+                try:
+                    if hasattr(damper, 'get_static_mesh'):
+                        sv, si, _ = damper.get_static_mesh()
+                    else:
+                        sv, si, _ = damper.generate_mesh()
+                    if sv is not None and len(sv) > 0:
+                        _add_static(sv + dp, si)
+                except Exception as e:
+                    print(f"  Static: air damper {i} housing failed: {e}")
+                # Register blade for animation
+                controller.register_damper(damper, dp, index=i, color="#CD853F")
+                print(f"  Animation: damper {i} [no static duplicate]")
+
+            # --- Duct sections: fully static ---
+            for duct, pos in getattr(air, '_duct_sections', []):
+                try:
+                    dv, di, _ = duct.generate_mesh()
+                    if dv is not None and len(dv) > 0:
+                        _add_static(dv + np.array(pos, dtype=np.float64) + air_offset, di)
+                except Exception:
+                    pass
+
+        # ================================================================
+        # EXHAUST + DUCT CONNECTIONS (static only)
+        # ================================================================
+        # Individual components (silencer, stack)
+        for name, component in getattr(complete_assembly, '_components', {}).items():
+            try:
+                cv, ci, _ = component.generate_mesh()
+                _add_static(cv, ci)
+            except Exception:
+                pass
+
+        # Connecting ductwork
+        for duct, position in getattr(complete_assembly, '_duct_connections', []):
+            try:
+                cv, ci, _ = duct.generate_mesh()
+                _add_static(cv + np.array(position), ci)
+            except Exception:
+                pass
+
+        # ================================================================
+        # Combine all static geometry into one mesh
+        # ================================================================
+        if all_static_verts:
+            combined_v = np.vstack(all_static_verts).astype(np.float32)
+            combined_i = np.concatenate(all_static_indices).astype(np.int32)
+            faces = combined_i.reshape(-1, 3)
+            self.add_mesh("assembly_static", combined_v, faces,
+                          color=C_default, opacity=0.85)
+
+    @staticmethod
+    def _numpy_to_pv(vertices: np.ndarray, indices: np.ndarray):
+        """Convert numpy vertices+indices to PyVista PolyData."""
+        faces = indices.reshape(-1, 3)
+        n = len(faces)
+        pv_faces = np.zeros((n, 4), dtype=np.int64)
+        pv_faces[:, 0] = 3
+        pv_faces[:, 1:] = faces
+        return pv.PolyData(vertices.astype(np.float64), pv_faces.flatten())
+
+    # _register_animated_parts replaced by _build_static_and_animated above
 
     # ================================================================
     #  Camera / View helpers

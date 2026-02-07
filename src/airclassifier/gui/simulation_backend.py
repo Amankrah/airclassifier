@@ -205,6 +205,7 @@ class SimulationBackend(QObject):
     # Signals for communication with GUI
     progress_updated = Signal(int, float, dict)  # (percent, time, stats)
     particles_updated = Signal(object, object)   # (positions, velocities)
+    component_state_updated = Signal(dict)       # physics-driven component states per frame
     simulation_completed = Signal(dict)          # (results)
     simulation_error = Signal(str)               # (error_message)
     log_message = Signal(str)                    # (message)
@@ -375,6 +376,80 @@ class SimulationBackend(QObject):
 
         mode = "with preclassification" if self.config.use_preclassification else "wheel-only"
         self.log_message.emit(f"Classification assembly created ({mode}, {len(components)} GUI components)")
+
+    def create_subsidiary_simulators(self) -> Dict[str, Any]:
+        """
+        Create lightweight air/feed physics simulators from the complete assembly.
+
+        These provide real physics state (blower VFD ramp, damper positions,
+        lid servo angle) for driving the full-system animation -- both during
+        simulation runs AND during build-time preview animation.
+
+        Returns:
+            Dict with keys 'air_sim' and 'feed_sim' (either may be None).
+        """
+        result = {"air_sim": None, "feed_sim": None}
+        if self._complete_assembly is None:
+            return result
+
+        # --- Air Flow Physics Simulator (lightweight: no SPH) ---
+        if self.config.include_air_system:
+            try:
+                from ..simulation.air_flow_physics import (
+                    AirFlowPhysicsSimulator,
+                    AirFlowPhysicsConfig,
+                )
+                air_assembly = self._complete_assembly.get_subsystem("air_system")
+                if air_assembly is not None:
+                    blower_rpm = getattr(self.config, 'blower_rpm', 3000.0)
+                    # Use airclass operating point if blower_rpm is set
+                    if blower_rpm > 0:
+                        try:
+                            from ..simulation.airclass_flow_physics import compute_blower_operating_point
+                            op = compute_blower_operating_point(blower_rpm)
+                            blower_rpm = op.get("rpm", blower_rpm)
+                        except Exception:
+                            pass
+                    air_config = AirFlowPhysicsConfig(
+                        target_rpm=blower_rpm,
+                        dt=0.01,
+                        total_time=60.0,
+                        ramp_time=2.0,
+                        damper_ramp_time=2.0,
+                        enable_sph=False,
+                        device="cpu",
+                    )
+                    air_sim = AirFlowPhysicsSimulator(air_assembly, air_config)
+                    air_sim.start_system()
+                    result["air_sim"] = air_sim
+            except Exception as e:
+                print(f"  Subsidiary air sim failed: {e}")
+
+        # --- Feed Flow Physics Simulator (lightweight: lid only) ---
+        if self.config.include_feed_system:
+            try:
+                from ..simulation.feed_flow_physics import (
+                    FeedFlowPhysicsSimulator,
+                    FlowPhysicsConfig,
+                )
+                feed_assembly = self._complete_assembly.get_subsystem("feed_system")
+                if feed_assembly is not None:
+                    feed_config = FlowPhysicsConfig(
+                        dt=0.01,
+                        total_time=60.0,
+                        animate_lid=True,
+                        lid_open_angle=90.0,
+                        lid_animation_time=2.0,
+                        enable_pouring=False,
+                        num_particles=0,
+                        device="cpu",
+                    )
+                    feed_sim = FeedFlowPhysicsSimulator(feed_assembly, feed_config)
+                    result["feed_sim"] = feed_sim
+            except Exception as e:
+                print(f"  Subsidiary feed sim failed: {e}")
+
+        return result
 
     def _create_particle_population(self) -> Tuple[Any, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -563,6 +638,11 @@ class SimulationBackend(QObject):
                     if positions is not None:
                         self.particles_updated.emit(positions, velocities)
 
+                    # Emit physics-driven component states for animation
+                    comp_state = self._get_component_states(current_time)
+                    if comp_state:
+                        self.component_state_updated.emit(comp_state)
+
             # Simulation complete
             results = self._finalize()
             self.simulation_completed.emit(results)
@@ -613,6 +693,81 @@ class SimulationBackend(QObject):
                 return None, None
 
         return None, None
+
+    def _get_component_states(self, sim_time: float) -> Dict[str, Any]:
+        """
+        Extract physics-driven component states from the running simulation.
+
+        Uses the ClassificationFlowPhysicsSimulator wheel_omega and the
+        blower operating point from airclass_flow_physics. Phase timing
+        follows the orchestration in air_flow_physics / feed_flow_physics.
+
+        Returns a dict that AnimationController.update_from_physics() uses
+        to drive the rendered full-system assembly directly.
+        """
+        import math
+        TWO_PI = 2.0 * math.pi
+        component_state = {"sim_time": float(sim_time)}
+
+        # Wheel -- from ClassificationFlowPhysicsSimulator
+        sim = self._sim
+        if sim is not None:
+            wheel_omega = getattr(sim, 'wheel_omega', 0.0)
+            component_state["wheel_omega"] = float(wheel_omega)
+            component_state["wheel_angle_rad"] = float(wheel_omega * sim_time) % TWO_PI
+            state = getattr(sim, 'state', None)
+            if state is not None:
+                phase = getattr(state, 'phase', None)
+                component_state["phase"] = phase.value if phase else "running"
+
+        # Blower -- from airclass_flow_physics operating point
+        blower_rpm = getattr(self.config, 'blower_rpm', 3000.0)
+        air_ramp_time = 2.0
+        if sim_time <= 0:
+            air_frac = 0.0
+        elif sim_time < air_ramp_time:
+            t_norm = sim_time / air_ramp_time
+            air_frac = t_norm * t_norm * (3.0 - 2.0 * t_norm)  # smoothstep
+        else:
+            air_frac = 1.0
+        component_state["blower_rpm"] = float(blower_rpm * air_frac)
+        component_state["blower_ramp_frac"] = float(air_frac)
+
+        # Dampers -- track air startup
+        damper_pos = min(1.0, sim_time / 2.0) if sim_time > 0 else 0.0
+        component_state["damper_positions"] = [float(damper_pos), float(damper_pos)]
+
+        # Lid -- feed_flow_physics servo at ~45 deg/s
+        feed_start = 3.0
+        lid_speed = 45.0
+        if sim_time < feed_start:
+            lid_angle = 0.0
+        else:
+            lid_angle = min(90.0, lid_speed * (sim_time - feed_start))
+        component_state["lid_angle_deg"] = float(lid_angle)
+
+        # Feed ramp
+        feed_ramp = 2.0
+        if sim_time < feed_start:
+            feed_frac = 0.0
+        elif sim_time < feed_start + feed_ramp:
+            feed_frac = (sim_time - feed_start) / feed_ramp
+        else:
+            feed_frac = 1.0
+        component_state["feed_ramp_frac"] = float(feed_frac)
+
+        # Classification ramp
+        cls_start = 5.0
+        cls_ramp = 2.0
+        if sim_time < cls_start:
+            cls_frac = 0.0
+        elif sim_time < cls_start + cls_ramp:
+            cls_frac = (sim_time - cls_start) / cls_ramp
+        else:
+            cls_frac = 1.0
+        component_state["classification_ramp_frac"] = float(cls_frac)
+
+        return component_state
 
     def _finalize(self) -> Dict[str, Any]:
         """Finalize simulation and compute results."""

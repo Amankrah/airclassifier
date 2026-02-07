@@ -44,6 +44,7 @@ class AnimationPhase(Enum):
     FEED_STARTUP = "feed_startup"
     CLASSIFICATION = "classification"
     STEADY_STATE = "steady_state"
+    SHUTDOWN = "shutdown"
 
 
 @dataclass
@@ -74,6 +75,12 @@ class AnimationController(QObject):
     """
     Drives component animations using their native APIs.
 
+    Supports two modes:
+      1. Timeline mode (default): fixed AnimationTimeline drives ramp fractions.
+      2. Physics mode: simulation backend emits component_state dicts that
+         override timeline fractions with actual physics values (wheel angle,
+         damper position, lid angle, etc.).
+
     Usage:
         ctrl = AnimationController(plotter)
         ctrl.register_blower(blower, position, rpm)
@@ -81,6 +88,9 @@ class AnimationController(QObject):
         ctrl.register_airlock(airlock, position, rpm)
         ...
         ctrl.start()
+
+        # During simulation, call from the backend signal:
+        ctrl.update_from_physics(component_state_dict)
     """
 
     phase_changed = Signal(str)
@@ -95,12 +105,43 @@ class AnimationController(QObject):
         self._anim_time = 0.0
         self._running = False
 
+        # Physics-driven state (when available, overrides timeline)
+        self._physics_state: Optional[Dict[str, Any]] = None
+        self._physics_mode = False  # True when physics state is being received
+
+        # Subsidiary simulators for autonomous physics-driven animation
+        # (used during build-time preview when no simulation is running)
+        self._air_sim = None   # AirFlowPhysicsSimulator
+        self._feed_sim = None  # FeedFlowPhysicsSimulator
+        self._feed_start_time = 3.0  # when feed system starts [s]
+
         self._timer = QTimer(self)
         self._timer.setInterval(self.FRAME_MS)
         self._timer.timeout.connect(self._tick)
 
+    @property
+    def phase(self) -> AnimationPhase:
+        return self._phase
+
     def set_plotter(self, plotter):
         self._plotter = plotter
+
+    def set_subsidiary_simulators(self, air_sim=None, feed_sim=None):
+        """
+        Attach lightweight air/feed physics simulators for autonomous animation.
+
+        When set, the controller steps these simulators in its own _tick() loop
+        and reads their live state (blower ramp, damper positions, lid angle)
+        instead of using the fixed timeline. This works both during build-time
+        preview AND during simulation (though during simulation the
+        SimulationWorker's component_state_updated signal takes priority).
+
+        Args:
+            air_sim: AirFlowPhysicsSimulator (enable_sph=False) or None
+            feed_sim: FeedFlowPhysicsSimulator (num_particles=0) or None
+        """
+        self._air_sim = air_sim
+        self._feed_sim = feed_sim
 
     # ================================================================
     # Registration -- uses actual component animation APIs
@@ -245,7 +286,9 @@ class AnimationController(QObject):
         Register a FeedHopper lid for hinge-open animation.
 
         Uses hopper.get_lid_mesh() and hopper.get_lid_hinge_position().
-        Lid rotates around the hinge X-axis from 0 (closed) to 90 deg (open).
+        Matches feed_flow_physics.py get_lid_transform():
+          Combined transform: T(hinge) * Rz(angle) * T(-hinge)
+          Positive angle = lid opens upward (Y+).
         """
         if not HAS_PYVISTA or hopper is None:
             return
@@ -253,7 +296,7 @@ class AnimationController(QObject):
         offset = np.asarray(world_offset, dtype=np.float64)
         state = {"angle_deg": 0.0}
 
-        # Get hinge position in local coords
+        # Get hinge position in component-local coords
         try:
             hinge_local = np.array(hopper.get_lid_hinge_position(), dtype=np.float64)
         except Exception:
@@ -262,7 +305,7 @@ class AnimationController(QObject):
         hinge_world = tuple(hinge_local + offset)
 
         def update_fn(dt, frac):
-            # Open from 0 to 90 degrees during ramp
+            # Open from 0 to +90 degrees (Rz positive = lid swings upward Y+)
             state["angle_deg"] = 90.0 * frac
 
         def mesh_fn():
@@ -272,8 +315,8 @@ class AnimationController(QObject):
                     return None
                 verts = v.astype(np.float64) + offset
                 mesh = self._make_pv_mesh(verts, i)
-                # Rotate around hinge axis (X-axis rotation for lid)
-                return mesh.rotate_x(state["angle_deg"], point=hinge_world, inplace=False)
+                # Rz at hinge point -- same as feed_flow_physics.get_lid_transform()
+                return mesh.rotate_z(state["angle_deg"], point=hinge_world, inplace=False)
             except Exception:
                 return None
 
@@ -324,10 +367,54 @@ class AnimationController(QObject):
         self._timer.start()
         self.phase_changed.emit(self._phase.value)
 
+    def sync_to_sim_time(self, sim_time: float):
+        """Sync animation time to simulation progress.
+
+        Call this from the progress callback so the animation phases
+        match what the simulation is actually doing.
+        """
+        # Only sync forward (don't go backward)
+        if sim_time > self._anim_time:
+            self._anim_time = sim_time
+
+    def update_from_physics(self, component_state: Dict[str, Any]):
+        """
+        Update animation from physics simulation state.
+
+        When called, the controller switches to physics mode: the simulation's
+        actual component states (wheel angle, damper positions, lid angle, etc.)
+        drive the animation directly instead of using the fixed timeline ramps.
+
+        Args:
+            component_state: Dict from SimulationBackend._get_component_states()
+                Keys: sim_time, wheel_omega, wheel_angle_rad, blower_rpm,
+                      damper_positions, lid_angle_deg, feed_ramp_frac,
+                      blower_ramp_frac, classification_ramp_frac, phase
+        """
+        self._physics_state = component_state
+        if not self._physics_mode:
+            self._physics_mode = True
+
+        # Also sync animation time
+        sim_time = component_state.get("sim_time", 0.0)
+        if sim_time > self._anim_time:
+            self._anim_time = sim_time
+
+    def begin_shutdown(self, duration: float = 3.0):
+        """Begin the shutdown phase: dampers close, equipment ramps down."""
+        self._phase = AnimationPhase.SHUTDOWN
+        self._shutdown_start = self._anim_time
+        self._shutdown_duration = duration
+        self.phase_changed.emit(self._phase.value)
+
     def stop(self):
         self._timer.stop()
         self._running = False
         self._phase = AnimationPhase.IDLE
+        self._physics_mode = False
+        self._physics_state = None
+        self._air_sim = None
+        self._feed_sim = None
 
     # ================================================================
     # Frame tick
@@ -338,7 +425,24 @@ class AnimationController(QObject):
             return
 
         dt = self.FRAME_MS / 1000.0
-        self._anim_time += dt
+
+        # Use physics-driven tick when physics state is available
+        # (from SimulationWorker.component_state_updated signal)
+        if self._physics_mode and self._physics_state is not None:
+            self._tick_physics(dt)
+            return
+
+        # If subsidiary simulators are attached (build-time preview),
+        # step them and generate physics state locally
+        if self._air_sim is not None or self._feed_sim is not None:
+            self._tick_with_subsidiary_sims(dt)
+            return
+
+        # --- Timeline mode (fallback when no subsidiary sims and no physics) ---
+        # During startup (before sim reports time), advance on wall clock;
+        # once sim is reporting, sync_to_sim_time drives _anim_time
+        if self._anim_time < self._timeline.steady_time:
+            self._anim_time += dt
         t = self._anim_time
         tl = self._timeline
 
@@ -371,8 +475,213 @@ class AnimationController(QObject):
         except Exception:
             pass
 
+    def _tick_physics(self, dt: float):
+        """
+        Physics-driven tick: use actual simulation state to drive animations.
+
+        Instead of computing ramp fractions from a fixed timeline, we read
+        the component states emitted by the simulation backend and apply
+        them directly. This makes animations match the actual physics.
+        """
+        ps = self._physics_state
+        t = ps.get("sim_time", self._anim_time)
+        tl = self._timeline
+
+        # Phase transitions (based on physics time)
+        old = self._phase
+        if t < tl.feed_start_time:
+            self._phase = AnimationPhase.AIR_STARTUP
+        elif t < tl.classification_start_time:
+            self._phase = AnimationPhase.FEED_STARTUP
+        elif t < tl.steady_time:
+            self._phase = AnimationPhase.CLASSIFICATION
+        else:
+            self._phase = AnimationPhase.STEADY_STATE
+        if self._phase != old:
+            self.phase_changed.emit(self._phase.value)
+
+        # Map physics state to per-part ramp fractions
+        # Physics state provides explicit fractions/values for each system
+        physics_fracs = {
+            "air": ps.get("blower_ramp_frac", self._compute_frac("air", t, tl)),
+            "feed": ps.get("feed_ramp_frac", self._compute_frac("feed", t, tl)),
+            "classification": ps.get("classification_ramp_frac", self._compute_frac("classification", t, tl)),
+        }
+
+        # Special handling: wheel gets physics-computed angle directly
+        wheel_angle_rad = ps.get("wheel_angle_rad", None)
+        lid_angle_deg = ps.get("lid_angle_deg", None)
+        damper_positions = ps.get("damper_positions", None)
+
+        for part in self._parts.values():
+            frac = physics_fracs.get(part.phase, 0.0)
+            part.active = frac > 0.001
+
+            if not part.active:
+                continue
+
+            # --- Physics overrides for specific parts ---
+            if part.name == "wheel_classifier" and wheel_angle_rad is not None:
+                # Drive wheel directly from physics angle
+                self._update_wheel_from_physics(part, wheel_angle_rad)
+                continue
+
+            if part.name == "hopper_lid" and lid_angle_deg is not None:
+                # Drive lid directly from physics angle
+                self._update_lid_from_physics(part, lid_angle_deg)
+                continue
+
+            if part.name.startswith("damper_") and damper_positions is not None:
+                # Drive damper from physics position
+                idx = int(part.name.split("_")[-1]) if "_" in part.name else 0
+                if idx < len(damper_positions):
+                    self._update_damper_from_physics(part, damper_positions[idx])
+                    continue
+
+            # --- Default: use physics-derived frac ---
+            if part.update:
+                part.update(dt, frac)
+            if part.get_mesh:
+                self._update_actor(part)
+
+        try:
+            self._plotter.render()
+        except Exception:
+            pass
+
+    def _tick_with_subsidiary_sims(self, dt: float):
+        """
+        Autonomous physics-driven tick using attached subsidiary simulators.
+
+        Used during build-time preview (no simulation running). Steps the
+        air and feed physics simulators locally and builds a component_state
+        dict, then delegates to _tick_physics() for the actual rendering.
+
+        This gives the same realistic animation (VFD blower ramp, lid servo,
+        damper dynamics) during preview as during a live simulation.
+        """
+        # Advance animation time
+        self._anim_time += dt
+        t = self._anim_time
+        tl = self._timeline
+
+        # Step air simulator to current time
+        if self._air_sim is not None:
+            try:
+                air_dt = self._air_sim.config.dt
+                while self._air_sim.state.time < t - air_dt * 0.5:
+                    self._air_sim.step()
+            except Exception:
+                pass
+
+        # Step feed simulator (starts at feed_start_time)
+        if self._feed_sim is not None:
+            try:
+                if t >= self._feed_start_time:
+                    # Trigger lid open once
+                    if self._feed_sim.state.lid_state.value == "closed":
+                        self._feed_sim.open_lid()
+                    feed_dt = self._feed_sim.config.dt
+                    target_feed_time = t - self._feed_start_time
+                    while self._feed_sim.state.time < target_feed_time - feed_dt * 0.5:
+                        self._feed_sim.step()
+            except Exception:
+                pass
+
+        # Build component state dict from live simulator state
+        ps = {"sim_time": t}
+
+        # Air state
+        if self._air_sim is not None and hasattr(self._air_sim, 'state'):
+            ast = self._air_sim.state
+            target_rpm = self._air_sim.config.target_rpm
+            ps["blower_ramp_frac"] = float(min(1.0, ast.blower_rpm / target_rpm)) if target_rpm > 0 else 1.0
+            ps["damper_positions"] = [float(p) for p in ast.damper_positions]
+        else:
+            ps["blower_ramp_frac"] = self._compute_frac("air", t, tl)
+
+        # Feed state
+        if self._feed_sim is not None and hasattr(self._feed_sim, 'state'):
+            fst = self._feed_sim.state
+            ps["lid_angle_deg"] = float(fst.lid_angle)
+            lid_max = self._feed_sim.config.lid_open_angle if hasattr(self._feed_sim, 'config') else 90.0
+            ps["feed_ramp_frac"] = float(min(1.0, fst.lid_angle / lid_max)) if lid_max > 0 else self._compute_frac("feed", t, tl)
+        else:
+            ps["feed_ramp_frac"] = self._compute_frac("feed", t, tl)
+
+        # Classification (wheel: no subsidiary sim, use timeline frac)
+        ps["classification_ramp_frac"] = self._compute_frac("classification", t, tl)
+
+        # Use the physics tick path with the locally-built state
+        self._physics_state = ps
+        self._tick_physics(dt)
+
+    def _update_wheel_from_physics(self, part: AnimatedPart, angle_rad: float):
+        """Update wheel classifier directly from physics-computed angle.
+
+        Reaches into the closure captured by register_wheel()'s mesh_fn
+        to set state["angle_rad"] = physics angle, so the next mesh_fn()
+        call rotates the wheel to the exact angle from the Warp kernel.
+        """
+        try:
+            # Access the closure variables through the mesh function
+            mesh_fn = part.get_mesh
+            if mesh_fn is not None:
+                # For wheel: mesh_fn creates a rotated copy using state["angle_rad"]
+                # We override by directly computing the rotated mesh
+                closure_vars = mesh_fn.__code__.co_freevars
+                if 'state' in closure_vars:
+                    idx = closure_vars.index('state')
+                    state_cell = mesh_fn.__closure__[idx]
+                    state_cell.cell_contents["angle_rad"] = angle_rad
+                # Now call the normal mesh update
+                self._update_actor(part)
+        except Exception:
+            # Fallback: just update normally
+            if part.update:
+                part.update(self.FRAME_MS / 1000.0, 1.0)
+            self._update_actor(part)
+
+    def _update_lid_from_physics(self, part: AnimatedPart, angle_deg: float):
+        """Update hopper lid directly from physics-computed angle."""
+        try:
+            mesh_fn = part.get_mesh
+            if mesh_fn is not None:
+                closure_vars = mesh_fn.__code__.co_freevars
+                if 'state' in closure_vars:
+                    idx = closure_vars.index('state')
+                    state_cell = mesh_fn.__closure__[idx]
+                    state_cell.cell_contents["angle_deg"] = angle_deg
+                self._update_actor(part)
+        except Exception:
+            if part.update:
+                part.update(self.FRAME_MS / 1000.0, 1.0)
+            self._update_actor(part)
+
+    def _update_damper_from_physics(self, part: AnimatedPart, position: float):
+        """Update damper blade directly from physics position (0=closed, 1=open)."""
+        try:
+            # For dampers, the update_fn calls damper.update_animation(dt, target, time)
+            # and mesh_fn calls damper.get_blade_mesh(). We set the position directly.
+            if part.update:
+                # update_fn(dt, frac) -- frac is used as target_position
+                part.update(self.FRAME_MS / 1000.0, position)
+            self._update_actor(part)
+        except Exception:
+            pass
+
     def _compute_frac(self, phase: str, t: float, tl: AnimationTimeline) -> float:
-        """Compute ramp fraction (0..1) for a given phase."""
+        """Compute ramp fraction (0..1) for a given phase.
+
+        During SHUTDOWN, all fractions ramp from 1 back to 0.
+        """
+        # Shutdown: everything ramps down
+        if self._phase == AnimationPhase.SHUTDOWN:
+            sd_start = getattr(self, '_shutdown_start', t)
+            sd_dur = getattr(self, '_shutdown_duration', 3.0)
+            progress = min(1.0, (t - sd_start) / max(sd_dur, 0.01))
+            return max(0.0, 1.0 - progress)
+
         if phase == "air":
             if t < tl.air_start_time:
                 return 0.0
