@@ -953,6 +953,11 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             self.sim_control._log(f"Animation physics init skipped: {e}")
 
+                        # Auto-start the build-time preview animation
+                        from .widgets.animation_controller import AnimationTimeline
+                        ctrl.start(AnimationTimeline())
+                        self.sim_control._log("Animation preview started")
+
                 # Keep reference so Run Simulation can skip canvas validation
                 self._built_backend = backend
 

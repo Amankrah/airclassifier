@@ -362,6 +362,28 @@ class AnimationController(QObject):
         self._anim_time = 0.0
         self._phase = AnimationPhase.AIR_STARTUP
         self._running = True
+        self._physics_mode = False
+        self._physics_state = None
+        # Reset subsidiary sims' internal time so they start fresh
+        # (they may have advanced during a previous preview cycle)
+        if self._air_sim is not None:
+            try:
+                self._air_sim.state.time = 0.0
+                self._air_sim.state.step = 0
+                self._air_sim.start_system()
+            except Exception:
+                pass
+        if self._feed_sim is not None:
+            try:
+                self._feed_sim.state.time = 0.0
+                self._feed_sim.state.step = 0
+                # Reset lid to closed state (use the enum from the state object)
+                lid_state_cls = type(self._feed_sim.state.lid_state)
+                self._feed_sim.state.lid_state = lid_state_cls("closed")
+                self._feed_sim.state.lid_angle = 0.0
+                self._feed_sim.state.lid_target_angle = 0.0
+            except Exception:
+                pass
         for p in self._parts.values():
             p.active = False
         self._timer.start()
@@ -385,8 +407,11 @@ class AnimationController(QObject):
         actual component states (wheel angle, damper positions, lid angle, etc.)
         drive the animation directly instead of using the fixed timeline ramps.
 
+        This takes priority over subsidiary sims (build-time preview), which
+        are cleared on first call.
+
         Args:
-            component_state: Dict from SimulationBackend._get_component_states()
+            component_state: Dict from SimulationWorker._get_component_states()
                 Keys: sim_time, wheel_omega, wheel_angle_rad, blower_rpm,
                       damper_positions, lid_angle_deg, feed_ramp_frac,
                       blower_ramp_frac, classification_ramp_frac, phase
@@ -394,6 +419,9 @@ class AnimationController(QObject):
         self._physics_state = component_state
         if not self._physics_mode:
             self._physics_mode = True
+            # Simulation worker now owns physics state; clear build-time sims
+            self._air_sim = None
+            self._feed_sim = None
 
         # Also sync animation time
         sim_time = component_state.get("sim_time", 0.0)
