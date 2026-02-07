@@ -54,6 +54,37 @@ def compute_feed_entry_rate_particles_per_s(
     return solids_mass_flow_kg_s / mass_particle
 
 
+def compute_venturi_max_throughput_kg_h(
+    air_flow_m3_s: float,
+    max_loading_ratio: float = 2.0,
+    air_density_kg_m3: float = RHO_F,
+) -> float:
+    """
+    Compute the maximum solids throughput [kg/h] for the venturi at given air flow.
+
+    The venturi's solids capacity is limited by the loading ratio:
+        mu = m_dot_solids / m_dot_air  <=  max_loading_ratio
+
+    For dilute-phase pneumatic transport, mu < 5 is typical; mu = 2 is
+    conservative and ensures stable entrainment.
+
+    Use this to coordinate the feed system throughput with the classification
+    system's venturi capacity.  The screw feeder RPM should be set so that
+    its discharge rate does not exceed this value.
+
+    Args:
+        air_flow_m3_s: Volumetric air flow rate [m³/s]
+        max_loading_ratio: Maximum solids/air mass ratio [-] (default 2.0)
+        air_density_kg_m3: Air density [kg/m³] (default STP)
+
+    Returns:
+        Maximum solids throughput [kg/h]
+    """
+    m_dot_air = air_flow_m3_s * air_density_kg_m3  # kg/s
+    m_dot_solids_max = max_loading_ratio * m_dot_air  # kg/s
+    return m_dot_solids_max * 3600.0  # kg/h
+
+
 @dataclass
 class FeedDuctSegmentResult:
     """Geometry and flow result for one duct/elbow/transition segment (feed path)."""

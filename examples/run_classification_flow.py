@@ -356,6 +356,7 @@ def main():
         from airclassifier.simulation.feedclass_flow_physics import (
             compute_feed_to_venturi_flow,
             print_feed_ductwork_summary,
+            compute_venturi_max_throughput_kg_h,
         )
         if skip_preclassification:
             print("\n[FULL SYSTEM] Air -> Wheel (no preclassification) -> Cyclones -> Bag Filter")
@@ -387,9 +388,17 @@ def main():
                 classification_params.venturi_throat_ratio = throat_m / classification_params.venturi_inlet_diameter
                 print(f"  [Override] Venturi throat: {args.throat_diameter:.1f} mm "
                       f"(ratio={classification_params.venturi_throat_ratio:.3f})")
+        # Coordinate feed throughput with venturi capacity
+        # The screw feeder rate must not exceed what the venturi can entrain
+        venturi_max_kg_h = compute_venturi_max_throughput_kg_h(
+            Q_m3s, max_loading_ratio=args.max_loading,
+        )
+        # Use venturi capacity as throughput (capped by feeder max)
+        throughput = min(venturi_max_kg_h, 500.0)  # 500 kg/h feeder design max
+
         complete_params = CompleteSystemParams(
             air_flow_m3_h=Q_m3s * 3600.0,
-            throughput_kg_h=500.0,
+            throughput_kg_h=throughput,
             include_feed_system=True,
             include_air_system=True,
             include_exhaust=False,

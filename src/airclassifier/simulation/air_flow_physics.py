@@ -827,11 +827,19 @@ def calculate_blower_performance(
     # OPERATING POINT (intersection of blower and system curves)
     # =================================================================
     # System curve: dP = K * Q²
-    # If at design flow we have design pressure, K = P_design / Q_design²
+    # K includes all resistances: ductwork + downstream (venturi, cyclones).
+    # When total_system_dp > 0, use it to derive K at current Q for a
+    # better initial estimate than the design point alone.
     if Q_design > 1e-6:
-        K_system = P_design / (Q_design ** 2)
+        K_design = P_design / (Q_design ** 2)
     else:
-        K_system = 1e6
+        K_design = 1e6
+    # Use the actual system ΔP passed in (includes downstream K-factor)
+    # to get K at the current operating point
+    if system_pressure_drop > 0 and Q_design > 1e-6:
+        K_system = system_pressure_drop / max(Q_design ** 2 * n_ratio ** 2, 1e-12)
+    else:
+        K_system = K_design
     
     # Operating flow rate (solve quadratic)
     # P_blower = P_shutoff * (1 - (Q/Q_max)²)  # Parabolic approximation
@@ -958,11 +966,20 @@ def compute_sph_density_pressure_kernel(
             if r < h:
                 density += particle_mass * poly6_kernel(r, h)
     
-    # Clamp density
-    density = wp.max(density, rest_density * 0.5)
+    # Clamp density (safety floor)
+    density = wp.max(density, rest_density * 0.3)
     
-    # Pressure from equation of state (weakly compressible)
-    pressure = speed_of_sound * speed_of_sound * (density - rest_density)
+    # Pressure from Tait equation of state (weakly compressible SPH).
+    # P = c²ρ₀/γ × ((ρ/ρ₀)^γ - 1)  with γ=7
+    # This prevents negative pressures that cause tensile instability
+    # (particles attracting in low-density regions).
+    gamma = 7.0
+    rho_ratio = density / rest_density
+    # (ρ/ρ₀)^7 via repeated squaring: r^2, r^4, r^7 = r^4 * r^2 * r
+    r2 = rho_ratio * rho_ratio
+    r4 = r2 * r2
+    r7 = r4 * r2 * rho_ratio
+    pressure = speed_of_sound * speed_of_sound * rest_density / gamma * (r7 - 1.0)
     
     densities[tid] = density
     pressures[tid] = pressure
@@ -1058,6 +1075,7 @@ def integrate_sph_air_kernel(
     scroll_half_width: float,  # Z extent of scroll housing
     blower_outlet: wp.vec3,
     tip_speed: float,
+    duct_flow_accel: float,  # Pressure-gradient acceleration [m/s²] = dP/(rho*L)
     # Blower outlet rectangular dimensions
     outlet_width: float,   # Z dimension of rectangular outlet
     outlet_height: float,  # Y dimension of rectangular outlet
@@ -1082,6 +1100,8 @@ def integrate_sph_air_kernel(
     spawn_y_min: float, spawn_y_max: float,
     spawn_z_min: float, spawn_z_max: float,
     max_vel: float,
+    step_count: int,
+    target_flow_vel: float,  # Hydraulic velocity Q/A [m/s] from 1D solver
 ):
     """
     Integrate SPH air particles with external blower forces and boundary containment.
@@ -1100,9 +1120,10 @@ def integrate_sph_air_kernel(
     fz = forces[tid * 3 + 2]
     force = wp.vec3(fx, fy, fz)
     
-    # Acceleration from SPH
-    rho_safe = wp.max(rho, rest_density * 0.5)
-    accel = force * (rest_density / rho_safe)
+    # Acceleration from SPH forces (already per unit mass from the SPH
+    # formulation: pressure gradient uses P/(rho^2) and viscosity uses
+    # mu/(rho*rho).  No additional density scaling needed.)
+    accel = force
     
     # =========================================================================
     # EXTERNAL BLOWER FORCE based on position
@@ -1116,8 +1137,9 @@ def integrate_sph_air_kernel(
     scroll_outlet_x = blower_center[0] + scroll_radius * 0.7
     
     # Segment 1: Before elbow - push in +X
+    # Use pressure-gradient acceleration from 1D hydraulics: a = dP/(rho*L)
     if pos[0] < elbow_inlet[0] and pos[2] < elbow_z * 0.5:
-        accel = accel + wp.vec3(tip_speed * 0.5, 0.0, 0.0)
+        accel = accel + wp.vec3(duct_flow_accel, 0.0, 0.0)
     
     # Segment 2: 90° Elbow - follow curve with centrifugal effect toward outer wall
     elif pos[0] >= elbow_inlet[0] - duct_radius and pos[2] < elbow_z:
@@ -1138,22 +1160,23 @@ def integrate_sph_air_kernel(
         rad_x = -wp.cos(alpha)  # Points away from bend center
         rad_z = wp.sin(alpha)
         
-        # Main flow: tangent to curve
-        flow_accel = tip_speed * 0.5
+        # Main flow: pressure-gradient driven
+        flow_a = duct_flow_accel
         
-        # Centrifugal effect: pushes toward outer curve (away from bend center)
-        # v^2/r effect - faster flow = stronger centrifugal push
-        centrifugal_accel = tip_speed * 0.3  # Push toward outer wall
+        # Centrifugal effect: v²/r using current velocity magnitude
+        v_mag = wp.length(vel)
+        centrifugal_a = v_mag * v_mag / wp.max(r_bend, 0.01)
+        centrifugal_a = wp.min(centrifugal_a, duct_flow_accel * 2.0)  # cap for stability
         
         accel = accel + wp.vec3(
-            tan_x * flow_accel + rad_x * centrifugal_accel,
+            tan_x * flow_a + rad_x * centrifugal_a,
             0.0,
-            tan_z * flow_accel + rad_z * centrifugal_accel
+            tan_z * flow_a + rad_z * centrifugal_a
         )
     
     # Segment 3: Vertical duct - push in +Z
     elif pos[2] >= elbow_z - duct_radius and pos[2] < blower_z:
-        accel = accel + wp.vec3(0.0, 0.0, tip_speed * 0.5)
+        accel = accel + wp.vec3(0.0, 0.0, duct_flow_accel)
     
     # Segment 4: Blower - centrifugal acceleration with scroll outlet
     elif pos[2] >= blower_z - scroll_radius * 0.5 and pos[0] < scroll_outlet_x:
@@ -1201,10 +1224,32 @@ def integrate_sph_air_kernel(
             # Near center - push toward impeller edge and outlet
             accel = accel + wp.vec3(tip_speed * 0.8, 0.0, 0.0)
     
-    # Segment 5+: After blower outlet - strong +X push
+    # Segment 5+: After blower outlet — pressure-gradient driven toward system outlet
     else:
-        accel = accel + wp.vec3(tip_speed * 1.0, 0.0, 0.0)
+        accel = accel + wp.vec3(duct_flow_accel * 1.5, 0.0, 0.0)
     
+    # =========================================================================
+    # HYDRAULIC VELOCITY COUPLING
+    # =========================================================================
+    # Gently steer the SPH velocity's flow-direction component toward the
+    # 1D hydraulic velocity (Q/A).  This couples the two physics layers so
+    # the SPH visualization reflects actual flow conditions.
+    # Relaxation factor: 0 = no coupling, 1 = instant match.  0.05 gives
+    # smooth visual tracking with ~20-step response time.
+    relax = 0.05
+    if pos[0] < elbow_inlet[0] and pos[2] < elbow_z * 0.5:
+        # Segment 1: flow in +X
+        vel_err_x = target_flow_vel - vel[0]
+        accel = accel + wp.vec3(vel_err_x * relax / dt, 0.0, 0.0)
+    elif pos[2] >= elbow_z - duct_radius and pos[2] < blower_z:
+        # Segment 3: flow in +Z
+        vel_err_z = target_flow_vel - vel[2]
+        accel = accel + wp.vec3(0.0, 0.0, vel_err_z * relax / dt)
+    elif pos[0] >= scroll_outlet_x:
+        # Segment 5+: flow in +X (outlet duct)
+        vel_err_x = target_flow_vel - vel[0]
+        accel = accel + wp.vec3(vel_err_x * relax / dt, 0.0, 0.0)
+
     # =========================================================================
     # VELOCITY INTEGRATION
     # =========================================================================
@@ -1418,13 +1463,16 @@ def integrate_sph_air_kernel(
         respawn = True
     
     if respawn:
-        seed = float(tid * 12345 + int(pos[0] * 1000.0))
+        # Use Warp RNG seeded with step + tid for uncorrelated respawn positions
+        state = wp.rand_init(step_count * 7919 + 31, tid)
+        ry = wp.randf(state)  # uniform [0, 1)
+        rz = wp.randf(state)
         pos_new = wp.vec3(
             spawn_x,
-            spawn_y_min + (spawn_y_max - spawn_y_min) * wp.frac(seed * 0.618),
-            spawn_z_min + (spawn_z_max - spawn_z_min) * wp.frac(seed * 0.381)
+            spawn_y_min + (spawn_y_max - spawn_y_min) * ry,
+            spawn_z_min + (spawn_z_max - spawn_z_min) * rz,
         )
-        vel_new = wp.vec3(tip_speed * 0.2, 0.0, 0.0)
+        vel_new = wp.vec3(duct_flow_accel * 0.5, 0.0, 0.0)
     
     positions[tid] = pos_new
     velocities[tid] = vel_new
@@ -1603,15 +1651,28 @@ class AirFlowPhysicsSimulator:
         # Temporary array for XSPH corrections
         self._xsph_corrections = wp.zeros(n * 3, dtype=float, device=self.device)
         
-        # Compute particle mass from density and estimated volume
-        duct_length = 2.0  # Approximate total flow path
-        duct_volume = PI * (self.geometry['system']['duct_diameter'] / 2.0) ** 2 * duct_length
+        # Compute particle mass from density and actual geometry volume.
+        # SPH requires m = rho * V_total / N so that density interpolation
+        # (rho_i = sum m_j W) recovers rest_density for uniform distribution.
+        duct_volume = sum(d.area * d.length for d in self.geometry['ducts'])
+        # Add blower scroll volume (torus approximation: pi * r_scroll^2 * 2*pi*R_impeller)
+        blower_geo = self.geometry.get('blower')
+        if blower_geo is not None:
+            scroll_r = getattr(blower_geo, 'scroll_radius',
+                               getattr(blower_geo, 'impeller_radius', 0.1) * 0.4)
+            impeller_w = getattr(blower_geo, 'impeller_width',
+                                 getattr(blower_geo, 'impeller_radius', 0.1) * 0.5)
+            scroll_volume = PI * scroll_r ** 2 * impeller_w
+            duct_volume += scroll_volume
+        # Safety: ensure non-zero
+        duct_volume = max(duct_volume, 1e-6)
         particle_volume = duct_volume / n
         self.particle_mass = self.config.air_density * particle_volume
         
         # Max velocity for stability
         self.max_velocity = min(self.config.speed_of_sound * 0.5, 
                                 self.config.smoothing_length / self.config.dt * 0.1)
+        self._duct_flow_accel = 0.0  # Updated each step from 1D hydraulics
         
         print(f"\n  SPH Air Parameters:")
         print(f"    Particles:        {n}")
@@ -1899,15 +1960,24 @@ class AirFlowPhysicsSimulator:
         # =================================================================
         # ITERATE TO FIND OPERATING POINT
         # =================================================================
-        # Simple iteration to find where blower curve meets system curve
-        for _ in range(3):
+        # Fixed-point iteration: blower curve ∩ system curve.
+        # Under-relaxation factor 0.5 for stability; 6 iterations gives
+        # ~1.5% accuracy (each halves the error: 2^6 = 64× reduction).
+        # Early exit on convergence to save cycles during steady state.
+        Q_converge_tol = Q_estimate * 1e-4  # 0.01% relative tolerance
+        for _iter in range(6):
             Q_new, P_new, shaft_power, efficiency = calculate_blower_performance(
                 blower_geo,
                 self.state.blower_omega,
                 total_dp,
                 rho
             )
+            Q_prev = Q_estimate
             Q_estimate = 0.5 * (Q_estimate + Q_new)
+
+            # Converged?
+            if abs(Q_estimate - Q_prev) < Q_converge_tol:
+                break
 
             # Recalculate total_dp at new Q for next iteration
             total_dp = dp_filter
@@ -1940,6 +2010,16 @@ class AirFlowPhysicsSimulator:
         # Accumulate energy
         self.state.total_energy_kWh += self.state.electrical_power * dt / 3600.0 / 1000.0
         
+        # Compute pressure-gradient acceleration for SPH duct forcing.
+        # a = dP / (rho * L_total).  This replaces the old tip_speed * constant
+        # proxy with a physically derived value from the 1D hydraulics.
+        total_duct_length = sum(d.length for d in self.geometry['ducts'])
+        total_duct_length = max(total_duct_length, 0.1)  # safety floor
+        if total_dp > 0 and rho > 0:
+            self._duct_flow_accel = total_dp / (rho * total_duct_length)
+        else:
+            self._duct_flow_accel = 0.0
+
         # =================================================================
         # UPDATE SPH AIR PARTICLES
         # =================================================================
@@ -2035,6 +2115,7 @@ class AirFlowPhysicsSimulator:
                     float(scroll_half_width),
                     wp.vec3(float(blower_outlet[0]), float(blower_outlet[1]), float(blower_outlet[2])),
                     float(tip_speed),
+                    float(self._duct_flow_accel),
                     # Blower rectangular outlet dimensions
                     float(outlet_width),
                     float(outlet_height),
@@ -2059,6 +2140,8 @@ class AirFlowPhysicsSimulator:
                     float(self.spawn_y_min), float(self.spawn_y_max),
                     float(self.spawn_z_min), float(self.spawn_z_max),
                     float(self.max_velocity),
+                    int(self.state.step),
+                    float(self.state.volume_flow_rate / max(self.duct_area, 1e-6)),
                 ],
                 device=self.device,
             )
