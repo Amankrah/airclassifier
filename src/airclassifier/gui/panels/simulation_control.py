@@ -72,6 +72,14 @@ class SimulationSettings:
     show_velocity_field: bool = False
     particle_color_mode: str = "velocity"
 
+    # --- Recirculation (CLI: --recirculate, --passes, --attrition) ---
+    recirculate_passes: int = 1                    # Number of passes (1 = single pass)
+    recirculate_fractions: str = "cy1"             # Comma-separated: cy1,cy2,wheel_coarse,...
+    attrition_factor: float = 0.10                 # Diameter reduction per pass (0.0 = off)
+    attrition_min_um: float = 5.0                  # [µm] Floor diameter for attrition
+    recirculate_wheel_rpm: float = 0.0             # Wheel RPM for passes 2+ (0 = same)
+    recirculate_time: float = 0.0                  # Sim time for passes 2+ (0 = same as total_time)
+
     # --- Assembly mode (CLI: default preclassification, --wheel-only) ---
     use_preclassification: bool = True
 
@@ -81,6 +89,12 @@ class SimulationSettings:
 
     # --- Air flow (CLI default: 1768 m³/h ≈ 0.491 m³/s) ---
     air_flow_m3s: float = 0.491         # [m³/s]
+    blower_rpm: float = 0.0             # [RPM] 0 = use air_flow_m3s directly; >0 overrides via operating point
+
+    # --- Geometry overrides (CLI: --throat-diameter, --zigzag-width/depth) ---
+    venturi_throat_diameter_mm: float = 0.0   # [mm] 0 = use geometry default (40mm)
+    zigzag_width_mm: float = 0.0              # [mm] 0 = use geometry default (120mm)
+    zigzag_depth_mm: float = 0.0              # [mm] 0 = use geometry default (200mm)
 
     # --- Complete system (used by Build Full System) ---
     include_feed_system: bool = True
@@ -136,11 +150,35 @@ class SimulationWorker(QObject):
             from ...particles import FluidConfig, ParticleMaterial
 
             # ==============================================================
-            # 1. Build classification assembly
+            # 0. Resolve blower RPM -> air flow
+            # ==============================================================
+            air_flow = s.air_flow_m3s
+            if s.blower_rpm > 0:
+                from ...simulation.airclass_flow_physics import compute_blower_operating_point
+                op = compute_blower_operating_point(s.blower_rpm)
+                air_flow = op["Q_m3_s"]
+                self.log_message.emit(
+                    f"  Blower: {s.blower_rpm:.0f} RPM \u2192 {op['Q_m3_h']:.0f} m\u00b3/h "
+                    f"({air_flow:.3f} m\u00b3/s)"
+                )
+
+            # ==============================================================
+            # 1. Build classification assembly with geometry overrides
             # ==============================================================
             self.log_message.emit("Building classification assembly...")
             params = ClassificationSystemParams()
             params.use_preclassification = s.use_preclassification
+            # Geometry overrides (same as CLI --throat-diameter, --zigzag-width/depth)
+            if s.venturi_throat_diameter_mm > 0:
+                throat_m = s.venturi_throat_diameter_mm / 1000.0
+                params.venturi_throat_ratio = throat_m / params.venturi_inlet_diameter
+                self.log_message.emit(f"  Venturi throat: {s.venturi_throat_diameter_mm:.1f} mm")
+            if s.zigzag_width_mm > 0:
+                params.zigzag_channel_width = s.zigzag_width_mm / 1000.0
+                self.log_message.emit(f"  Zigzag width: {s.zigzag_width_mm:.0f} mm")
+            if s.zigzag_depth_mm > 0:
+                params.zigzag_channel_depth = s.zigzag_depth_mm / 1000.0
+                self.log_message.emit(f"  Zigzag depth: {s.zigzag_depth_mm:.0f} mm")
             assembly = ClassificationSystemAssembly(params=params)
 
             mode_str = "Full System" if s.use_preclassification else "Wheel-Only"
@@ -169,9 +207,21 @@ class SimulationWorker(QObject):
             # ==============================================================
             # 3. Build ClassificationFlowConfig (same fields as CLI)
             # ==============================================================
+
+            # Auto-compute feed rate when continuous feeding is on but rate is 0
+            feed_rate = s.particle_feed_rate
+            if s.continuous_feeding and feed_rate <= 0 and s.num_particles > 0:
+                feed_duration = min(s.total_time * 0.5, 120.0)
+                feed_duration = max(feed_duration, 1.0)
+                feed_rate = s.num_particles / feed_duration
+                self.log_message.emit(
+                    f"  Auto feed rate: {feed_rate:.0f} /s "
+                    f"({s.num_particles} over {feed_duration:.0f}s)"
+                )
+
             config = ClassificationFlowConfig(
                 num_particles=s.num_particles,
-                air_flow_rate_m3s=s.air_flow_m3s,
+                air_flow_rate_m3s=air_flow,
                 bypass_ratio=s.bypass_ratio,
                 dt=s.dt,
                 turbulent_intensity=s.turbulence_intensity,
@@ -179,7 +229,7 @@ class SimulationWorker(QObject):
                 friction=s.friction,
                 device=s.device,
                 continuous_feeding=s.continuous_feeding,
-                particle_feed_rate=s.particle_feed_rate,
+                particle_feed_rate=feed_rate,
                 max_loading_ratio=s.max_loading_ratio,
                 fluid_config=fluid,
                 material=material,
@@ -188,7 +238,7 @@ class SimulationWorker(QObject):
 
             self.log_message.emit(
                 f"  Particles: {s.num_particles:,}   dt={s.dt}s   "
-                f"Q={s.air_flow_m3s:.3f} m\u00b3/s ({s.air_flow_m3s * 3600:.0f} m\u00b3/h)"
+                f"Q={air_flow:.3f} m\u00b3/s ({air_flow * 3600:.0f} m\u00b3/h)"
             )
             self.log_message.emit(
                 f"  Device: {s.device}   Wheel: {s.wheel_rpm:.0f} RPM   "
@@ -242,67 +292,270 @@ class SimulationWorker(QObject):
                 )
 
             # ==============================================================
-            # 6. Step loop
+            # 6. Multi-pass recirculation loop
             # ==============================================================
-            total_steps = int(s.total_time / s.dt)
-            output_steps = max(1, int(s.output_interval / s.dt))
+            num_passes = s.recirculate_passes if s.recirculate_passes > 1 else 1
+            recirc_fractions = [
+                f.strip() for f in s.recirculate_fractions.split(",") if f.strip()
+            ] if num_passes > 1 else []
 
-            self.log_message.emit(
-                f"Running {total_steps:,} steps ({s.total_time:.0f}s)..."
-            )
+            # Cumulative collection across passes
+            cumulative = {
+                'coarse': 0, 'wheel_coarse': 0, 'cyclone_1': 0,
+                'cyclone_2': 0, 'cyclone_3_protein': 0, 'bagfilter': 0,
+                'escaped': 0, 'active': 0,
+            }
+            pass_results_list = []
+            # Cumulative cyclone diameter data for merged stats
+            import numpy as _np
+            cumul_cy_diameters = {'cyclone_1': [], 'cyclone_2': [], 'cyclone_3_protein': []}
+
+            if num_passes > 1:
+                self.log_message.emit(
+                    f"Multi-pass recirculation: {num_passes} passes, "
+                    f"fractions=[{', '.join(recirc_fractions)}], "
+                    f"attrition={s.attrition_factor*100:.0f}%"
+                )
 
             import time as _time
             t_start = _time.perf_counter()
 
-            for step in range(total_steps):
+            for pass_num in range(1, num_passes + 1):
                 if not self._is_running:
                     break
 
-                while self._is_paused and self._is_running:
-                    QThread.msleep(100)
+                pass_sim_time = s.total_time
+                if pass_num > 1 and s.recirculate_time > 0:
+                    pass_sim_time = s.recirculate_time
 
-                sim.step()
+                total_steps = int(pass_sim_time / s.dt)
+                output_steps = max(1, int(s.output_interval / s.dt))
 
-                # Progress report at output_interval
-                if step > 0 and step % output_steps == 0:
-                    progress = int(100 * step / total_steps)
-                    sim_time = step * s.dt
+                if num_passes > 1:
+                    self.log_message.emit(f"--- Pass {pass_num}/{num_passes} "
+                                          f"({total_steps:,} steps, {pass_sim_time:.0f}s) ---")
+                else:
+                    self.log_message.emit(f"Running {total_steps:,} steps ({s.total_time:.0f}s)...")
 
-                    counts = sim.get_separation_counts()
-                    fines = (
-                        counts.get("cyclone_1", 0)
-                        + counts.get("cyclone_2", 0)
-                        + counts.get("cyclone_3_protein", 0)
-                        + counts.get("bagfilter", 0)
+                for step in range(total_steps):
+                    if not self._is_running:
+                        break
+
+                    while self._is_paused and self._is_running:
+                        QThread.msleep(100)
+
+                    sim.step()
+
+                    # Progress report at output_interval
+                    if step > 0 and step % output_steps == 0:
+                        # Overall progress across all passes
+                        pass_frac = (pass_num - 1) / num_passes
+                        step_frac = step / total_steps / num_passes
+                        progress = int(100 * (pass_frac + step_frac))
+                        sim_time = step * s.dt
+
+                        counts = sim.get_separation_counts()
+                        fines = (
+                            counts.get("cyclone_1", 0)
+                            + counts.get("cyclone_2", 0)
+                            + counts.get("cyclone_3_protein", 0)
+                            + counts.get("bagfilter", 0)
+                        )
+                        coarse = counts.get("coarse", 0) + counts.get("wheel_coarse", 0)
+                        total_collected = fines + coarse
+                        active = counts.get("active", 0)
+                        eff = 100.0 * fines / total_collected if total_collected > 0 else 0.0
+
+                        stats = {
+                            "active_particles": active,
+                            "collected_fines": fines,
+                            "collected_coarse": coarse,
+                            "separation_efficiency": eff,
+                            "pass_number": pass_num,
+                            "total_passes": num_passes,
+                            **counts,
+                        }
+                        self.progress_updated.emit(progress, sim_time, stats)
+
+                    # Early termination: all fed and none active
+                    all_fed = (sim.state.particles_fed >= sim.state.total_particles_to_feed)
+                    if step > 0 and all_fed and sim.get_separation_counts().get('active', 0) == 0:
+                        self.log_message.emit(
+                            f"  [Early exit] All particles settled at "
+                            f"t={sim.state.time:.1f}s (step {step:,}/{total_steps:,})"
+                        )
+                        break
+
+                # Pass complete — force-collect active particles by current zone
+                # Active particles are still in transit; assign them to the
+                # collection bin matching their current zone so no particles
+                # are "lost" in the results.
+                n_active_before = sim.get_separation_counts().get('active', 0)
+                if n_active_before > 0:
+                    zones_np = sim.get_zones()
+                    is_active_np = sim.state.is_active.numpy()[:sim.state.particles_active]
+                    active_mask = is_active_np == 1
+                    active_zones = zones_np[active_mask]
+                    # Map zone → collection zone for force-collect
+                    # Particles in cyclone body → their dust outlet
+                    # Particles in zigzag → fines (they're small refeed particles)
+                    # Particles in ducts/venturi → fines (in transit to cyclones)
+                    import warp as _wp
+                    zone_arr = sim.state.zones.numpy().copy()
+                    active_arr = sim.state.is_active.numpy().copy()
+                    n_forced = 0
+                    for idx in range(sim.state.particles_active):
+                        if active_arr[idx] != 1:
+                            continue
+                        z = zone_arr[idx]
+                        # Force-assign based on current zone
+                        if z == 50:        # In Cy1 body
+                            zone_arr[idx] = 55  # → Cy1 dust
+                        elif z == 51:      # In Cy2 body
+                            zone_arr[idx] = 56  # → Cy2 dust
+                        elif z == 52:      # In Cy3 body
+                            zone_arr[idx] = 57  # → Cy3 dust
+                        elif z in (40, 41):  # In ducts to cyclones
+                            zone_arr[idx] = 55  # → Cy1 (next destination)
+                        elif z == 70:      # In bag filter
+                            zone_arr[idx] = 75  # → Bag dust
+                        elif z in (20, 21, 22):  # In zigzag / fines path
+                            zone_arr[idx] = 55  # → Cy1 (fines path)
+                        elif z in (0, 1, 2, 10):  # In venturi/duct
+                            zone_arr[idx] = 55  # → Cy1 (still in transit)
+                        elif z in (34, 35):  # In wheel
+                            zone_arr[idx] = 55  # → Cy1 (fines path)
+                        elif z == 36:      # In wheel coarse hopper
+                            zone_arr[idx] = 37  # → Wheel coarse
+                        else:
+                            zone_arr[idx] = 55  # Default: Cy1
+                        active_arr[idx] = 0
+                        n_forced += 1
+                    sim.state.zones = _wp.array(zone_arr, dtype=_wp.int32, device=sim.device)
+                    sim.state.is_active = _wp.array(active_arr, dtype=_wp.int32, device=sim.device)
+                    self.log_message.emit(
+                        f"  [Force-collect] {n_forced} active particles assigned to nearest bin"
                     )
-                    coarse = counts.get("coarse", 0) + counts.get("wheel_coarse", 0)
-                    total_collected = fines + coarse
-                    active = counts.get("active", 0)
-                    eff = 100.0 * fines / total_collected if total_collected > 0 else 0.0
 
-                    stats = {
-                        "active_particles": active,
-                        "collected_fines": fines,
-                        "collected_coarse": coarse,
-                        "separation_efficiency": eff,
-                        **counts,
+                # Now get final pass counts (with force-collected particles)
+                pass_counts = sim.get_separation_counts()
+                pass_results_list.append({'pass': pass_num, 'counts': pass_counts})
+
+                # Accumulate cyclone diameter data for cumulative stats
+                try:
+                    zones_np = sim.get_zones()
+                    diameters_np = sim.get_diameters()
+                    sep_to_frac_cy = {
+                        'cyclone_1': 'cy1', 'cyclone_2': 'cy2', 'cyclone_3_protein': 'cy3',
                     }
-                    self.progress_updated.emit(progress, sim_time, stats)
+                    for key, zone_id in [('cyclone_1', 55), ('cyclone_2', 56), ('cyclone_3_protein', 57)]:
+                        mask = (zones_np == zone_id)
+                        if _np.any(mask):
+                            d_um = diameters_np[mask] * 1e6
+                            frac_name = sep_to_frac_cy.get(key)
+                            if frac_name in recirc_fractions and pass_num < num_passes:
+                                pass  # Will be reclassified
+                            else:
+                                cumul_cy_diameters[key].extend(d_um.tolist())
+                except Exception:
+                    pass
+
+                # Map sep count keys to fraction names for recirculation check
+                sep_to_frac = {
+                    'cyclone_1': 'cy1', 'cyclone_2': 'cy2',
+                    'cyclone_3_protein': 'cy3', 'wheel_coarse': 'wheel_coarse',
+                    'coarse': 'zigzag_coarse', 'bagfilter': 'bagfilter',
+                }
+                for key in cumulative:
+                    if key == 'active':
+                        continue
+                    frac_name = sep_to_frac.get(key)
+                    if frac_name in recirc_fractions and pass_num < num_passes:
+                        pass  # Will be recirculated
+                    else:
+                        cumulative[key] += pass_counts.get(key, 0)
+                # Active should be 0 after force-collect
+                cumulative['active'] += pass_counts.get('active', 0)
+
+                if num_passes > 1:
+                    self.log_message.emit(
+                        f"  Pass {pass_num}: Zc={pass_counts.get('coarse',0)} "
+                        f"Wc={pass_counts.get('wheel_coarse',0)} "
+                        f"Cy1={pass_counts.get('cyclone_1',0)} "
+                        f"Cy3={pass_counts.get('cyclone_3_protein',0)} "
+                        f"Active={pass_counts.get('active',0)}"
+                    )
+
+                # Recirculation: extract and reinitialize for next pass
+                if pass_num < num_passes and recirc_fractions and self._is_running:
+                    particle_data = sim.extract_collected_particles(recirc_fractions)
+                    n_recirc = particle_data['count']
+                    if n_recirc == 0:
+                        self.log_message.emit("  No particles to recirculate — stopping.")
+                        break
+
+                    self.log_message.emit(
+                        f"  Recirculating {n_recirc} particles "
+                        f"(mean {particle_data['diameters'].mean()*1e6:.1f} µm)"
+                    )
+
+                    next_wheel = s.recirculate_wheel_rpm if s.recirculate_wheel_rpm > 0 else None
+                    sim.reinitialize_from_particles(
+                        particle_data,
+                        initial_velocity=(0.0, 0.5, 0.0),
+                        continuous_feeding=False,
+                        wheel_rpm=next_wheel,
+                        attrition_factor=s.attrition_factor,
+                        attrition_min_diameter_m=s.attrition_min_um * 1e-6,
+                    )
 
             # ==============================================================
-            # 7. Final results
+            # 7. Final results (cumulative across all passes)
             # ==============================================================
             elapsed = _time.perf_counter() - t_start
-            counts = sim.get_separation_counts()
+
+            # Use cumulative counts when multi-pass, otherwise last pass counts
+            if num_passes > 1:
+                final_counts = cumulative
+            else:
+                final_counts = sim.get_separation_counts()
+
             fines = (
-                counts.get("cyclone_1", 0)
-                + counts.get("cyclone_2", 0)
-                + counts.get("cyclone_3_protein", 0)
-                + counts.get("bagfilter", 0)
+                final_counts.get("cyclone_1", 0)
+                + final_counts.get("cyclone_2", 0)
+                + final_counts.get("cyclone_3_protein", 0)
+                + final_counts.get("bagfilter", 0)
             )
-            coarse = counts.get("coarse", 0) + counts.get("wheel_coarse", 0)
+            coarse = final_counts.get("coarse", 0) + final_counts.get("wheel_coarse", 0)
             total_collected = fines + coarse
             eff = 100.0 * fines / total_collected if total_collected > 0 else 0.0
+
+            # Cyclone particle size stats — cumulative across all passes
+            cyclone_stats = {}
+            if num_passes > 1:
+                # Build cumulative stats from collected diameter data
+                for key in ('cyclone_1', 'cyclone_2', 'cyclone_3_protein'):
+                    d_list = cumul_cy_diameters.get(key, [])
+                    entry = {'count': len(d_list), 'mean_d_um': None, 'median_d_um': None, 'design_d50_um': None}
+                    if d_list:
+                        d_arr = _np.array(d_list)
+                        entry['mean_d_um'] = float(d_arr.mean())
+                        entry['median_d_um'] = float(_np.median(d_arr))
+                    # Get design d50 from last pass stats
+                    try:
+                        last_stats = sim.get_cyclone_particle_size_stats()
+                        entry['design_d50_um'] = last_stats.get(key, {}).get('design_d50_um')
+                    except Exception:
+                        pass
+                    cyclone_stats[key] = entry
+            else:
+                try:
+                    cyclone_stats = sim.get_cyclone_particle_size_stats()
+                except Exception:
+                    pass
+
+            # Geometry info for results panel
+            geo = getattr(sim, 'geometry', {})
 
             results = {
                 "total_time": s.total_time,
@@ -311,7 +564,17 @@ class SimulationWorker(QObject):
                 "separation_efficiency": eff,
                 "fines_collected": fines,
                 "coarse_collected": coarse,
-                **counts,
+                "air_flow_m3s": air_flow,
+                "air_flow_m3h": air_flow * 3600,
+                "blower_rpm": s.blower_rpm,
+                "wheel_rpm": s.wheel_rpm,
+                "use_preclassification": s.use_preclassification,
+                "num_particles": s.num_particles,
+                "cyclone_stats": cyclone_stats,
+                "geometry": geo,
+                "num_passes": num_passes,
+                "pass_results": pass_results_list,
+                **final_counts,
             }
             self.simulation_completed.emit(results)
 
@@ -401,6 +664,7 @@ class SimulationControlPanel(QWidget):
     pause_requested = Signal()
     stop_requested = Signal()
     settings_changed = Signal(object)
+    simulation_results_ready = Signal(dict)  # emitted with full results dict
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -611,13 +875,27 @@ class SimulationControlPanel(QWidget):
         self.assembly_mode_combo.currentIndexChanged.connect(self._on_assembly_mode_changed)
         f.addRow("Mode:", self.assembly_mode_combo)
 
+        self.blower_rpm_spin = QDoubleSpinBox()
+        self.blower_rpm_spin.setRange(0, 5000)
+        self.blower_rpm_spin.setSingleStep(100)
+        self.blower_rpm_spin.setDecimals(0)
+        self.blower_rpm_spin.setValue(self._settings.blower_rpm)
+        self.blower_rpm_spin.setSuffix("  RPM")
+        self.blower_rpm_spin.setToolTip(
+            "VFD blower speed. 0 = use Air Flow Rate directly.\n"
+            "Design: 3000 RPM = 3000 m\u00b3/h.\n"
+            "Recommended: 400-600 RPM for bench-scale."
+        )
+        self.blower_rpm_spin.valueChanged.connect(self._on_blower_rpm_changed)
+        f.addRow("Blower RPM:", self.blower_rpm_spin)
+
         self.air_flow_spin = QDoubleSpinBox()
         self.air_flow_spin.setRange(0.001, 5.0)
         self.air_flow_spin.setDecimals(3)
         self.air_flow_spin.setSingleStep(0.01)
         self.air_flow_spin.setValue(self._settings.air_flow_m3s)
         self.air_flow_spin.setSuffix("  m\u00b3/s")
-        self.air_flow_spin.setToolTip("Default 0.491 = 1768 m\u00b3/h (air system at 2500 RPM)")
+        self.air_flow_spin.setToolTip("Direct air flow rate. Overridden when Blower RPM > 0.")
         self.air_flow_spin.valueChanged.connect(lambda v: setattr(self._settings, 'air_flow_m3s', v))
         f.addRow("Air Flow Rate:", self.air_flow_spin)
 
@@ -647,6 +925,46 @@ class SimulationControlPanel(QWidget):
         self.wheel_diameter_spin.setSuffix("  m")
         self.wheel_diameter_spin.valueChanged.connect(lambda v: setattr(self._settings, 'wheel_diameter', v))
         f.addRow("Wheel Diameter:", self.wheel_diameter_spin)
+
+        layout.addWidget(g)
+
+        # ---- Geometry Overrides ----
+        g = QGroupBox("Geometry Overrides")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
+
+        hint = QLabel("0 = use geometry defaults")
+        hint.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 8pt; border: none; background: transparent;")
+        f.addRow(hint)
+
+        self.throat_dia_spin = QDoubleSpinBox()
+        self.throat_dia_spin.setRange(0, 200)
+        self.throat_dia_spin.setDecimals(1)
+        self.throat_dia_spin.setSingleStep(5)
+        self.throat_dia_spin.setValue(self._settings.venturi_throat_diameter_mm)
+        self.throat_dia_spin.setSuffix("  mm")
+        self.throat_dia_spin.setToolTip("Venturi throat diameter. Default 40mm (80mm inlet \u00d7 0.5 ratio)")
+        self.throat_dia_spin.valueChanged.connect(lambda v: setattr(self._settings, 'venturi_throat_diameter_mm', v))
+        f.addRow("Venturi Throat \u00d8:", self.throat_dia_spin)
+
+        self.zz_width_spin = QDoubleSpinBox()
+        self.zz_width_spin.setRange(0, 500)
+        self.zz_width_spin.setDecimals(0)
+        self.zz_width_spin.setSingleStep(10)
+        self.zz_width_spin.setValue(self._settings.zigzag_width_mm)
+        self.zz_width_spin.setSuffix("  mm")
+        self.zz_width_spin.setToolTip("Zigzag channel width. Default 120mm from geometry.")
+        self.zz_width_spin.valueChanged.connect(lambda v: setattr(self._settings, 'zigzag_width_mm', v))
+        f.addRow("Zigzag Width:", self.zz_width_spin)
+
+        self.zz_depth_spin = QDoubleSpinBox()
+        self.zz_depth_spin.setRange(0, 500)
+        self.zz_depth_spin.setDecimals(0)
+        self.zz_depth_spin.setSingleStep(10)
+        self.zz_depth_spin.setValue(self._settings.zigzag_depth_mm)
+        self.zz_depth_spin.setSuffix("  mm")
+        self.zz_depth_spin.setToolTip("Zigzag channel depth. Default 200mm from geometry.")
+        self.zz_depth_spin.valueChanged.connect(lambda v: setattr(self._settings, 'zigzag_depth_mm', v))
+        f.addRow("Zigzag Depth:", self.zz_depth_spin)
 
         layout.addWidget(g)
 
@@ -692,6 +1010,80 @@ class SimulationControlPanel(QWidget):
 
         layout.addWidget(g)
 
+        # ---- Recirculation ----
+        g = QGroupBox("Multi-Pass Recirculation")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
+
+        self.passes_spin = QSpinBox()
+        self.passes_spin.setRange(1, 10)
+        self.passes_spin.setValue(self._settings.recirculate_passes)
+        self.passes_spin.setToolTip("Number of classification passes (1 = single pass, no recirculation)")
+        self.passes_spin.valueChanged.connect(self._on_passes_changed)
+        f.addRow("Passes:", self.passes_spin)
+
+        self.recirc_fractions_combo = QComboBox()
+        self.recirc_fractions_combo.addItems([
+            "cy1", "cy1,cy2", "cy2", "wheel_coarse", "cy1,wheel_coarse",
+        ])
+        self.recirc_fractions_combo.setEditable(True)
+        self.recirc_fractions_combo.setCurrentText(self._settings.recirculate_fractions)
+        self.recirc_fractions_combo.setToolTip(
+            "Fractions to refeed: cy1, cy2, cy3, wheel_coarse, zigzag_coarse, bagfilter.\n"
+            "Comma-separated for multiple."
+        )
+        self.recirc_fractions_combo.currentTextChanged.connect(
+            lambda v: setattr(self._settings, 'recirculate_fractions', v)
+        )
+        f.addRow("Refeed Fractions:", self.recirc_fractions_combo)
+
+        self.attrition_spin = QDoubleSpinBox()
+        self.attrition_spin.setRange(0.0, 0.50)
+        self.attrition_spin.setDecimals(2)
+        self.attrition_spin.setSingleStep(0.05)
+        self.attrition_spin.setValue(self._settings.attrition_factor)
+        self.attrition_spin.setToolTip(
+            "Venturi attrition: fraction of breakable diameter removed per pass.\n"
+            "Models shear breakup of protein-starch composites at throat.\n"
+            "0.10 = 10% per pass. 0 = disabled."
+        )
+        self.attrition_spin.valueChanged.connect(lambda v: setattr(self._settings, 'attrition_factor', v))
+        f.addRow("Attrition Rate:", self.attrition_spin)
+
+        self.attrition_min_spin = QDoubleSpinBox()
+        self.attrition_min_spin.setRange(1.0, 20.0)
+        self.attrition_min_spin.setDecimals(1)
+        self.attrition_min_spin.setSingleStep(1.0)
+        self.attrition_min_spin.setValue(self._settings.attrition_min_um)
+        self.attrition_min_spin.setSuffix(" \u00b5m")
+        self.attrition_min_spin.setToolTip("Minimum diameter below which attrition stops (protein body floor)")
+        self.attrition_min_spin.valueChanged.connect(lambda v: setattr(self._settings, 'attrition_min_um', v))
+        f.addRow("Attrition Min \u00d8:", self.attrition_min_spin)
+
+        self.recirc_wheel_spin = QDoubleSpinBox()
+        self.recirc_wheel_spin.setRange(0, 20000)
+        self.recirc_wheel_spin.setSingleStep(500)
+        self.recirc_wheel_spin.setDecimals(0)
+        self.recirc_wheel_spin.setValue(self._settings.recirculate_wheel_rpm)
+        self.recirc_wheel_spin.setSuffix("  RPM")
+        self.recirc_wheel_spin.setToolTip("Wheel RPM for passes 2+. 0 = same as main wheel RPM.")
+        self.recirc_wheel_spin.valueChanged.connect(lambda v: setattr(self._settings, 'recirculate_wheel_rpm', v))
+        f.addRow("Pass 2+ Wheel:", self.recirc_wheel_spin)
+
+        self.recirc_time_spin = QDoubleSpinBox()
+        self.recirc_time_spin.setRange(0, 3600)
+        self.recirc_time_spin.setDecimals(0)
+        self.recirc_time_spin.setSingleStep(30)
+        self.recirc_time_spin.setValue(self._settings.recirculate_time)
+        self.recirc_time_spin.setSuffix("  s")
+        self.recirc_time_spin.setToolTip("Simulation time for passes 2+. 0 = same as Total Time.")
+        self.recirc_time_spin.valueChanged.connect(lambda v: setattr(self._settings, 'recirculate_time', v))
+        f.addRow("Pass 2+ Time:", self.recirc_time_spin)
+
+        # Initially disable recirculation controls when passes=1
+        self._set_recirc_controls_enabled(self._settings.recirculate_passes > 1)
+
+        layout.addWidget(g)
+
         # ---- Compute ----
         g = QGroupBox("Compute")
         f = QFormLayout(g); f.setContentsMargins(*_M)
@@ -707,6 +1099,25 @@ class SimulationControlPanel(QWidget):
 
     # ---- settings callbacks ----
 
+    def _on_blower_rpm_changed(self, rpm: float):
+        self._settings.blower_rpm = rpm
+        if rpm > 0:
+            try:
+                from ...simulation.airclass_flow_physics import compute_blower_operating_point
+                op = compute_blower_operating_point(rpm)
+                q = op["Q_m3_s"]
+                self._settings.air_flow_m3s = q
+                self.air_flow_spin.setValue(q)
+                self.air_flow_spin.setEnabled(False)
+                self._log(
+                    f"Blower {rpm:.0f} RPM \u2192 {op['Q_m3_h']:.0f} m\u00b3/h "
+                    f"({q:.3f} m\u00b3/s), P={op['P_operating_Pa']:.0f} Pa"
+                )
+            except Exception as e:
+                self._log(f"Blower RPM error: {e}")
+        else:
+            self.air_flow_spin.setEnabled(True)
+
     def _on_material_changed(self, source: str):
         self._settings.material_source = source
         use_material = source not in ("none", "")
@@ -721,6 +1132,20 @@ class SimulationControlPanel(QWidget):
         self.bypass_spin.setEnabled(index == 0)
         mode_name = "Full System" if index == 0 else "Wheel-Only"
         self._log(f"Assembly mode: {mode_name}")
+
+    def _on_passes_changed(self, value: int):
+        self._settings.recirculate_passes = value
+        self._set_recirc_controls_enabled(value > 1)
+        if value > 1:
+            self._log(f"Recirculation: {value} passes")
+
+    def _set_recirc_controls_enabled(self, enabled: bool):
+        """Enable/disable recirculation sub-controls based on passes count."""
+        self.recirc_fractions_combo.setEnabled(enabled)
+        self.attrition_spin.setEnabled(enabled)
+        self.attrition_min_spin.setEnabled(enabled)
+        self.recirc_wheel_spin.setEnabled(enabled)
+        self.recirc_time_spin.setEnabled(enabled)
 
     # ================================================================
     # Log tab
@@ -801,6 +1226,10 @@ class SimulationControlPanel(QWidget):
         if s.bypass_ratio > 0:
             self._log(f"  Bypass:     {s.bypass_ratio:.1%}")
         self._log(f"  Wheel:      {s.wheel_rpm:.0f} RPM, \u00d8{s.wheel_diameter*1000:.0f} mm")
+        if s.recirculate_passes > 1:
+            self._log(f"  Recirc:     {s.recirculate_passes} passes, "
+                       f"fractions=[{s.recirculate_fractions}], "
+                       f"attrition={s.attrition_factor*100:.0f}%")
         self._log("=" * 56)
 
         # UI state
@@ -845,7 +1274,12 @@ class SimulationControlPanel(QWidget):
     @Slot(int, float, dict)
     def _on_progress(self, progress: int, sim_time: float, stats: Dict[str, Any]):
         self.progress_bar.setValue(progress)
-        self.card_time.set_value(f"{sim_time:.3f} s")
+        pass_num = stats.get("pass_number", 0)
+        total_passes = stats.get("total_passes", 1)
+        if total_passes > 1 and pass_num > 0:
+            self.card_time.set_value(f"{sim_time:.3f} s  (P{pass_num}/{total_passes})")
+        else:
+            self.card_time.set_value(f"{sim_time:.3f} s")
         self.card_particles.set_value(f"{stats.get('active_particles', 0):,}")
         self.card_fines.set_value(f"{stats.get('collected_fines', 0):,}")
         self.card_coarse.set_value(f"{stats.get('collected_coarse', 0):,}")
@@ -878,7 +1312,31 @@ class SimulationControlPanel(QWidget):
         self._log(f"    Wheel:     {results.get('wheel_coarse', 0):,}")
         self._log(f"  Escaped:     {results.get('escaped', 0):,}")
         self._log(f"  Efficiency:  {results.get('separation_efficiency', 0):.1f}%")
+        # Cyclone size stats
+        for key, st in results.get("cyclone_stats", {}).items():
+            n = st.get("count", 0)
+            d50 = st.get("design_d50_um")
+            mean = st.get("mean_d_um")
+            median = st.get("median_d_um")
+            d50_s = f"d50={d50:.0f}\u00b5m" if d50 else ""
+            mean_s = f"mean={mean:.1f}\u00b5m" if mean else ""
+            med_s = f"median={median:.1f}\u00b5m" if median else ""
+            self._log(f"    {key}: N={n:,}  {d50_s}  {mean_s}  {med_s}")
+        # Multi-pass breakdown
+        n_passes = results.get("num_passes", 1)
+        if n_passes > 1:
+            self._log(f"\n  Multi-Pass ({n_passes} passes):")
+            for pr in results.get("pass_results", []):
+                c = pr['counts']
+                self._log(
+                    f"    Pass {pr['pass']}: "
+                    f"Zc={c.get('coarse',0):,} Wc={c.get('wheel_coarse',0):,} "
+                    f"Cy1={c.get('cyclone_1',0):,} Cy3={c.get('cyclone_3_protein',0):,} "
+                    f"Active={c.get('active',0):,}"
+                )
         self._log("=" * 56)
+        # Forward results to the Results panel
+        self.simulation_results_ready.emit(results)
 
     @Slot(str)
     def _on_error(self, error: str):
@@ -926,5 +1384,17 @@ class SimulationControlPanel(QWidget):
         self.restitution_spin.setValue(settings.restitution)
         self.friction_spin.setValue(settings.friction)
         self.max_loading_spin.setValue(settings.max_loading_ratio)
+        self.blower_rpm_spin.setValue(settings.blower_rpm)
+        self.throat_dia_spin.setValue(settings.venturi_throat_diameter_mm)
+        self.zz_width_spin.setValue(settings.zigzag_width_mm)
+        self.zz_depth_spin.setValue(settings.zigzag_depth_mm)
         idx = 0 if settings.use_preclassification else 1
         self.assembly_mode_combo.setCurrentIndex(idx)
+        # Recirculation
+        self.passes_spin.setValue(settings.recirculate_passes)
+        self.recirc_fractions_combo.setCurrentText(settings.recirculate_fractions)
+        self.attrition_spin.setValue(settings.attrition_factor)
+        self.attrition_min_spin.setValue(settings.attrition_min_um)
+        self.recirc_wheel_spin.setValue(settings.recirculate_wheel_rpm)
+        self.recirc_time_spin.setValue(settings.recirculate_time)
+        self._set_recirc_controls_enabled(settings.recirculate_passes > 1)

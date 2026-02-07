@@ -3143,6 +3143,15 @@ if wp is not None:
             
             v_air = v_tan + v_rad + v_axial
 
+            # Turbulent dispersion in cyclone (stochastic separation)
+            # Real cyclones have significant turbulence from swirling flow;
+            # this prevents deterministic particle trapping and enables
+            # realistic grade efficiency near the d50 boundary.
+            v_turb = compute_turbulent_dispersion(
+                v_air_cyclone_inlet, turbulent_intensity, random_seed, tid
+            )
+            v_air = v_air + v_turb
+
             # Wall containment (cylinder + cone)
             total_height = cyclone_primary_cylinder_height + cyclone_primary_cone_height
             
@@ -3211,6 +3220,12 @@ if wp is not None:
 
             v_air = v_tan + v_rad + v_axial
 
+            # Turbulent dispersion in secondary cyclone
+            v_turb = compute_turbulent_dispersion(
+                v_air_cyclone_secondary_inlet, turbulent_intensity, random_seed, tid
+            )
+            v_air = v_air + v_turb
+
             # Wall containment
             if local_y >= -cyclone_secondary_cylinder_height:
                 wall_r = cyclone_secondary_radius
@@ -3268,6 +3283,12 @@ if wp is not None:
             )
 
             v_air = v_tan + v_rad + v_axial
+
+            # Turbulent dispersion in tertiary cyclone
+            v_turb = compute_turbulent_dispersion(
+                v_air_cyclone_tertiary_inlet, turbulent_intensity, random_seed, tid
+            )
+            v_air = v_air + v_turb
 
             # Wall containment
             if local_y >= -cyclone_tertiary_cylinder_height:
@@ -5949,6 +5970,295 @@ class ClassificationFlowPhysicsSimulator:
                 'design_d50_um': design_d50_um,
             }
         return out
+
+    # =========================================================================
+    # MULTI-PASS RECIRCULATION SUPPORT
+    # =========================================================================
+
+    # Zone IDs for collected-particle extraction
+    ZONE_NAMES_TO_IDS = {
+        'cy1': [55],            # Cyclone 1 dust outlet
+        'cy2': [56],            # Cyclone 2 dust outlet
+        'cy3': [57],            # Cyclone 3 (protein) dust outlet
+        'wheel_coarse': [37],   # Wheel coarse collected
+        'zigzag_coarse': [30],  # Zigzag coarse outlet
+        'bagfilter': [75],      # Bag filter dust
+    }
+
+    def extract_collected_particles(
+        self,
+        fraction_names: List[str],
+    ) -> Dict[str, Any]:
+        """
+        Extract particle data from specified collection zones for recirculation.
+
+        Args:
+            fraction_names: List of fraction names to extract. Valid names:
+                'cy1', 'cy2', 'cy3', 'wheel_coarse', 'zigzag_coarse', 'bagfilter'
+
+        Returns:
+            Dict with keys: diameters (np.ndarray [m]), densities (np.ndarray [kg/m3]),
+            types (np.ndarray int32), count (int), fraction_counts (dict name->int).
+        """
+        n = self.state.particles_active
+        zones = self.state.zones.numpy()[:n]
+        diameters = self.state.diameters.numpy()[:n]
+        densities = self.state.densities.numpy()[:n]
+        types = self.state.particle_types.numpy()[:n]
+
+        # Build combined mask for all requested fractions
+        mask = np.zeros(n, dtype=bool)
+        fraction_counts = {}
+        for name in fraction_names:
+            zone_ids = self.ZONE_NAMES_TO_IDS.get(name)
+            if zone_ids is None:
+                valid = ', '.join(sorted(self.ZONE_NAMES_TO_IDS.keys()))
+                raise ValueError(f"Unknown fraction '{name}'. Valid: {valid}")
+            frac_mask = np.zeros(n, dtype=bool)
+            for zid in zone_ids:
+                frac_mask |= (zones == zid)
+            fraction_counts[name] = int(np.sum(frac_mask))
+            mask |= frac_mask
+
+        count = int(np.sum(mask))
+        return {
+            'diameters': diameters[mask].copy(),
+            'densities': densities[mask].copy(),
+            'types': types[mask].copy(),
+            'count': count,
+            'fraction_counts': fraction_counts,
+        }
+
+    def reinitialize_from_particles(
+        self,
+        particle_data: Dict[str, Any],
+        initial_velocity: Tuple[float, float, float] = (0.0, 0.5, 0.0),
+        continuous_feeding: Optional[bool] = None,
+        wheel_rpm: Optional[float] = None,
+        attrition_factor: float = 0.0,
+        attrition_min_diameter_m: float = 5.0e-6,
+        skip_preclassification: bool = False,
+    ) -> int:
+        """
+        Reset simulation state and re-initialize with extracted particles for a new pass.
+
+        This resets time, step counters, and all particle arrays, then populates
+        slots 0..N-1 with the provided particle data at the solids inlet position.
+        Geometry and air flow settings are preserved from the original init.
+
+        Args:
+            particle_data: Dict from extract_collected_particles() with
+                diameters, densities, types, count.
+            initial_velocity: Initial velocity for re-injected particles [m/s].
+            continuous_feeding: Override continuous feeding for this pass.
+                None = use current config setting.
+            wheel_rpm: Optional wheel RPM override for this pass. None = keep current.
+            attrition_factor: Fraction of breakable diameter removed per pass
+                (0.0 = no attrition, 0.10 = 10% per pass). Models venturi
+                throat shear breaking apart protein-starch composites.
+                d_new = d_min + (1 - factor) * (d_old - d_min).
+            attrition_min_diameter_m: Minimum diameter below which no further
+                attrition occurs [m]. Individual protein bodies (~5 µm) don't
+                break further. Default: 5e-6 (5 µm).
+            skip_preclassification: When True, recirculated particles enter
+                directly at the wheel classifier (zone 34) instead of the
+                venturi inlet (zone 0). Default False: particles re-enter
+                through the venturi solids inlet, matching the physical
+                machine design where recirculated material returns to
+                the feed hopper. Set True only for experimental bypass.
+
+        Returns:
+            Number of particles initialized.
+        """
+        count = particle_data['count']
+        if count == 0:
+            print("  [Recirculation] No particles to recirculate.")
+            return 0
+
+        n_max = self.config.num_particles
+        n = min(count, n_max)
+        if n < count:
+            print(f"  [Recirculation] Truncating {count} to capacity {n_max}")
+
+        diameters_np = np.asarray(particle_data['diameters'][:n], dtype=np.float64)
+        densities_np = np.asarray(particle_data['densities'][:n], dtype=np.float64)
+        types_np = np.asarray(particle_data['types'][:n], dtype=np.int32)
+
+        # Venturi attrition: reduce particle diameters to model shear-induced
+        # breakup of agglomerates passing through the venturi throat.
+        # d_new = d_min + (1 - factor) * (d_old - d_min)
+        # This gives exponential decay toward d_min with each pass.
+        if attrition_factor > 0.0:
+            d_before = diameters_np.mean()
+            d_min = attrition_min_diameter_m
+            breakable = diameters_np - d_min
+            breakable = np.maximum(breakable, 0.0)
+            diameters_np = d_min + (1.0 - attrition_factor) * breakable
+            diameters_np = np.maximum(diameters_np, d_min)
+            d_after = diameters_np.mean()
+            print(f"  [Attrition] {attrition_factor*100:.0f}% breakable reduction: "
+                  f"mean {d_before*1e6:.1f} → {d_after*1e6:.1f} µm "
+                  f"(min floor: {d_min*1e6:.1f} µm)")
+
+        masses_np = densities_np * (np.pi / 6.0) * (diameters_np ** 3)
+
+        # Optional wheel RPM override for this pass
+        if wheel_rpm is not None:
+            self.wheel_omega = wheel_rpm * TWO_PI / 60.0
+            # Recompute wheel d50 for the new RPM
+            self._compute_wheel_d50()
+            print(f"  [Recirculation] Wheel RPM override: {wheel_rpm:.0f} "
+                  f"(omega={self.wheel_omega:.1f} rad/s, d50={self.wheel_d50*1e6:.1f} µm)")
+
+        # Override continuous feeding if requested
+        use_continuous = continuous_feeding if continuous_feeding is not None else self.config.continuous_feeding
+
+        # Determine entry point: wheel inlet (zone 34) or venturi inlet (zone 0)
+        if skip_preclassification and self.use_preclassification:
+            # Recirculation: enter directly at wheel classifier, bypassing
+            # venturi and zigzag. Particles are placed around the wheel
+            # housing inlet at the annular chamber entry.
+            entry_zone = 34  # WHEEL_HOUSING
+            entry_pos = np.array(self.wheel_inlet_pos, dtype=np.float64)
+            entry_radius = self.wheel_housing_radius * 0.8
+            # Initial velocity: radially inward toward the wheel
+            # (matching the fines path air velocity at wheel entry)
+            recirc_velocity = (0.0, self.v_air_zigzag * 0.3, 0.0)
+            print(f"  [Recirculation] Skipping preclassification → wheel inlet (zone 34)")
+        else:
+            entry_zone = self.initial_particle_zone
+            entry_pos = np.array(self.venturi_solids_inlet_pos, dtype=np.float64)
+            entry_radius = self.venturi_solids_inlet_radius
+            recirc_velocity = initial_velocity
+
+        # Positions: randomly distributed around entry point
+        # Use a pass-varying seed so each recirculation pass has unique
+        # random positions (avoids identical particle arrangements).
+        _recirc_seed = n * 31 + 137  # varies with particle count per pass
+        rng = np.random.default_rng(_recirc_seed)
+        r = np.sqrt(rng.uniform(0, 1, n)) * entry_radius * 0.8
+        theta = rng.uniform(0, 2 * np.pi, n)
+        cx, cy, cz = entry_pos[0], entry_pos[1], entry_pos[2]
+        # Spread Y positions slightly along the inlet tube direction so
+        # particles don't all start at the exact same cross-section.
+        # This prevents numerical pile-ups at zone boundaries.
+        y_spread = rng.uniform(-0.01, 0.01, n)  # ±10mm along inlet axis
+        positions_np = np.column_stack([
+            cx + r * np.cos(theta),
+            cy + y_spread,
+            cz + r * np.sin(theta),
+        ]).astype(np.float64)
+
+        # Velocities
+        velocities_np = np.zeros((n, 3), dtype=np.float64)
+        velocities_np[:] = recirc_velocity
+        velocities_np += rng.uniform(-0.05, 0.05, (n, 3))
+
+        # Zones
+        zones_np = np.full(n, entry_zone, dtype=np.int32)
+
+        # Active flags
+        if use_continuous:
+            is_active_np = np.zeros(n, dtype=np.int32)
+        else:
+            is_active_np = np.ones(n, dtype=np.int32)
+
+        # Reset simulation time and counters
+        self.state.time = 0.0
+        self.state.step = 0
+        self.state.phase = SimulationPhase.RUNNING
+        self.state.collected_fines = 0
+        self.state.collected_coarse = 0
+        self.state.collected_cyclone = {}
+        self.state.collected_bagfilter = 0
+        self.state.exited_clean_air = 0
+
+        # Write into device arrays (zero out all slots, then fill 0..n)
+        pos_full = np.zeros((n_max, 3), dtype=np.float64)
+        pos_full[:n] = positions_np
+        self.state.positions = wp.array(pos_full, dtype=wp.vec3, device=self.device)
+
+        vel_full = np.zeros((n_max, 3), dtype=np.float64)
+        vel_full[:n] = velocities_np
+        self.state.velocities = wp.array(vel_full, dtype=wp.vec3, device=self.device)
+
+        dia_full = np.zeros(n_max, dtype=np.float64)
+        dia_full[:n] = diameters_np
+        self.state.diameters = wp.array(dia_full, dtype=float, device=self.device)
+
+        mass_full = np.zeros(n_max, dtype=np.float64)
+        mass_full[:n] = masses_np
+        self.state.masses = wp.array(mass_full, dtype=float, device=self.device)
+
+        zone_full = np.full(n_max, -1, dtype=np.int32)
+        zone_full[:n] = zones_np
+        self.state.zones = wp.array(zone_full, dtype=wp.int32, device=self.device)
+
+        active_full = np.zeros(n_max, dtype=np.int32)
+        active_full[:n] = is_active_np
+        self.state.is_active = wp.array(active_full, dtype=wp.int32, device=self.device)
+
+        dens_full = np.zeros(n_max, dtype=np.float64)
+        dens_full[:n] = densities_np
+        self.state.densities = wp.array(dens_full, dtype=float, device=self.device)
+
+        type_full = np.zeros(n_max, dtype=np.int32)
+        type_full[:n] = types_np
+        self.state.particle_types = wp.array(type_full, dtype=wp.int32, device=self.device)
+
+        if use_continuous:
+            self.state.particles_active = 0
+            self.state.total_particles_to_feed = n
+            self.state.particles_fed = 0
+            self._feed_accumulator = 0.0
+        else:
+            self.state.particles_active = n
+            self.state.total_particles_to_feed = n
+            self.state.particles_fed = n
+
+        if entry_zone == 34:
+            inlet_name = "wheel inlet (zone 34, skip preclassification)"
+        elif self.use_preclassification:
+            inlet_name = "venturi inlet (zone 0)"
+        else:
+            inlet_name = "wheel inlet (zone 34, wheel-only)"
+        feed_mode = "continuous" if use_continuous else "batch"
+        print(f"  [Recirculation] Initialized {n} particles at {inlet_name} ({feed_mode})")
+        print(f"    Diameter range: {diameters_np.min()*1e6:.1f} – {diameters_np.max()*1e6:.1f} µm")
+        print(f"    Mean diameter:  {diameters_np.mean()*1e6:.1f} µm")
+        return n
+
+    def _compute_wheel_d50(self):
+        """Recompute wheel cut size d50 from current omega and geometry.
+
+        Uses the same force-balance formula as _compute_derived_parameters:
+        d50 = sqrt(18*mu*v_radial / (delta_rho * omega^2 * R))
+        where v_radial = Q / blade_passage_area.
+        """
+        cfg = self.config
+        if self.wheel_omega > 0 and self.wheel_radius > 0:
+            mu = cfg.air_viscosity
+            rho_p = cfg.particle_density
+            rho_f = cfg.air_density
+            Q = self.wheel_volumetric_flow
+            r = self.wheel_radius
+            W = self.wheel_width
+            omega = self.wheel_omega
+            # Blade passage area (same as in _compute_derived_parameters)
+            blade_passage_area = (
+                (2.0 * np.pi * r - self.wheel_num_blades * self.wheel_blade_thickness)
+                * W
+            )
+            blade_passage_area = max(blade_passage_area, 1.0e-12)
+            v_radial = Q / blade_passage_area
+            delta_rho = rho_p - rho_f
+            denom = delta_rho * omega**2 * r
+            if denom > 0 and v_radial > 0:
+                self.wheel_d50 = np.sqrt(18.0 * mu * v_radial / denom)
+            else:
+                self.wheel_d50 = 0.0
+        else:
+            self.wheel_d50 = 0.0
 
     def print_separation_summary(self):
         """Print a summary of separation results with full particle balance along the path."""

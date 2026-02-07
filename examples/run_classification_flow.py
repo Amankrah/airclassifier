@@ -87,6 +87,12 @@ Usage:
     python examples/run_classification_flow.py -v --particles 2000 --time 10
     python examples/run_classification_flow.py --visualize --material yellow_pea --diagnostics
 
+    # Multi-pass recirculation (refeed Cy1 back through the classifier)
+    python examples/run_classification_flow.py --full-system --material yellow_pea --blower-rpm 500 --wheel-rpm 1300 --recirculate cy1 --passes 3
+    python examples/run_classification_flow.py --full-system --material yellow_pea --blower-rpm 500 --wheel-rpm 1300 --recirculate cy1 cy2 --passes 2
+    python examples/run_classification_flow.py --full-system --material yellow_pea --blower-rpm 500 --wheel-rpm 1300 --recirculate cy1 --passes 3 --recirculate-wheel-rpm 2000
+    python examples/run_classification_flow.py --full-system --material yellow_pea --blower-rpm 500 --wheel-rpm 1300 --recirculate cy1 --passes 3 --recirculate-time 180
+
     # Combined examples
     python examples/run_classification_flow.py --diagnostics --visualize --particles 5000 --time 10
     python examples/run_classification_flow.py --material yellow_pea --air-flow 0.2 -n 1000 -t 5 -v
@@ -120,6 +126,12 @@ Options:
     --wheel-rpm           Wheel classifier RPM (main classifier; default: from geometry, e.g. 8000)
     --turbulence          Turbulent intensity (default: 0.15)
     --device              cuda or cpu (default: cuda)
+    --recirculate FRAC    Fractions to refeed: cy1, cy2, cy3, wheel_coarse, zigzag_coarse, bagfilter
+    --passes N            Number of classification passes (default: 1; requires --recirculate)
+    --recirculate-wheel-rpm RPM  Wheel RPM for passes 2+ (tighter cut on narrower PSD)
+    --recirculate-time T  Simulation time for passes 2+ in seconds (default: same as --time)
+    --attrition F         Venturi attrition per pass (0.0-0.5, default: 0.10 = 10% breakup)
+    --attrition-min D     Min diameter for attrition in µm (default: 5.0 = protein body floor)
 """
 
 import sys
@@ -250,6 +262,49 @@ def main():
     parser.add_argument(
         "--max-loading", type=float, default=2.0,
         help="Max solids loading ratio mu = m_dot_solids / m_dot_air for venturi entrainment cap (default: 2.0)"
+    )
+
+    # Multi-pass recirculation
+    parser.add_argument(
+        "--recirculate", type=str, nargs="+", default=None,
+        metavar="FRACTION",
+        help="Fractions to recirculate after each pass. Valid: cy1, cy2, cy3, "
+             "wheel_coarse, zigzag_coarse, bagfilter. "
+             "Example: --recirculate cy1 cy2"
+    )
+    parser.add_argument(
+        "--passes", type=int, default=1,
+        help="Number of classification passes (default: 1). "
+             "Requires --recirculate to specify which fractions to refeed."
+    )
+    parser.add_argument(
+        "--recirculate-wheel-rpm", type=float, default=None,
+        help="Wheel RPM override for recirculation passes 2+. "
+             "Useful for tighter cuts on narrower refeed PSD. "
+             "Example: --recirculate-wheel-rpm 2000"
+    )
+    parser.add_argument(
+        "--recirculate-time", type=float, default=None,
+        help="Simulation time for recirculation passes 2+ in seconds. "
+             "Default: same as --time. Fewer particles may need less time."
+    )
+    parser.add_argument(
+        "--attrition", type=float, default=0.10,
+        help="Venturi attrition: fraction of breakable diameter removed per "
+             "recirculation pass (0.0-0.5, default: 0.10 = 10%%). Models "
+             "shear-induced breakup of protein-starch composites at throat. "
+             "0.0 disables attrition."
+    )
+    parser.add_argument(
+        "--attrition-min", type=float, default=5.0,
+        help="Minimum particle diameter (µm) below which attrition stops "
+             "(default: 5.0 µm = individual protein bodies)."
+    )
+    parser.add_argument(
+        "--recirculate-to-wheel", action="store_true",
+        help="Feed recirculated particles directly to wheel classifier "
+             "(skip venturi+zigzag). Default: particles re-enter through "
+             "venturi solids inlet (matching physical machine design)."
     )
     
     args = parser.parse_args()
@@ -880,265 +935,421 @@ def main():
         plotter.camera.zoom(0.8)
         plotter.show(interactive_update=True, auto_close=False)
     
-    # Run simulation
-    print("\n" + "-" * 70)
-    print("RUNNING SIMULATION")
-    print("-" * 70)
-    print(f"  Time: {args.time:.1f} s")
-    print(f"  dt:   {args.dt*1000:.2f} ms")
-    print(f"  Steps: {int(args.time / args.dt):,}")
-    if args.bypass_ratio > 0:
-        Q_class = args.air_flow * (1.0 - args.bypass_ratio)
-        print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h total, "
-              f"{Q_class * 3600:.1f} m³/h classification, "
-              f"{args.bypass_ratio*100:.1f}% bypass")
-    else:
-        print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h")
-    if getattr(simulator, 'use_preclassification', True):
-        print(f"  Zigzag d50: {simulator.zigzag_d50 * 1e6:.1f} µm")
-    print(f"  Wheel d50: {simulator.wheel_d50 * 1e6:.1f} µm")
-    if config.continuous_feeding:
-        print(f"  Feeding: continuous at {config.particle_feed_rate:.0f} particles/s")
-        m_per_particle = config.particle_density * (np.pi / 6.0) * config.visual_particle_diameter**3
-        print(f"  Feed mass flow: {config.particle_feed_rate * m_per_particle * 3600:.1f} kg/h")
-        print(f"  Max loading ratio: {config.max_loading_ratio:.1f}")
-    else:
-        print(f"  Feeding: batch (all particles active at t=0)")
-    print("-" * 70)
-    
-    total_steps = int(args.time / args.dt)
-    print_interval = max(1, total_steps // 20)  # ~20 console updates
-    
-    # Animation timing
-    target_fps = 30
-    frame_interval = 1.0 / target_fps
-    steps_per_frame = max(1, int(frame_interval / args.dt))
-    
-    # Start simulation
-    start_time = time.time()
-    last_wall_time = time.time()
-    last_print_step = -print_interval
-    
-    step = 0
-    while step < total_steps:
-        # Run multiple simulation steps per visual frame
-        frame_steps = min(steps_per_frame, total_steps - step)
-        for _ in range(frame_steps):
-            simulator.step()
-            step += 1
-        
-        # Get current state
-        zone_counts = simulator.get_zone_counts()
-        sep_counts = simulator.get_separation_counts()
-        
-        # Console output at intervals
-        if step - last_print_step >= print_interval or step >= total_steps:
-            last_print_step = step
-            progress = 100.0 * step / total_steps
-            
-            active = sep_counts['active']
-            coarse = sep_counts['coarse']           # Zigzag coarse (starch)
-            wheel_coarse = sep_counts.get('wheel_coarse', 0)  # Wheel coarse (starch)
-            cy1 = sep_counts['cyclone_1']
-            cy2 = sep_counts['cyclone_2']
-            cy3 = sep_counts['cyclone_3_protein']
-            bag = sep_counts['bagfilter']
-            
-            status = f"  [{progress:5.1f}%] t={simulator.state.time:5.2f}s"
-            # Show feed progress if continuous feeding
-            if config.continuous_feeding:
-                fed = simulator.state.particles_fed
-                total_to_feed = simulator.state.total_particles_to_feed
-                status += f" | Fed:{fed:5d}/{total_to_feed}"
-            status += f" | Active:{active:5d} Zc:{coarse:5d} Wc:{wheel_coarse:5d}"
-            status += f" Cy1:{cy1:5d} Cy2:{cy2:5d} Cy3:{cy3:5d} Bag:{bag:5d}"
-            # Show zone breakdown for active particles (path: venturi -> duct -> zigzag -> fines_path -> wheel -> cyclones)
-            zz = zone_counts.get('zigzag', 0)
-            fp = zone_counts.get('fines_path', 0)
-            vent = zone_counts.get('venturi', 0)
-            duct_vz = zone_counts.get('duct_v_z', 0)
-            wh = zone_counts.get('wheel_housing', 0)
-            wf = zone_counts.get('wheel_fines', 0)
-            wch = zone_counts.get('wheel_coarse_hopper', 0)
-            cy1_z = zone_counts.get('cyclone_1', 0)
-            cy2_z = zone_counts.get('cyclone_2', 0)
-            cy3_z = zone_counts.get('cyclone_3', 0)
-            status += f"  [zz:{zz:4d} fp:{fp:4d} wh:{wh:4d} wf:{wf:4d} wch:{wch:4d} c1:{cy1_z:4d} c2:{cy2_z:4d} c3:{cy3_z:4d}]"
-            print(status)
-        
-        # Update visualization every frame
-        if plotter is not None:
-            # Calculate wall-clock dt
-            current_wall_time = time.time()
-            wall_dt = current_wall_time - last_wall_time
-            last_wall_time = current_wall_time
-            
-            # ============================================
-            # UPDATE PARTICLES
-            # ============================================
-            positions = simulator.get_positions()
-            velocities = simulator.get_velocities()
-            diameters = simulator.get_diameters()
-            zones = simulator.get_zones()
-            
-            if len(positions) > 0:
-                # Filter finite positions
-                finite = np.isfinite(positions).all(axis=1)
-                if np.any(finite):
-                    positions = np.asarray(positions[finite], dtype=np.float64)
-                    velocities = np.asarray(velocities[finite], dtype=np.float64)
-                    diameters = np.asarray(diameters[finite], dtype=np.float64)
-                    zones = zones[finite]
-                    n_show = len(positions)
-                else:
-                    n_show = 0
-
-                if n_show > 0:
-                    # Transform positions to Y-up for display
-                    positions = to_y_up(positions)
-
-                    # Create particle point cloud
-                    speeds = np.linalg.norm(velocities, axis=1)
-
-                    particle_mesh = pv.PolyData(positions)
-                    particle_mesh['velocity'] = speeds
-                    
-                    # Point size based on particle diameter (scale up for visibility)
-                    particle_dia_um = float(np.mean(diameters)) * 1e6
-                    point_size = max(6, min(15, int(particle_dia_um / 3)))
-                    
-                    try:
-                        new_actor = plotter.add_mesh(
-                            particle_mesh,
-                            scalars='velocity',
-                            cmap='plasma',  # Velocity coloring
-                            point_size=point_size,
-                            render_points_as_spheres=True,
-                            opacity=0.9,
-                            clim=[0, 20.0],
-                            show_scalar_bar=True,
-                            scalar_bar_args={'title': 'Velocity (m/s)', 'n_labels': 3},
-                        )
-                        if particle_actor is not None:
-                            try:
-                                plotter.remove_actor(particle_actor)
-                            except Exception:
-                                pass
-                        particle_actor = new_actor
-                    except Exception as e:
-                        if "plane" not in str(e).lower():
-                            raise
-                        pass  # Keep previous frame
-            
-            # ============================================
-            # UPDATE WHEEL AND MOTOR ROTATION (coupled to physics omega * time)
-            # ============================================
-            try:
-                omega = getattr(simulator, 'wheel_omega', 0.0)
-                t = simulator.state.time
-                angle_rad = omega * t
-                angle_deg = np.degrees(angle_rad)
-                wheel_mesh_rotated = wheel_mesh_base.copy(deep=True)
-                wheel_mesh_rotated.rotate_y(angle_deg, point=wheel_center_world, in_place=True)
-                plotter.remove_actor(wheel_actor)
-                wheel_actor = plotter.add_mesh(wheel_mesh_rotated, color='#9B59B6', opacity=0.6, label='Wheel')
-            except Exception:
-                pass
-            
-            # ============================================
-            # UPDATE INFO TEXT
-            # ============================================
-            info_text = (
-                f"CLASSIFICATION FLOW\n"
-                f"Protein Separation\n"
-                f"\n"
-                f"Venturi:   {zone_counts.get('venturi', 0):4d}\n"
-                f"Zigzag:    {zone_counts.get('zigzag', 0):4d}\n"
-                f"Cyclone 1: {zone_counts.get('cyclone_1', 0):4d}\n"
-                f"Cyclone 2: {zone_counts.get('cyclone_2', 0):4d}\n"
-                f"Cyclone 3: {zone_counts.get('cyclone_3', 0):4d}\n"
-                f"Bag Filt:  {zone_counts.get('bagfilter', 0):4d}\n"
-                f"\n"
-                f"t = {simulator.state.time:.2f}s"
-            )
-            plotter.add_text(info_text, position='upper_left', font_size=10,
-                            color='black', name='sim_info')
-            
-            # ============================================
-            # UPDATE SEPARATION STATS
-            # ============================================
-            total_collected = (sep_counts['coarse'] + sep_counts.get('wheel_coarse', 0) +
-                             sep_counts['cyclone_1'] + sep_counts['cyclone_2'] +
-                             sep_counts['cyclone_3_protein'] + sep_counts['bagfilter'])
-            
-            if total_collected > 0:
-                pct_coarse = 100 * sep_counts['coarse'] / total_collected
-                pct_wc = 100 * sep_counts.get('wheel_coarse', 0) / total_collected
-                pct_cy1 = 100 * sep_counts['cyclone_1'] / total_collected
-                pct_cy2 = 100 * sep_counts['cyclone_2'] / total_collected
-                pct_cy3 = 100 * sep_counts['cyclone_3_protein'] / total_collected
-                pct_bag = 100 * sep_counts['bagfilter'] / total_collected
-            else:
-                pct_coarse = pct_wc = pct_cy1 = pct_cy2 = pct_cy3 = pct_bag = 0
-            
-            sep_text = (
-                f"SEPARATION\n"
-                f"----------\n"
-                f"Zc (zigzag): {sep_counts['coarse']:4d} ({pct_coarse:4.1f}%)\n"
-                f"Wc (wheel):  {sep_counts.get('wheel_coarse', 0):4d} ({pct_wc:4.1f}%)\n"
-                f"Cy1:         {sep_counts['cyclone_1']:4d} ({pct_cy1:4.1f}%)\n"
-                f"Cy2:         {sep_counts['cyclone_2']:4d} ({pct_cy2:4.1f}%)\n"
-                f"Cy3:         {sep_counts['cyclone_3_protein']:4d} ({pct_cy3:4.1f}%)\n"
-                f"Bag:         {sep_counts['bagfilter']:4d} ({pct_bag:4.1f}%)\n"
-                f"----------\n"
-                f"Protein: Cy3+Bag | Starch: Zc+Wc"
-            )
-            plotter.add_text(sep_text, position='upper_right', font_size=10,
-                            color='black', name='sep_info')
-            
-            plotter.update()
-            time.sleep(0.001)
-    
-    elapsed = time.time() - start_time
-    
-    print("-" * 70)
-    print("SIMULATION COMPLETE")
-    print("-" * 70)
-    print(f"  Wall time: {elapsed:.1f} s")
-    print(f"  Sim time:  {simulator.state.time:.2f} s")
-    print(f"  Steps:     {simulator.state.step:,}")
-    print(f"  Rate:      {simulator.state.step / elapsed:.0f} steps/s")
-    if config.continuous_feeding:
-        fed = simulator.state.particles_fed
-        total_to_feed = simulator.state.total_particles_to_feed
-        print(f"  Feeding:   {fed}/{total_to_feed} particles fed ({100*fed/max(1,total_to_feed):.1f}%)")
-        print(f"  Feed rate: {config.particle_feed_rate:.0f} particles/s")
-    
-    # Print final separation summary
-    simulator.print_separation_summary()
-    
     # =========================================================================
-    # FINAL DIAGNOSTICS
+    # MULTI-PASS RECIRCULATION SETUP
+    # =========================================================================
+    num_passes = args.passes if args.recirculate else 1
+    recirculate_fractions = args.recirculate or []
+    # Validate fraction names
+    valid_fractions = {'cy1', 'cy2', 'cy3', 'wheel_coarse', 'zigzag_coarse', 'bagfilter'}
+    for frac in recirculate_fractions:
+        if frac not in valid_fractions:
+            print(f"ERROR: Unknown recirculation fraction '{frac}'. Valid: {', '.join(sorted(valid_fractions))}")
+            return
+
+    if num_passes > 1:
+        print(f"\n  MULTI-PASS RECIRCULATION: {num_passes} passes")
+        print(f"    Recirculating: {', '.join(recirculate_fractions)}")
+        if args.recirculate_wheel_rpm is not None:
+            print(f"    Pass 2+ wheel RPM: {args.recirculate_wheel_rpm:.0f}")
+        if args.recirculate_time is not None:
+            print(f"    Pass 2+ sim time: {args.recirculate_time:.1f} s")
+        if args.attrition > 0:
+            print(f"    Venturi attrition: {args.attrition*100:.0f}% per pass "
+                  f"(min {args.attrition_min:.1f} µm)")
+        else:
+            print(f"    Venturi attrition: disabled")
+        if args.recirculate_to_wheel:
+            print(f"    Refeed path: wheel → cyclones (skip preclassification)")
+        else:
+            print(f"    Refeed path: venturi → zigzag → wheel → cyclones (full path)")
+
+    # Cumulative collection across all passes (for final summary)
+    cumulative_counts = {
+        'coarse': 0, 'wheel_coarse': 0, 'cyclone_1': 0, 'cyclone_2': 0,
+        'cyclone_3_protein': 0, 'bagfilter': 0, 'escaped': 0, 'active': 0,
+    }
+    # Cumulative cyclone particle size data (diameters in µm, for merged stats)
+    cumulative_cy_diameters = {'cyclone_1': [], 'cyclone_2': [], 'cyclone_3_protein': []}
+    pass_results = []  # Per-pass separation counts
+    original_feed_count = args.particles  # Total particles from original feed
+
+    for pass_num in range(1, num_passes + 1):
+        pass_sim_time = args.time
+        if pass_num > 1 and args.recirculate_time is not None:
+            pass_sim_time = args.recirculate_time
+
+        # Run simulation
+        print("\n" + "-" * 70)
+        if num_passes > 1:
+            print(f"RUNNING SIMULATION — PASS {pass_num}/{num_passes}")
+        else:
+            print("RUNNING SIMULATION")
+        print("-" * 70)
+        print(f"  Time: {pass_sim_time:.1f} s")
+        print(f"  dt:   {args.dt*1000:.2f} ms")
+        print(f"  Steps: {int(pass_sim_time / args.dt):,}")
+        if args.bypass_ratio > 0:
+            Q_class = args.air_flow * (1.0 - args.bypass_ratio)
+            print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h total, "
+                  f"{Q_class * 3600:.1f} m³/h classification, "
+                  f"{args.bypass_ratio*100:.1f}% bypass")
+        else:
+            print(f"  Air flow: {args.air_flow * 3600:.0f} m³/h")
+        if getattr(simulator, 'use_preclassification', True):
+            print(f"  Zigzag d50: {simulator.zigzag_d50 * 1e6:.1f} µm")
+        print(f"  Wheel d50: {simulator.wheel_d50 * 1e6:.1f} µm")
+        if pass_num == 1:
+            if config.continuous_feeding:
+                print(f"  Feeding: continuous at {config.particle_feed_rate:.0f} particles/s")
+                m_per_particle = config.particle_density * (np.pi / 6.0) * config.visual_particle_diameter**3
+                print(f"  Feed mass flow: {config.particle_feed_rate * m_per_particle * 3600:.1f} kg/h")
+                print(f"  Max loading ratio: {config.max_loading_ratio:.1f}")
+            else:
+                print(f"  Feeding: batch (all particles active at t=0)")
+        else:
+            print(f"  Recirculation pass: {simulator.state.total_particles_to_feed} particles from {', '.join(recirculate_fractions)}")
+        print("-" * 70)
+
+        total_steps = int(pass_sim_time / args.dt)
+        print_interval = max(1, total_steps // 20)  # ~20 console updates
+
+        # Animation timing
+        target_fps = 30
+        frame_interval = 1.0 / target_fps
+        steps_per_frame = max(1, int(frame_interval / args.dt))
+
+        # Start simulation
+        start_time = time.time()
+        last_wall_time = time.time()
+        last_print_step = -print_interval
+
+        step = 0
+        early_exit = False
+        while step < total_steps:
+            # Run multiple simulation steps per visual frame
+            frame_steps = min(steps_per_frame, total_steps - step)
+            for _ in range(frame_steps):
+                simulator.step()
+                step += 1
+
+            # Get current state
+            zone_counts = simulator.get_zone_counts()
+            sep_counts = simulator.get_separation_counts()
+
+            # Early termination: all particles fed and none still active
+            all_fed = (simulator.state.particles_fed >= simulator.state.total_particles_to_feed)
+            if all_fed and sep_counts['active'] == 0:
+                if not early_exit:
+                    early_exit = True
+                    print(f"  [Early exit] All particles settled at t={simulator.state.time:.1f}s "
+                          f"(step {step:,}/{total_steps:,})")
+                break
+
+            # Console output at intervals
+            if step - last_print_step >= print_interval or step >= total_steps:
+                last_print_step = step
+                progress = 100.0 * step / total_steps
+
+                active = sep_counts['active']
+                coarse = sep_counts['coarse']           # Zigzag coarse (starch)
+                wheel_coarse = sep_counts.get('wheel_coarse', 0)  # Wheel coarse (starch)
+                cy1 = sep_counts['cyclone_1']
+                cy2 = sep_counts['cyclone_2']
+                cy3 = sep_counts['cyclone_3_protein']
+                bag = sep_counts['bagfilter']
+
+                status = f"  [{progress:5.1f}%] t={simulator.state.time:5.2f}s"
+                # Show feed progress if continuous feeding
+                if config.continuous_feeding or pass_num > 1:
+                    fed = simulator.state.particles_fed
+                    total_to_feed = simulator.state.total_particles_to_feed
+                    status += f" | Fed:{fed:5d}/{total_to_feed}"
+                status += f" | Active:{active:5d} Zc:{coarse:5d} Wc:{wheel_coarse:5d}"
+                status += f" Cy1:{cy1:5d} Cy2:{cy2:5d} Cy3:{cy3:5d} Bag:{bag:5d}"
+                # Show zone breakdown for active particles
+                zz = zone_counts.get('zigzag', 0)
+                fp = zone_counts.get('fines_path', 0)
+                vent = zone_counts.get('venturi', 0)
+                duct_vz = zone_counts.get('duct_v_z', 0)
+                wh = zone_counts.get('wheel_housing', 0)
+                wf = zone_counts.get('wheel_fines', 0)
+                wch = zone_counts.get('wheel_coarse_hopper', 0)
+                cy1_z = zone_counts.get('cyclone_1', 0)
+                cy2_z = zone_counts.get('cyclone_2', 0)
+                cy3_z = zone_counts.get('cyclone_3', 0)
+                status += f"  [zz:{zz:4d} fp:{fp:4d} wh:{wh:4d} wf:{wf:4d} wch:{wch:4d} c1:{cy1_z:4d} c2:{cy2_z:4d} c3:{cy3_z:4d}]"
+                print(status)
+
+            # Update visualization every frame
+            if plotter is not None:
+                # Calculate wall-clock dt
+                current_wall_time = time.time()
+                wall_dt = current_wall_time - last_wall_time
+                last_wall_time = current_wall_time
+
+                # ============================================
+                # UPDATE PARTICLES
+                # ============================================
+                positions = simulator.get_positions()
+                velocities = simulator.get_velocities()
+                diameters = simulator.get_diameters()
+                zones = simulator.get_zones()
+
+                if len(positions) > 0:
+                    # Filter finite positions
+                    finite = np.isfinite(positions).all(axis=1)
+                    if np.any(finite):
+                        positions = np.asarray(positions[finite], dtype=np.float64)
+                        velocities = np.asarray(velocities[finite], dtype=np.float64)
+                        diameters = np.asarray(diameters[finite], dtype=np.float64)
+                        zones = zones[finite]
+                        n_show = len(positions)
+                    else:
+                        n_show = 0
+
+                    if n_show > 0:
+                        # Transform positions to Y-up for display
+                        positions = to_y_up(positions)
+
+                        # Create particle point cloud
+                        speeds = np.linalg.norm(velocities, axis=1)
+
+                        particle_mesh = pv.PolyData(positions)
+                        particle_mesh['velocity'] = speeds
+
+                        # Point size based on particle diameter (scale up for visibility)
+                        particle_dia_um = float(np.mean(diameters)) * 1e6
+                        point_size = max(6, min(15, int(particle_dia_um / 3)))
+
+                        try:
+                            new_actor = plotter.add_mesh(
+                                particle_mesh,
+                                scalars='velocity',
+                                cmap='plasma',  # Velocity coloring
+                                point_size=point_size,
+                                render_points_as_spheres=True,
+                                opacity=0.9,
+                                clim=[0, 20.0],
+                                show_scalar_bar=True,
+                                scalar_bar_args={'title': 'Velocity (m/s)', 'n_labels': 3},
+                            )
+                            if particle_actor is not None:
+                                try:
+                                    plotter.remove_actor(particle_actor)
+                                except Exception:
+                                    pass
+                            particle_actor = new_actor
+                        except Exception as e:
+                            if "plane" not in str(e).lower():
+                                raise
+                            pass  # Keep previous frame
+
+                # ============================================
+                # UPDATE WHEEL AND MOTOR ROTATION (coupled to physics omega * time)
+                # ============================================
+                try:
+                    omega = getattr(simulator, 'wheel_omega', 0.0)
+                    t = simulator.state.time
+                    angle_rad = omega * t
+                    angle_deg = np.degrees(angle_rad)
+                    wheel_mesh_rotated = wheel_mesh_base.copy(deep=True)
+                    wheel_mesh_rotated.rotate_y(angle_deg, point=wheel_center_world, in_place=True)
+                    plotter.remove_actor(wheel_actor)
+                    wheel_actor = plotter.add_mesh(wheel_mesh_rotated, color='#9B59B6', opacity=0.6, label='Wheel')
+                except Exception:
+                    pass
+
+                # ============================================
+                # UPDATE INFO TEXT
+                # ============================================
+                pass_label = f" (Pass {pass_num}/{num_passes})" if num_passes > 1 else ""
+                info_text = (
+                    f"CLASSIFICATION FLOW{pass_label}\n"
+                    f"Protein Separation\n"
+                    f"\n"
+                    f"Venturi:   {zone_counts.get('venturi', 0):4d}\n"
+                    f"Zigzag:    {zone_counts.get('zigzag', 0):4d}\n"
+                    f"Cyclone 1: {zone_counts.get('cyclone_1', 0):4d}\n"
+                    f"Cyclone 2: {zone_counts.get('cyclone_2', 0):4d}\n"
+                    f"Cyclone 3: {zone_counts.get('cyclone_3', 0):4d}\n"
+                    f"Bag Filt:  {zone_counts.get('bagfilter', 0):4d}\n"
+                    f"\n"
+                    f"t = {simulator.state.time:.2f}s"
+                )
+                plotter.add_text(info_text, position='upper_left', font_size=10,
+                                color='black', name='sim_info')
+
+                # ============================================
+                # UPDATE SEPARATION STATS
+                # ============================================
+                total_collected = (sep_counts['coarse'] + sep_counts.get('wheel_coarse', 0) +
+                                 sep_counts['cyclone_1'] + sep_counts['cyclone_2'] +
+                                 sep_counts['cyclone_3_protein'] + sep_counts['bagfilter'])
+
+                if total_collected > 0:
+                    pct_coarse = 100 * sep_counts['coarse'] / total_collected
+                    pct_wc = 100 * sep_counts.get('wheel_coarse', 0) / total_collected
+                    pct_cy1 = 100 * sep_counts['cyclone_1'] / total_collected
+                    pct_cy2 = 100 * sep_counts['cyclone_2'] / total_collected
+                    pct_cy3 = 100 * sep_counts['cyclone_3_protein'] / total_collected
+                    pct_bag = 100 * sep_counts['bagfilter'] / total_collected
+                else:
+                    pct_coarse = pct_wc = pct_cy1 = pct_cy2 = pct_cy3 = pct_bag = 0
+
+                sep_text = (
+                    f"SEPARATION\n"
+                    f"----------\n"
+                    f"Zc (zigzag): {sep_counts['coarse']:4d} ({pct_coarse:4.1f}%)\n"
+                    f"Wc (wheel):  {sep_counts.get('wheel_coarse', 0):4d} ({pct_wc:4.1f}%)\n"
+                    f"Cy1:         {sep_counts['cyclone_1']:4d} ({pct_cy1:4.1f}%)\n"
+                    f"Cy2:         {sep_counts['cyclone_2']:4d} ({pct_cy2:4.1f}%)\n"
+                    f"Cy3:         {sep_counts['cyclone_3_protein']:4d} ({pct_cy3:4.1f}%)\n"
+                    f"Bag:         {sep_counts['bagfilter']:4d} ({pct_bag:4.1f}%)\n"
+                    f"----------\n"
+                    f"Protein: Cy3+Bag | Starch: Zc+Wc"
+                )
+                plotter.add_text(sep_text, position='upper_right', font_size=10,
+                                color='black', name='sep_info')
+
+                plotter.update()
+                time.sleep(0.001)
+
+        elapsed = time.time() - start_time
+
+        print("-" * 70)
+        if num_passes > 1:
+            print(f"PASS {pass_num}/{num_passes} COMPLETE")
+        else:
+            print("SIMULATION COMPLETE")
+        print("-" * 70)
+        print(f"  Wall time: {elapsed:.1f} s")
+        print(f"  Sim time:  {simulator.state.time:.2f} s")
+        print(f"  Steps:     {simulator.state.step:,}")
+        print(f"  Rate:      {simulator.state.step / elapsed:.0f} steps/s")
+        if config.continuous_feeding and pass_num == 1:
+            fed = simulator.state.particles_fed
+            total_to_feed = simulator.state.total_particles_to_feed
+            print(f"  Feeding:   {fed}/{total_to_feed} particles fed ({100*fed/max(1,total_to_feed):.1f}%)")
+            print(f"  Feed rate: {config.particle_feed_rate:.0f} particles/s")
+
+        # Print pass separation summary
+        simulator.print_separation_summary()
+
+        # =====================================================================
+        # ACCUMULATE PASS RESULTS
+        # =====================================================================
+        pass_sep = simulator.get_separation_counts()
+        pass_results.append({'pass': pass_num, 'counts': pass_sep})
+
+        # For non-recirculated fractions, add to cumulative totals
+        # Recirculated fractions will be re-processed in the next pass
+        for key in cumulative_counts:
+            if key == 'active':
+                continue  # Don't accumulate active (transient)
+            # If this fraction is being recirculated, don't add to cumulative yet
+            # (it will be re-classified in the next pass)
+            # Map separation count keys to recirculate fraction names
+            sep_to_frac = {
+                'cyclone_1': 'cy1', 'cyclone_2': 'cy2',
+                'cyclone_3_protein': 'cy3', 'wheel_coarse': 'wheel_coarse',
+                'coarse': 'zigzag_coarse', 'bagfilter': 'bagfilter',
+            }
+            frac_name = sep_to_frac.get(key)
+            if frac_name in recirculate_fractions and pass_num < num_passes:
+                # This fraction will be recirculated — don't collect yet
+                pass
+            else:
+                cumulative_counts[key] += pass_sep.get(key, 0)
+
+        # Accumulate cyclone particle size data for cumulative stats
+        try:
+            cy_stats = simulator.get_cyclone_particle_size_stats()
+            zones_np = simulator.get_zones()
+            diameters_np = simulator.get_diameters()
+            for key, zone_id in [('cyclone_1', 55), ('cyclone_2', 56), ('cyclone_3_protein', 57)]:
+                mask = (zones_np == zone_id)
+                if np.any(mask):
+                    d_um = diameters_np[mask] * 1e6
+                    sep_to_frac = {
+                        'cyclone_1': 'cy1', 'cyclone_2': 'cy2', 'cyclone_3_protein': 'cy3',
+                    }
+                    frac_name = sep_to_frac.get(key)
+                    if frac_name in recirculate_fractions and pass_num < num_passes:
+                        pass  # Will be reclassified
+                    else:
+                        cumulative_cy_diameters[key].extend(d_um.tolist())
+        except Exception:
+            pass
+
+        # Remaining active particles at end of pass count as "still active"
+        cumulative_counts['active'] += pass_sep.get('active', 0)
+
+        # =====================================================================
+        # RECIRCULATION: Extract and re-initialize for next pass
+        # =====================================================================
+        if pass_num < num_passes and recirculate_fractions:
+            print(f"\n{'='*70}")
+            print(f"RECIRCULATION: Extracting {', '.join(recirculate_fractions)} for pass {pass_num + 1}")
+            print(f"{'='*70}")
+
+            particle_data = simulator.extract_collected_particles(recirculate_fractions)
+            frac_counts = particle_data['fraction_counts']
+            for frac_name, frac_count in frac_counts.items():
+                print(f"  {frac_name}: {frac_count} particles")
+            print(f"  Total to recirculate: {particle_data['count']} particles")
+
+            if particle_data['count'] == 0:
+                print("  No particles to recirculate — stopping early.")
+                break
+
+            # Print size distribution of refeed material
+            d_um = particle_data['diameters'] * 1e6
+            print(f"  Refeed PSD: {d_um.min():.1f} – {d_um.max():.1f} µm, "
+                  f"mean={d_um.mean():.1f} µm, median={np.median(d_um):.1f} µm")
+
+            # Determine wheel RPM for next pass
+            next_wheel_rpm = args.recirculate_wheel_rpm  # None = keep current
+
+            # Re-initialize simulator with extracted particles
+            # Use batch feeding for recirculation passes (smaller particle counts)
+            # Apply venturi attrition to model shear breakup at throat
+            # Default: skip preclassification (enter at wheel, not venturi+zigzag)
+            n_recirc = simulator.reinitialize_from_particles(
+                particle_data,
+                initial_velocity=(0.0, 0.5, 0.0),
+                continuous_feeding=False,  # Batch for recirculation (fewer particles)
+                wheel_rpm=next_wheel_rpm,
+                attrition_factor=args.attrition,
+                attrition_min_diameter_m=args.attrition_min * 1e-6,  # µm to m
+                skip_preclassification=args.recirculate_to_wheel,
+            )
+            if n_recirc == 0:
+                print("  Recirculation initialization failed — stopping.")
+                break
+
+    # =========================================================================
+    # FINAL DIAGNOSTICS (after all passes)
     # =========================================================================
     if args.diagnostics:
         print("\n" + "=" * 70)
-        print("FINAL DIAGNOSTICS - Zone Distribution")
+        print("FINAL DIAGNOSTICS - Zone Distribution (last pass)")
         print("=" * 70)
         zone_counts = simulator.get_zone_counts()
         print(f"\n  Active Particle Distribution by Zone:")
         for zone_name, count in zone_counts.items():
             if count > 0:
                 print(f"    {zone_name:20s}: {count:5d}")
-        
+
         # Print detailed separation analysis (path order; balance = sum of all)
         sep = simulator.get_separation_counts()
         total = sum(sep.values())  # Full balance: every particle in exactly one bucket
-        
+
         if total > 0:
             print(f"\n  Separation Analysis (particle balance):")
             print(f"    Total (all destinations): {total:5d} particles")
             print(f"    Still in system:          {sep['active']:5d} particles")
-            
+
             print(f"\n  Collection by Outlet (path order):")
             outlets = [
                 ('Zigzag coarse (starch)', 'coarse', '#8B4513'),
@@ -1149,14 +1360,14 @@ def main():
                 ('Bag Filter', 'bagfilter', '#95A5A6'),
                 ('Escaped', 'escaped', '#FF0000'),
             ]
-            
+
             for label, key, _ in outlets:
                 count = sep[key]
                 pct = 100.0 * count / total if total > 0 else 0
                 bar_len = int(pct / 2)
                 bar = '#' * bar_len
                 print(f"    {label:20s}: {count:5d} ({pct:5.1f}%) |{bar}")
-            
+
             # Protein recovery estimate
             protein_outlets = sep['cyclone_3_protein'] + sep['bagfilter']
             starch_outlets = sep['coarse'] + sep.get('wheel_coarse', 0)
@@ -1206,8 +1417,72 @@ def main():
                 d_um = diameters_arr[mask] * 1e6  # Convert to µm
                 print(f"    {label:22s}: n={n:5d}  d=[{np.min(d_um):5.1f}, {np.median(d_um):5.1f}, {np.max(d_um):5.1f}] µm (min/med/max)")
 
+    # =========================================================================
+    # CUMULATIVE MULTI-PASS SUMMARY
+    # =========================================================================
+    if num_passes > 1:
+        print("\n" + "=" * 70)
+        print(f"CUMULATIVE RESULTS — {len(pass_results)} PASSES")
+        print(f"  Recirculated fractions: {', '.join(recirculate_fractions)}")
+        print("=" * 70)
+
+        cum_total = sum(cumulative_counts.values())
+        print(f"\n  Original feed: {original_feed_count} particles")
+        print(f"  Cumulative collection (all passes combined):\n")
+
+        labels = [
+            ('coarse', 'Zigzag coarse (starch):  '),
+            ('wheel_coarse', 'Wheel coarse (starch):   '),
+            ('cyclone_1', 'Cyclone 1 (fines 1):     '),
+            ('cyclone_2', 'Cyclone 2 (fines 2):     '),
+            ('cyclone_3_protein', 'Cyclone 3 (PROTEIN):     '),
+            ('bagfilter', 'Bag filter:               '),
+            ('escaped', 'Escaped (loss):           '),
+            ('active', 'Still active (residual):   '),
+        ]
+        for key, label in labels:
+            c = cumulative_counts.get(key, 0)
+            pct_of_feed = 100.0 * c / max(1, original_feed_count)
+            pct_of_cum = 100.0 * c / max(1, cum_total)
+            bar_len = int(pct_of_feed / 2)
+            bar = '#' * bar_len
+            print(f"    {label} {c:5d} ({pct_of_feed:5.1f}% of feed, {pct_of_cum:5.1f}% of collected) |{bar}")
+
+        # Cumulative protein recovery
+        protein_cum = cumulative_counts['cyclone_3_protein'] + cumulative_counts['bagfilter']
+        starch_cum = cumulative_counts['coarse'] + cumulative_counts['wheel_coarse']
+        print(f"\n  Cumulative Protein Recovery:")
+        print(f"    Protein-rich (Cy3 + Bag):  {protein_cum:5d} ({100*protein_cum/max(1,original_feed_count):.1f}% of feed)")
+        print(f"    Starch-rich (Zc + Wc):     {starch_cum:5d} ({100*starch_cum/max(1,original_feed_count):.1f}% of feed)")
+
+        # Cumulative cyclone particle sizes
+        print(f"\n  Cumulative Cyclone Particle Sizes (all passes):")
+        for key, title in [('cyclone_1', 'Cy1'), ('cyclone_2', 'Cy2'), ('cyclone_3_protein', 'Cy3 (protein)')]:
+            d_list = cumulative_cy_diameters.get(key, [])
+            if d_list:
+                d_arr = np.array(d_list)
+                print(f"    {title:20s}: N={len(d_arr):5d}  mean={d_arr.mean():.1f} µm  median={np.median(d_arr):.1f} µm  "
+                      f"range=[{d_arr.min():.1f}, {d_arr.max():.1f}] µm")
+            else:
+                print(f"    {title:20s}: N=    0")
+
+        # Per-pass breakdown table
+        print(f"\n  Per-Pass Breakdown:")
+        header = f"    {'Pass':>4s}  {'Feed':>6s}  {'Zc':>6s}  {'Wc':>6s}  {'Cy1':>6s}  {'Cy2':>6s}  {'Cy3':>6s}  {'Bag':>5s}  {'Active':>6s}"
+        print(header)
+        print(f"    {'----':>4s}  {'------':>6s}  {'------':>6s}  {'------':>6s}  {'------':>6s}  {'------':>6s}  {'------':>6s}  {'-----':>5s}  {'------':>6s}")
+        for pr in pass_results:
+            p = pr['pass']
+            c = pr['counts']
+            feed_n = sum(c.values())
+            print(f"    {p:4d}  {feed_n:6d}  {c['coarse']:6d}  {c.get('wheel_coarse',0):6d}  "
+                  f"{c['cyclone_1']:6d}  {c['cyclone_2']:6d}  {c['cyclone_3_protein']:6d}  "
+                  f"{c['bagfilter']:5d}  {c['active']:6d}")
+
+        print("=" * 70)
+
     print("=" * 70)
-    
+
     if plotter is not None:
         print("\nVisualization window open. Close to exit.")
         plotter.show()

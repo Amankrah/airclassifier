@@ -676,6 +676,11 @@ class MainWindow(QMainWindow):
         self.sim_control.pause_requested.connect(self.pause_simulation)
         self.sim_control.stop_requested.connect(self.stop_simulation)
 
+        # Simulation results -> Results panel
+        self.sim_control.simulation_results_ready.connect(
+            self.results_panel.set_results
+        )
+
     def _update_window_title(self):
         """Update window title based on project state."""
         title = "Air Classifier Designer"

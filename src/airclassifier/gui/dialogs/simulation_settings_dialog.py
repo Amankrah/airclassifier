@@ -43,6 +43,12 @@ class SimulationSettingsDialog(QDialog):
             show_particles=settings.show_particles,
             show_velocity_field=settings.show_velocity_field,
             particle_color_mode=settings.particle_color_mode,
+            recirculate_passes=settings.recirculate_passes,
+            recirculate_fractions=settings.recirculate_fractions,
+            attrition_factor=settings.attrition_factor,
+            attrition_min_um=settings.attrition_min_um,
+            recirculate_wheel_rpm=settings.recirculate_wheel_rpm,
+            recirculate_time=settings.recirculate_time,
         )
 
         self._setup_ui()
@@ -71,6 +77,10 @@ class SimulationSettingsDialog(QDialog):
         # Compute tab
         compute_tab = self._create_compute_tab()
         tabs.addTab(compute_tab, "Compute")
+
+        # Recirculation tab
+        recirc_tab = self._create_recirculation_tab()
+        tabs.addTab(recirc_tab, "Recirculation")
 
         # Visualization tab
         viz_tab = self._create_visualization_tab()
@@ -241,6 +251,79 @@ class SimulationSettingsDialog(QDialog):
         layout.addStretch()
         return widget
 
+    def _create_recirculation_tab(self) -> QWidget:
+        """Create recirculation settings tab."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Multi-pass
+        pass_group = QGroupBox("Multi-Pass Recirculation")
+        pass_form = QFormLayout(pass_group)
+
+        self.passes_spin = QSpinBox()
+        self.passes_spin.setRange(1, 10)
+        self.passes_spin.setToolTip("1 = single pass (no recirculation)")
+        pass_form.addRow("Number of Passes:", self.passes_spin)
+
+        self.recirc_fractions_combo = QComboBox()
+        self.recirc_fractions_combo.addItems([
+            "cy1", "cy1,cy2", "cy2", "wheel_coarse", "cy1,wheel_coarse",
+        ])
+        self.recirc_fractions_combo.setEditable(True)
+        self.recirc_fractions_combo.setToolTip(
+            "Fractions to refeed after each pass.\n"
+            "Valid: cy1, cy2, cy3, wheel_coarse, zigzag_coarse, bagfilter"
+        )
+        pass_form.addRow("Refeed Fractions:", self.recirc_fractions_combo)
+
+        layout.addWidget(pass_group)
+
+        # Attrition
+        attr_group = QGroupBox("Venturi Attrition")
+        attr_form = QFormLayout(attr_group)
+
+        self.attrition_spin = QDoubleSpinBox()
+        self.attrition_spin.setRange(0.0, 0.50)
+        self.attrition_spin.setDecimals(2)
+        self.attrition_spin.setSingleStep(0.05)
+        self.attrition_spin.setToolTip(
+            "Diameter reduction per pass (0.10 = 10%).\n"
+            "Models shear breakup at venturi throat."
+        )
+        attr_form.addRow("Attrition Rate:", self.attrition_spin)
+
+        self.attrition_min_spin = QDoubleSpinBox()
+        self.attrition_min_spin.setRange(1.0, 20.0)
+        self.attrition_min_spin.setDecimals(1)
+        self.attrition_min_spin.setSuffix(" \u00b5m")
+        self.attrition_min_spin.setToolTip("Floor diameter (protein bodies don't break further)")
+        attr_form.addRow("Min Diameter:", self.attrition_min_spin)
+
+        layout.addWidget(attr_group)
+
+        # Pass 2+ overrides
+        override_group = QGroupBox("Pass 2+ Overrides")
+        override_form = QFormLayout(override_group)
+
+        self.recirc_wheel_spin = QDoubleSpinBox()
+        self.recirc_wheel_spin.setRange(0, 20000)
+        self.recirc_wheel_spin.setDecimals(0)
+        self.recirc_wheel_spin.setSuffix(" RPM")
+        self.recirc_wheel_spin.setToolTip("Wheel RPM for recirculation passes. 0 = same as main.")
+        override_form.addRow("Wheel RPM:", self.recirc_wheel_spin)
+
+        self.recirc_time_spin = QDoubleSpinBox()
+        self.recirc_time_spin.setRange(0, 3600)
+        self.recirc_time_spin.setDecimals(0)
+        self.recirc_time_spin.setSuffix(" s")
+        self.recirc_time_spin.setToolTip("Sim time for passes 2+. 0 = same as Total Time.")
+        override_form.addRow("Sim Time:", self.recirc_time_spin)
+
+        layout.addWidget(override_group)
+
+        layout.addStretch()
+        return widget
+
     def _create_visualization_tab(self) -> QWidget:
         """Create visualization settings tab."""
         widget = QWidget()
@@ -282,6 +365,13 @@ class SimulationSettingsDialog(QDialog):
         self.show_particles_check.setChecked(self._settings.show_particles)
         self.show_flow_check.setChecked(self._settings.show_velocity_field)
         self.color_mode_combo.setCurrentText(self._settings.particle_color_mode)
+        # Recirculation
+        self.passes_spin.setValue(self._settings.recirculate_passes)
+        self.recirc_fractions_combo.setCurrentText(self._settings.recirculate_fractions)
+        self.attrition_spin.setValue(self._settings.attrition_factor)
+        self.attrition_min_spin.setValue(self._settings.attrition_min_um)
+        self.recirc_wheel_spin.setValue(self._settings.recirculate_wheel_rpm)
+        self.recirc_time_spin.setValue(self._settings.recirculate_time)
 
         self._update_info()
 
@@ -311,6 +401,13 @@ class SimulationSettingsDialog(QDialog):
         self._settings.show_particles = self.show_particles_check.isChecked()
         self._settings.show_velocity_field = self.show_flow_check.isChecked()
         self._settings.particle_color_mode = self.color_mode_combo.currentText()
+        # Recirculation
+        self._settings.recirculate_passes = self.passes_spin.value()
+        self._settings.recirculate_fractions = self.recirc_fractions_combo.currentText()
+        self._settings.attrition_factor = self.attrition_spin.value()
+        self._settings.attrition_min_um = self.attrition_min_spin.value()
+        self._settings.recirculate_wheel_rpm = self.recirc_wheel_spin.value()
+        self._settings.recirculate_time = self.recirc_time_spin.value()
 
         self.accept()
 
