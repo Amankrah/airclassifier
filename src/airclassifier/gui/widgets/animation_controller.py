@@ -186,13 +186,17 @@ class AnimationController(QObject):
             return
 
         offset = np.asarray(world_offset, dtype=np.float64)
+        # Store the current blade position so mesh_fn can read it directly.
+        # This bypasses the damper's internal smooth transition which conflicts
+        # with the animation controller's own frac ramp and causes oscillation.
+        state = {"position": 0.0}
 
         def update_fn(dt, frac):
-            damper.update_animation(dt, target_position=frac, transition_time=1.0)
+            state["position"] = max(0.0, min(1.0, frac))
 
         def mesh_fn():
             try:
-                v, i, _ = damper.get_blade_mesh()
+                v, i, _ = damper.get_blade_mesh(position=state["position"])
                 if v is not None and len(v) > 0:
                     verts = v.astype(np.float64) + offset
                     return self._make_pv_mesh(verts, i)
@@ -612,18 +616,15 @@ class AnimationController(QObject):
                 pass
 
         # Step feed simulator (starts at feed_start_time)
-        # Lid sequence: opens at feed_start, closes after feed_duration
+        # Lid opens during preamble and STAYS OPEN for the entire simulation.
+        # It only closes during the shutdown sequence (handled by begin_shutdown).
         if self._feed_sim is not None:
             try:
-                feed_close_time = self._feed_start_time + 4.0  # lid open for ~4s
                 if t >= self._feed_start_time:
                     lid_val = self._feed_sim.state.lid_state.value
-                    # Open lid at feed start
-                    if lid_val == "closed" and t < feed_close_time:
+                    # Open lid at feed start (stays open)
+                    if lid_val == "closed":
                         self._feed_sim.open_lid()
-                    # Close lid after feed duration
-                    elif lid_val == "open" and t >= feed_close_time:
-                        self._feed_sim.close_lid()
 
                     feed_dt = self._feed_sim.config.dt
                     target_feed_time = t - self._feed_start_time
@@ -705,14 +706,19 @@ class AnimationController(QObject):
     def _update_damper_from_physics(self, part: AnimatedPart, position: float):
         """Update damper blade directly from physics position (0=closed, 1=open)."""
         try:
-            # For dampers, the update_fn calls damper.update_animation(dt, target, time)
-            # and mesh_fn calls damper.get_blade_mesh(). We set the position directly.
-            if part.update:
-                # update_fn(dt, frac) -- frac is used as target_position
-                part.update(self.FRAME_MS / 1000.0, position)
+            # Set position in the closure state dict, then re-render
+            mesh_fn = part.get_mesh
+            if mesh_fn is not None:
+                closure_vars = mesh_fn.__code__.co_freevars
+                if 'state' in closure_vars:
+                    idx = closure_vars.index('state')
+                    state_cell = mesh_fn.__closure__[idx]
+                    state_cell.cell_contents["position"] = max(0.0, min(1.0, position))
             self._update_actor(part)
         except Exception:
-            pass
+            if part.update:
+                part.update(self.FRAME_MS / 1000.0, position)
+            self._update_actor(part)
 
     def render_initial_state(self):
         """

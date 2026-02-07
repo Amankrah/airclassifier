@@ -734,47 +734,67 @@ class SimulationWorker(QObject):
                 self.log_message.emit(f"  Feed physics init failed (animation will use fallback): {e}")
                 self._feed_sim = None
 
-    def _step_subsidiary_simulators(self, sim_time: float):
-        """
-        Advance air and feed physics simulators to match the classification sim time.
+        # Fast-forward subsidiary sims through the startup preamble so they
+        # start at steady-state.  The preamble animation was already shown to
+        # the user by the AnimationController before the worker was launched.
+        self._fast_forward_subsidiary_sims()
 
-        Orchestration timing:
-          t=0s   Air system starts (blower ramp, dampers open)
-          t=3s   Feed system starts (lid opens)
-          t>=3s  Feed sim steps alongside
+    def _fast_forward_subsidiary_sims(self):
+        """Fast-forward air/feed sims through the startup preamble to steady state."""
+        PREAMBLE = 8.0  # matches AnimationTimeline.steady_time
 
-        Each simulator steps at its own dt, catching up to sim_time.
-        """
-        FEED_START_TIME = 3.0  # seconds: when feed system begins
-
-        # --- Air simulator: steps from t=0 ---
+        # Air: ramp blower to full speed, open dampers fully
         if self._air_sim is not None:
             try:
-                air_dt = self._air_sim.config.dt
-                while self._air_sim.state.time < sim_time - air_dt * 0.5:
+                dt = self._air_sim.config.dt
+                while self._air_sim.state.time < PREAMBLE:
                     self._air_sim.step()
             except Exception:
                 pass
 
-        # --- Feed simulator: starts at FEED_START_TIME ---
-        # Lid sequence: opens at FEED_START_TIME, closes after FEED_DURATION
-        FEED_DURATION = 4.0  # lid stays open for ~4s
+        # Feed: open lid and let it reach fully open.
+        # Lid STAYS OPEN for the entire classification phase and only
+        # closes during the shutdown sequence after the simulation ends.
         if self._feed_sim is not None:
             try:
-                feed_close_time = FEED_START_TIME + FEED_DURATION
-                if sim_time >= FEED_START_TIME:
-                    lid_val = self._feed_sim.state.lid_state.value
-                    # Open lid at feed start
-                    if lid_val == "closed" and sim_time < feed_close_time:
-                        self._feed_sim.open_lid()
-                    # Close lid after feed duration
-                    elif lid_val == "open" and sim_time >= feed_close_time:
-                        self._feed_sim.close_lid()
+                feed_start = 3.0
+                dt = self._feed_sim.config.dt
 
-                    feed_dt = self._feed_sim.config.dt
-                    target_feed_time = sim_time - FEED_START_TIME
-                    while self._feed_sim.state.time < target_feed_time - feed_dt * 0.5:
-                        self._feed_sim.step()
+                # Open lid
+                self._feed_sim.open_lid()
+                while self._feed_sim.state.time < (PREAMBLE - feed_start):
+                    self._feed_sim.step()
+                # Lid is now fully open at 90° -- stays open
+            except Exception:
+                pass
+
+    def _step_subsidiary_simulators(self, sim_time: float):
+        """
+        Advance air and feed physics simulators during the classification phase.
+
+        The sims were already fast-forwarded through the startup preamble
+        in _fast_forward_subsidiary_sims().  During classification (sim_time
+        0→total_time), they are at steady state: blower at full RPM, dampers
+        open, lid closed.  We keep stepping them to maintain their time.
+        """
+        PREAMBLE = 8.0  # already fast-forwarded this far
+        target = PREAMBLE + sim_time
+
+        if self._air_sim is not None:
+            try:
+                air_dt = self._air_sim.config.dt
+                while self._air_sim.state.time < target - air_dt * 0.5:
+                    self._air_sim.step()
+            except Exception:
+                pass
+
+        if self._feed_sim is not None:
+            try:
+                # Feed sim time is offset by feed_start (3s)
+                feed_target = target - 3.0
+                feed_dt = self._feed_sim.config.dt
+                while self._feed_sim.state.time < feed_target - feed_dt * 0.5:
+                    self._feed_sim.step()
             except Exception:
                 pass
 
@@ -873,26 +893,11 @@ class SimulationWorker(QObject):
             component_state["deagg_omega"] = float(getattr(feed, 'deagg_omega', 0.0))
         else:
             # --- FALLBACK: computed ramp ---
-            # Lid opens at FEED_START, closes after FEED_DURATION
-            feed_ramp = 2.0
-            lid_speed = 45.0  # deg/s
-            feed_duration = 4.0
-            feed_close_time = FEED_START + feed_duration
-            if sim_time < FEED_START:
-                lid_angle = 0.0
-                feed_frac = 0.0
-            elif sim_time < feed_close_time:
-                # Opening / open phase
-                elapsed = sim_time - FEED_START
-                lid_angle = min(90.0, lid_speed * elapsed)
-                feed_frac = min(1.0, elapsed / feed_ramp)
-            else:
-                # Closing phase
-                closing_elapsed = sim_time - feed_close_time
-                lid_angle = max(0.0, 90.0 - lid_speed * closing_elapsed)
-                feed_frac = 1.0
-            component_state["lid_angle_deg"] = float(lid_angle)
-            component_state["feed_ramp_frac"] = float(feed_frac)
+            # By the time the simulation starts, the preamble is done and
+            # the lid is already fully open at 90°.  It stays open for the
+            # entire classification phase and closes during shutdown.
+            component_state["lid_angle_deg"] = 90.0
+            component_state["feed_ramp_frac"] = 1.0
 
         # ==================================================================
         # CLASSIFICATION -- wheel is physics-driven (above); ramp fraction

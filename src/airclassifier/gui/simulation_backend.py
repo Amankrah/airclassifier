@@ -737,21 +737,12 @@ class SimulationBackend(QObject):
         damper_pos = min(1.0, sim_time / 2.0) if sim_time > 0 else 0.0
         component_state["damper_positions"] = [float(damper_pos), float(damper_pos)]
 
-        # Lid -- feed_flow_physics servo at ~45 deg/s; closes after feed_duration
-        feed_start = 3.0
-        lid_speed = 45.0
-        feed_duration = 4.0
-        feed_close_time = feed_start + feed_duration
-        if sim_time < feed_start:
-            lid_angle = 0.0
-        elif sim_time < feed_close_time:
-            lid_angle = min(90.0, lid_speed * (sim_time - feed_start))
-        else:
-            closing_elapsed = sim_time - feed_close_time
-            lid_angle = max(0.0, 90.0 - lid_speed * closing_elapsed)
-        component_state["lid_angle_deg"] = float(lid_angle)
+        # Lid -- stays open (90°) during classification; closes during shutdown.
+        # The preamble (lid open sequence) is handled by the animation controller.
+        component_state["lid_angle_deg"] = 90.0
 
-        # Feed ramp
+        # Feed ramp -- already at steady state during classification
+        feed_start = 3.0
         feed_ramp = 2.0
         if sim_time < feed_start:
             feed_frac = 0.0

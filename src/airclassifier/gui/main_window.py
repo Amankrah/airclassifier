@@ -962,13 +962,24 @@ class MainWindow(QMainWindow):
     #  Simulation Operations
     # ================================================================
 
+    # Startup preamble: animation plays the full startup sequence
+    # (air ramp, dampers open, lid open→close, wheel spin-up) BEFORE
+    # the classification physics begins.  This matches the real machine
+    # where the system must be at steady-state before material is classified.
+    STARTUP_PREAMBLE_MS = 8000  # 8 seconds (matches AnimationTimeline.steady_time)
+
     @Slot()
     def run_simulation(self):
         """Start the simulation.
 
         If a system hasn't been built yet, build it first automatically.
-        The simulation worker uses the settings panel params directly
-        (assembly is built inside the worker from ClassificationSystemParams).
+
+        Sequence:
+        1. Start the mechanical animation (startup preamble: blower ramp,
+           dampers open, lid open→close, wheel spin-up).
+        2. After the preamble completes (~8s), start the classification
+           particle physics so the system is at steady-state.
+        3. When physics finishes, play the shutdown sequence.
         """
         # Auto-build if not built yet
         if self._built_backend is None:
@@ -976,9 +987,22 @@ class MainWindow(QMainWindow):
 
         self._start_simulation_run()
 
-        # Start mechanical animations (synced to physics timeline)
+        # Start mechanical animations -- preamble runs first
         self._start_animation()
 
+        # Delay the simulation start until the startup preamble completes
+        # so the animation shows the full startup sequence before particles flow.
+        self.sim_control._log(
+            f"Startup preamble: {self.STARTUP_PREAMBLE_MS / 1000:.0f}s "
+            "(air → feed → classification)..."
+        )
+        QTimer.singleShot(self.STARTUP_PREAMBLE_MS, self._start_simulation_after_preamble)
+
+    def _start_simulation_after_preamble(self):
+        """Called after the startup preamble animation completes."""
+        if self._simulation_state != "running":
+            return  # User cancelled during preamble
+        self.sim_control._log("Preamble complete — starting classification physics")
         self.sim_control.start_simulation({})
 
     def _start_animation(self):
@@ -1039,14 +1063,28 @@ class MainWindow(QMainWindow):
 
     @Slot(float)
     def _on_sim_time_updated(self, sim_time: float):
-        """Sync animation time with simulation progress."""
+        """Sync animation time with simulation progress.
+
+        The simulation reports sim_time starting from 0, but the animation
+        already spent STARTUP_PREAMBLE_MS on the startup sequence.  Offset
+        so the animation stays at steady-state during classification.
+        """
         if self._animation_controller is not None:
-            self._animation_controller.sync_to_sim_time(sim_time)
+            anim_time = sim_time + self.STARTUP_PREAMBLE_MS / 1000.0
+            self._animation_controller.sync_to_sim_time(anim_time)
 
     @Slot(dict)
     def _on_component_state_updated(self, component_state: dict):
-        """Forward physics-driven component states to animation controller."""
+        """Forward physics-driven component states to animation controller.
+
+        Offsets sim_time by the startup preamble so the animation controller
+        sees animation-time (startup already completed) rather than raw sim_time.
+        """
         if self._animation_controller is not None:
+            # Offset sim_time so animation stays at steady-state
+            preamble_s = self.STARTUP_PREAMBLE_MS / 1000.0
+            component_state = dict(component_state)  # shallow copy
+            component_state["sim_time"] = component_state.get("sim_time", 0.0) + preamble_s
             self._animation_controller.update_from_physics(component_state)
 
     @Slot(dict)
