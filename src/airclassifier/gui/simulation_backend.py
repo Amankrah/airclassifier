@@ -173,9 +173,9 @@ class SimulationConfig:
     wheel_target_d50: float = 25e-6  # 25 µm
 
     # Zigzag parameters (when use_preclassification=True)
-    zigzag_channel_width: float = 0.06
+    zigzag_channel_width: float = 0.15
     zigzag_num_stages: int = 5
-    zigzag_channel_depth: float = 0.08
+    zigzag_channel_depth: float = 0.25
 
     # Venturi parameters (when use_preclassification=True)
     venturi_inlet_diameter: float = 0.08

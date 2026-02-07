@@ -131,12 +131,14 @@ class ClassificationSystemParams:
     """
 
     # Zigzag classifier parameters (pilot scale)
-    # Cross-section sized to match venturi outlet area (~41 cm²) so flow
-    # velocity is maintained through the transition (avoids 6× expansion
-    # that kills particle transport).  60×80mm = 48 cm².
-    zigzag_channel_width: float = 0.060     # [m] 60mm width
+    # Channel cross-section determines bulk air velocity and thus d50 cut size.
+    # 150×250mm = 375 cm² gives v_bulk ≈ 2.6 m/s at 354 m³/h — a reasonable
+    # operating range for pre-classification of flour particles.  The expanding
+    # transition from venturi outlet (D≈80mm, ~50 cm²) to this cross-section
+    # is handled automatically by the round-to-rect transition component.
+    zigzag_channel_width: float = 0.150     # [m] 150mm width
     zigzag_num_stages: int = 5              # 5 stages for good separation
-    zigzag_channel_depth: float = 0.080     # [m] 80mm depth
+    zigzag_channel_depth: float = 0.250     # [m] 250mm depth
 
     # Venturi eductor parameters
     # Choked flow (Ma=1 at throat) ∝ throat_area ∝ throat_diameter².
@@ -496,7 +498,7 @@ class ClassificationSystemAssembly:
             zigzag_coarse_world = self._get_port_world_pos('zigzag', zigzag_coarse)
 
             # Rect-to-round transition oriented HORIZONTALLY (-X) from coarse outlet
-            coarse_round_d = zigzag_coarse.width  # 60mm
+            coarse_round_d = zigzag_coarse.width  # = channel_width * 0.5
             diag = np.sqrt(zigzag_coarse.width**2 + zigzag_coarse.height**2) / 2
             r = coarse_round_d / 2
             coarse_trans_length = abs(diag - r) / np.tan(np.radians(15))

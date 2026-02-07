@@ -153,12 +153,20 @@ class ClassificationFlowConfig:
     # When True, particles are pre-allocated but inactive; step() activates them at particle_feed_rate
     continuous_feeding: bool = False
 
+    # Feed entry speed at solids inlet [m/s] along the inlet direction.
+    # From feed_result segments[-1]["particle_velocity_along_m_s"] when using
+    # from_air_and_feed_results(); fallback 0.05 m/s (gravity chute terminal).
+    feed_entry_speed: float = 0.05
+
     # Max solids loading ratio (mu = m_dot_solids / m_dot_air) for venturi entrainment cap
     # Dilute-phase pneumatic transport: mu < 5 typical; conservative cap at mu=2
     max_loading_ratio: float = 2.0
 
-    # Turbulence parameters (for zigzag mixing)
-    turbulent_intensity: float = 0.15      # Fraction of mean velocity (15%)
+    # Zone-specific turbulence intensities (fraction of local reference velocity)
+    # Real turbulence differs significantly by component:
+    turbulence_zigzag: float = 0.25        # Zigzag recirculation zones (high: 0.20-0.30)
+    turbulence_cyclone: float = 0.12       # Cyclone swirling flow (moderate: 0.10-0.15)
+    turbulent_intensity: float = 0.15      # Base/fallback (legacy, for direct construction)
 
     # Wheel classifier (main classifier) operating speed [RPM]. When set, overrides
     # assembly wheel RPM for this run (e.g. for sensitivity or target d50).
@@ -227,6 +235,14 @@ class ClassificationFlowConfig:
             particle_density = 1420.0
         if particle_dia_m <= 0:
             particle_dia_m = 50e-6
+
+        # Feed entry speed at solids inlet: from feed_result segments (actual feed
+        # system exit velocity) or fallback to gravity chute terminal (0.05 m/s).
+        segments = feed_result.get("segments", [])
+        if segments:
+            feed_entry_speed = abs(segments[-1].get("particle_velocity_along_m_s", 0.05))
+        else:
+            feed_entry_speed = 0.05
 
         # Feed entry rate at solids inlet: from feed_result or computed from solids mass flow
         particle_feed_rate = feed_result.get("particle_feed_rate_per_s", 0.0)
@@ -297,6 +313,7 @@ class ClassificationFlowConfig:
             num_particles=n_cap,
             particle_feed_rate=sim_feed_rate if continuous else particle_feed_rate,
             continuous_feeding=continuous,
+            feed_entry_speed=feed_entry_speed,
             max_loading_ratio=max_loading,
             fluid_config=fluid_config or FluidConfig.air_at_stp(),
             material=material,
@@ -444,6 +461,9 @@ class ClassificationFlowState:
     total_particles_to_feed: int = 0
     last_feed_time: float = 0.0
     
+    # Recirculation pass counter (0 = initial, 1+ = recirculation passes)
+    recirculation_pass: int = 0
+
     # Collection tracking
     collected_fines: int = 0      # Protein-rich (light particles)
     collected_coarse: int = 0     # Starch-rich (heavy particles)
@@ -1582,6 +1602,37 @@ if wp is not None:
     # CYCLONE SEPARATION PHYSICS
     # -------------------------------------------------------------------------
     @wp.func
+    def compute_cyclone_collection_probability(
+        d_p: float,
+        d50: float,
+    ) -> float:
+        """
+        Grade efficiency curve for cyclone wall collection.
+
+        Standard form: eta(d) = 1 - exp(-0.693 * (d/d50)^n)
+
+        Where n = 2 (Stairmand-type cyclone, moderate sharpness).
+        - d << d50: eta -> 0 (small particles re-entrain from wall)
+        - d = d50:  eta = 0.5 (50% collection by definition)
+        - d >> d50: eta -> 1 (large particles stick and spiral to dust outlet)
+
+        This prevents false collection of sub-d50 particles that
+        momentarily contact the wall due to turbulence.
+
+        Args:
+            d_p: Particle diameter [m]
+            d50: Cut size for this cyclone stage [m]
+
+        Returns:
+            Collection probability [0, 1]
+        """
+        if d50 <= 0.0:
+            return 1.0  # No d50 info: collect everything (fallback)
+        ratio = d_p / d50
+        # n = 2 steepness (Stairmand standard)
+        return 1.0 - wp.exp(-0.693 * ratio * ratio)
+
+    @wp.func
     def compute_cyclone_tangential_velocity(
         pos: wp.vec3,
         cyclone_center: wp.vec3,
@@ -2323,9 +2374,19 @@ if wp is not None:
         cyclone_primary_cone_tip_ratio: float,
         cyclone_secondary_cone_tip_ratio: float,
         cyclone_tertiary_cone_tip_ratio: float,
+
+        # Cyclone cut sizes (Lapple d50) for grade efficiency collection
+        cyclone_primary_d50: float,
+        cyclone_secondary_d50: float,
+        cyclone_tertiary_d50: float,
         
-        # Turbulence
-        turbulent_intensity: float,
+        # Duct velocities (from continuity Q/A, not hardcoded factors)
+        v_air_duct_zigzag_cyclone: float,  # Q_class / A_duct (fines path)
+        v_air_duct_cyclone_bag: float,     # Q_total / A_duct (overflow path)
+
+        # Zone-specific turbulence
+        turbulence_zigzag: float,          # Zigzag recirculation (0.20-0.30)
+        turbulence_cyclone: float,         # Cyclone swirling flow (0.10-0.15)
 
         # =====================================================================
         # WHEEL CLASSIFIER GEOMETRY (mandatory centrifugal separator)
@@ -2661,19 +2722,17 @@ if wp is not None:
             # Use ZONE velocity as reference so turbulence doesn't vanish
             # for slow particles near d50 (those need it most)
             v_zone_ref = v_air_zigzag * zigzag_velocity_ratio_zone
-            v_turb = compute_turbulent_dispersion(v_zone_ref, turbulent_intensity, random_seed, tid)
+            v_turb = compute_turbulent_dispersion(v_zone_ref, turbulence_zigzag, random_seed, tid)
             v_air = v_air + v_turb
 
-            # CAP upward velocity at zone velocity for proper separation.
-            # In zigzag classifiers, the effective velocity that determines the
-            # cut size (d50) is the zone velocity, not bulk or throat velocity.
-            # Without this cap, the high bulk/throat velocities lift all particles
-            # upward and prevent coarse classification. The zone velocity is the
-            # time-averaged effective velocity experienced by particles as they
-            # bounce between deflector plates through recirculation zones.
-            v_zone_max = v_air_zigzag * zigzag_velocity_ratio_zone
-            if v_air[1] > v_zone_max:
-                v_air = wp.vec3(v_air[0], v_zone_max, v_air[2])
+            # NOTE: No velocity cap here. The spatially-varying velocity field
+            # from compute_zigzag_air_velocity (throat/zone/transport) is the
+            # physically correct model. Separation happens because particles
+            # experience different drag forces in each region — throat acceleration,
+            # zone recirculation, and transport flow. If all particles are carried
+            # upward, the remedy is geometry (larger channel cross-section to reduce
+            # bulk velocity) or reduced air flow rate, not artificial velocity
+            # suppression which destroys the deflector plate physics.
 
             # Channel wall containment (rectangular cross-section)
             half_w = zigzag_channel_width / 2.0
@@ -2767,10 +2826,50 @@ if wp is not None:
                                 )
                                 vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
 
-            # SEPARATION LOGIC based on particle position
-            # Rising particles (fines) move toward top
+                # ---------------------------------------------------------
+                # PLATE TIP EDGE COLLISION
+                # ---------------------------------------------------------
+                # The surface checks above only catch particles on the wall
+                # side of the plate.  Particles traveling horizontally at
+                # tip height can slip through the gap between the tip and
+                # the opposite wall.  This point-circle check catches them.
+                tip_y_in_stage = plate_y_local + plate_vertical
+                tip_dy = pos_in_stage - tip_y_in_stage
+                if plate_on_left:
+                    tip_dx = local_x - (-half_w + plate_horizontal)
+                else:
+                    tip_dx = local_x - (half_w - plate_horizontal)
+                tip_dist_sq = tip_dx * tip_dx + tip_dy * tip_dy
+                tip_r_sq = particle_radius * particle_radius
+                if tip_dist_sq < tip_r_sq and tip_dist_sq > 1.0e-12:
+                    tip_dist = wp.sqrt(tip_dist_sq)
+                    tip_nx = tip_dx / tip_dist
+                    tip_ny = tip_dy / tip_dist
+                    normal = wp.vec3(tip_nx, tip_ny, 0.0)
+                    push = particle_radius - tip_dist + 0.001
+                    pos = wp.vec3(pos[0] + push * tip_nx, pos[1] + push * tip_ny, pos[2])
+                    vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
+
+            # SEPARATION LOGIC: position + terminal velocity check
+            # A particle must BOTH reach the outlet AND be aerodynamically
+            # consistent with that exit path.  Without the v_t check, a heavy
+            # particle momentarily pushed to the top by throat acceleration or
+            # turbulence would be misclassified as fines.
+            v_t = compute_terminal_velocity(d, rho_p, rho_f, mu_f, gravity)
+
+            # Rising particles: exit as fines ONLY if air can sustain them
             if pos[1] >= zigzag_fines_outlet_y - particle_radius * 2.0:
-                zone = 22  # Fines path (toward cyclones)
+                if v_t < v_air_zigzag:
+                    zone = 22  # Fines: v_t < v_air_bulk, particle carried upward
+                else:
+                    # Heavy particle reached top via turbulence/throat momentum.
+                    # v_t >= v_air means gravity wins on average — particle will
+                    # settle back through separation zones. Contain at boundary
+                    # and reflect so it re-enters the zigzag stages.
+                    zone = 21
+                    pos = wp.vec3(pos[0], zigzag_fines_outlet_y - particle_radius * 2.0 - 0.001, pos[2])
+                    if vel[1] > 0.0:
+                        vel = wp.vec3(vel[0], -vel[1] * restitution, vel[2])
             # Falling particles (coarse) move toward bottom
             elif pos[1] <= zigzag_coarse_outlet_y + particle_radius * 2.0:
                 zone = 30  # Coarse outlet (collected starch)
@@ -2864,9 +2963,20 @@ if wp is not None:
             if r <= wheel_hub_radius:
                 # Geometrically inside hub -> FINES (protein)
                 zone = 35
-            elif r >= wheel_radius and force_ratio > 1.0:
-                # At or beyond wheel rim and F_c > F_d -> COARSE (starch)
+            elif force_ratio > 1.0:
+                # Centrifugal force dominates drag at current radius -> COARSE.
+                # Since F_c/F_d is proportional to r^2 (F_c grows with r,
+                # |v_r| shrinks with r), this is irreversible: the force
+                # imbalance only grows as the particle spirals outward.
+                # Route directly to the coarse hopper instead of waiting
+                # for geometric rim crossing, which may never occur if the
+                # drag integration doesn't resolve the radial trajectory
+                # within the simulation timestep budget.
                 zone = 36
+                # Reposition to hopper entrance (just below wheel bottom
+                # shroud) so hopper cone containment applies correctly.
+                hopper_entry_y = wheel_center[1] - wheel_width * 0.5 - 0.01
+                pos = wp.vec3(pos[0], hopper_entry_y, pos[2])
 
         # =====================================================================
         # ZONE 35: WHEEL FINES OUTLET (Through hub to cyclones)
@@ -2971,8 +3081,8 @@ if wp is not None:
             local_z = pos[2] - duct_zigzag_cyclone_start[2]
             r = wp.sqrt(local_x * local_x + local_z * local_z)
 
-            # Air velocity is upward in this vertical section
-            v_air = wp.vec3(0.0, v_air_cyclone_inlet * 0.8, 0.0)
+            # Air velocity: upward, from continuity Q_class / A_duct
+            v_air = wp.vec3(0.0, v_air_duct_zigzag_cyclone, 0.0)
 
             # Radial containment
             if r + particle_radius > duct_zigzag_cyclone_radius:
@@ -2993,8 +3103,8 @@ if wp is not None:
                         wheel_center[1],
                         wheel_center[2]
                     )
-                    # Tangential inlet velocity (tangent to housing)
-                    vel = wp.vec3(0.0, 0.0, v_air_cyclone_inlet * 0.5)
+                    # Tangential inlet velocity (from duct into volute housing)
+                    vel = wp.vec3(0.0, 0.0, v_air_duct_zigzag_cyclone)
             else:
                 # Original path: transition to elbow when reaching elbow height
                 if pos[1] >= elbow_zigzag_cyclone_pos[1] - particle_radius * 2.0:
@@ -3177,7 +3287,7 @@ if wp is not None:
             # this prevents deterministic particle trapping and enables
             # realistic grade efficiency near the d50 boundary.
             v_turb = compute_turbulent_dispersion(
-                v_air_cyclone_inlet, turbulent_intensity, random_seed, tid
+                v_air_cyclone_inlet, turbulence_cyclone, random_seed, tid
             )
             v_air = v_air + v_turb
 
@@ -3204,7 +3314,7 @@ if wp is not None:
                     pos = pos + normal * push
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
 
-            # SEPARATION: geometry-based (CycloneGeometryParams)
+            # SEPARATION with grade efficiency (prevents false collection)
             # In core = inside vortex finder radius (inner vortex -> overflow)
             # At wall = at cyclone wall (spirals to dust outlet)
             in_core = r <= cyclone_primary_vf_radius
@@ -3213,7 +3323,12 @@ if wp is not None:
             above_vf = local_y > 0.0
 
             if at_wall and below_cylinder:
-                zone = 55  # Collected in primary dust outlet
+                # Grade efficiency: probability of collection depends on d/d50
+                eta = compute_cyclone_collection_probability(d, cyclone_primary_d50)
+                collect_state = wp.rand_init(random_seed + 7919, tid)
+                if wp.randf(collect_state) < eta:
+                    zone = 55  # Collected in primary dust outlet
+                # else: particle stays in zone 50, re-entrained by inner vortex
             elif in_core and above_vf:
                 zone = 51  # Move to secondary cyclone
                 pos = wp.vec3(
@@ -3251,7 +3366,7 @@ if wp is not None:
 
             # Turbulent dispersion in secondary cyclone
             v_turb = compute_turbulent_dispersion(
-                v_air_cyclone_secondary_inlet, turbulent_intensity, random_seed, tid
+                v_air_cyclone_secondary_inlet, turbulence_cyclone, random_seed, tid
             )
             v_air = v_air + v_turb
 
@@ -3276,7 +3391,10 @@ if wp is not None:
             above_vf = local_y > 0.0
 
             if at_wall and below_cylinder:
-                zone = 56  # Collected in secondary dust outlet
+                eta = compute_cyclone_collection_probability(d, cyclone_secondary_d50)
+                collect_state = wp.rand_init(random_seed + 7919, tid)
+                if wp.randf(collect_state) < eta:
+                    zone = 56  # Collected in secondary dust outlet
             elif in_core and above_vf:
                 zone = 52  # Move to tertiary cyclone
                 # Teleport to tertiary cyclone tangential inlet
@@ -3315,7 +3433,7 @@ if wp is not None:
 
             # Turbulent dispersion in tertiary cyclone
             v_turb = compute_turbulent_dispersion(
-                v_air_cyclone_tertiary_inlet, turbulent_intensity, random_seed, tid
+                v_air_cyclone_tertiary_inlet, turbulence_cyclone, random_seed, tid
             )
             v_air = v_air + v_turb
 
@@ -3340,7 +3458,10 @@ if wp is not None:
             above_vf = local_y > 0.0
 
             if at_wall and below_cylinder:
-                zone = 57  # Collected in tertiary dust outlet (fine protein)
+                eta = compute_cyclone_collection_probability(d, cyclone_tertiary_d50)
+                collect_state = wp.rand_init(random_seed + 7919, tid)
+                if wp.randf(collect_state) < eta:
+                    zone = 57  # Collected in tertiary dust outlet (fine protein)
             elif in_core and above_vf:
                 zone = 60  # Move to bag filter path
                 # Teleport to elbow inlet (bag filter path)
@@ -3378,8 +3499,8 @@ if wp is not None:
             # Angle in elbow
             angle = wp.atan2(dy, -dx)
             
-            # Air velocity follows the elbow curve
-            v_tan_mag = v_air_cyclone_inlet * 0.5
+            # Air velocity follows the elbow curve (from continuity Q/A)
+            v_tan_mag = v_air_duct_cyclone_bag
             v_air = wp.vec3(
                 v_tan_mag * wp.sin(angle),
                 v_tan_mag * wp.cos(angle),
@@ -3440,8 +3561,8 @@ if wp is not None:
             dz = pos[2] - center_z
             r = wp.sqrt(dy * dy + dz * dz)
             
-            # Air velocity (horizontal toward bag filter)
-            v_air = wp.vec3(v_air_cyclone_inlet * 0.5, 0.0, 0.0)
+            # Air velocity: horizontal, from continuity Q_total / A_duct
+            v_air = wp.vec3(v_air_duct_cyclone_bag, 0.0, 0.0)
             
             # Radial containment with expanding radius
             if r + particle_radius > local_radius:
@@ -3459,12 +3580,26 @@ if wp is not None:
         # ZONE 70: BAG FILTER (final fines capture)
         # =====================================================================
         elif zone == 70:
-            # BAG FILTER: Capture on entry.
-            # Real bag filters capture >99.9% of particles via inertial
-            # impaction, interception, and diffusion on the filter media.
-            # Simulating internal trajectories is unnecessary - any particle
-            # that reaches the bag filter is effectively collected.
-            zone = 75
+            # BAG FILTER: size-dependent collection via grade efficiency.
+            #
+            # Fibrous filters have a "most penetrating particle size" (MPPS)
+            # at ~0.3 um where neither impaction nor diffusion dominates.
+            # Above MPPS: inertial impaction + interception → η increases with d.
+            # Below MPPS: Brownian diffusion → η increases as d decreases.
+            #
+            # Simplified model: η(d) = 1 - exp(-0.693 * (d / d_mpps)^2)
+            # d_mpps = 0.5 um (conservative for industrial bag filters).
+            #
+            # For flour particles (d > 5 um): η > 99.99%, effectively instant.
+            # For submicron: η follows penetration curve → enables emission estimates.
+            d_mpps = 0.5e-6  # Most penetrating particle size [m]
+            ratio = d / d_mpps
+            eta_bag = 1.0 - wp.exp(-0.693 * ratio * ratio)
+            bag_state = wp.rand_init(random_seed + 15731, tid)
+            if wp.randf(bag_state) < eta_bag:
+                zone = 75  # Collected on filter media
+            else:
+                zone = 80  # Escaped to clean air exhaust (emission)
         
         # =====================================================================
         # ZONES 75, 80, 99: COLLECTION / EXIT
@@ -3855,9 +3990,6 @@ class ClassificationFlowPhysicsSimulator:
         
         # Allocate arrays
         self._allocate_arrays()
-        
-        # Hash grid for particle collisions
-        self._setup_hash_grid()
         
         # Separation statistics arrays
         self._setup_statistics_arrays()
@@ -4413,10 +4545,21 @@ class ClassificationFlowPhysicsSimulator:
         self.v_air_cyclone_secondary_inlet = Q_total / max(A_sec, 1e-6)
         self.v_air_cyclone_tertiary_inlet = Q_total / max(A_ter, 1e-6)
 
+        # Duct velocities from continuity (Q/A) — replaces hardcoded factors.
+        # Fines path duct (zigzag → wheel/cyclone): carries Q_class
+        A_duct_zc = np.pi * self.duct_zigzag_cyclone_radius**2
+        self.v_air_duct_zigzag_cyclone = Q_air / max(A_duct_zc, 1e-6)
+        # Overflow duct (cyclone → bag filter): carries Q_total (bypass merged)
+        A_duct_cb = np.pi * self.duct_cyclone_bag_radius**2
+        self.v_air_duct_cyclone_bag = Q_total / max(A_duct_cb, 1e-6)
+
         # =====================================================================
         # CUT SIZE CALCULATION
         # =====================================================================
-        # IMPORTANT: Separation occurs in the ZONE (recirculation region), not bulk flow!
+        # Single-stage equilibrium d50 based on zone velocity (recirculation region).
+        # This is a simplified model — the actual multi-stage zigzag has a MUCH
+        # sharper grade efficiency curve (Senden 1979) and the effective separation
+        # occurs at smaller sizes than this single-stage d50 suggests.
         # v_zone = v_bulk * velocity_ratio_zone (typically 0.3)
         # d50 = sqrt(18 * mu * v_zone / (g * (rho_p - rho_f)))
         g = 9.81
@@ -4480,8 +4623,13 @@ class ClassificationFlowPhysicsSimulator:
         self.wheel_fines_outlet_pos = wheel_geo['fines_outlet_pos']
         self.wheel_coarse_outlet_pos = wheel_geo['coarse_outlet_pos']
 
-        # Air flow through wheel (uses classification flow, not total)
-        self.wheel_volumetric_flow = Q_air
+        # Air flow through wheel classifier.
+        # The wheel sits in the classification path (after zigzag, before cyclones).
+        # ALL classification-path air passes through the wheel blade gaps — there
+        # is no parallel bypass within the wheel housing.  Therefore:
+        #   Q_wheel = Q_class = Q_total × (1 - bypass_ratio)
+        # The bypass flow (if any) rejoins AFTER the wheel, before the cyclones.
+        self.wheel_volumetric_flow = Q_air  # Q_air = Q_class from line above
 
         # Wheel d50 from force balance (matches wheel_classifier.calculate_d50):
         # v_r through blade passage area; d50 = sqrt(18*mu*v_r / (Delta_rho*omega^2*r))
@@ -4626,8 +4774,9 @@ class ClassificationFlowPhysicsSimulator:
         elif self.zigzag_d50 * 1e6 < 60:
             print(f"      Status: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) in starch range - partial separation")
         else:
-            print(f"      WARNING: Zigzag d50 ({self.zigzag_d50*1e6:.1f}um) > 60um - poor separation")
-            print(f"               Consider: reduce channel size, increase air flow, or more stages")
+            print(f"      NOTE: Zigzag single-stage d50 ({self.zigzag_d50*1e6:.1f}um) > 60um")
+            print(f"            Multi-stage sharpening ({self.zigzag_num_stages} stages) gives effective separation")
+            print(f"            well below this value. See PARTICLE FATE table for actual grade efficiency.")
     
     def _allocate_arrays(self):
         """Allocate particle arrays on device."""
@@ -4642,20 +4791,6 @@ class ClassificationFlowPhysicsSimulator:
         # Optional: per-particle type and density (for material/transfer)
         self.state.particle_types = wp.zeros(n, dtype=wp.int32, device=self.device)
         self.state.densities = wp.zeros(n, dtype=float, device=self.device)
-    
-    def _setup_hash_grid(self):
-        """Setup hash grid for particle collisions."""
-        extent = self.system_max - self.system_min
-        max_extent = max(extent)
-        
-        grid_dim = max(32, int(max_extent / 0.05))
-        
-        self._hash_grid = wp.HashGrid(
-            dim_x=grid_dim,
-            dim_y=grid_dim,
-            dim_z=grid_dim,
-            device=self.device
-        )
     
     def _setup_statistics_arrays(self):
         """Setup arrays for separation statistics."""
@@ -5294,7 +5429,7 @@ class ClassificationFlowPhysicsSimulator:
             print(f"    3. Use cyclone-only separation (current bypass mode)")
         elif self.zigzag_d50 > 60e-6:
             print(f"    Current d50={self.zigzag_d50*1e6:.0f}um - coarse separation")
-            print(f"    Reduce air flow or channel size for protein range (25-35um)")
+            print(f"    Reduce air flow or increase channel size for protein range (25-35um)")
         else:
             print(f"    Current d50={self.zigzag_d50*1e6:.0f}um - in protein separation range")
             print(f"    Adjust --air-flow to fine-tune separation point")
@@ -5306,7 +5441,7 @@ class ClassificationFlowPhysicsSimulator:
         num_particles: int = None,
         mean_diameter: float = 30e-6,   # 30 um (flour average)
         diameter_std: float = 15e-6,    # 15 um std dev
-        initial_velocity: Tuple[float, float, float] = (0.0, 0.5, 0.0),
+        initial_velocity: Optional[Tuple[float, float, float]] = None,
     ):
         """
         Initialize particles at the venturi solids inlet.
@@ -5315,8 +5450,12 @@ class ClassificationFlowPhysicsSimulator:
             num_particles: Number of particles (default: config value)
             mean_diameter: Mean particle diameter [m] (default 30um)
             diameter_std: Standard deviation [m] (default 15um)
-            initial_velocity: Initial velocity from feed system [m/s]
+            initial_velocity: Initial velocity [m/s]. None = auto from feed system
+                (config.feed_entry_speed along solids inlet direction).
         """
+        if initial_velocity is None:
+            initial_velocity = self._compute_feed_entry_velocity()
+
         n = num_particles or self.config.num_particles
         n = min(n, self.config.num_particles)
         
@@ -5345,18 +5484,32 @@ class ClassificationFlowPhysicsSimulator:
             ],
             device=self.device
         )
-        
-        self.state.particles_active = n
+
+        # Continuous feeding: deactivate all particles; step() will activate at feed_rate
+        if cfg.continuous_feeding:
+            active_np = self.state.is_active.numpy().copy()
+            active_np[0:n] = 0
+            self.state.is_active = wp.array(active_np, dtype=wp.int32, device=self.device)
+            self.state.particles_active = 0
+            self.state.total_particles_to_feed = n
+            self.state.particles_fed = 0
+            self._feed_accumulator = 0.0
+        else:
+            self.state.particles_active = n
 
         # Get diameter stats for logging
         diameters = self.state.diameters.numpy()[:n]
 
         inlet_name = "venturi inlet" if self.use_preclassification else "wheel inlet (wheel-only)"
-        print(f"\n  Initialized {n} particles at {inlet_name}")
+        mode = "continuous" if cfg.continuous_feeding else "batch"
+        print(f"\n  Initialized {n} particles at {inlet_name} ({mode})")
         print(f"    Diameter range: {diameters.min()*1e6:.1f} - {diameters.max()*1e6:.1f} um")
         print(f"    Mean diameter:  {diameters.mean()*1e6:.1f} um")
+        print(f"    Entry velocity: ({initial_velocity[0]:.3f}, {initial_velocity[1]:.3f}, {initial_velocity[2]:.3f}) m/s")
         print(f"    Inlet position: ({self.venturi_solids_inlet_pos[0]*1000:.0f}, {self.venturi_solids_inlet_pos[1]*1000:.0f}, {self.venturi_solids_inlet_pos[2]*1000:.0f}) mm")
         print(f"    Initial zone:   {self.initial_particle_zone}")
+        if cfg.continuous_feeding:
+            print(f"    Feed rate:      {cfg.particle_feed_rate:.0f} particles/s")
     
     # =========================================================================
     # FEED SYSTEM INTEGRATION (particles from feed_flow_physics)
@@ -5369,6 +5522,23 @@ class ClassificationFlowPhysicsSimulator:
     def get_solids_inlet_direction(self) -> np.ndarray:
         """Return world direction of venturi solids inlet (flow into venturi)."""
         return np.array(self.venturi_solids_inlet_dir, dtype=np.float64)
+
+    def _compute_feed_entry_velocity(self) -> Tuple[float, float, float]:
+        """
+        Compute 3D entry velocity from config feed_entry_speed and inlet direction.
+
+        Uses the actual feed system exit speed (from feed_result segments) projected
+        along the venturi solids inlet direction.  This replaces the old hardcoded
+        (0.0, 0.5, 0.0) default that ignored feed system kinematics.
+        """
+        speed = self.config.feed_entry_speed
+        inlet_dir = np.array(self.venturi_solids_inlet_dir, dtype=np.float64)
+        norm = np.linalg.norm(inlet_dir)
+        if norm > 1e-9:
+            inlet_dir = inlet_dir / norm
+        else:
+            inlet_dir = np.array([0.0, 1.0, 0.0])
+        return tuple((speed * inlet_dir).tolist())
     
     def inject_particles_from_feed(
         self,
@@ -5399,6 +5569,29 @@ class ClassificationFlowPhysicsSimulator:
         
         if count == 0:
             return 0
+
+        # CRITICAL: Validate diameter scale.  The feed system may export
+        # visual-scale diameters (mm, e.g. 15mm) instead of physical (µm,
+        # e.g. 50µm).  Physical flour diameters are 5–100 µm; visual display
+        # diameters are 1–30 mm — a ~300× factor.  Detect and correct.
+        median_d = float(np.median(diameters[:count]))
+        if median_d > 1e-3:  # > 1mm → clearly visual scale, not physical
+            target_d = self.config.visual_particle_diameter  # physical dia from feed_result
+            if target_d > 0 and target_d < 1e-3:
+                scale = median_d / target_d
+                diameters = diameters / scale
+                # Recompute masses from corrected physical diameters
+                dens = transfer_data.get('densities')
+                if dens is not None:
+                    dens = np.asarray(dens, dtype=np.float64)[:count]
+                else:
+                    dens = np.full(count, self.config.particle_density, dtype=np.float64)
+                masses = dens * (np.pi / 6.0) * diameters[:count]**3
+                print(f"  WARNING: Feed diameters were visual-scale (median={median_d*1000:.1f}mm).")
+                print(f"           Rescaled ÷{scale:.0f}× to physical (median={target_d*1e6:.0f}µm).")
+            else:
+                print(f"  WARNING: Feed diameters appear visual-scale (median={median_d*1000:.1f}mm) "
+                      f"but no valid physical target available. Classification physics will be wrong.")
         
         # Position offset: from feed outlet to classification solids inlet
         if offset_feed_outlet_to_solids_inlet is not None:
@@ -5469,7 +5662,7 @@ class ClassificationFlowPhysicsSimulator:
         self,
         material: ParticleMaterial,
         num_particles: Optional[int] = None,
-        initial_velocity: Tuple[float, float, float] = (0.0, 0.5, 0.0),
+        initial_velocity: Optional[Tuple[float, float, float]] = None,
         visual_scale_diameter: Optional[float] = None,
     ) -> None:
         """
@@ -5478,6 +5671,8 @@ class ClassificationFlowPhysicsSimulator:
         Uses create_particle_population from the particles module for consistent
         size/density/sphericity with feed and other systems.
         """
+        if initial_velocity is None:
+            initial_velocity = self._compute_feed_entry_velocity()
         n = num_particles or self.config.num_particles
         n = min(n, self.config.num_particles)
         
@@ -5565,7 +5760,7 @@ class ClassificationFlowPhysicsSimulator:
         self,
         source: str = "yellow_pea",
         num_particles: Optional[int] = None,
-        initial_velocity: Tuple[float, float, float] = (0.0, 0.5, 0.0),
+        initial_velocity: Optional[Tuple[float, float, float]] = None,
     ) -> None:
         """
         Initialize a whole-flour particle population (protein + starch + fiber) at venturi solids inlet.
@@ -5573,6 +5768,8 @@ class ClassificationFlowPhysicsSimulator:
         Uses create_whole_flour_population from the particles module for consistency
         with the feed system; particles enter classification as they would from the deagglomerator.
         """
+        if initial_velocity is None:
+            initial_velocity = self._compute_feed_entry_velocity()
         n = num_particles or self.config.num_particles
         n = min(n, self.config.num_particles)
         
@@ -5813,9 +6010,19 @@ class ClassificationFlowPhysicsSimulator:
                 float(self.cyclone_primary_cone_tip_ratio),
                 float(self.cyclone_secondary_cone_tip_ratio),
                 float(self.cyclone_tertiary_cone_tip_ratio),
-                
-                # Turbulence
-                float(cfg.turbulent_intensity),
+
+                # Cyclone cut sizes for grade efficiency collection
+                float(self.cyclone_d50),
+                float(self.cyclone_secondary_d50),
+                float(self.cyclone_tertiary_d50),
+
+                # Duct velocities (from continuity Q/A)
+                float(self.v_air_duct_zigzag_cyclone),
+                float(self.v_air_duct_cyclone_bag),
+
+                # Zone-specific turbulence
+                float(cfg.turbulence_zigzag),
+                float(cfg.turbulence_cyclone),
 
                 # Wheel classifier geometry
                 int(1 if self.wheel_enabled else 0),
@@ -6170,28 +6377,19 @@ class ClassificationFlowPhysicsSimulator:
             entry_radius = self.venturi_solids_inlet_radius
 
             # Compute entry velocity from feed system kinetics:
-            # Particles arrive along the solids inlet direction at the
-            # terminal velocity from the gravity chute (typically ~0.05 m/s).
+            # Uses config.feed_entry_speed (from feed_result) along inlet direction.
             if initial_velocity is not None:
                 recirc_velocity = initial_velocity
             else:
-                # Feed chute terminal velocity: gravity-driven through
-                # ~1m angled duct at 0.05 m/s (from feedclass kinetics)
-                feed_entry_speed = 0.05  # m/s — typical gravity chute exit
-                inlet_dir = np.array(self.venturi_solids_inlet_dir, dtype=np.float64)
-                norm = np.linalg.norm(inlet_dir)
-                if norm > 1e-9:
-                    inlet_dir = inlet_dir / norm
-                else:
-                    inlet_dir = np.array([0.0, 1.0, 0.0])
-                recirc_velocity = tuple((feed_entry_speed * inlet_dir).tolist())
-                print(f"  [Feed kinetics] Entry velocity: {feed_entry_speed:.2f} m/s "
-                      f"along ({inlet_dir[0]:.2f}, {inlet_dir[1]:.2f}, {inlet_dir[2]:.2f})")
+                recirc_velocity = self._compute_feed_entry_velocity()
+                print(f"  [Feed kinetics] Entry velocity: {self.config.feed_entry_speed:.2f} m/s "
+                      f"-> ({recirc_velocity[0]:.3f}, {recirc_velocity[1]:.3f}, {recirc_velocity[2]:.3f}) m/s")
 
         # Positions: randomly distributed around entry point
         # Use a pass-varying seed so each recirculation pass has unique
         # random positions (avoids identical particle arrangements).
-        _recirc_seed = n * 31 + 137  # varies with particle count per pass
+        self.state.recirculation_pass += 1
+        _recirc_seed = self.state.recirculation_pass * 7919 + n * 31 + 137
         rng = np.random.default_rng(_recirc_seed)
         r = np.sqrt(rng.uniform(0, 1, n)) * entry_radius * 0.8
         theta = rng.uniform(0, 2 * np.pi, n)

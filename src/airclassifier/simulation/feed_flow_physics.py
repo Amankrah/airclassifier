@@ -2089,12 +2089,25 @@ class FeedFlowPhysicsSimulator:
             # Initial downward velocity from gravity
             velocities[i, 1] = -np.sqrt(2 * GRAVITY * self.config.pour_height)
         
-        # Particle diameters
+        # Particle diameters (visual scale for display)
         visual_diameter = self.config.visual_particle_diameter
         diameters = np.full(n_pour, visual_diameter, dtype=np.float32)
         diameters *= (1.0 + rng.uniform(-0.1, 0.1, n_pour).astype(np.float32))
         
-        # Masses
+        # Store physical-scale diameters for transfer to classification.
+        # pour_particles uses a uniform visual diameter (no material PSD), so
+        # physical diameter defaults to 50 µm (typical flour median).
+        physical_dia = 50e-6  # [m] default physical flour diameter
+        if not hasattr(self, '_physical_diameters') or self._physical_diameters is None:
+            self._physical_diameters = np.full(self.config.num_particles, physical_dia, dtype=np.float64)
+        self._physical_diameters[start_idx:start_idx + n_pour] = physical_dia * (
+            diameters / visual_diameter  # preserve relative size variation
+        )
+        if not hasattr(self, '_visual_scale_factor') or self._visual_scale_factor <= 0:
+            self._visual_scale_factor = visual_diameter / physical_dia
+
+        # Masses (from visual diameters for simulation display; classification
+        # recomputes from physical diameters via get_particle_data_for_transfer)
         masses = self.config.particle_density * (PI / 6.0) * diameters ** 3
         
         # All particles start in hopper zone
