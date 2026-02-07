@@ -205,7 +205,8 @@ def main():
     )
     parser.add_argument(
         "--turbulence", type=float, default=0.15,
-        help="Turbulent intensity (default: 0.15)"
+        help="Base turbulence intensity (default: 0.15). Scales zone-specific "
+             "intensities proportionally: zigzag=0.25, cyclone=0.12 at base=0.15."
     )
     parser.add_argument(
         "--diagnostics", "-d", action="store_true",
@@ -311,6 +312,12 @@ def main():
 
     # Unify --wheel-only and --without-preclassification into a single flag
     skip_preclassification = args.wheel_only or args.without_preclassification
+
+    # Scale zone-specific turbulence from --turbulence base value.
+    # Defaults: zigzag=0.25, cyclone=0.12 at base=0.15.
+    _turb_scale = args.turbulence / 0.15
+    turb_zigzag = 0.25 * _turb_scale
+    turb_cyclone = 0.12 * _turb_scale
 
     # VFD: convert blower RPM to air flow via actual operating point
     if args.blower_rpm is not None:
@@ -483,7 +490,8 @@ def main():
             simulation_time_s=args.time,
             dt=args.dt,
             device=args.device,
-            turbulent_intensity=args.turbulence,
+            turbulence_zigzag=turb_zigzag,
+            turbulence_cyclone=turb_cyclone,
             fluid_config=fluid,
             material=material,
             bypass_ratio=args.bypass_ratio,
@@ -638,7 +646,8 @@ def main():
                 bypass_ratio=args.bypass_ratio,
                 num_particles=args.particles,
                 device=args.device,
-                turbulent_intensity=args.turbulence,
+                turbulence_zigzag=turb_zigzag,
+                turbulence_cyclone=turb_cyclone,
                 material=material,
                 fluid_config=fluid,
                 wheel_rpm=args.wheel_rpm,
@@ -655,7 +664,8 @@ def main():
                 bypass_ratio=args.bypass_ratio,
                 num_particles=args.particles,
                 device=args.device,
-                turbulent_intensity=args.turbulence,
+                turbulence_zigzag=turb_zigzag,
+                turbulence_cyclone=turb_cyclone,
                 material=material,
                 fluid_config=FluidConfig.air_at_stp(),
                 wheel_rpm=args.wheel_rpm,
@@ -668,7 +678,8 @@ def main():
                 bypass_ratio=args.bypass_ratio,
                 num_particles=args.particles,
                 device=args.device,
-                turbulent_intensity=args.turbulence,
+                turbulence_zigzag=turb_zigzag,
+                turbulence_cyclone=turb_cyclone,
                 wheel_rpm=args.wheel_rpm,
             )
     
@@ -744,7 +755,6 @@ def main():
         simulator.initialize_whole_flour_population(
             source=args.material,
             num_particles=args.particles,
-            initial_velocity=(0.0, 0.5, 0.0),
         )
     elif args.material and args.material in ("protein", "starch", "fiber"):
         # Single fraction via material
@@ -752,7 +762,6 @@ def main():
         simulator.initialize_particles_from_material(
             material=material,
             num_particles=args.particles,
-            initial_velocity=(0.0, 0.5, 0.0),
         )
     else:
         mean_dia_m = args.particle_dia * 1e-6

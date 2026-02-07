@@ -33,7 +33,7 @@ class SimulationSettingsDialog(QDialog):
             num_particles=settings.num_particles,
             particle_feed_rate=settings.particle_feed_rate,
             continuous_feeding=settings.continuous_feeding,
-            turbulence_intensity=settings.turbulence_intensity,
+            turbulence_base=settings.turbulence_base,
             restitution=settings.restitution,
             friction=settings.friction,
             device=settings.device,
@@ -357,7 +357,7 @@ class SimulationSettingsDialog(QDialog):
         self.continuous_check.setChecked(self._settings.continuous_feeding)
         self.source_combo.setCurrentText(self._settings.material_source)
         self.fraction_combo.setCurrentText(self._settings.material_fraction)
-        self.turbulence_spin.setValue(self._settings.turbulence_intensity)
+        self.turbulence_spin.setValue(self._settings.turbulence_base)
         self.restitution_spin.setValue(self._settings.restitution)
         self.friction_spin.setValue(self._settings.friction)
         self.device_combo.setCurrentText(self._settings.device)
@@ -393,7 +393,7 @@ class SimulationSettingsDialog(QDialog):
         self._settings.continuous_feeding = self.continuous_check.isChecked()
         self._settings.material_source = self.source_combo.currentText()
         self._settings.material_fraction = self.fraction_combo.currentText()
-        self._settings.turbulence_intensity = self.turbulence_spin.value()
+        self._settings.turbulence_base = self.turbulence_spin.value()
         self._settings.restitution = self.restitution_spin.value()
         self._settings.friction = self.friction_spin.value()
         self._settings.device = self.device_combo.currentText()

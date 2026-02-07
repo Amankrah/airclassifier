@@ -151,8 +151,8 @@ class SimulationConfig:
     material_source: str = "yellow_pea"
     material_fraction: str = "whole"
 
-    # Physics
-    turbulence_intensity: float = 0.15
+    # Physics (turbulence base scales zone-specific: zigzag=0.25, cyclone=0.12 at base=0.15)
+    turbulence_base: float = 0.15
     restitution: float = 0.3
     friction: float = 0.4
 
@@ -243,12 +243,14 @@ class SimulationBackend(QObject):
             )
 
             # Create simulation config
+            _ts = self.config.turbulence_base / 0.15  # scale from base
             sim_config = ClassificationFlowConfig(
                 num_particles=self.config.num_particles,
                 dt=self.config.dt,
                 continuous_feeding=self.config.continuous_feeding,
                 particle_feed_rate=self.config.particle_feed_rate,
-                turbulence_intensity=self.config.turbulence_intensity,
+                turbulence_zigzag=0.25 * _ts,
+                turbulence_cyclone=0.12 * _ts,
                 restitution=self.config.restitution,
                 friction=self.config.friction,
                 device=self.config.device,
@@ -362,9 +364,13 @@ class SimulationBackend(QObject):
 
         try:
             self._complete_assembly = CompleteClassifierAssembly(complete_params)
-            self.log_message.emit(f"Complete assembly built: {self._complete_assembly.get_system_summary()['num_subsystems']} subsystems")
+            summary = self._complete_assembly.get_system_summary()
+            self.log_message.emit(f"Complete assembly built: {summary.get('num_subsystems', '?')} subsystems")
         except Exception as e:
-            self.log_message.emit(f"Warning: Could not build complete assembly: {e}")
+            import traceback
+            self.log_message.emit(f"WARNING: CompleteClassifierAssembly failed: {e}")
+            self.log_message.emit(f"  {traceback.format_exc()}")
+            self.log_message.emit("  Falling back to classification-only mesh.")
             self._complete_assembly = None
 
         mode = "with preclassification" if self.config.use_preclassification else "wheel-only"

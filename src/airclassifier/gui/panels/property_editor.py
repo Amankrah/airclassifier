@@ -55,7 +55,7 @@ COMPONENT_PROPERTIES: Dict[str, List[PropertyDefinition]] = {
         PropertyDefinition("num_stages", "Number of Stages", "int", 5, 3, 12, 1, group="Dimensions"),
         PropertyDefinition("plate_angle", "Plate Angle", "float", 60.0, 30.0, 75.0, 1.0, unit="deg", group="Geometry"),
         PropertyDefinition("plate_length_ratio", "Plate Length Ratio", "float", 0.6, 0.4, 0.9, 0.05, group="Geometry"),
-        PropertyDefinition("turbulence_intensity", "Turbulence Intensity", "float", 0.15, 0.05, 0.3, 0.01, group="Flow"),
+        PropertyDefinition("turbulence_base", "Turbulence (base)", "float", 0.15, 0.05, 0.3, 0.01, group="Flow"),
     ],
     "Wheel Classifier": [
         PropertyDefinition("wheel_diameter", "Wheel Diameter", "float", 0.20, 0.1, 0.5, 0.01, unit="m", group="Wheel"),

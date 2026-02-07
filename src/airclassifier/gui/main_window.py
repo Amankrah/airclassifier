@@ -11,7 +11,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QDockWidget, QToolBar, QStatusBar, QMenuBar,
-    QMenu, QMessageBox, QFileDialog, QSplitter,
+    QMenu, QMessageBox, QFileDialog,
     QLabel, QProgressBar, QFrame, QPushButton,
     QGraphicsOpacityEffect, QSizePolicy,
 )
@@ -21,12 +21,9 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QCloseEvent, QFont
 
-from .panels.component_palette import ComponentPalette
-from .panels.property_editor import PropertyEditor
 from .panels.simulation_control import SimulationControlPanel
 from .panels.results_panel import ResultsPanel
 from .widgets.viewport_3d import Viewport3D
-from .widgets.assembly_canvas import AssemblyCanvas
 from .theme import COLORS
 
 
@@ -114,14 +111,14 @@ class _WelcomeOverlay(QWidget):
         open_btn.clicked.connect(self.open_project_clicked.emit)
         card_layout.addWidget(open_btn)
 
-        preset_btn = QPushButton("  Load Preset Configuration")
-        preset_btn.setStyleSheet(btn_style_secondary)
-        preset_btn.clicked.connect(self.load_preset_clicked.emit)
-        card_layout.addWidget(preset_btn)
+        config_btn = QPushButton("  Configure Assembly")
+        config_btn.setStyleSheet(btn_style_secondary)
+        config_btn.clicked.connect(self.load_preset_clicked.emit)
+        card_layout.addWidget(config_btn)
 
         card_layout.addSpacing(10)
 
-        hint = QLabel("Tip: Drag components from the palette on the left into the assembly canvas")
+        hint = QLabel("Tip: Configure Assembly to set parameters, then Build Full System to preview")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setWordWrap(True)
         hint.setStyleSheet(f"font-size: 9pt; color: {COLORS.TEXT_MUTED}; border: none; background: transparent;")
@@ -197,6 +194,8 @@ class MainWindow(QMainWindow):
         self._assembly_config: Dict[str, Any] = {}
         self._simulation_state: str = "idle"
         self._built_backend = None  # set by Build Full System
+        self._assembly_params: Dict[str, Any] = {}  # set by Assembly Config dialog
+        self._animation_controller = None  # AnimationController instance
 
         # Initialize UI
         self._setup_window()
@@ -259,7 +258,7 @@ class MainWindow(QMainWindow):
 
     def _dismiss_welcome_and_preset(self):
         self._dismiss_welcome()
-        self.load_preset()
+        self.show_assembly_config()
 
     def resizeEvent(self, event):
         """Keep overlay sized to the central area."""
@@ -329,25 +328,10 @@ class MainWindow(QMainWindow):
         self.action_fullscreen.triggered.connect(self.toggle_fullscreen)
 
         # Assembly actions
-        self.action_add_component = QAction("&Add Component", self)
+        self.action_add_component = QAction("&Configure Assembly...", self)
         self.action_add_component.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.action_add_component.setStatusTip("Open assembly configuration (components, dimensions, mode)")
         self.action_add_component.triggered.connect(self.add_component)
-
-        self.action_delete_component = QAction("&Delete Component", self)
-        self.action_delete_component.setShortcut(QKeySequence.StandardKey.Delete)
-        self.action_delete_component.triggered.connect(self.delete_component)
-
-        self.action_auto_connect = QAction("Auto-&Connect Ports", self)
-        self.action_auto_connect.setStatusTip("Automatically connect compatible ports")
-        self.action_auto_connect.triggered.connect(self.auto_connect_ports)
-
-        self.action_validate = QAction("&Validate Assembly", self)
-        self.action_validate.setShortcut(QKeySequence("Ctrl+Shift+V"))
-        self.action_validate.triggered.connect(self.validate_assembly)
-
-        self.action_load_preset = QAction("Load &Preset...", self)
-        self.action_load_preset.setStatusTip("Load a predefined classifier configuration")
-        self.action_load_preset.triggered.connect(self.load_preset)
 
         self.action_build_system = QAction("&Build Full System", self)
         self.action_build_system.setShortcut(QKeySequence("Ctrl+B"))
@@ -417,12 +401,7 @@ class MainWindow(QMainWindow):
         # Assembly menu
         assembly_menu = menubar.addMenu("&Assembly")
         assembly_menu.addAction(self.action_add_component)
-        assembly_menu.addAction(self.action_delete_component)
         assembly_menu.addSeparator()
-        assembly_menu.addAction(self.action_auto_connect)
-        assembly_menu.addAction(self.action_validate)
-        assembly_menu.addSeparator()
-        assembly_menu.addAction(self.action_load_preset)
         assembly_menu.addAction(self.action_build_system)
 
         # Simulation menu
@@ -453,8 +432,8 @@ class MainWindow(QMainWindow):
         main_toolbar.addAction(self.action_open)
         main_toolbar.addAction(self.action_save)
         main_toolbar.addSeparator()
-        main_toolbar.addAction(self.action_undo)
-        main_toolbar.addAction(self.action_redo)
+        main_toolbar.addAction(self.action_add_component)  # Configure Assembly
+        main_toolbar.addAction(self.action_build_system)
 
         self.addToolBar(main_toolbar)
 
@@ -467,9 +446,6 @@ class MainWindow(QMainWindow):
         sim_toolbar.addAction(self.action_run_sim)
         sim_toolbar.addAction(self.action_pause_sim)
         sim_toolbar.addAction(self.action_stop_sim)
-        sim_toolbar.addSeparator()
-        sim_toolbar.addAction(self.action_validate)
-        sim_toolbar.addAction(self.action_build_system)
 
         self.addToolBar(sim_toolbar)
 
@@ -482,59 +458,17 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Create splitter for viewport and assembly canvas
-        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.main_splitter.setHandleWidth(3)
-
-        # 3D Viewport (top) - give it more space
+        # 3D Viewport takes the full central area
         self.viewport_3d = Viewport3D()
         self.viewport_3d.setMinimumHeight(400)
-        self.main_splitter.addWidget(self.viewport_3d)
+        layout.addWidget(self.viewport_3d)
 
-        # Assembly Canvas (bottom) - node editor for schematic view
-        self.assembly_canvas = AssemblyCanvas()
-        self.assembly_canvas.setMinimumHeight(150)
-        self.assembly_canvas.setMaximumHeight(300)
-        self.main_splitter.addWidget(self.assembly_canvas)
-
-        # Set initial sizes (80% viewport, 20% canvas)
-        self.main_splitter.setSizes([800, 200])
-        self.main_splitter.setStretchFactor(0, 4)
-        self.main_splitter.setStretchFactor(1, 1)
-
-        layout.addWidget(self.main_splitter)
         self.setCentralWidget(central_widget)
 
     # ------------------------------------------------------------- dock area
 
     def _create_dock_widgets(self):
-        """Create all dock widgets."""
-        # Component Palette (left) -- constrain width to give more room to viewport
-        self.component_palette = ComponentPalette()
-        self.component_palette.setMinimumWidth(200)
-        self.component_palette.setMaximumWidth(310)
-        palette_dock = QDockWidget("Components", self)
-        palette_dock.setObjectName("ComponentPaletteDock")
-        palette_dock.setWidget(self.component_palette)
-        palette_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, palette_dock)
-        self._view_menu.addAction(palette_dock.toggleViewAction())
-
-        # Property Editor (right)
-        self.property_editor = PropertyEditor()
-        self.property_editor.setMinimumWidth(220)
-        self.property_editor.setMaximumWidth(340)
-        property_dock = QDockWidget("Properties", self)
-        property_dock.setObjectName("PropertyEditorDock")
-        property_dock.setWidget(self.property_editor)
-        property_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, property_dock)
-        self._view_menu.addAction(property_dock.toggleViewAction())
-
+        """Create dock widgets for simulation and results."""
         # Simulation Control (bottom)
         self.sim_control = SimulationControlPanel()
         self.sim_control.setMaximumHeight(350)
@@ -619,9 +553,16 @@ class MainWindow(QMainWindow):
 
     def _update_component_count(self):
         """Refresh the component count label in the status bar."""
-        count = len(self.assembly_canvas._nodes)
-        suffix = "component" if count == 1 else "components"
-        self._component_count_label.setText(f"{count} {suffix}")
+        # Count is based on assembly params (subsystems enabled)
+        p = self._assembly_params
+        count = 1  # classification is always present
+        if p.get("include_feed_system", True):
+            count += 1
+        if p.get("include_air_system", True):
+            count += 1
+        if p.get("include_exhaust", True):
+            count += 1
+        self._component_count_label.setText(f"{count} subsystems")
 
     # --------------------------------------------------------- state save/restore
 
@@ -646,31 +587,6 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
         """Connect internal signals."""
-        # Component palette -> Assembly canvas
-        self.component_palette.component_selected.connect(
-            self.assembly_canvas.add_component_node
-        )
-
-        # Assembly canvas -> Property editor
-        self.assembly_canvas.node_selected.connect(
-            self.property_editor.set_component
-        )
-
-        # Property editor -> Assembly canvas (parameter updates)
-        self.property_editor.parameter_changed.connect(
-            self.assembly_canvas.update_node_params
-        )
-
-        # Assembly canvas -> 3D viewport
-        self.assembly_canvas.assembly_changed.connect(
-            self.viewport_3d.update_assembly
-        )
-
-        # Assembly canvas changes -> update status bar count
-        self.assembly_canvas.assembly_changed.connect(
-            lambda _: self._update_component_count()
-        )
-
         # Simulation control signals
         self.sim_control.run_requested.connect(self.run_simulation)
         self.sim_control.pause_requested.connect(self.pause_simulation)
@@ -718,11 +634,10 @@ class MainWindow(QMainWindow):
 
         self._project_path = None
         self._assembly_config = {}
+        self._assembly_params = {}
         self._is_modified = False
         self._built_backend = None
-        self.assembly_canvas.clear()
         self.viewport_3d.clear()
-        self.property_editor.clear()
         self._update_window_title()
         self._update_component_count()
         self.statusBar().showMessage("New project created", 3000)
@@ -747,7 +662,7 @@ class MainWindow(QMainWindow):
 
             self._project_path = path
             self._assembly_config = data.get("assembly", {})
-            self.assembly_canvas.load_state(data.get("canvas", {}))
+            self._assembly_params = data.get("assembly_params", {})
             self.viewport_3d.load_state(data.get("viewport", {}))
             self._is_modified = False
             self._update_window_title()
@@ -787,7 +702,7 @@ class MainWindow(QMainWindow):
             data = {
                 "version": "1.0",
                 "assembly": self._assembly_config,
-                "canvas": self.assembly_canvas.save_state(),
+                "assembly_params": self._assembly_params,
                 "viewport": self.viewport_3d.save_state(),
             }
             with open(path, 'w') as f:
@@ -848,12 +763,12 @@ class MainWindow(QMainWindow):
     @Slot()
     def undo(self):
         """Undo last action."""
-        self.assembly_canvas.undo()
+        pass  # Assembly is now params-driven (no undo stack)
 
     @Slot()
     def redo(self):
         """Redo last undone action."""
-        self.assembly_canvas.redo()
+        pass  # Assembly is now params-driven (no undo stack)
 
     @Slot()
     def show_preferences(self):
@@ -892,51 +807,75 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def add_component(self):
-        """Add a new component to the assembly."""
-        self.component_palette.show_add_dialog()
+        """Open the assembly configuration dialog."""
+        self.show_assembly_config()
 
     @Slot()
     def delete_component(self):
-        """Delete selected component."""
-        self.assembly_canvas.delete_selected()
-        self._set_modified(True)
+        """No-op -- assembly is params-driven now."""
+        pass
 
     @Slot()
     def auto_connect_ports(self):
-        """Automatically connect compatible ports."""
-        connected = self.assembly_canvas.auto_connect()
-        self.statusBar().showMessage(f"Auto-connected {connected} port pairs", 3000)
-        if connected > 0:
-            self._set_modified(True)
+        """No-op -- connections are automatic in params-driven assemblies."""
+        self.statusBar().showMessage("Connections are automatic in the assembly system", 3000)
 
     @Slot()
     def validate_assembly(self):
-        """Validate the current assembly."""
-        errors = self.assembly_canvas.validate()
-        if errors:
-            error_text = "\n".join(f"  - {e}" for e in errors)
-            QMessageBox.warning(
-                self, "Validation Errors",
-                f"Assembly has the following issues:\n\n{error_text}"
-            )
-        else:
-            QMessageBox.information(
-                self, "Validation Passed",
-                "Assembly is valid and ready for simulation."
-            )
+        """Build the assembly to validate it."""
+        self.build_full_system()
 
     @Slot()
     def load_preset(self):
-        """Load a predefined classifier configuration."""
-        from .dialogs.preset_dialog import PresetDialog
-        dialog = PresetDialog(self)
-        if dialog.exec():
-            preset = dialog.selected_preset
-            self.assembly_canvas.load_preset(preset)
-            self.viewport_3d.rebuild_from_canvas(self.assembly_canvas)
-            self._set_modified(True)
-            self._update_component_count()
-            self.statusBar().showMessage(f"Loaded preset: {preset['name']}", 3000)
+        """Open assembly configuration dialog (replaces old preset dialog)."""
+        self.show_assembly_config()
+
+    @Slot()
+    def show_assembly_config(self):
+        """Open the Assembly Configuration dialog."""
+        from .dialogs.assembly_config_dialog import AssemblyConfigDialog
+
+        dialog = AssemblyConfigDialog(self, self._assembly_params)
+        dialog.assembly_configured.connect(self._on_assembly_configured)
+        dialog.exec()
+
+    def _on_assembly_configured(self, params: Dict[str, Any]):
+        """Handle new assembly params from the Assembly Config dialog.
+
+        Syncs shared fields (wheel RPM, air flow, mode, etc.) into the
+        Simulation Settings so both panels stay consistent.
+        """
+        self._assembly_params = params
+        self._set_modified(True)
+        self._update_component_count()
+
+        # Sync assembly params -> simulation settings
+        s = self.sim_control.get_settings()
+        if "wheel_rpm" in params:
+            s.wheel_rpm = params["wheel_rpm"]
+        if "wheel_diameter" in params:
+            s.wheel_diameter = params["wheel_diameter"]
+        if "use_preclassification" in params:
+            s.use_preclassification = params["use_preclassification"]
+        if "include_feed_system" in params:
+            s.include_feed_system = params["include_feed_system"]
+        if "include_air_system" in params:
+            s.include_air_system = params["include_air_system"]
+        if "include_exhaust" in params:
+            s.include_exhaust = params["include_exhaust"]
+        # Sync geometry overrides that exist in both places
+        if "venturi_throat_ratio" in params and "venturi_inlet_diameter" in params:
+            throat_mm = params["venturi_inlet_diameter"] * params["venturi_throat_ratio"] * 1000
+            s.venturi_throat_diameter_mm = throat_mm
+        if "zigzag_channel_width" in params:
+            s.zigzag_width_mm = params["zigzag_channel_width"] * 1000
+        if "zigzag_channel_depth" in params:
+            s.zigzag_depth_mm = params["zigzag_channel_depth"] * 1000
+        # Push updated settings back to the UI widgets
+        self.sim_control.set_settings(s)
+
+        # Immediately build and preview
+        self.build_full_system()
 
     @Slot()
     def build_full_system(self):
@@ -947,15 +886,25 @@ class MainWindow(QMainWindow):
 
         try:
             settings = self.sim_control.get_settings()
+            p = self._assembly_params
 
             config = SimulationConfig(
-                assembly_data=self.assembly_canvas.get_assembly_data(),
-                use_preclassification=settings.use_preclassification,
-                wheel_diameter=settings.wheel_diameter,
-                wheel_rpm=settings.wheel_rpm,
-                include_feed_system=settings.include_feed_system,
-                include_air_system=settings.include_air_system,
-                include_exhaust=settings.include_exhaust,
+                assembly_data={},
+                use_preclassification=p.get("use_preclassification", settings.use_preclassification),
+                wheel_diameter=p.get("wheel_diameter", settings.wheel_diameter),
+                wheel_rpm=p.get("wheel_rpm", settings.wheel_rpm),
+                include_feed_system=p.get("include_feed_system", settings.include_feed_system),
+                include_air_system=p.get("include_air_system", settings.include_air_system),
+                include_exhaust=p.get("include_exhaust", settings.include_exhaust),
+                # Classification geometry params from Assembly Config dialog
+                venturi_inlet_diameter=p.get("venturi_inlet_diameter", 0.08),
+                venturi_throat_ratio=p.get("venturi_throat_ratio", 0.5),
+                zigzag_channel_width=p.get("zigzag_channel_width", 0.15),
+                zigzag_channel_depth=p.get("zigzag_channel_depth", 0.25),
+                zigzag_num_stages=p.get("zigzag_num_stages", 5),
+                primary_cyclone_diameter=p.get("primary_cyclone_diameter", 0.30),
+                secondary_cyclone_diameter=p.get("secondary_cyclone_diameter", 0.20),
+                tertiary_cyclone_diameter=p.get("tertiary_cyclone_diameter", 0.12),
                 device="cpu",
             )
 
@@ -966,10 +915,19 @@ class MainWindow(QMainWindow):
             if vertices is not None and len(vertices) > 0:
                 self.viewport_3d.update_from_backend_mesh(vertices, indices)
 
+                # Try to set up animation from the COMPLETE assembly (not classification-only)
+                self._stop_animation()
+                assembly_obj = getattr(backend, '_complete_assembly', None) or getattr(backend, '_assembly', None)
+                if assembly_obj is not None:
+                    ctrl = self.viewport_3d.build_with_animation(assembly_obj)
+                    if ctrl is not None:
+                        self._animation_controller = ctrl
+                        self.sim_control._log("Animation: registered rotating components")
+
                 # Keep reference so Run Simulation can skip canvas validation
                 self._built_backend = backend
 
-                mode = "Full System" if settings.use_preclassification else "Wheel-Only"
+                mode = "Full System" if p.get("use_preclassification", True) else "Wheel-Only"
                 msg = f"Built {mode}: {len(vertices):,} vertices, {len(indices)//3:,} triangles"
                 self.statusBar().showMessage(msg, 5000)
 
@@ -994,38 +952,43 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def run_simulation(self):
-        """Start or resume simulation.
+        """Start the simulation.
 
-        Two paths:
-        1. If the user has built a full system (via Build Full System), run
-           using the backend config -- canvas validation is skipped because
-           the backend already built a valid assembly from settings.
-        2. Otherwise fall back to the canvas assembly, validating first.
+        If a system hasn't been built yet, build it first automatically.
+        The simulation worker uses the settings panel params directly
+        (assembly is built inside the worker from ClassificationSystemParams).
         """
-        # Path 1: a system was already built via "Build Full System"
-        if hasattr(self, "_built_backend") and self._built_backend is not None:
-            self._start_simulation_run()
-            assembly_data = self.assembly_canvas.get_assembly_data()
-            self.sim_control.start_simulation(assembly_data)
-            return
-
-        # Path 2: canvas-based -- validate first
-        errors = self.assembly_canvas.validate()
-        if errors:
-            error_text = "\n".join(f"  \u2022 {e}" for e in errors)
-            QMessageBox.warning(
-                self,
-                "Cannot Run Simulation",
-                f"The assembly has {len(errors)} issue(s):\n\n"
-                f"{error_text}\n\n"
-                "Either fix the canvas connections or use\n"
-                "Build Full System first, then Run."
-            )
-            return
+        # Auto-build if not built yet
+        if self._built_backend is None:
+            self.build_full_system()
 
         self._start_simulation_run()
-        assembly_data = self.assembly_canvas.get_assembly_data()
-        self.sim_control.start_simulation(assembly_data)
+
+        # Start mechanical animations (synced to physics timeline)
+        self._start_animation()
+
+        self.sim_control.start_simulation({})
+
+    def _start_animation(self):
+        """Start the mechanical animation sequence."""
+        if self._animation_controller is not None:
+            from .widgets.animation_controller import AnimationTimeline
+            timeline = AnimationTimeline(
+                air_start_time=0.0,
+                air_ramp_duration=2.0,
+                feed_start_time=3.0,
+                lid_open_duration=1.0,
+                feed_ramp_duration=2.0,
+                classification_start_time=5.0,
+                steady_time=8.0,
+            )
+            self._animation_controller.start(timeline)
+            self.sim_control._log("Animation started: Air \u2192 Feed \u2192 Classification")
+
+    def _stop_animation(self):
+        """Stop the mechanical animation."""
+        if self._animation_controller is not None:
+            self._animation_controller.stop()
 
     def _start_simulation_run(self):
         """Shared UI state change when a simulation run begins."""
@@ -1048,13 +1011,14 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def stop_simulation(self):
-        """Stop the simulation."""
+        """Stop the simulation and animations."""
         self._simulation_state = "idle"
         self.simulation_state_changed.emit("idle")
         self.action_run_sim.setEnabled(True)
         self.action_pause_sim.setEnabled(False)
         self.action_stop_sim.setEnabled(False)
         self.sim_progress.setVisible(False)
+        self._stop_animation()
         self.sim_control.stop_simulation()
 
     @Slot()

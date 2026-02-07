@@ -53,7 +53,7 @@ class SimulationSettings:
     particle_std_um: float = 30.0       # [um]  std dev when no material preset
 
     # --- Physics (ClassificationFlowConfig defaults) ---
-    turbulence_intensity: float = 0.15  # CLI --turbulence 0.15
+    turbulence_base: float = 0.15  # Base turbulence (scales zigzag=0.25, cyclone=0.12)
     restitution: float = 0.3            # ClassificationFlowConfig default
     friction: float = 0.4               # ClassificationFlowConfig default
     bypass_ratio: float = 0.0           # CLI --bypass-ratio 0.0
@@ -219,12 +219,14 @@ class SimulationWorker(QObject):
                     f"({s.num_particles} over {feed_duration:.0f}s)"
                 )
 
+            _ts = s.turbulence_base / 0.15  # scale from base
             config = ClassificationFlowConfig(
                 num_particles=s.num_particles,
                 air_flow_rate_m3s=air_flow,
                 bypass_ratio=s.bypass_ratio,
                 dt=s.dt,
-                turbulent_intensity=s.turbulence_intensity,
+                turbulence_zigzag=0.25 * _ts,
+                turbulence_cyclone=0.12 * _ts,
                 restitution=s.restitution,
                 friction=s.friction,
                 device=s.device,
@@ -265,7 +267,6 @@ class SimulationWorker(QObject):
                     sim.initialize_whole_flour_population(
                         source=s.material_source,
                         num_particles=s.num_particles,
-                        initial_velocity=(0.0, 0.5, 0.0),
                     )
                     self.log_message.emit(f"  Whole flour population: {s.material_source}")
                 else:
@@ -273,7 +274,6 @@ class SimulationWorker(QObject):
                     sim.initialize_particles_from_material(
                         material=material,
                         num_particles=s.num_particles,
-                        initial_velocity=(0.0, 0.5, 0.0),
                     )
                     self.log_message.emit(f"  Material population: {material.name}")
             else:
@@ -284,7 +284,6 @@ class SimulationWorker(QObject):
                     num_particles=s.num_particles,
                     mean_diameter=mean_dia_m,
                     diameter_std=std_dia_m,
-                    initial_velocity=(0.0, 0.5, 0.0),
                 )
                 self.log_message.emit(
                     f"  Generic particles: d={s.particle_diameter_um:.0f} \u00b1 "
@@ -777,7 +776,7 @@ class SimulationControlPanel(QWidget):
         self.total_time_spin.setSingleStep(10)
         self.total_time_spin.setValue(self._settings.total_time)
         self.total_time_spin.setSuffix(" s")
-        self.total_time_spin.valueChanged.connect(lambda v: setattr(self._settings, 'total_time', v))
+        self.total_time_spin.valueChanged.connect(self._on_time_changed)
         f.addRow("Total Time:", self.total_time_spin)
 
         self.dt_spin = QDoubleSpinBox()
@@ -785,7 +784,7 @@ class SimulationControlPanel(QWidget):
         self.dt_spin.setDecimals(4)
         self.dt_spin.setValue(self._settings.dt)
         self.dt_spin.setSuffix(" s")
-        self.dt_spin.valueChanged.connect(lambda v: setattr(self._settings, 'dt', v))
+        self.dt_spin.valueChanged.connect(self._on_time_changed)
         f.addRow("Time Step (dt):", self.dt_spin)
 
         self.output_spin = QDoubleSpinBox()
@@ -918,7 +917,7 @@ class SimulationControlPanel(QWidget):
         self.wheel_rpm_spin.setDecimals(0)
         self.wheel_rpm_spin.setValue(self._settings.wheel_rpm)
         self.wheel_rpm_spin.setSuffix("  RPM")
-        self.wheel_rpm_spin.valueChanged.connect(lambda v: setattr(self._settings, 'wheel_rpm', v))
+        self.wheel_rpm_spin.valueChanged.connect(self._on_wheel_rpm_changed)
         f.addRow("Wheel Speed:", self.wheel_rpm_spin)
 
         self.wheel_diameter_spin = QDoubleSpinBox()
@@ -980,10 +979,10 @@ class SimulationControlPanel(QWidget):
         self.turbulence_spin.setRange(0.0, 0.5)
         self.turbulence_spin.setDecimals(2)
         self.turbulence_spin.setSingleStep(0.01)
-        self.turbulence_spin.setValue(self._settings.turbulence_intensity)
-        self.turbulence_spin.setToolTip("Fraction of mean velocity for zigzag mixing (15% typical)")
-        self.turbulence_spin.valueChanged.connect(lambda v: setattr(self._settings, 'turbulence_intensity', v))
-        f.addRow("Turbulence Intensity:", self.turbulence_spin)
+        self.turbulence_spin.setValue(self._settings.turbulence_base)
+        self.turbulence_spin.setToolTip("Base turbulence (0.15 default). Scales zone-specific: zigzag=0.25, cyclone=0.12")
+        self.turbulence_spin.valueChanged.connect(lambda v: setattr(self._settings, 'turbulence_base', v))
+        f.addRow("Turbulence (base):", self.turbulence_spin)
 
         self.restitution_spin = QDoubleSpinBox()
         self.restitution_spin.setRange(0.0, 1.0)
@@ -1113,6 +1112,16 @@ class SimulationControlPanel(QWidget):
                 self._settings.air_flow_m3s = q
                 self.air_flow_spin.setValue(q)
                 self.air_flow_spin.setEnabled(False)
+                # Dynamic tooltips
+                self.blower_rpm_spin.setToolTip(
+                    f"VFD blower at {rpm:.0f} RPM\n"
+                    f"Flow: {op['Q_m3_h']:.0f} m\u00b3/h ({q:.3f} m\u00b3/s)\n"
+                    f"Pressure: {op['P_operating_Pa']:.0f} Pa\n"
+                    f"Power: {op['shaft_power_W']:.0f} W  Efficiency: {op['efficiency']:.1%}"
+                )
+                self.air_flow_spin.setToolTip(
+                    f"Computed from blower at {rpm:.0f} RPM: {op['Q_m3_h']:.0f} m\u00b3/h"
+                )
                 self._log(
                     f"Blower {rpm:.0f} RPM \u2192 {op['Q_m3_h']:.0f} m\u00b3/h "
                     f"({q:.3f} m\u00b3/s), P={op['P_operating_Pa']:.0f} Pa"
@@ -1121,6 +1130,43 @@ class SimulationControlPanel(QWidget):
                 self._log(f"Blower RPM error: {e}")
         else:
             self.air_flow_spin.setEnabled(True)
+            self.blower_rpm_spin.setToolTip(
+                "VFD blower speed. 0 = use Air Flow Rate directly.\n"
+                "Design: 3000 RPM = 3000 m\u00b3/h.\n"
+                "Recommended: 400-600 RPM for bench-scale."
+            )
+            self.air_flow_spin.setToolTip(
+                "Direct air flow rate (m\u00b3/s). Set Blower RPM > 0 to compute from fan curve."
+            )
+
+    def _on_time_changed(self, _=None):
+        """Update time-related tooltips when total_time or dt changes."""
+        t = self.total_time_spin.value()
+        dt = self.dt_spin.value()
+        self._settings.total_time = t
+        self._settings.dt = dt
+        if dt > 0:
+            steps = int(t / dt)
+            self.total_time_spin.setToolTip(f"{t:.1f}s = {steps:,} steps at dt={dt}s")
+            self.dt_spin.setToolTip(f"{dt}s per step, {steps:,} total steps for {t:.1f}s")
+        else:
+            self.total_time_spin.setToolTip(f"{t:.1f}s")
+            self.dt_spin.setToolTip("")
+
+    def _on_wheel_rpm_changed(self, rpm: float):
+        self._settings.wheel_rpm = rpm
+        import math
+        omega = 2 * math.pi * rpm / 60.0
+        dia_m = self._settings.wheel_diameter
+        r = dia_m / 2.0
+        tip_speed = omega * r
+        g_force = (omega ** 2 * r) / 9.81
+        self.wheel_rpm_spin.setToolTip(
+            f"Wheel classifier at {rpm:.0f} RPM\n"
+            f"\u00d8 {dia_m * 1000:.0f} mm   \u03c9 = {omega:.1f} rad/s\n"
+            f"Tip speed: {tip_speed:.1f} m/s\n"
+            f"G-force at rim: {g_force:.0f} g"
+        )
 
     def _on_material_changed(self, source: str):
         self._settings.material_source = source
@@ -1384,7 +1430,7 @@ class SimulationControlPanel(QWidget):
         self.bypass_spin.setValue(settings.bypass_ratio)
         self.wheel_rpm_spin.setValue(settings.wheel_rpm)
         self.wheel_diameter_spin.setValue(settings.wheel_diameter)
-        self.turbulence_spin.setValue(settings.turbulence_intensity)
+        self.turbulence_spin.setValue(settings.turbulence_base)
         self.restitution_spin.setValue(settings.restitution)
         self.friction_spin.setValue(settings.friction)
         self.max_loading_spin.setValue(settings.max_loading_ratio)
@@ -1402,3 +1448,8 @@ class SimulationControlPanel(QWidget):
         self.recirc_wheel_spin.setValue(settings.recirculate_wheel_rpm)
         self.recirc_time_spin.setValue(settings.recirculate_time)
         self._set_recirc_controls_enabled(settings.recirculate_passes > 1)
+        # Refresh dynamic tooltips
+        self._on_time_changed()
+        self._on_wheel_rpm_changed(settings.wheel_rpm)
+        if settings.blower_rpm > 0:
+            self._on_blower_rpm_changed(settings.blower_rpm)

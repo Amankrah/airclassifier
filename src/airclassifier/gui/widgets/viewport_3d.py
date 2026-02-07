@@ -453,6 +453,190 @@ class Viewport3D(QWidget):
             print(f"Error updating mesh from assembly: {e}")
 
     # ================================================================
+    #  Animation support
+    # ================================================================
+
+    def build_with_animation(self, complete_assembly) -> Optional["AnimationController"]:
+        """
+        Build the assembly mesh and register animated components using
+        their native animation APIs (update_animation, get_impeller_mesh, etc.).
+
+        Args:
+            complete_assembly: CompleteClassifierAssembly instance
+
+        Returns:
+            AnimationController ready to start(), or None if PyVista unavailable.
+        """
+        if not HAS_PYVISTA or self.plotter is None:
+            return None
+
+        from .animation_controller import AnimationController
+
+        # Build the static combined mesh
+        try:
+            vertices, indices = complete_assembly.build_mesh()
+            if vertices is None or len(vertices) == 0:
+                return None
+            self.clear()
+            faces = np.array(indices).reshape(-1, 3)
+            self.add_mesh("assembly_static", np.array(vertices), faces,
+                          color=COMPONENT_RENDER_COLORS["default"], opacity=0.85)
+        except Exception as e:
+            print(f"Error building static mesh: {e}")
+            return None
+
+        controller = AnimationController(self.plotter, self)
+
+        try:
+            self._register_animated_parts(complete_assembly, controller)
+        except Exception as e:
+            print(f"Warning: Could not extract animated parts: {e}")
+
+        self._fit_all()
+        return controller
+
+    def _register_animated_parts(self, complete_assembly, controller):
+        """
+        Extract actual component instances and register them with the
+        AnimationController using their native animation APIs.
+        """
+        # Helper to get component world position
+        def _get_offset(subsystem_name):
+            """Get subsystem offset from assembly params."""
+            p = complete_assembly.params
+            offsets = {
+                "feed_system": getattr(p, 'feed_position', (0, 0, 0)),
+                "classification": getattr(p, 'classifier_position', (0, 0, 0)),
+                "air_system": getattr(p, 'air_system_position', (0, 0, 0)),
+            }
+            return np.array(offsets.get(subsystem_name, (0, 0, 0)), dtype=np.float64)
+
+        get_sub = getattr(complete_assembly, 'get_subsystem', None)
+        if get_sub is None:
+            return
+
+        # ---- Air system: blower + dampers ----
+        air = get_sub("air_system")
+        if air is not None:
+            air_offset = _get_offset("air_system")
+
+            # Use get_component_positions() if available
+            air_positions = {}
+            if hasattr(air, 'get_component_positions'):
+                air_positions = air.get_component_positions()
+
+            def _air_pos(key):
+                return np.array(air_positions.get(key, (0, 0, 0)), dtype=np.float64) + air_offset
+
+            # Blower
+            blower = getattr(air, 'blower', None)
+            if blower is not None:
+                pos = _air_pos('blower')
+                rpm = getattr(blower.params, 'rpm', 3000.0) if hasattr(blower, 'params') else 3000.0
+                controller.register_blower(blower, pos, rpm, color="#27AE60")
+                print(f"  Animation: registered blower ({rpm:.0f} RPM)")
+
+            # Dampers
+            dampers = getattr(air, 'dampers', [])
+            if not dampers:
+                dampers = getattr(air, '_dampers', [])
+            for i, damper in enumerate(dampers):
+                if damper is not None:
+                    pos = _air_pos(f'damper_{i}')
+                    controller.register_damper(damper, pos, index=i, color="#B0BEC5")
+                    print(f"  Animation: registered damper {i}")
+
+        # ---- Feed system: hopper lid, airlock, screw feeder, deagglomerator ----
+        feed = get_sub("feed_system")
+        if feed is not None:
+            feed_offset = _get_offset("feed_system")
+
+            # Use FeedSystemAssembly.get_component_positions() for correct positions
+            feed_positions = {}
+            if hasattr(feed, 'get_component_positions'):
+                feed_positions = feed.get_component_positions()
+
+            def _feed_pos(key):
+                return np.array(feed_positions.get(key, (0, 0, 0)), dtype=np.float64) + feed_offset
+
+            # Hopper lid
+            hopper = getattr(feed, 'hopper', None)
+            if hopper is not None and hasattr(hopper, 'get_lid_mesh'):
+                pos = _feed_pos('hopper')
+                controller.register_hopper_lid(hopper, pos, color="#F0AD4E")
+                print(f"  Animation: registered hopper lid")
+
+            # Rotary airlock
+            airlock = getattr(feed, 'airlock', None)
+            if airlock is not None:
+                pos = _feed_pos('airlock')
+                rpm = getattr(airlock.params, 'rpm', 20.0) if hasattr(airlock, 'params') else 20.0
+                controller.register_airlock(airlock, pos, rpm, name="feed_airlock", phase="feed", color="#3498DB")
+                print(f"  Animation: registered feed airlock ({rpm:.0f} RPM)")
+
+            # Screw feeder  (attribute is `feed.feeder`, NOT `feed.screw_feeder`)
+            screw = getattr(feed, 'feeder', None)
+            if screw is not None:
+                pos = _feed_pos('feeder')
+                rpm = getattr(screw.params, 'rpm', 60.0) if hasattr(screw, 'params') else 60.0
+                controller.register_screw(screw, pos, rpm, color="#27AE60")
+                print(f"  Animation: registered screw feeder ({rpm:.0f} RPM)")
+
+            # Deagglomerator
+            deagg = getattr(feed, 'deagglomerator', None)
+            if deagg is not None:
+                pos = _feed_pos('deagglomerator')
+                rpm = getattr(deagg.params, 'rpm', 1500.0) if hasattr(deagg, 'params') else 1500.0
+                controller.register_deagglomerator(deagg, pos, rpm, color="#9B59B6")
+                print(f"  Animation: registered deagglomerator ({rpm:.0f} RPM)")
+
+        # ---- Classification: wheel classifier + collection airlocks ----
+        classification = get_sub("classification")
+        if classification is not None:
+            cls_offset = _get_offset("classification")
+
+            # Use get_component_positions() if available
+            cls_positions = {}
+            if hasattr(classification, 'get_component_positions'):
+                cls_positions = classification.get_component_positions()
+
+            def _cls_pos(key):
+                return np.array(cls_positions.get(key, (0, 0, 0)), dtype=np.float64) + cls_offset
+
+            # Wheel classifier
+            wheel = getattr(classification, 'wheel', None)
+            if wheel is not None:
+                pos = _cls_pos('wheel')
+                rpm = getattr(wheel.params, 'rpm', 8000.0) if hasattr(wheel, 'params') else 8000.0
+                try:
+                    verts, indices_w, _ = wheel.generate_mesh()
+                    if verts is not None and len(verts) > 0:
+                        verts_world = verts.copy().astype(np.float64) + pos
+                        faces_w = indices_w.reshape(-1, 3)
+                        n = len(faces_w)
+                        pv_faces = np.zeros((n, 4), dtype=np.int64)
+                        pv_faces[:, 0] = 3
+                        pv_faces[:, 1:] = faces_w
+                        wheel_mesh = pv.PolyData(verts_world, pv_faces.flatten())
+                        controller.register_wheel(wheel_mesh, pos, rpm, color="#FF6B6B")
+                        print(f"  Animation: registered wheel classifier ({rpm:.0f} RPM)")
+                except Exception as e:
+                    print(f"  Animation: could not register wheel: {e}")
+
+            # Classification collection airlocks
+            for attr_name, label in [
+                ('coarse_airlock', 'class_coarse_airlock'),
+                ('dropout_airlock', 'class_dropout_airlock'),
+                ('wheel_coarse_airlock', 'class_wheel_airlock'),
+            ]:
+                al = getattr(classification, attr_name, None)
+                if al is not None:
+                    pos = _cls_pos(attr_name)
+                    rpm = getattr(al.params, 'rpm', 20.0) if hasattr(al, 'params') else 20.0
+                    controller.register_airlock(al, pos, rpm, name=label, phase="classification", color="#3498DB")
+                    print(f"  Animation: registered {label} ({rpm:.0f} RPM)")
+
+    # ================================================================
     #  Camera / View helpers
     # ================================================================
 
