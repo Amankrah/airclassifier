@@ -450,9 +450,14 @@ class AnimationController(QObject):
 
         Exits physics mode so the shutdown animation drives everything
         back to the resting state (same as run_air_flow_physics.py shutdown).
+
+        Uses wall-clock time for progress so the shutdown completes within
+        the expected real-time duration regardless of animation tick rate
+        (heavy 3D rendering can make ticks slower than real-time).
         """
         self._phase = AnimationPhase.SHUTDOWN
         self._shutdown_start = self._anim_time
+        self._shutdown_start_wall = time.time()  # wall-clock reference
         self._shutdown_duration = duration
         # Exit physics mode -- shutdown is a local animation sequence
         self._physics_mode = False
@@ -513,8 +518,11 @@ class AnimationController(QObject):
                 self.phase_changed.emit(self._phase.value)
 
         # Update each part
+        shutdown_complete = self._phase == AnimationPhase.SHUTDOWN
         for part in self._parts.values():
             frac = self._compute_frac(part.phase, t, tl)
+            if frac > 0.001:
+                shutdown_complete = False
             part.active = frac > 0.001
 
             if part.active and part.update:
@@ -522,6 +530,11 @@ class AnimationController(QObject):
 
             if part.active and part.get_mesh:
                 self._update_actor(part)
+
+        # Auto-complete shutdown: when all fracs have reached 0,
+        # force all parts to their resting state and stop the timer.
+        if shutdown_complete:
+            self._finalize_shutdown()
 
         try:
             self._plotter.render()
@@ -730,6 +743,30 @@ class AnimationController(QObject):
         except Exception:
             pass
 
+    def _finalize_shutdown(self):
+        """
+        Called when the shutdown animation reaches 100% progress.
+
+        Forces all parts to their resting state (frac=0 → closed/stopped)
+        and stops the animation timer.  This ensures the final visual state
+        is correct even if wall-clock timing is imprecise.
+        """
+        for part in self._parts.values():
+            if part.update:
+                try:
+                    part.update(0.0, 0.0)
+                except Exception:
+                    pass
+            if part.get_mesh is not None:
+                try:
+                    self._update_actor(part)
+                except Exception:
+                    pass
+        self._timer.stop()
+        self._running = False
+        self._phase = AnimationPhase.IDLE
+        self.phase_changed.emit(self._phase.value)
+
     def render_initial_state(self):
         """
         Render all registered animated parts at their initial resting position.
@@ -738,12 +775,22 @@ class AnimationController(QObject):
         so they are visible in the viewport even before animation starts.
         Each part is rendered at frac=0 / angle=0 -- its default geometry.
 
+        Explicitly resets each part's state to frac=0 (closed/stopped) before
+        generating meshes so the render always shows the resting geometry,
+        regardless of what the animation was doing previously.
+
         When start() is called later, the animation tick takes over and
         updates these actors each frame.
         """
         if self._plotter is None:
             return
         for part in self._parts.values():
+            # Reset state to resting (frac=0 → position=0, angle=0)
+            if part.update:
+                try:
+                    part.update(0.0, 0.0)
+                except Exception:
+                    pass
             if part.get_mesh is not None:
                 try:
                     self._update_actor(part)
@@ -758,12 +805,22 @@ class AnimationController(QObject):
         """Compute ramp fraction (0..1) for a given phase.
 
         During SHUTDOWN, all fractions ramp from 1 back to 0.
+        Uses wall-clock time for shutdown so the animation plays at the
+        correct real-time speed regardless of how fast ticks fire.
         """
-        # Shutdown: everything ramps down
+        # Shutdown: everything ramps down (wall-clock driven)
         if self._phase == AnimationPhase.SHUTDOWN:
-            sd_start = getattr(self, '_shutdown_start', t)
             sd_dur = getattr(self, '_shutdown_duration', 3.0)
-            progress = min(1.0, (t - sd_start) / max(sd_dur, 0.01))
+            # Prefer wall-clock elapsed time so shutdown is immune to
+            # slow animation ticks caused by heavy 3D rendering.
+            wall_start = getattr(self, '_shutdown_start_wall', None)
+            if wall_start is not None:
+                wall_elapsed = time.time() - wall_start
+                progress = min(1.0, wall_elapsed / max(sd_dur, 0.01))
+            else:
+                # Fallback to animation-time if wall start not recorded
+                sd_start = getattr(self, '_shutdown_start', t)
+                progress = min(1.0, (t - sd_start) / max(sd_dur, 0.01))
             return max(0.0, 1.0 - progress)
 
         if phase == "air":

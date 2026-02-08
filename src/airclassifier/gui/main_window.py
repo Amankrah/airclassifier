@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         self._built_backend = None  # set by Build Full System
         self._assembly_params: Dict[str, Any] = {}  # set by Assembly Config dialog
         self._animation_controller = None  # AnimationController instance
+        self._anim_generation = 0  # incremented each run; stale timers check this
 
         # Initialize UI
         self._setup_window()
@@ -967,7 +968,7 @@ class MainWindow(QMainWindow):
     # the classification physics begins.  This matches the real machine
     # where the system must be at steady-state before material is classified.
     STARTUP_PREAMBLE_MS = 8000   # 8 seconds (matches AnimationTimeline.steady_time)
-    SHUTDOWN_DURATION_MS = 3500  # 3.5s for dampers/lid to close + buffer
+    SHUTDOWN_DURATION_MS = 4500  # 3s shutdown anim + 1.5s buffer for force-stop
 
     @Slot()
     def run_simulation(self):
@@ -986,7 +987,19 @@ class MainWindow(QMainWindow):
         if self._built_backend is None:
             self.build_full_system()
 
+        # Bump generation so stale timers from a previous run are ignored
+        self._anim_generation += 1
+
         self._start_simulation_run()
+
+        # Reset the sim-control progress bar and KPI cards NOW so the user
+        # doesn't see stale 100% / old values during the 8s preamble.
+        self.sim_control.progress_bar.setValue(0)
+        self.sim_control.card_time.set_value("0.000 s")
+        self.sim_control.card_particles.set_value("0")
+        self.sim_control.card_fines.set_value("0")
+        self.sim_control.card_coarse.set_value("0")
+        self.sim_control.card_efficiency.set_value("--")
 
         # Start mechanical animations -- preamble runs first
         self._start_animation()
@@ -997,10 +1010,16 @@ class MainWindow(QMainWindow):
             f"Startup preamble: {self.STARTUP_PREAMBLE_MS / 1000:.0f}s "
             "(air → feed → classification)..."
         )
-        QTimer.singleShot(self.STARTUP_PREAMBLE_MS, self._start_simulation_after_preamble)
+        gen = self._anim_generation
+        QTimer.singleShot(
+            self.STARTUP_PREAMBLE_MS,
+            lambda g=gen: self._start_simulation_after_preamble(g),
+        )
 
-    def _start_simulation_after_preamble(self):
+    def _start_simulation_after_preamble(self, generation: int = -1):
         """Called after the startup preamble animation completes."""
+        if generation >= 0 and generation != self._anim_generation:
+            return  # stale timer from a cancelled/restarted run
         if self._simulation_state != "running":
             return  # User cancelled during preamble
         self.sim_control._log("Preamble complete — starting classification physics")
@@ -1043,23 +1062,50 @@ class MainWindow(QMainWindow):
         self.sim_control._log("Animation started: Air \u2192 Feed \u2192 Classification")
 
     def _stop_animation(self):
-        """Begin shutdown animation (dampers close, lid closes, ramp down)."""
+        """Begin shutdown animation (dampers close, lid closes, ramp down).
+
+        The shutdown uses wall-clock time for progress, so the animation
+        completes within ``_SHUTDOWN_ANIM_S`` seconds regardless of how
+        fast animation ticks fire.  A generous force-stop timer fires
+        well after the animation should have completed as a safety net.
+
+        Uses a generation counter so stale timers from a previous run
+        cannot interfere with a new run's animation.
+        """
+        _SHUTDOWN_ANIM_S = 3.0          # animation duration (wall-clock)
+        _FORCE_STOP_MS = int(_SHUTDOWN_ANIM_S * 1000) + 1500  # safety buffer
+
         if self._animation_controller is not None:
             phase = self._animation_controller.phase.value
             if phase in ("steady_state", "classification", "feed_startup", "air_startup"):
-                # Graceful shutdown: ramp everything to closed over 3s
-                self._animation_controller.begin_shutdown(duration=3.0)
-                QTimer.singleShot(3500, self._force_stop_animation)
+                # Graceful shutdown: ramp everything to closed
+                gen = self._anim_generation
+                self._animation_controller.begin_shutdown(duration=_SHUTDOWN_ANIM_S)
+                # Capture generation so the lambda is a no-op if a new run started
+                QTimer.singleShot(
+                    _FORCE_STOP_MS,
+                    lambda g=gen: self._force_stop_animation(g),
+                )
             else:
                 self._animation_controller.stop()
                 self._animation_controller.render_initial_state()
 
-    def _force_stop_animation(self):
-        """Force-stop after shutdown delay, render parts at resting state."""
+    def _force_stop_animation(self, generation: int = -1):
+        """Force-stop after shutdown delay, render parts at resting state.
+
+        This is a safety net -- the AnimationController now auto-completes
+        the shutdown when progress reaches 100%.  If it already stopped
+        itself, render_initial_state() is still safe to call (idempotent).
+
+        Ignores the call if the generation counter has advanced (a new run
+        started since this timer was scheduled).
+        """
+        if generation >= 0 and generation != self._anim_generation:
+            return  # stale timer from a previous run -- ignore
         if self._animation_controller is not None:
             self._animation_controller.stop()
-            # Render all parts at rest (angle=0, closed) so the assembly
-            # stays visible after the simulation ends.
+            # render_initial_state() explicitly resets all parts to frac=0
+            # (closed dampers, closed lid, stopped rotors) before rendering.
             self._animation_controller.render_initial_state()
 
     @Slot(float)
@@ -1105,10 +1151,16 @@ class MainWindow(QMainWindow):
         # Keep simulation state as "running" during shutdown so the UI
         # shows the shutdown animation.  After the shutdown completes,
         # _on_shutdown_complete finalizes everything.
-        QTimer.singleShot(self.SHUTDOWN_DURATION_MS, self._on_shutdown_complete)
+        gen = self._anim_generation
+        QTimer.singleShot(
+            self.SHUTDOWN_DURATION_MS,
+            lambda g=gen: self._on_shutdown_complete(g),
+        )
 
-    def _on_shutdown_complete(self):
+    def _on_shutdown_complete(self, generation: int = -1):
         """Called after the shutdown animation finishes."""
+        if generation >= 0 and generation != self._anim_generation:
+            return  # stale timer from a previous run
         self._simulation_state = "idle"
         self.action_run_sim.setEnabled(True)
         self.action_stop_sim.setEnabled(False)
