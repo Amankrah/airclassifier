@@ -39,13 +39,15 @@ Modules:
 """
 
 from .config import MachineConfig, MaterialProperties, Recipe
+from .physics.coupling import CoupledSimulator, PretreatmentResult, StepState
 
 __all__ = [
     # Config
     "MachineConfig",
     "MaterialProperties",
     "Recipe",
-    # Simulator (lazy imports to avoid heavy deps at import time)
-    # "GP15Simulator",
-    # "PretreatmentResult",
+    # Simulator
+    "CoupledSimulator",
+    "PretreatmentResult",
+    "StepState",
 ]

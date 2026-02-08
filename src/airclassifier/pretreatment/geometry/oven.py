@@ -84,15 +84,45 @@ class OvenGeometry:
             self.params.width / nz,
         )
 
-    def build_material_mask(self, electrode_gap_m: float, bed_depth_m: float) -> np.ndarray:
-        """Build a 3D int array: 1 = material cell, 0 = air/belt.
+    def build_material_mask(
+        self,
+        electrode_gap_m: float,
+        bed_depth_m: float,
+        belt_stack_m: float = 0.0035,
+    ) -> np.ndarray:
+        """Build a 3D int array tagging each cell by zone.
+
+        Zone IDs:
+            0 — air gap (above bed)
+            1 — material bed
+            2 — belt / wear-strip / top-sheet stack
+
+        The vertical layout within the electrode gap (Y-axis) is::
+
+            y = gap      upper electrode
+            y = d_bed    top of material bed
+            y = d_belt   top of belt stack
+            y = 0        lower electrode (ground)
 
         Args:
             electrode_gap_m: Current electrode gap [m].
             bed_depth_m: Material bed depth [m].
+            belt_stack_m: Belt + wear strip + top sheet thickness [m].
 
         Returns:
             np.ndarray of shape (nx, ny, nz), dtype int32.
         """
-        # TODO: Implement material mask based on belt stack and bed depth
-        raise NotImplementedError
+        nx, ny, nz = self.get_grid_shape()
+        dy = electrode_gap_m / ny
+
+        mask = np.zeros((nx, ny, nz), dtype=np.int32)
+
+        for j in range(ny):
+            y_centre = (j + 0.5) * dy          # centre of cell j
+            if y_centre < belt_stack_m:
+                mask[:, j, :] = 2               # belt layer
+            elif y_centre < belt_stack_m + bed_depth_m:
+                mask[:, j, :] = 1               # material bed
+            # else: 0 — air gap (default)
+
+        return mask
