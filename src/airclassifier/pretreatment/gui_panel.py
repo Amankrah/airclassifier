@@ -2,77 +2,230 @@
 Pretreatment GUI Panel
 ======================
 
-A PySide6 dock widget for the Air Classifier Designer that provides
-recipe selection, run/pause/stop controls, and real-time KPI cards
-for the GP-15 RF pretreatment simulation (engineering guide §9.3).
+A PySide6 panel widget for the Air Classifier Designer that provides
+recipe editing, run/pause/stop controls, real-time KPI cards, and
+3D field visualization for the GP-15 RF pretreatment simulation.
 
-This panel integrates into the existing MainWindow's dock system::
+Follows the same patterns as ``gui/panels/simulation_control.py``:
+- Inherits from ``QWidget`` (not ``QDockWidget``)
+- Uses ``QThread`` + worker for background simulation
+- Emits signals consumed by ``MainWindow``
+- Communicates with ``Viewport3D`` via mesh data
+
+Integration in MainWindow._create_dock_widgets()::
 
     from airclassifier.pretreatment.gui_panel import PretreatmentPanel
-    panel = PretreatmentPanel()
-    main_window.addDockWidget(Qt.RightDockWidgetArea, panel)
 
-The panel communicates with GP15Simulator through signals/slots:
-    - ``recipe_changed(Recipe)`` — user selects or edits a recipe
-    - ``run_requested(float)`` — user clicks Run with duration
-    - ``stop_requested()`` — user clicks Stop
-    - ``step_completed(StepState)`` — simulation reports a timestep
+    self.pretreatment_panel = PretreatmentPanel()
+    pretreatment_dock = QDockWidget("Pretreatment", self)
+    pretreatment_dock.setObjectName("PretreatmentDock")
+    pretreatment_dock.setWidget(self.pretreatment_panel)
+    self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, pretreatment_dock)
+    self.tabifyDockWidget(sim_dock, pretreatment_dock)
+    self._view_menu.addAction(pretreatment_dock.toggleViewAction())
 
-Phase 4 skeleton — UI layout only.  Full widget implementation
-deferred to GUI integration sprint.
+Engineering guide §9.3.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Dict, Any
 
 try:
-    from PySide6.QtCore import Qt, Signal
+    from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
     from PySide6.QtWidgets import (
-        QDockWidget,
         QFormLayout,
+        QFrame,
         QGroupBox,
         QHBoxLayout,
         QLabel,
-        QLineEdit,
         QPushButton,
-        QSpinBox,
         QDoubleSpinBox,
+        QCheckBox,
+        QComboBox,
+        QProgressBar,
+        QTabWidget,
+        QTextEdit,
         QVBoxLayout,
         QWidget,
     )
+
     _HAS_PYSIDE6 = True
 except ImportError:
     _HAS_PYSIDE6 = False
 
-from .config import MachineConfig, Recipe
+from .config import MachineConfig, MaterialProperties, Recipe
 from .physics.coupling import StepState
 
 
 if _HAS_PYSIDE6:
 
-    class PretreatmentPanel(QDockWidget):
+    # ── KPI card widget ──────────────────────────────────────────────
+
+    class _StatCard(QFrame):
+        """Small KPI display card matching the project's style."""
+
+        def __init__(self, title: str, unit: str = "", parent=None):
+            super().__init__(parent)
+            self.setFrameShape(QFrame.Shape.StyledPanel)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(6, 4, 6, 4)
+
+            self._title = QLabel(title)
+            self._title.setStyleSheet("font-size: 10px; color: #888;")
+            layout.addWidget(self._title)
+
+            self._value = QLabel("--")
+            self._value.setStyleSheet("font-size: 18px; font-weight: bold;")
+            layout.addWidget(self._value)
+
+            self._unit = unit
+
+        def set_value(self, val: float, fmt: str = ".1f"):
+            self._value.setText(f"{val:{fmt}} {self._unit}")
+
+    # ── Background simulation worker ─────────────────────────────────
+
+    class _PretreatmentWorker(QObject):
+        """Runs the GP-15 simulation in a background thread."""
+
+        progress_updated = Signal(int, float, dict)   # percent, time, stats
+        simulation_completed = Signal(dict)            # results
+        simulation_error = Signal(str)                 # error
+        log_message = Signal(str)                      # log
+
+        def __init__(self, config, material, recipe, duration_s):
+            super().__init__()
+            self._config = config
+            self._material = material
+            self._recipe = recipe
+            self._duration_s = duration_s
+            self._running = True
+
+        def run(self):
+            """Execute the simulation (runs in QThread)."""
+            try:
+                from .simulator import GP15Simulator
+
+                self.log_message.emit("Initializing GP-15 simulator...")
+                sim = GP15Simulator(
+                    config=self._config,
+                    material=self._material,
+                    enable_controller=True,
+                    enable_corrections=True,
+                    use_tvd=True,
+                )
+                sim.load_recipe(self._recipe)
+
+                self.log_message.emit(
+                    f"Running for {self._duration_s:.0f} s "
+                    f"(gap={self._recipe.electrode_gap_mm:.0f} mm, "
+                    f"speed={self._recipe.belt_speed_m_per_min:.2f} m/min)..."
+                )
+
+                # Compute stable dt and total steps
+                sim._ensure_initialized()
+                dt = sim._sim.compute_stable_dt(self._recipe)
+                total_steps = max(1, int(self._duration_s / dt))
+                report_every = max(1, total_steps // 100)
+
+                for step_i in range(total_steps):
+                    if not self._running:
+                        break
+
+                    actual_dt = min(dt, self._duration_s - sim._sim._time)
+                    if actual_dt <= 0:
+                        break
+                    state = sim.step(actual_dt)
+
+                    if step_i % report_every == 0:
+                        pct = int(100 * step_i / total_steps)
+                        self.progress_updated.emit(pct, state.time_s, {
+                            "T_mean_c": state.T_mean_c,
+                            "T_max_c": state.T_max_c,
+                            "M_mean_wb": state.M_mean_wb,
+                            "rf_power_kw": state.rf_power_kw,
+                            "anode_current_a": state.anode_current_a,
+                        })
+
+                outlet = sim.get_outlet_conditions()
+                meshes = sim.get_mesh()
+
+                results = {
+                    "outlet": outlet,
+                    "meshes": meshes,
+                    "time_series": {
+                        "time_s": [s.time_s for s in sim._sim._history],
+                        "T_mean_c": [s.T_mean_c for s in sim._sim._history],
+                        "M_mean_wb": [s.M_mean_wb for s in sim._sim._history],
+                        "rf_power_kw": [s.rf_power_kw for s in sim._sim._history],
+                    },
+                }
+
+                self.log_message.emit(
+                    f"Complete. Outlet: M={outlet.avg_moisture_wb:.1%}, "
+                    f"T={outlet.avg_temperature_c:.1f} °C"
+                )
+                self.progress_updated.emit(100, sim._sim._time, {})
+                self.simulation_completed.emit(results)
+
+            except Exception as e:
+                self.simulation_error.emit(str(e))
+
+        def stop(self):
+            self._running = False
+
+    # ── Main panel widget ────────────────────────────────────────────
+
+    class PretreatmentPanel(QWidget):
         """Pretreatment simulation control panel.
 
-        Provides recipe editing, simulation controls, and live KPI
-        display for the GP-15 RF heating digital twin.
+        Provides recipe editing, simulation run controls, live KPI
+        cards, and a log tab.  Follows the same architecture as
+        ``SimulationControlPanel``.
         """
 
-        # Signals
-        recipe_changed = Signal(object)
-        run_requested = Signal(float)
+        # Signals consumed by MainWindow
+        run_requested = Signal()
         stop_requested = Signal()
+        simulation_results_ready = Signal(dict)
+        sim_time_updated = Signal(float)
+        mesh_updated = Signal(object, object)  # vertices, indices
 
         def __init__(self, parent: Optional[QWidget] = None):
-            super().__init__("Pretreatment (GP-15)", parent)
-            self.setObjectName("pretreatment_panel")
+            super().__init__(parent)
+            self._worker: Optional[_PretreatmentWorker] = None
+            self._thread: Optional[QThread] = None
             self._build_ui()
 
         def _build_ui(self):
-            container = QWidget()
-            layout = QVBoxLayout(container)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(4, 4, 4, 4)
 
-            # ── Recipe group ──────────────────────────────────────
+            self._tabs = QTabWidget()
+            layout.addWidget(self._tabs)
+
+            # ── Control tab ───────────────────────────────────────
+            control_widget = QWidget()
+            ctrl_layout = QVBoxLayout(control_widget)
+
+            # Material preset
+            mat_grp = QGroupBox("Material")
+            mat_form = QFormLayout()
+            self._material_combo = QComboBox()
+            self._material_combo.addItems(["yellow_pea", "faba_bean", "oat"])
+            mat_form.addRow("Preset:", self._material_combo)
+
+            self._moisture_spin = QDoubleSpinBox()
+            self._moisture_spin.setRange(0.01, 0.25)
+            self._moisture_spin.setValue(0.10)
+            self._moisture_spin.setDecimals(3)
+            self._moisture_spin.setSingleStep(0.01)
+            mat_form.addRow("Inlet moisture:", self._moisture_spin)
+            mat_grp.setLayout(mat_form)
+            ctrl_layout.addWidget(mat_grp)
+
+            # Recipe
             recipe_grp = QGroupBox("Recipe")
             recipe_form = QFormLayout()
 
@@ -95,6 +248,9 @@ if _HAS_PYSIDE6:
             self._fan_spin.setSuffix(" Hz")
             recipe_form.addRow("Extraction fan:", self._fan_spin)
 
+            self._temp_check = QCheckBox("Enable")
+            recipe_form.addRow("Temp control:", self._temp_check)
+
             self._duration_spin = QDoubleSpinBox()
             self._duration_spin.setRange(1, 3600)
             self._duration_spin.setValue(120)
@@ -102,71 +258,144 @@ if _HAS_PYSIDE6:
             recipe_form.addRow("Duration:", self._duration_spin)
 
             recipe_grp.setLayout(recipe_form)
-            layout.addWidget(recipe_grp)
+            ctrl_layout.addWidget(recipe_grp)
 
-            # ── Controls ──────────────────────────────────────────
-            ctrl_layout = QHBoxLayout()
-            self._run_btn = QPushButton("Run")
+            # Buttons
+            btn_layout = QHBoxLayout()
+            self._run_btn = QPushButton("▶ Run")
             self._run_btn.clicked.connect(self._on_run)
-            self._stop_btn = QPushButton("Stop")
+            self._stop_btn = QPushButton("■ Stop")
             self._stop_btn.clicked.connect(self._on_stop)
             self._stop_btn.setEnabled(False)
-            ctrl_layout.addWidget(self._run_btn)
-            ctrl_layout.addWidget(self._stop_btn)
-            layout.addLayout(ctrl_layout)
+            btn_layout.addWidget(self._run_btn)
+            btn_layout.addWidget(self._stop_btn)
+            ctrl_layout.addLayout(btn_layout)
 
-            # ── KPI display ───────────────────────────────────────
+            # Progress
+            self._progress = QProgressBar()
+            self._progress.setRange(0, 100)
+            ctrl_layout.addWidget(self._progress)
+
+            # KPI cards
             kpi_grp = QGroupBox("Live KPIs")
-            kpi_form = QFormLayout()
+            kpi_layout = QHBoxLayout()
+            self._card_T = _StatCard("Temperature", "°C")
+            self._card_M = _StatCard("Moisture", "%")
+            self._card_P = _StatCard("RF Power", "kW")
+            self._card_Ia = _StatCard("Anode I", "A")
+            kpi_layout.addWidget(self._card_T)
+            kpi_layout.addWidget(self._card_M)
+            kpi_layout.addWidget(self._card_P)
+            kpi_layout.addWidget(self._card_Ia)
+            kpi_grp.setLayout(kpi_layout)
+            ctrl_layout.addWidget(kpi_grp)
 
-            self._lbl_time = QLabel("0.0 s")
-            self._lbl_T = QLabel("-- °C")
-            self._lbl_M = QLabel("-- %")
-            self._lbl_power = QLabel("-- kW")
-            self._lbl_current = QLabel("-- A")
+            ctrl_layout.addStretch()
+            self._tabs.addTab(control_widget, "Control")
 
-            kpi_form.addRow("Time:", self._lbl_time)
-            kpi_form.addRow("T (mean):", self._lbl_T)
-            kpi_form.addRow("M (mean):", self._lbl_M)
-            kpi_form.addRow("RF power:", self._lbl_power)
-            kpi_form.addRow("Ia:", self._lbl_current)
+            # ── Log tab ───────────────────────────────────────────
+            self._log_text = QTextEdit()
+            self._log_text.setReadOnly(True)
+            self._tabs.addTab(self._log_text, "Log")
 
-            kpi_grp.setLayout(kpi_form)
-            layout.addWidget(kpi_grp)
-
-            layout.addStretch()
-            self.setWidget(container)
-
-        def update_kpis(self, state: StepState):
-            """Update the KPI labels from a simulation step."""
-            self._lbl_time.setText(f"{state.time_s:.1f} s")
-            self._lbl_T.setText(f"{state.T_mean_c:.1f} °C")
-            self._lbl_M.setText(f"{state.M_mean_wb * 100:.2f} %")
-            self._lbl_power.setText(f"{state.rf_power_kw:.2f} kW")
-            self._lbl_current.setText(f"{state.anode_current_a:.2f} A")
+        # ── Public API ────────────────────────────────────────────
 
         def get_recipe(self) -> Recipe:
-            """Build a Recipe from the current UI values."""
+            """Build a Recipe from current UI values."""
             return Recipe(
                 name="gui_recipe",
                 recipe_number=0,
                 electrode_gap_mm=self._gap_spin.value(),
                 belt_speed_m_per_min=self._speed_spin.value(),
                 extraction_fan_hz=self._fan_spin.value(),
+                temp_control_enabled=self._temp_check.isChecked(),
             )
 
-        def _on_run(self):
-            self.run_requested.emit(self._duration_spin.value())
+        def get_material(self) -> MaterialProperties:
+            """Build MaterialProperties from current UI values."""
+            from .materials.presets import get_material_preset
+            mat = get_material_preset(self._material_combo.currentText())
+            mat.initial_moisture_wb = self._moisture_spin.value()
+            return mat
+
+        def update_kpis(self, stats: dict):
+            """Update KPI cards from a stats dict."""
+            if "T_mean_c" in stats:
+                self._card_T.set_value(stats["T_mean_c"])
+            if "M_mean_wb" in stats:
+                self._card_M.set_value(stats["M_mean_wb"] * 100, ".2f")
+            if "rf_power_kw" in stats:
+                self._card_P.set_value(stats["rf_power_kw"], ".2f")
+            if "anode_current_a" in stats:
+                self._card_Ia.set_value(stats["anode_current_a"], ".2f")
+
+        # ── Simulation lifecycle ──────────────────────────────────
+
+        def start_simulation(self):
+            """Launch the background simulation thread."""
+            config = MachineConfig()
+            material = self.get_material()
+            recipe = self.get_recipe()
+            duration = self._duration_spin.value()
+
+            self._thread = QThread()
+            self._worker = _PretreatmentWorker(config, material, recipe, duration)
+            self._worker.moveToThread(self._thread)
+
+            self._thread.started.connect(self._worker.run)
+            self._worker.progress_updated.connect(self._on_progress)
+            self._worker.simulation_completed.connect(self._on_completed)
+            self._worker.simulation_error.connect(self._on_error)
+            self._worker.log_message.connect(self._log)
+
+            self._thread.start()
             self._run_btn.setEnabled(False)
             self._stop_btn.setEnabled(True)
+            self._log("Simulation started.")
+
+        def _on_run(self):
+            self.run_requested.emit()
+            self.start_simulation()
 
         def _on_stop(self):
+            if self._worker:
+                self._worker.stop()
             self.stop_requested.emit()
             self._run_btn.setEnabled(True)
             self._stop_btn.setEnabled(False)
+            self._log("Simulation stopped by user.")
+
+        def _on_progress(self, pct: int, time_s: float, stats: dict):
+            self._progress.setValue(pct)
+            self.sim_time_updated.emit(time_s)
+            if stats:
+                self.update_kpis(stats)
+
+        def _on_completed(self, results: dict):
+            self._run_btn.setEnabled(True)
+            self._stop_btn.setEnabled(False)
+            self._progress.setValue(100)
+            self.simulation_results_ready.emit(results)
+
+            if self._thread:
+                self._thread.quit()
+                self._thread.wait()
+
+            self._log("Simulation complete.")
+
+        def _on_error(self, msg: str):
+            self._run_btn.setEnabled(True)
+            self._stop_btn.setEnabled(False)
+            self._log(f"ERROR: {msg}")
+
+            if self._thread:
+                self._thread.quit()
+                self._thread.wait()
+
+        def _log(self, msg: str):
+            self._log_text.append(msg)
 
 else:
-    # Stub when PySide6 is not installed
     class PretreatmentPanel:  # type: ignore[no-redef]
         """Placeholder — PySide6 not available."""
         def __init__(self, *args, **kwargs):

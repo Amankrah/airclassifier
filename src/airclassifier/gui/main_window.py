@@ -26,6 +26,12 @@ from .panels.results_panel import ResultsPanel
 from .widgets.viewport_3d import Viewport3D
 from .theme import COLORS
 
+try:
+    from ..pretreatment.gui_panel import PretreatmentPanel
+    _HAS_PRETREATMENT = True
+except Exception:
+    _HAS_PRETREATMENT = False
+
 
 class _WelcomeOverlay(QWidget):
     """
@@ -495,6 +501,22 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(sim_dock, results_dock)
         self._view_menu.addAction(results_dock.toggleViewAction())
 
+        # Pretreatment Panel (bottom, tabbed with simulation)
+        if _HAS_PRETREATMENT:
+            self.pretreatment_panel = PretreatmentPanel()
+            self.pretreatment_panel.setMaximumHeight(400)
+            pretreatment_dock = QDockWidget("Pretreatment (GP-15)", self)
+            pretreatment_dock.setObjectName("PretreatmentDock")
+            pretreatment_dock.setWidget(self.pretreatment_panel)
+            pretreatment_dock.setAllowedAreas(
+                Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.TopDockWidgetArea
+            )
+            self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, pretreatment_dock)
+            self.tabifyDockWidget(sim_dock, pretreatment_dock)
+            self._view_menu.addAction(pretreatment_dock.toggleViewAction())
+        else:
+            self.pretreatment_panel = None
+
         # Raise simulation dock by default
         sim_dock.raise_()
 
@@ -606,6 +628,12 @@ class MainWindow(QMainWindow):
 
         # Physics-driven animation: forward component state from simulation to animation
         self.sim_control.component_state_updated.connect(self._on_component_state_updated)
+
+        # Pretreatment panel signals
+        if self.pretreatment_panel is not None:
+            self.pretreatment_panel.simulation_results_ready.connect(
+                self._on_pretreatment_finished
+            )
 
     def _update_window_title(self):
         """Update window title based on project state."""
@@ -1139,6 +1167,67 @@ class MainWindow(QMainWindow):
             self._animation_controller.update_from_physics(component_state)
 
     @Slot(dict)
+    def _on_pretreatment_finished(self, results: Dict[str, Any]):
+        """Called when GP-15 pretreatment simulation completes.
+
+        Updates the 3D viewport with the oven geometry and temperature/
+        moisture fields from the simulation result.
+        """
+        meshes = results.get("meshes", {})
+        outlet = results.get("outlet")
+
+        # Add oven structure to 3D viewport
+        import numpy as np
+        for name in ("oven", "upper_electrode", "lower_electrode", "belt"):
+            if name in meshes:
+                v = meshes[name]["vertices"]
+                t = meshes[name]["triangles"]
+                colors = {
+                    "oven": "#555555",
+                    "upper_electrode": "#C0C0C0",
+                    "lower_electrode": "#A0A0A0",
+                    "belt": "#4A90D9",
+                }
+                self.viewport_3d.add_mesh(
+                    component_id=f"gp15_{name}",
+                    vertices=v,
+                    faces=t,
+                    color=colors.get(name, "#888888"),
+                    opacity=0.3 if name == "oven" else 0.7,
+                )
+
+        # Add field visualization if available
+        if "fields" in meshes:
+            try:
+                from ..pretreatment.io.visualization import fields_to_pyvista_grid
+                f = meshes["fields"]
+                grid = fields_to_pyvista_grid(
+                    grid_shape=f["grid_shape"],
+                    cell_sizes=f["cell_sizes"],
+                    T=f.get("temperature"),
+                    M=f.get("moisture"),
+                )
+                # Threshold to material cells only
+                bed = grid.threshold(value=[0.5, 1.5], scalars="Zone") if "Zone" in grid.cell_data else grid
+                actor = self.viewport_3d.plotter.add_mesh(
+                    bed,
+                    scalars="Temperature [C]",
+                    cmap="coolwarm",
+                    opacity=0.8,
+                    show_edges=False,
+                    name="gp15_field",
+                )
+            except Exception:
+                pass  # Visualization is optional
+
+        if outlet:
+            self.statusBar().showMessage(
+                f"GP-15: M={outlet.avg_moisture_wb:.1%}, "
+                f"T={outlet.avg_temperature_c:.1f} °C, "
+                f"E={outlet.total_energy_kwh:.2f} kWh",
+                10000,
+            )
+
     def _on_simulation_finished(self, results: Dict[str, Any]):
         """Called when classification physics completes -- play shutdown sequence.
 

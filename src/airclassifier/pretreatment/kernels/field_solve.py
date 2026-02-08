@@ -224,9 +224,75 @@ def compute_gradient_sq_np(
     return E2
 
 
-# ── Warp kernel stubs (Phase 3) ─────────────────────────────────────
+# ── Warp GPU kernels ─────────────────────────────────────────────────
 
-# @wp.kernel
-# def jacobi_iteration(...):  ...
-# @wp.kernel
-# def compute_gradient_sq(...):  ...
+try:
+    import warp as wp
+
+    @wp.kernel
+    def jacobi_iteration_wp(
+        phi: wp.array3d(dtype=float),
+        phi_new: wp.array3d(dtype=float),
+        eps: wp.array3d(dtype=float),
+        inv_dx2: float, inv_dy2: float, inv_dz2: float,
+        nx: int, ny: int, nz: int,
+    ):
+        """One Jacobi iteration for div(eps * grad(phi)) = 0."""
+        i, j, k = wp.tid()
+        if i <= 0 or i >= nx - 1 or j <= 0 or j >= ny - 1 or k <= 0 or k >= nz - 1:
+            return
+
+        e_xp = 0.5 * (eps[i, j, k] + eps[i + 1, j, k])
+        e_xm = 0.5 * (eps[i - 1, j, k] + eps[i, j, k])
+        e_yp = 0.5 * (eps[i, j, k] + eps[i, j + 1, k])
+        e_ym = 0.5 * (eps[i, j - 1, k] + eps[i, j, k])
+        e_zp = 0.5 * (eps[i, j, k] + eps[i, j, k + 1])
+        e_zm = 0.5 * (eps[i, j, k - 1] + eps[i, j, k])
+
+        num = (
+            (e_xp * phi[i + 1, j, k] + e_xm * phi[i - 1, j, k]) * inv_dx2
+            + (e_yp * phi[i, j + 1, k] + e_ym * phi[i, j - 1, k]) * inv_dy2
+            + (e_zp * phi[i, j, k + 1] + e_zm * phi[i, j, k - 1]) * inv_dz2
+        )
+        den = (
+            (e_xp + e_xm) * inv_dx2
+            + (e_yp + e_ym) * inv_dy2
+            + (e_zp + e_zm) * inv_dz2
+        )
+
+        phi_new[i, j, k] = num / wp.max(den, 1.0e-30)
+
+    @wp.kernel
+    def compute_gradient_sq_wp(
+        phi: wp.array3d(dtype=float),
+        E2: wp.array3d(dtype=float),
+        dx: float, dy: float, dz: float,
+        nx: int, ny: int, nz: int,
+    ):
+        """Compute |grad(phi)|^2 = |E|^2 from the potential field."""
+        i, j, k = wp.tid()
+        if i >= nx or j >= ny or k >= nz:
+            return
+
+        im = wp.max(i - 1, 0)
+        ip = wp.min(i + 1, nx - 1)
+        jm = wp.max(j - 1, 0)
+        jp = wp.min(j + 1, ny - 1)
+        km = wp.max(k - 1, 0)
+        kp = wp.min(k + 1, nz - 1)
+
+        # Use safe difference denominators
+        dx_eff = dx * float(ip - im)
+        dy_eff = dy * float(jp - jm)
+        dz_eff = dz * float(kp - km)
+
+        dphi_dx = (phi[ip, j, k] - phi[im, j, k]) / wp.max(dx_eff, 1.0e-30)
+        dphi_dy = (phi[i, jp, k] - phi[i, jm, k]) / wp.max(dy_eff, 1.0e-30)
+        dphi_dz = (phi[i, j, kp] - phi[i, j, km]) / wp.max(dz_eff, 1.0e-30)
+
+        E2[i, j, k] = dphi_dx * dphi_dx + dphi_dy * dphi_dy + dphi_dz * dphi_dz
+
+    _HAS_WARP_FIELD = True
+
+except ImportError:
+    _HAS_WARP_FIELD = False

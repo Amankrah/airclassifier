@@ -171,7 +171,32 @@ def advect_material_tvd_np(
     return out
 
 
-# ── Warp kernel stub (Phase 3) ──────────────────────────────────────
+# ── Warp GPU kernels ─────────────────────────────────────────────────
 
-# @wp.kernel
-# def advect_material(...):  ...
+try:
+    import warp as wp
+
+    @wp.kernel
+    def advect_material_wp_kernel(
+        field: wp.array3d(dtype=float),
+        field_new: wp.array3d(dtype=float),
+        v_belt_dx_dt: float,
+        inlet_value: float,
+        nx: int, ny: int, nz: int,
+    ):
+        """Advect a scalar field along +X (upwind scheme, Warp GPU)."""
+        i, j, k = wp.tid()
+        if i >= nx or j >= ny or k >= nz:
+            return
+
+        if i == 0:
+            field_new[i, j, k] = inlet_value
+        else:
+            field_new[i, j, k] = field[i, j, k] - v_belt_dx_dt * (
+                field[i, j, k] - field[i - 1, j, k]
+            )
+
+    _HAS_WARP = True
+
+except ImportError:
+    _HAS_WARP = False
