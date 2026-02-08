@@ -56,13 +56,43 @@ class OvenGeometry:
         self.params = params or OvenGeometryParams()
 
     def generate_mesh(self) -> Tuple[np.ndarray, np.ndarray, dict]:
-        """Generate oven wall mesh.
+        """Generate oven wall mesh as a wireframe box.
+
+        The oven is a rectangular chamber with infeed (x=0) and outfeed
+        (x=L) openings.  Walls are on the +/-Z sides and the +Y (top)
+        face.  The bottom (y=0) is the lower electrode tray.
 
         Returns:
-            (vertices, indices, metadata) triangle mesh.
+            (vertices, triangles, metadata) triangle mesh.
         """
-        # TODO: Implement oven wall geometry
-        raise NotImplementedError
+        p = self.params
+        L = p.length
+        H = p.height
+        W = p.width
+        t = p.wall_thickness
+
+        # Outer box vertices  (8 corners)
+        verts = np.array([
+            [0, 0, 0], [L, 0, 0], [L, H, 0], [0, H, 0],
+            [0, 0, W], [L, 0, W], [L, H, W], [0, H, W],
+        ], dtype=np.float32)
+
+        # 12 triangles for 6 faces
+        tris = np.array([
+            [0, 1, 2], [0, 2, 3],  # -Z wall
+            [4, 6, 5], [4, 7, 6],  # +Z wall
+            [0, 4, 5], [0, 5, 1],  # floor (-Y)
+            [2, 6, 7], [2, 7, 3],  # ceiling (+Y)
+            [0, 3, 7], [0, 7, 4],  # infeed (-X)
+            [1, 5, 6], [1, 6, 2],  # outfeed (+X)
+        ], dtype=np.int32)
+
+        return verts, tris, {
+            "type": "oven_wall",
+            "length_m": L,
+            "width_m": W,
+            "height_m": H,
+        }
 
     def get_grid_shape(self) -> Tuple[int, int, int]:
         """Return (nx, ny, nz) for the simulation grid."""

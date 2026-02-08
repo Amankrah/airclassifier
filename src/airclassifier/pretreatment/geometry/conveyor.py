@@ -46,11 +46,55 @@ class ConveyorGeometry:
         self.params = params or ConveyorParams()
 
     def generate_belt_mesh(self) -> Tuple[np.ndarray, np.ndarray, dict]:
-        """Generate belt surface mesh for visualization."""
-        # TODO: Implement belt mesh generation
-        raise NotImplementedError
+        """Generate belt surface mesh (flat quad at y = belt_stack)."""
+        p = self.params
+        y = p.wear_strip_thickness_m + p.top_sheet_thickness_m
+        verts = np.array([
+            [0.0,           y,                   0.0],
+            [p.belt_length_m, y,                 0.0],
+            [p.belt_length_m, y + p.belt_thickness_m, 0.0],
+            [0.0,           y + p.belt_thickness_m, 0.0],
+            [0.0,           y,                   p.belt_width_m],
+            [p.belt_length_m, y,                 p.belt_width_m],
+            [p.belt_length_m, y + p.belt_thickness_m, p.belt_width_m],
+            [0.0,           y + p.belt_thickness_m, p.belt_width_m],
+        ], dtype=np.float32)
+        tris = np.array([
+            [0, 1, 2], [0, 2, 3],
+            [4, 6, 5], [4, 7, 6],
+            [0, 4, 5], [0, 5, 1],
+            [2, 6, 7], [2, 7, 3],
+            [0, 3, 7], [0, 7, 4],
+            [1, 5, 6], [1, 6, 2],
+        ], dtype=np.int32)
+        return verts, tris, {"type": "belt", "material": "PTFE"}
 
-    def generate_bed_mesh(self, bed_depth_m: float) -> Tuple[np.ndarray, np.ndarray, dict]:
+    def generate_bed_mesh(
+        self, bed_depth_m: float,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
         """Generate material bed mesh (rectangular slab on belt)."""
-        # TODO: Implement bed mesh generation
-        raise NotImplementedError
+        p = self.params
+        y_base = (
+            p.wear_strip_thickness_m
+            + p.top_sheet_thickness_m
+            + p.belt_thickness_m
+        )
+        verts = np.array([
+            [0.0,           y_base,                0.0],
+            [p.belt_length_m, y_base,              0.0],
+            [p.belt_length_m, y_base + bed_depth_m, 0.0],
+            [0.0,           y_base + bed_depth_m,  0.0],
+            [0.0,           y_base,                p.belt_width_m],
+            [p.belt_length_m, y_base,              p.belt_width_m],
+            [p.belt_length_m, y_base + bed_depth_m, p.belt_width_m],
+            [0.0,           y_base + bed_depth_m,  p.belt_width_m],
+        ], dtype=np.float32)
+        tris = np.array([
+            [0, 1, 2], [0, 2, 3],
+            [4, 6, 5], [4, 7, 6],
+            [0, 4, 5], [0, 5, 1],
+            [2, 6, 7], [2, 7, 3],
+            [0, 3, 7], [0, 7, 4],
+            [1, 5, 6], [1, 6, 2],
+        ], dtype=np.int32)
+        return verts, tris, {"type": "material_bed"}

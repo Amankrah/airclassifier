@@ -18,6 +18,7 @@ Main entry points::
     from airclassifier.pretreatment import (
         GP15Simulator,
         PretreatmentResult,
+        OutletState,
         MachineConfig,
         MaterialProperties,
         Recipe,
@@ -28,6 +29,7 @@ Main entry points::
     sim.load_recipe(Recipe(name="yellow_pea_standard", recipe_number=1,
                            electrode_gap_mm=80, belt_speed_m_per_min=0.5))
     result = sim.run(duration_s=120.0)
+    outlet = sim.get_outlet_conditions()
 
 Modules:
     geometry    Oven chamber, electrode, conveyor belt meshes
@@ -36,18 +38,29 @@ Modules:
     control     PLC controller, recipe system, safety logic
     materials   Feedstock properties (yellow pea, faba bean, oat)
     io          VTK/CSV export, 3D field visualization helpers
+    optimizer   Recipe optimization and sensitivity sweeps
 """
 
 from .config import MachineConfig, MaterialProperties, Recipe
-from .physics.coupling import CoupledSimulator, PretreatmentResult, StepState
+from .physics.coupling import (
+    CoupledSimulator,
+    OutletState,
+    PretreatmentResult,
+    StepState,
+)
+from .simulator import GP15Simulator
 
 __all__ = [
+    # Public API
+    "GP15Simulator",
     # Config
     "MachineConfig",
     "MaterialProperties",
     "Recipe",
-    # Simulator
-    "CoupledSimulator",
+    # Results
     "PretreatmentResult",
     "StepState",
+    "OutletState",
+    # Internal (advanced)
+    "CoupledSimulator",
 ]

@@ -1,25 +1,47 @@
 """
-Integration tests for the full coupled simulation.
+Integration tests for the full pretreatment simulation.
 
 Validates:
-- End-to-end: material enters at initial moisture, exits drier
-- Temperature rises under RF heating
-- Coupling: T and M fields are mutually consistent
-- Advection: material moves through the domain
+- GP15Simulator public API (§7.1)
+- End-to-end coupled simulation
+- OutletState for pipeline integration (§9.1)
+- Manual example validation (§10.1)
+- Mesh generation for visualization
 """
 
 import numpy as np
 import pytest
 
 from airclassifier.pretreatment.config import MachineConfig, MaterialProperties, Recipe
+from airclassifier.pretreatment.simulator import GP15Simulator
+from airclassifier.pretreatment.physics.coupling import CoupledSimulator, OutletState
 from airclassifier.pretreatment.geometry.oven import OvenGeometry, OvenGeometryParams
-from airclassifier.pretreatment.physics.coupling import CoupledSimulator
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
+def _make_gp15(**kwargs):
+    """Create a GP15Simulator with small grid for fast tests."""
+    config = MachineConfig()
+    material = MaterialProperties(
+        initial_moisture_wb=0.10,
+        target_moisture_wb=0.03,
+        initial_temperature_c=22.0,
+        bed_depth_m=0.04,
+        bed_porosity=0.40,
+    )
+    return GP15Simulator(
+        config=config,
+        material=material,
+        enable_controller=False,
+        enable_corrections=False,
+        use_tvd=False,
+        **kwargs,
+    )
+
+
 def _make_coupled(nx=16, ny=8, nz=12):
-    """Create a small coupled simulator for testing."""
+    """Create a small coupled simulator for direct testing."""
     machine = MachineConfig()
     material = MaterialProperties(
         initial_moisture_wb=0.10,
@@ -29,7 +51,6 @@ def _make_coupled(nx=16, ny=8, nz=12):
         bed_porosity=0.40,
     )
 
-    # Build grid
     oven = OvenGeometry(OvenGeometryParams(
         length=machine.oven_length_m,
         width=machine.belt_width_m,
@@ -47,7 +68,7 @@ def _make_coupled(nx=16, ny=8, nz=12):
         device="cpu",
     )
 
-    gap_m = 0.10  # 100 mm gap
+    gap_m = 0.10
     mask = oven.build_material_mask(
         electrode_gap_m=gap_m,
         bed_depth_m=material.bed_depth_m,
@@ -66,7 +87,88 @@ def _make_coupled(nx=16, ny=8, nz=12):
     return sim, recipe, material
 
 
-# ── Tests ────────────────────────────────────────────────────────────
+# ── GP15Simulator public API tests ───────────────────────────────────
+
+class TestGP15Simulator:
+    """GP15Simulator public API (§7.1)."""
+
+    def test_create_and_run(self):
+        """Simulator should create and run without error."""
+        gp15 = _make_gp15()
+        gp15.load_recipe(Recipe(
+            name="test", recipe_number=1,
+            electrode_gap_mm=100, belt_speed_m_per_min=0.5,
+        ))
+        result = gp15.run(duration_s=5.0)
+        assert result.duration_s > 0
+        assert result.T_final is not None
+        assert result.M_final is not None
+
+    def test_outlet_conditions(self):
+        """get_outlet_conditions() should return valid OutletState."""
+        gp15 = _make_gp15()
+        gp15.load_recipe(Recipe(
+            name="test", recipe_number=1,
+            electrode_gap_mm=100, belt_speed_m_per_min=0.5,
+        ))
+        gp15.run(duration_s=5.0)
+        outlet = gp15.get_outlet_conditions()
+
+        assert isinstance(outlet, OutletState)
+        assert outlet.avg_temperature_c > 0
+        assert 0 <= outlet.avg_moisture_wb <= 1.0
+        assert outlet.throughput_kg_per_hr > 0
+        assert outlet.residence_time_s > 0
+
+    def test_get_mesh(self):
+        """get_mesh() should return all geometry components."""
+        gp15 = _make_gp15()
+        gp15.load_recipe(Recipe(
+            name="test", recipe_number=1,
+            electrode_gap_mm=100, belt_speed_m_per_min=0.5,
+        ))
+        meshes = gp15.get_mesh()
+
+        assert "oven" in meshes
+        assert "upper_electrode" in meshes
+        assert "lower_electrode" in meshes
+        assert "belt" in meshes
+        assert "bed" in meshes
+
+        # Each mesh should have vertices and triangles
+        for name in ("oven", "upper_electrode", "lower_electrode"):
+            assert meshes[name]["vertices"].shape[1] == 3
+            assert meshes[name]["triangles"].shape[1] == 3
+
+    def test_get_mesh_with_fields(self):
+        """After running, get_mesh() should include field data."""
+        gp15 = _make_gp15()
+        gp15.load_recipe(Recipe(
+            name="test", recipe_number=1,
+            electrode_gap_mm=100, belt_speed_m_per_min=0.5,
+        ))
+        gp15.run(duration_s=2.0)
+        meshes = gp15.get_mesh()
+
+        assert "fields" in meshes
+        f = meshes["fields"]
+        assert "temperature" in f
+        assert "moisture" in f
+        assert f["grid_shape"] is not None
+
+    def test_step_interactive(self):
+        """step() should work for interactive/real-time use."""
+        gp15 = _make_gp15()
+        gp15.load_recipe(Recipe(
+            name="test", recipe_number=1,
+            electrode_gap_mm=100, belt_speed_m_per_min=0.5,
+        ))
+        state = gp15.step(dt=0.5)
+        assert state.time_s > 0
+        assert state.rf_power_kw >= 0
+
+
+# ── CoupledSimulator direct tests ────────────────────────────────────
 
 class TestCoupledSimulation:
     """Full coupled simulation integration tests."""
@@ -85,9 +187,7 @@ class TestCoupledSimulation:
         for _ in range(20):
             state = sim.step(dt=0.5, recipe=recipe)
 
-        assert state.T_mean_c > T_start, (
-            f"Expected T > {T_start}, got {state.T_mean_c}"
-        )
+        assert state.T_mean_c > T_start
 
     def test_moisture_decreases(self):
         """Material moisture should decrease after several steps."""
@@ -97,9 +197,7 @@ class TestCoupledSimulation:
         for _ in range(50):
             state = sim.step(dt=0.5, recipe=recipe)
 
-        assert state.M_mean_wb < M_start, (
-            f"Expected M < {M_start}, got {state.M_mean_wb}"
-        )
+        assert state.M_mean_wb < M_start
 
     def test_run_returns_result(self):
         """The run() method should return a PretreatmentResult."""
@@ -116,8 +214,7 @@ class TestCoupledSimulation:
         """RF power delivered to material should be positive."""
         sim, recipe, _ = _make_coupled()
         state = sim.step(dt=0.5, recipe=recipe)
-
-        assert state.rf_power_kw > 0.0, "RF power should be positive"
+        assert state.rf_power_kw > 0.0
 
     def test_anode_current_in_range(self):
         """Anode current should be between no-load and full-load."""
@@ -140,3 +237,48 @@ class TestCoupledSimulation:
         assert "T_mean_c" in ts
         assert "M_mean_wb" in ts
         assert len(ts["time_s"]) == 10  # 5s / 0.5s = 10 steps
+
+
+# ── Validation (§10.1) ──────────────────────────────────────────────
+
+class TestManualValidation:
+    """Reproduce the GP-15 manual worked example (§10.1).
+
+    Given:
+        Throughput       = 600 kg/hr
+        Inlet moisture   = 4% (wet basis)
+        Outlet moisture  = 3% (wet basis)
+        Water removal    = 1 kg/kWh (high surface-to-volume product)
+
+    Water removed = 600 × (0.04 - 0.03) / (1 - 0.03) = 6.19 kg/hr
+    RF power to material = 6.19 / 1.0 = 6.19 kW
+    Generator power = ~11 kW (at ~56% oscillator efficiency)
+    """
+
+    def test_water_removal_calculation(self):
+        """Verify the water removal arithmetic from the manual."""
+        throughput_kg_hr = 600.0
+        M_in = 0.04
+        M_out = 0.03
+
+        water_removed = throughput_kg_hr * (M_in - M_out) / (1 - M_out)
+        assert water_removed == pytest.approx(6.19, abs=0.01)
+
+    def test_rf_power_requirement(self):
+        """RF power to material should be ~6.2 kW for 1 kg/kWh efficiency."""
+        water_rate_kg_hr = 6.19
+        efficiency_kg_per_kwh = 1.0
+        P_rf_kw = water_rate_kg_hr / efficiency_kg_per_kwh
+        assert P_rf_kw == pytest.approx(6.19, abs=0.1)
+
+    def test_generator_power_with_efficiency(self):
+        """Generator power at 56% efficiency should be ~11 kW."""
+        P_rf_kw = 6.19
+        oscillator_efficiency = 0.56
+        P_gen_kw = P_rf_kw / oscillator_efficiency
+        assert P_gen_kw == pytest.approx(11.05, abs=0.5)
+
+    def test_oscillator_efficiency_constant(self):
+        """The default oscillator efficiency should match the manual."""
+        gp15 = _make_gp15()
+        assert gp15._sim._oscillator_efficiency == pytest.approx(0.56)
