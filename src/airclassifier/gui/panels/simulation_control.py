@@ -265,14 +265,6 @@ class SimulationWorker(QObject):
             sim = ClassificationFlowPhysicsSimulator(assembly, config)
 
             # ==============================================================
-            # 4b. Create subsidiary air/feed physics simulators
-            #     These step alongside the classification sim to provide
-            #     real physics state (blower ramp, damper positions, lid angle)
-            #     for driving the full-system assembly animation.
-            # ==============================================================
-            self._create_subsidiary_simulators(assembly, air_flow, s)
-
-            # ==============================================================
             # 5. Initialize particles (critical -- same as run_classification_flow.py)
             # ==============================================================
             if s.use_preclassification:
@@ -394,9 +386,6 @@ class SimulationWorker(QObject):
                             **counts,
                         }
                         self.progress_updated.emit(progress, sim_time, stats)
-
-                        # Advance subsidiary physics simulators to current time
-                        self._step_subsidiary_simulators(sim_time)
 
                         # Emit physics-driven component states for animation
                         comp_state = self._get_component_states(sim, sim_time)
@@ -800,14 +789,20 @@ class SimulationWorker(QObject):
 
     def _get_component_states(self, sim, sim_time: float) -> dict:
         """
-        Extract physics-driven component states from the running simulators.
+        Extract component states during the classification phase.
 
-        Reads actual live state from:
-        - ClassificationFlowPhysicsSimulator: wheel_omega, wheel_angle_rad
-        - AirFlowPhysicsSimulator.state: blower_rpm, blower_omega, damper_positions
-        - FeedFlowPhysicsSimulator.state: lid_angle, lid_state, component omegas
+        The startup preamble (air ramp, dampers open, lid open/close) was
+        already played by the AnimationController BEFORE the simulation
+        started.  During classification, every component is at steady state:
+        - Wheel: spinning at physics omega (from ClassificationFlowPhysicsSimulator)
+        - Blower: full RPM (from airclass_flow_physics operating point)
+        - Dampers: fully open (position 1.0)
+        - Lid: fully open (90°)
+        - Feed components: full speed
+        - All ramp fractions: 1.0
 
-        Falls back to computed ramps when a subsidiary simulator isn't available.
+        The shutdown animation (closing dampers, lid, ramp-down) is handled
+        by AnimationController.begin_shutdown() AFTER the simulation ends.
         """
         import math
         TWO_PI = 2.0 * math.pi
@@ -815,7 +810,7 @@ class SimulationWorker(QObject):
         component_state = {"sim_time": float(sim_time)}
 
         # ==================================================================
-        # WHEEL -- from ClassificationFlowPhysicsSimulator
+        # WHEEL -- from ClassificationFlowPhysicsSimulator (live physics)
         # angle = wheel_omega * time  (same as Warp kernel, line 1962)
         # ==================================================================
         wheel_omega = getattr(sim, 'wheel_omega', 0.0)
@@ -828,90 +823,19 @@ class SimulationWorker(QObject):
             component_state["phase"] = phase.value if phase else "running"
 
         # ==================================================================
-        # AIR SYSTEM -- from AirFlowPhysicsSimulator.state (live physics)
-        # Falls back to computed ramps when air_sim is not available.
+        # STEADY STATE -- everything fully running during classification.
+        # Preamble already completed; shutdown handled after sim ends.
         # ==================================================================
-        air = self._air_sim
-        if air is not None and hasattr(air, 'state'):
-            # --- LIVE from AirFlowPhysicsSimulator ---
-            ast = air.state
-            component_state["blower_rpm"] = float(ast.blower_rpm)
-            component_state["blower_omega"] = float(ast.blower_omega)
-            component_state["damper_positions"] = [float(p) for p in ast.damper_positions]
-            component_state["air_phase"] = ast.phase.value if hasattr(ast.phase, 'value') else str(ast.phase)
-            component_state["air_flow_m3s"] = float(ast.volume_flow_rate)
+        op = self._blower_operating_point
+        blower_design_rpm = op.get("rpm", s.blower_rpm) if op else s.blower_rpm
 
-            # Compute ramp fraction from actual RPM vs target
-            target_rpm = air.config.target_rpm if hasattr(air, 'config') else s.blower_rpm
-            if target_rpm > 0:
-                component_state["blower_ramp_frac"] = float(min(1.0, ast.blower_rpm / target_rpm))
-            else:
-                component_state["blower_ramp_frac"] = 1.0
-        else:
-            # --- FALLBACK: computed ramp ---
-            op = self._blower_operating_point
-            blower_design_rpm = op.get("rpm", s.blower_rpm) if op else s.blower_rpm
-            blower_omega_design = op.get("omega_rad_s", blower_design_rpm * TWO_PI / 60.0) if op else blower_design_rpm * TWO_PI / 60.0
-            air_ramp_time = 2.0
-            if sim_time <= 0:
-                air_frac = 0.0
-            elif sim_time < air_ramp_time:
-                t_norm = sim_time / air_ramp_time
-                air_frac = t_norm * t_norm * (3.0 - 2.0 * t_norm)
-            else:
-                air_frac = 1.0
-            component_state["blower_rpm"] = float(blower_design_rpm * air_frac)
-            component_state["blower_omega"] = float(blower_omega_design * air_frac)
-            component_state["blower_ramp_frac"] = float(air_frac)
-            component_state["air_flow_m3s"] = float(self._air_flow_m3s * air_frac)
-            damper_pos = min(1.0, sim_time / 2.0) if sim_time > 0 else 0.0
-            component_state["damper_positions"] = [float(damper_pos), float(damper_pos)]
-
-        # ==================================================================
-        # FEED SYSTEM -- from FeedFlowPhysicsSimulator.state (live physics)
-        # Falls back to computed ramps when feed_sim is not available.
-        # ==================================================================
-        FEED_START = 3.0
-        feed = self._feed_sim
-        if feed is not None and hasattr(feed, 'state'):
-            # --- LIVE from FeedFlowPhysicsSimulator ---
-            fst = feed.state
-            component_state["lid_angle_deg"] = float(fst.lid_angle)
-            component_state["lid_state"] = fst.lid_state.value if hasattr(fst.lid_state, 'value') else str(fst.lid_state)
-            component_state["feed_phase"] = fst.phase.value if hasattr(fst.phase, 'value') else str(fst.phase)
-
-            # Feed ramp fraction: 1.0 once lid is fully open, else proportional
-            lid_max = feed.config.lid_open_angle if hasattr(feed, 'config') else 90.0
-            if lid_max > 0:
-                component_state["feed_ramp_frac"] = float(min(1.0, fst.lid_angle / lid_max))
-            else:
-                component_state["feed_ramp_frac"] = 1.0 if sim_time >= FEED_START + 2.0 else 0.0
-
-            # Component angular velocities from the simulator (constant, set at init)
-            component_state["airlock_omega"] = float(getattr(feed, 'airlock_omega', 0.0))
-            component_state["feeder_omega"] = float(getattr(feed, 'feeder_omega', 0.0))
-            component_state["deagg_omega"] = float(getattr(feed, 'deagg_omega', 0.0))
-        else:
-            # --- FALLBACK: computed ramp ---
-            # By the time the simulation starts, the preamble is done and
-            # the lid is already fully open at 90°.  It stays open for the
-            # entire classification phase and closes during shutdown.
-            component_state["lid_angle_deg"] = 90.0
-            component_state["feed_ramp_frac"] = 1.0
-
-        # ==================================================================
-        # CLASSIFICATION -- wheel is physics-driven (above); ramp fraction
-        # controls when the animation layer activates the wheel visual.
-        # ==================================================================
-        cls_start = 5.0
-        cls_ramp = 2.0
-        if sim_time < cls_start:
-            cls_frac = 0.0
-        elif sim_time < cls_start + cls_ramp:
-            cls_frac = (sim_time - cls_start) / cls_ramp
-        else:
-            cls_frac = 1.0
-        component_state["classification_ramp_frac"] = float(cls_frac)
+        component_state["blower_rpm"] = float(blower_design_rpm)
+        component_state["blower_ramp_frac"] = 1.0
+        component_state["air_flow_m3s"] = float(self._air_flow_m3s)
+        component_state["damper_positions"] = [1.0, 1.0]   # fully open
+        component_state["lid_angle_deg"] = 90.0              # fully open
+        component_state["feed_ramp_frac"] = 1.0
+        component_state["classification_ramp_frac"] = 1.0
 
         return component_state
 

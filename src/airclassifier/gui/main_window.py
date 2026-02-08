@@ -966,7 +966,8 @@ class MainWindow(QMainWindow):
     # (air ramp, dampers open, lid open→close, wheel spin-up) BEFORE
     # the classification physics begins.  This matches the real machine
     # where the system must be at steady-state before material is classified.
-    STARTUP_PREAMBLE_MS = 8000  # 8 seconds (matches AnimationTimeline.steady_time)
+    STARTUP_PREAMBLE_MS = 8000   # 8 seconds (matches AnimationTimeline.steady_time)
+    SHUTDOWN_DURATION_MS = 3500  # 3.5s for dampers/lid to close + buffer
 
     @Slot()
     def run_simulation(self):
@@ -1089,13 +1090,31 @@ class MainWindow(QMainWindow):
 
     @Slot(dict)
     def _on_simulation_finished(self, results: Dict[str, Any]):
-        """Called when simulation completes -- trigger shutdown animation."""
+        """Called when classification physics completes -- play shutdown sequence.
+
+        The shutdown animation (dampers close, lid closes, blower ramps down)
+        plays for SHUTDOWN_DURATION_MS before the simulation is declared
+        fully complete.  This matches the real machine shutdown procedure.
+        """
+        self.action_pause_sim.setEnabled(False)
+        self.sim_control._log("Classification complete — shutting down system...")
+
+        # Start shutdown animation (dampers close, lid close, blower ramp down)
+        self._stop_animation()
+
+        # Keep simulation state as "running" during shutdown so the UI
+        # shows the shutdown animation.  After the shutdown completes,
+        # _on_shutdown_complete finalizes everything.
+        QTimer.singleShot(self.SHUTDOWN_DURATION_MS, self._on_shutdown_complete)
+
+    def _on_shutdown_complete(self):
+        """Called after the shutdown animation finishes."""
         self._simulation_state = "idle"
         self.action_run_sim.setEnabled(True)
-        self.action_pause_sim.setEnabled(False)
         self.action_stop_sim.setEnabled(False)
         self.sim_progress.setVisible(False)
-        self._stop_animation()
+        self.sim_control._log("System shutdown complete — dampers closed, lid closed.")
+        self.statusBar().showMessage("Simulation complete", 5000)
 
     def _start_simulation_run(self):
         """Shared UI state change when a simulation run begins."""

@@ -398,7 +398,10 @@ class AnimationController(QObject):
 
         Call this from the progress callback so the animation phases
         match what the simulation is actually doing.
+        Does not override an active shutdown.
         """
+        if self._phase == AnimationPhase.SHUTDOWN:
+            return
         # Only sync forward (don't go backward)
         if sim_time > self._anim_time:
             self._anim_time = sim_time
@@ -414,12 +417,21 @@ class AnimationController(QObject):
         This takes priority over subsidiary sims (build-time preview), which
         are cleared on first call.
 
+        IMPORTANT: Refuses to override an active SHUTDOWN phase.  Stale
+        physics updates can arrive via queued cross-thread signals after
+        begin_shutdown() has been called.
+
         Args:
             component_state: Dict from SimulationWorker._get_component_states()
                 Keys: sim_time, wheel_omega, wheel_angle_rad, blower_rpm,
                       damper_positions, lid_angle_deg, feed_ramp_frac,
                       blower_ramp_frac, classification_ramp_frac, phase
         """
+        # Never override an active shutdown -- stale signals from the worker
+        # thread can arrive after begin_shutdown() was called.
+        if self._phase == AnimationPhase.SHUTDOWN:
+            return
+
         self._physics_state = component_state
         if not self._physics_mode:
             self._physics_mode = True
@@ -549,37 +561,42 @@ class AnimationController(QObject):
             "classification": ps.get("classification_ramp_frac", self._compute_frac("classification", t, tl)),
         }
 
-        # Special handling: wheel gets physics-computed angle directly
+        # Special handling: components with direct physics values
         wheel_angle_rad = ps.get("wheel_angle_rad", None)
         lid_angle_deg = ps.get("lid_angle_deg", None)
         damper_positions = ps.get("damper_positions", None)
 
         for part in self._parts.values():
             frac = physics_fracs.get(part.phase, 0.0)
-            part.active = frac > 0.001
 
-            if not part.active:
-                continue
+            # --- Dampers: active based on their OWN position, not blower frac.
+            #     Dampers open during air startup independently of blower RPM.
+            if part.name.startswith("damper_") and damper_positions is not None:
+                idx = int(part.name.split("_")[-1]) if "_" in part.name else 0
+                if idx < len(damper_positions):
+                    pos = damper_positions[idx]
+                    part.active = True  # always render (closed=visible too)
+                    self._update_damper_from_physics(part, pos)
+                    continue
 
-            # --- Physics overrides for specific parts ---
-            if part.name == "wheel_classifier" and wheel_angle_rad is not None:
-                # Drive wheel directly from physics angle
-                self._update_wheel_from_physics(part, wheel_angle_rad)
-                continue
-
+            # --- Lid: active based on its own angle, not feed frac.
             if part.name == "hopper_lid" and lid_angle_deg is not None:
-                # Drive lid directly from physics angle
+                part.active = True  # always render
                 self._update_lid_from_physics(part, lid_angle_deg)
                 continue
 
-            if part.name.startswith("damper_") and damper_positions is not None:
-                # Drive damper from physics position
-                idx = int(part.name.split("_")[-1]) if "_" in part.name else 0
-                if idx < len(damper_positions):
-                    self._update_damper_from_physics(part, damper_positions[idx])
-                    continue
+            # --- Wheel: active based on classification frac
+            if part.name == "wheel_classifier" and wheel_angle_rad is not None:
+                part.active = frac > 0.001
+                if part.active:
+                    self._update_wheel_from_physics(part, wheel_angle_rad)
+                continue
 
-            # --- Default: use physics-derived frac ---
+            # --- Default: use phase frac for activity ---
+            part.active = frac > 0.001
+            if not part.active:
+                continue
+
             if part.update:
                 part.update(dt, frac)
             if part.get_mesh:
@@ -706,19 +723,12 @@ class AnimationController(QObject):
     def _update_damper_from_physics(self, part: AnimatedPart, position: float):
         """Update damper blade directly from physics position (0=closed, 1=open)."""
         try:
-            # Set position in the closure state dict, then re-render
-            mesh_fn = part.get_mesh
-            if mesh_fn is not None:
-                closure_vars = mesh_fn.__code__.co_freevars
-                if 'state' in closure_vars:
-                    idx = closure_vars.index('state')
-                    state_cell = mesh_fn.__closure__[idx]
-                    state_cell.cell_contents["position"] = max(0.0, min(1.0, position))
-            self._update_actor(part)
-        except Exception:
+            # update_fn sets state["position"] = frac, then mesh_fn reads it
             if part.update:
                 part.update(self.FRAME_MS / 1000.0, position)
             self._update_actor(part)
+        except Exception:
+            pass
 
     def render_initial_state(self):
         """

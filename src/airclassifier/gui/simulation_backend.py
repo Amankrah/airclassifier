@@ -720,48 +720,16 @@ class SimulationBackend(QObject):
                 phase = getattr(state, 'phase', None)
                 component_state["phase"] = phase.value if phase else "running"
 
-        # Blower -- from airclass_flow_physics operating point
+        # During classification, preamble has already completed.
+        # All systems at steady state -- open, running, full speed.
+        # They only close/stop during the shutdown sequence after sim ends.
         blower_rpm = getattr(self.config, 'blower_rpm', 3000.0)
-        air_ramp_time = 2.0
-        if sim_time <= 0:
-            air_frac = 0.0
-        elif sim_time < air_ramp_time:
-            t_norm = sim_time / air_ramp_time
-            air_frac = t_norm * t_norm * (3.0 - 2.0 * t_norm)  # smoothstep
-        else:
-            air_frac = 1.0
-        component_state["blower_rpm"] = float(blower_rpm * air_frac)
-        component_state["blower_ramp_frac"] = float(air_frac)
-
-        # Dampers -- track air startup
-        damper_pos = min(1.0, sim_time / 2.0) if sim_time > 0 else 0.0
-        component_state["damper_positions"] = [float(damper_pos), float(damper_pos)]
-
-        # Lid -- stays open (90°) during classification; closes during shutdown.
-        # The preamble (lid open sequence) is handled by the animation controller.
-        component_state["lid_angle_deg"] = 90.0
-
-        # Feed ramp -- already at steady state during classification
-        feed_start = 3.0
-        feed_ramp = 2.0
-        if sim_time < feed_start:
-            feed_frac = 0.0
-        elif sim_time < feed_start + feed_ramp:
-            feed_frac = (sim_time - feed_start) / feed_ramp
-        else:
-            feed_frac = 1.0
-        component_state["feed_ramp_frac"] = float(feed_frac)
-
-        # Classification ramp
-        cls_start = 5.0
-        cls_ramp = 2.0
-        if sim_time < cls_start:
-            cls_frac = 0.0
-        elif sim_time < cls_start + cls_ramp:
-            cls_frac = (sim_time - cls_start) / cls_ramp
-        else:
-            cls_frac = 1.0
-        component_state["classification_ramp_frac"] = float(cls_frac)
+        component_state["blower_rpm"] = float(blower_rpm)
+        component_state["blower_ramp_frac"] = 1.0
+        component_state["damper_positions"] = [1.0, 1.0]  # fully open
+        component_state["lid_angle_deg"] = 90.0             # fully open
+        component_state["feed_ramp_frac"] = 1.0
+        component_state["classification_ramp_frac"] = 1.0
 
         return component_state
 
