@@ -163,6 +163,31 @@ class Viewport3D(QWidget):
         self.opacity_slider.valueChanged.connect(self._set_opacity)
         toolbar.addWidget(self.opacity_slider)
 
+        toolbar.addSeparator()
+
+        # Cinematic camera controls
+        self.cinematic_btn = QPushButton("Cinematic")
+        self.cinematic_btn.setCheckable(True)
+        self.cinematic_btn.setChecked(False)
+        self.cinematic_btn.setToolTip(
+            "Enable cinematic camera — automatic camera movement\n"
+            "while the simulation runs (game-style showcase).\n"
+            "Move the mouse to temporarily take back control."
+        )
+        self.cinematic_btn.toggled.connect(self._toggle_cinematic)
+        toolbar.addWidget(self.cinematic_btn)
+
+        self.cinematic_mode_combo = QComboBox()
+        self.cinematic_mode_combo.addItems(["Orbit", "Showcase", "Flythrough"])
+        self.cinematic_mode_combo.setFixedWidth(100)
+        self.cinematic_mode_combo.setToolTip(
+            "Orbit: smooth rotation around the assembly\n"
+            "Showcase: guided tour of key viewpoints\n"
+            "Flythrough: scripted spiral sweep"
+        )
+        self.cinematic_mode_combo.currentTextChanged.connect(self._on_cinematic_mode_changed)
+        toolbar.addWidget(self.cinematic_mode_combo)
+
         layout.addWidget(toolbar)
 
         # 3D viewer container
@@ -174,6 +199,8 @@ class Viewport3D(QWidget):
 
     def _setup_viewer(self):
         """Setup the PyVista viewer or show a styled placeholder."""
+        self._cinematic_camera = None  # CinematicCameraController
+
         if not HAS_PYVISTA:
             placeholder = QFrame()
             placeholder.setStyleSheet(f"""
@@ -217,6 +244,15 @@ class Viewport3D(QWidget):
         self.plotter.camera.up = (0, 1, 0)
 
         self.viewer_layout.addWidget(self.plotter.interactor)
+
+        # Hook into the VTK interactor to detect mouse interaction
+        # so the cinematic camera pauses when the user grabs the view.
+        iren = self.plotter.interactor.GetRenderWindow().GetInteractor()
+        iren.AddObserver("StartInteractionEvent", self._on_user_interaction)
+
+        # Create cinematic camera controller
+        from .cinematic_camera import CinematicCameraController
+        self._cinematic_camera = CinematicCameraController(self.plotter, self)
 
         # Initial view -- match visualize_geometry.py camera
         self._reset_view()
@@ -872,6 +908,55 @@ class Viewport3D(QWidget):
         if not HAS_PYVISTA or self.plotter is None:
             return
         self.plotter.reset_camera()
+
+    # ================================================================
+    #  Cinematic camera
+    # ================================================================
+
+    def _toggle_cinematic(self, enabled: bool):
+        """Toggle the cinematic camera on/off."""
+        if self._cinematic_camera is None:
+            return
+        if enabled:
+            self._cinematic_camera.start()
+        else:
+            self._cinematic_camera.stop()
+
+    def _on_cinematic_mode_changed(self, mode_text: str):
+        """Switch the cinematic camera mode from the combo box."""
+        if self._cinematic_camera is None:
+            return
+        from .cinematic_camera import CameraMode
+        mode_map = {
+            "Orbit": CameraMode.ORBIT,
+            "Showcase": CameraMode.SHOWCASE,
+            "Flythrough": CameraMode.FLYTHROUGH,
+        }
+        mode = mode_map.get(mode_text, CameraMode.ORBIT)
+        self._cinematic_camera.set_mode(mode)
+
+    def _on_user_interaction(self, obj=None, event=None):
+        """Called by VTK when the user starts a mouse interaction.
+
+        Pauses the cinematic camera for a few seconds so the user can
+        freely rotate/pan/zoom, then the cinematic camera resumes.
+        """
+        if self._cinematic_camera is not None and self._cinematic_camera.is_running:
+            self._cinematic_camera.pause_for_interaction()
+
+    def start_cinematic(self):
+        """Programmatic API: start the cinematic camera (e.g. from MainWindow)."""
+        if self._cinematic_camera is not None:
+            self.cinematic_btn.setChecked(True)  # also triggers _toggle_cinematic
+
+    def stop_cinematic(self):
+        """Programmatic API: stop the cinematic camera."""
+        if self._cinematic_camera is not None:
+            self.cinematic_btn.setChecked(False)
+
+    @property
+    def cinematic_enabled(self) -> bool:
+        return self.cinematic_btn.isChecked()
 
     # ================================================================
     #  Display toggles

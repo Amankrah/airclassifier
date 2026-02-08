@@ -1001,6 +1001,10 @@ class MainWindow(QMainWindow):
         self.sim_control.card_coarse.set_value("0")
         self.sim_control.card_efficiency.set_value("--")
 
+        # Start cinematic camera if the user has it enabled
+        if self.viewport_3d.cinematic_enabled:
+            self.viewport_3d.start_cinematic()
+
         # Start mechanical animations -- preamble runs first
         self._start_animation()
 
@@ -1165,6 +1169,8 @@ class MainWindow(QMainWindow):
         self.action_run_sim.setEnabled(True)
         self.action_stop_sim.setEnabled(False)
         self.sim_progress.setVisible(False)
+        # Stop cinematic camera when simulation is fully done
+        self.viewport_3d.stop_cinematic()
         self.sim_control._log("System shutdown complete — dampers closed, lid closed.")
         self.statusBar().showMessage("Simulation complete", 5000)
 
@@ -1197,6 +1203,7 @@ class MainWindow(QMainWindow):
         self.action_stop_sim.setEnabled(False)
         self.sim_progress.setVisible(False)
         self._stop_animation()
+        self.viewport_3d.stop_cinematic()
         self.sim_control.stop_simulation()
 
     @Slot()
