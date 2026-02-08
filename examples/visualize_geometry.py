@@ -35,6 +35,9 @@ Complete core system:
     python examples/visualize_geometry.py --core-with-preclassification   # Full core (venturi, zigzag, ductwork)
     python examples/visualize_geometry.py --core-without-preclassification  # Core wheel-only (ductwork)
 
+Pretreatment (GP-15 RF machine):
+    python examples/visualize_geometry.py --gp15   # Full GP-15 machine (oven, conveyor, electrodes, envelope)
+
 Other:
     python examples/visualize_geometry.py --export     # Export all to STL files
     python examples/visualize_geometry.py --all       # Feed + air + classification (with preclassification)
@@ -622,6 +625,82 @@ def visualize_wheel_classifier(use_mesh: bool = False, animate: bool = False):
         # Fallback to basic visualization
         result = render_component(classifier, "Wheel Classifier",
                                  COMPONENT_COLORS['wheel'], use_mesh=use_mesh)
+
+    print(f"\nResult: {result['message']}")
+    return result
+
+
+def visualize_gp15_machine(electrode_gap_mm: float = 80.0):
+    """Visualize the GP-15 RF dielectric heating machine (assembled geometry).
+
+    Uses geometry.machine.build_gp15_machine_meshes: oven, conveyor,
+    electrodes, and envelope (legs, housing, tunnels, hopper, EMU duct,
+    control panel). Y-up coordinates; same as classifier geometry.
+    """
+    print("\n" + "=" * 60)
+    print("GP-15 RF MACHINE VISUALIZATION")
+    print("=" * 60)
+
+    from airclassifier.pretreatment.geometry.machine import build_gp15_machine_meshes
+    from airclassifier.pretreatment.config import MachineConfig, MaterialProperties
+    from airclassifier.pretreatment.materials.presets import get_material_preset
+    import numpy as np
+
+    config = MachineConfig()
+    material = get_material_preset("yellow_pea")
+    material.bed_depth_m = 0.04
+
+    meshes = build_gp15_machine_meshes(
+        config=config,
+        material=material,
+        electrode_gap_mm=electrode_gap_mm,
+    )
+
+    total_verts = sum(m["vertices"].shape[0] for k, m in meshes.items() if "vertices" in m)
+    total_tris = sum(m["triangles"].shape[0] for k, m in meshes.items() if "triangles" in m)
+    print("GP-15 machine (assembled from geometry.machine):")
+    print("  - Oven chamber, conveyor belt, material bed")
+    print("  - Upper and lower electrodes")
+    print("  - Legs, housing, attenuation tunnels")
+    print("  - Infeed hopper, EMU duct, control panel")
+    print(f"\nTotal: {len(meshes)} components, {total_verts:,} vertices, {total_tris:,} triangles")
+    print(f"Electrode gap: {electrode_gap_mm:.0f} mm  |  Y-up coordinates")
+
+    if PYVISTA_AVAILABLE:
+        import pyvista as pv
+
+        print("\nInitializing PyVista plotter...")
+        plotter = pv.Plotter()
+        plotter.set_background("white")
+        plotter.camera.up = (0, 1, 0)  # Y-up coordinate system
+
+        for name, data in meshes.items():
+            if "vertices" not in data or "triangles" not in data:
+                continue
+            v = data["vertices"]
+            t = data["triangles"]
+            faces = np.hstack([[3] + list(face) for face in t.reshape(-1, 3)])
+            mesh = pv.PolyData(v, faces)
+            color = data.get("color", "#888888")
+            opacity = data.get("opacity", 0.7)
+            label = name.replace("_", " ").title()
+            plotter.add_mesh(mesh, color=color, opacity=opacity, label=label)
+
+        plotter.add_legend(bcolor="white", face="circle")
+        plotter.add_title("GP-15 RF Dielectric Heating Machine")
+        plotter.add_axes()
+
+        plotter.reset_camera()
+        plotter.camera.azimuth = -170
+        plotter.camera.elevation = -20
+
+        print("\nOpening visualization window...")
+        print("(Close the window to continue)")
+        plotter.show(interactive=True)
+
+        result = {"success": True, "message": "GP-15 machine visualized with PyVista"}
+    else:
+        result = {"success": False, "message": "PyVista is required; install with: pip install pyvista"}
 
     print(f"\nResult: {result['message']}")
     return result
@@ -1446,6 +1525,7 @@ def interactive_menu():
         print("  A. Air System Assembly")
         print("  S. Classification (with preclassification: venturi, zigzag)")
         print("  W. Classification (without preclassification: wheel-only)")
+        print("  G. GP-15 RF Machine (pretreatment)")
         print("\nComplete Core System:")
         print("  C. Core (with preclassification)")
         print("  K. Core (without preclassification, wheel-only)")
@@ -1507,6 +1587,8 @@ def interactive_menu():
             visualize_classification_system(wheel_only=False)
         elif choice == "W":
             visualize_classification_system(wheel_only=True)
+        elif choice == "G":
+            visualize_gp15_machine()
         elif choice == "C":
             visualize_core_system(use_preclassification=True)
         elif choice == "K":
@@ -1571,6 +1653,10 @@ Examples:
   # Complete core system (feed + air + classification + ductwork + exhaust)
   python visualize_geometry.py --core-with-preclassification
   python visualize_geometry.py --core-without-preclassification
+
+  # Pretreatment (GP-15 RF machine)
+  python visualize_geometry.py --gp15
+  python visualize_geometry.py --gp15 --gp15-gap 100
 
   # Export and run all
   python visualize_geometry.py --export
@@ -1683,6 +1769,20 @@ Examples:
         help="Visualize complete core system without preclassification (wheel-only, ductwork)"
     )
 
+    # Pretreatment (GP-15)
+    assembly_group.add_argument(
+        "--gp15",
+        action="store_true",
+        help="Visualize GP-15 RF dielectric heating machine (oven, conveyor, electrodes, envelope)"
+    )
+    assembly_group.add_argument(
+        "--gp15-gap",
+        type=float,
+        default=80.0,
+        metavar="MM",
+        help="Electrode gap in mm for --gp15 (default: 80)"
+    )
+
     # Other options
     other_group = parser.add_argument_group('Other')
     other_group.add_argument(
@@ -1707,7 +1807,7 @@ Examples:
     has_component = any([args.cyclone, args.multicyclone, args.blower,
                         args.deagglomerator, args.hopper, args.airlock, args.zigzag,
                         args.wheel])
-    has_assembly = any([args.feed, args.air, args.with_preclassification, args.without_preclassification])
+    has_assembly = any([args.feed, args.air, args.with_preclassification, args.without_preclassification, args.gp15])
     has_core = any([args.core_with_preclassification, args.core_without_preclassification])
     has_other = any([args.all, args.export])
 
@@ -1758,6 +1858,9 @@ Examples:
 
     if args.without_preclassification:
         visualize_classification_system(wheel_only=True, animate_wheel=args.animate_wheel)
+
+    if args.gp15:
+        visualize_gp15_machine(electrode_gap_mm=getattr(args, "gp15_gap", 80.0))
 
     # Complete core system
     if args.core_with_preclassification:

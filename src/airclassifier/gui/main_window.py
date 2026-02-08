@@ -1,5 +1,5 @@
 """
-Main Window for Air Classifier Designer
+Main Window for ProteinProcessIO
 ========================================
 
 Central window containing all panels, menus, and toolbars.
@@ -66,7 +66,7 @@ class _WelcomeOverlay(QWidget):
         card_layout.setSpacing(8)
 
         # Title
-        title = QLabel("Air Classifier Designer")
+        title = QLabel("ProteinProcessIO")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"font-size: 18pt; font-weight: 700; color: {COLORS.TEXT_PRIMARY}; border: none; background: transparent;")
         card_layout.addWidget(title)
@@ -124,7 +124,7 @@ class _WelcomeOverlay(QWidget):
 
         card_layout.addSpacing(10)
 
-        hint = QLabel("Tip: Configure Assembly to set parameters, then Build Full System to preview")
+        hint = QLabel("Tip: Configure Assembly to set process stages, then Build Full System to preview")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setWordWrap(True)
         hint.setStyleSheet(f"font-size: 9pt; color: {COLORS.TEXT_MUTED}; border: none; background: transparent;")
@@ -162,7 +162,7 @@ class _StatusSeparator(QFrame):
 
 class MainWindow(QMainWindow):
     """
-    Main application window for Air Classifier Designer.
+    Main application window for ProteinProcessIO.
 
     Layout:
     +-------------------------------------------------------------+
@@ -229,7 +229,7 @@ class MainWindow(QMainWindow):
 
     def _setup_window(self):
         """Configure main window properties."""
-        self.setWindowTitle("Air Classifier Designer")
+        self.setWindowTitle("ProteinProcessIO")
         self.setMinimumSize(1400, 900)
         self.resize(1800, 1100)
 
@@ -342,7 +342,7 @@ class MainWindow(QMainWindow):
 
         self.action_build_system = QAction("&Build Full System", self)
         self.action_build_system.setShortcut(QKeySequence("Ctrl+B"))
-        self.action_build_system.setStatusTip("Build and preview the complete classifier assembly in 3D")
+        self.action_build_system.setStatusTip("Build and preview the complete process assembly in 3D (pretreatment + classification)")
         self.action_build_system.triggered.connect(self.build_full_system)
 
         # Simulation actions
@@ -637,7 +637,7 @@ class MainWindow(QMainWindow):
 
     def _update_window_title(self):
         """Update window title based on project state."""
-        title = "Air Classifier Designer"
+        title = "ProteinProcessIO"
         if self._project_path:
             title = f"{self._project_path.name} - {title}"
         if self._is_modified:
@@ -915,69 +915,134 @@ class MainWindow(QMainWindow):
         # Immediately build and preview
         self.build_full_system()
 
+    def _build_pretreatment_meshes(self, p: Dict[str, Any]):
+        """Build the complete GP-15 RF machine geometry and add to viewport.
+
+        Uses the machine geometry builder which creates: housing, legs,
+        attenuation tunnels, upper/lower electrodes with frame and lead
+        screws, conveyor belt, material bed, infeed hopper, EMU duct,
+        and control panel.
+        """
+        try:
+            from ..pretreatment.geometry.machine import build_gp15_machine_meshes
+            from ..pretreatment.config import MachineConfig, MaterialProperties
+            from ..pretreatment.materials.presets import get_material_preset
+
+            config = MachineConfig()
+            material = get_material_preset(p.get("pt_material", "yellow_pea"))
+            material.initial_moisture_wb = p.get("pt_inlet_moisture", 0.10)
+            material.bed_depth_m = p.get("pt_bed_depth_mm", 40) / 1000.0
+
+            meshes = build_gp15_machine_meshes(
+                config=config,
+                material=material,
+                electrode_gap_mm=p.get("pt_electrode_gap_mm", 80),
+            )
+
+            total_verts = 0
+            for name, mesh in meshes.items():
+                v = mesh["vertices"]
+                t = mesh["triangles"]
+                self.viewport_3d.add_mesh(
+                    component_id=f"gp15_{name}",
+                    vertices=v,
+                    faces=t,
+                    color=mesh["color"],
+                    opacity=mesh["opacity"],
+                )
+                total_verts += len(v)
+
+            self.sim_control._log(
+                f"GP-15 machine built: {len(meshes)} components, "
+                f"{total_verts:,} vertices"
+            )
+
+        except Exception as e:
+            import traceback
+            self.sim_control._log(f"Pretreatment build error: {e}\n{traceback.format_exc()}")
+
     @Slot()
     def build_full_system(self):
-        """Build and display the complete classifier assembly in 3D viewport."""
+        """Build and display the complete process assembly in 3D viewport."""
         from .simulation_backend import SimulationConfig, SimulationBackend
 
-        self.statusBar().showMessage("Building complete system...")
+        self.statusBar().showMessage("Building process system...")
 
         try:
             settings = self.sim_control.get_settings()
             p = self._assembly_params
 
-            config = SimulationConfig(
-                assembly_data={},
-                use_preclassification=p.get("use_preclassification", settings.use_preclassification),
-                wheel_diameter=p.get("wheel_diameter", settings.wheel_diameter),
-                wheel_rpm=p.get("wheel_rpm", settings.wheel_rpm),
-                include_feed_system=p.get("include_feed_system", settings.include_feed_system),
-                include_air_system=p.get("include_air_system", settings.include_air_system),
-                include_exhaust=p.get("include_exhaust", settings.include_exhaust),
-                # Classification geometry params from Assembly Config dialog
-                venturi_inlet_diameter=p.get("venturi_inlet_diameter", 0.08),
-                venturi_throat_ratio=p.get("venturi_throat_ratio", 0.5),
-                zigzag_channel_width=p.get("zigzag_channel_width", 0.15),
-                zigzag_channel_depth=p.get("zigzag_channel_depth", 0.25),
-                zigzag_num_stages=p.get("zigzag_num_stages", 5),
-                primary_cyclone_diameter=p.get("primary_cyclone_diameter", 0.30),
-                secondary_cyclone_diameter=p.get("secondary_cyclone_diameter", 0.20),
-                tertiary_cyclone_diameter=p.get("tertiary_cyclone_diameter", 0.12),
-                device="cpu",
-            )
+            # Clear viewport — each system renders independently
+            self.viewport_3d.clear()
+            self._stop_animation()
 
-            backend = SimulationBackend(config)
-            backend._build_assembly_from_gui()
+            msg_parts = []
+            classifier_ok = False
+            pretreatment_ok = False
 
-            vertices, indices = backend.get_mesh()
-            if vertices is not None and len(vertices) > 0:
-                self.viewport_3d.update_from_backend_mesh(vertices, indices)
+            # ── Build air classifier (if selected) ────────────────
+            if p.get("enable_classification", True):
+                config = SimulationConfig(
+                    assembly_data={},
+                    use_preclassification=p.get("use_preclassification", settings.use_preclassification),
+                    wheel_diameter=p.get("wheel_diameter", settings.wheel_diameter),
+                    wheel_rpm=p.get("wheel_rpm", settings.wheel_rpm),
+                    include_feed_system=p.get("include_feed_system", settings.include_feed_system),
+                    include_air_system=p.get("include_air_system", settings.include_air_system),
+                    include_exhaust=p.get("include_exhaust", settings.include_exhaust),
+                    venturi_inlet_diameter=p.get("venturi_inlet_diameter", 0.08),
+                    venturi_throat_ratio=p.get("venturi_throat_ratio", 0.5),
+                    zigzag_channel_width=p.get("zigzag_channel_width", 0.15),
+                    zigzag_channel_depth=p.get("zigzag_channel_depth", 0.25),
+                    zigzag_num_stages=p.get("zigzag_num_stages", 5),
+                    primary_cyclone_diameter=p.get("primary_cyclone_diameter", 0.30),
+                    secondary_cyclone_diameter=p.get("secondary_cyclone_diameter", 0.20),
+                    tertiary_cyclone_diameter=p.get("tertiary_cyclone_diameter", 0.12),
+                    device="cpu",
+                )
 
-                # Set up animation controller from the COMPLETE assembly.
-                # This only REGISTERS the animated parts (wheel, blower, dampers,
-                # lid, etc.) -- it does NOT start any animation or physics.
-                # Animation begins only when the user clicks Run Simulation.
-                self._stop_animation()
-                assembly_obj = getattr(backend, '_complete_assembly', None) or getattr(backend, '_assembly', None)
-                if assembly_obj is not None:
-                    ctrl = self.viewport_3d.build_with_animation(assembly_obj)
-                    if ctrl is not None:
-                        self._animation_controller = ctrl
-                        self.sim_control._log("Animation: registered rotating components")
+                backend = SimulationBackend(config)
+                backend._build_assembly_from_gui()
 
-                # Keep reference so Run Simulation can skip canvas validation
-                self._built_backend = backend
+                vertices, indices = backend.get_mesh()
+                if vertices is not None and len(vertices) > 0:
+                    self.viewport_3d.update_from_backend_mesh(vertices, indices)
 
-                mode = "Full System" if p.get("use_preclassification", True) else "Wheel-Only"
-                msg = f"Built {mode}: {len(vertices):,} vertices, {len(indices)//3:,} triangles"
-                self.statusBar().showMessage(msg, 5000)
+                    self._stop_animation()
+                    assembly_obj = getattr(backend, '_complete_assembly', None) or getattr(backend, '_assembly', None)
+                    if assembly_obj is not None:
+                        ctrl = self.viewport_3d.build_with_animation(assembly_obj)
+                        if ctrl is not None:
+                            self._animation_controller = ctrl
+                            self.sim_control._log("Animation: registered rotating components")
 
-                summary = backend.get_system_summary()
-                self.sim_control._log(f"System built: {summary.get('mode', 'unknown')}")
-                self.sim_control._log("Ready to run simulation.")
+                    self._built_backend = backend
+                    classifier_ok = True
+
+                    mode = "Full System" if p.get("use_preclassification", True) else "Wheel-Only"
+                    msg_parts.append(f"{mode}: {len(vertices):,} verts")
+
+                    summary = backend.get_system_summary()
+                    self.sim_control._log(f"Classifier built: {summary.get('mode', 'unknown')}")
+                else:
+                    self._built_backend = None
             else:
                 self._built_backend = None
-                QMessageBox.warning(self, "Build Failed", "Could not generate mesh geometry.")
+
+            # ── Build RF pretreatment oven (if enabled) ───────────
+            if p.get("enable_pretreatment", False):
+                self._build_pretreatment_meshes(p)
+                pretreatment_ok = True
+                msg_parts.append("GP-15 RF oven")
+
+            # ── Status message ────────────────────────────────────
+            if classifier_ok or pretreatment_ok:
+                msg = "Built: " + " + ".join(msg_parts)
+                self.statusBar().showMessage(msg, 5000)
+                self.sim_control._log("Ready to run simulation.")
+            else:
+                QMessageBox.warning(self, "Build Failed",
+                    "No process stages enabled. Open Configure Assembly and enable at least one stage.")
 
         except Exception as e:
             import traceback
@@ -1176,25 +1241,22 @@ class MainWindow(QMainWindow):
         meshes = results.get("meshes", {})
         outlet = results.get("outlet")
 
-        # Add oven structure to 3D viewport
+        # Add machine-assembled geometry to 3D viewport (same source as Build flow)
         import numpy as np
-        for name in ("oven", "upper_electrode", "lower_electrode", "belt"):
-            if name in meshes:
-                v = meshes[name]["vertices"]
-                t = meshes[name]["triangles"]
-                colors = {
-                    "oven": "#555555",
-                    "upper_electrode": "#C0C0C0",
-                    "lower_electrode": "#A0A0A0",
-                    "belt": "#4A90D9",
-                }
-                self.viewport_3d.add_mesh(
-                    component_id=f"gp15_{name}",
-                    vertices=v,
-                    faces=t,
-                    color=colors.get(name, "#888888"),
-                    opacity=0.3 if name == "oven" else 0.7,
-                )
+        for name, mesh in meshes.items():
+            if name == "fields":
+                continue
+            if not isinstance(mesh, dict) or "vertices" not in mesh or "triangles" not in mesh:
+                continue
+            v = mesh["vertices"]
+            t = mesh["triangles"]
+            self.viewport_3d.add_mesh(
+                component_id=f"gp15_{name}",
+                vertices=v,
+                faces=t,
+                color=mesh.get("color", "#888888"),
+                opacity=mesh.get("opacity", 0.7),
+            )
 
         # Add field visualization if available
         if "fields" in meshes:
@@ -1318,8 +1380,8 @@ class MainWindow(QMainWindow):
     def show_about(self):
         """Show about dialog."""
         QMessageBox.about(
-            self, "About Air Classifier Designer",
-            f"""<h2>Air Classifier Designer</h2>
+            self, "About ProteinProcessIO",
+            f"""<h2>ProteinProcessIO</h2>
             <p>Version 1.0.0</p>
             <p>Interactive design and simulation tool for air classification systems.</p>
             <p>Powered by NVIDIA Warp for GPU-accelerated multiphysics simulation.</p>

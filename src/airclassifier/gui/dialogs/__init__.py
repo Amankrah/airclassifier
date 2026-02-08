@@ -1,5 +1,5 @@
 """
-GUI Dialogs for Air Classifier Designer
+GUI Dialogs for ProteinProcessIO
 ========================================
 
 Dialog windows for various application functions.

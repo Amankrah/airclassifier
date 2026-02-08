@@ -1,5 +1,5 @@
 """
-GUI Panels for Air Classifier Designer
+GUI Panels for ProteinProcessIO
 =======================================
 
 Dockable panel widgets for the main window.

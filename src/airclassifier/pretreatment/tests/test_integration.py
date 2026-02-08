@@ -121,7 +121,7 @@ class TestGP15Simulator:
         assert outlet.residence_time_s > 0
 
     def test_get_mesh(self):
-        """get_mesh() should return all geometry components."""
+        """get_mesh() returns assembled machine geometry (same as build_gp15_machine_meshes)."""
         gp15 = _make_gp15()
         gp15.load_recipe(Recipe(
             name="test", recipe_number=1,
@@ -133,12 +133,17 @@ class TestGP15Simulator:
         assert "upper_electrode" in meshes
         assert "lower_electrode" in meshes
         assert "belt" in meshes
-        assert "bed" in meshes
+        assert "material_bed" in meshes
+        # Envelope parts from geometry.machine
+        assert "housing" in meshes
+        assert "legs" in meshes
 
-        # Each mesh should have vertices and triangles
-        for name in ("oven", "upper_electrode", "lower_electrode"):
+        # Each structural mesh has vertices, triangles, color, opacity
+        for name in ("oven", "upper_electrode", "lower_electrode", "belt", "material_bed"):
             assert meshes[name]["vertices"].shape[1] == 3
             assert meshes[name]["triangles"].shape[1] == 3
+            assert "color" in meshes[name]
+            assert "opacity" in meshes[name]
 
     def test_get_mesh_with_fields(self):
         """After running, get_mesh() should include field data."""

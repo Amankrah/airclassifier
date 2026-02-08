@@ -19,13 +19,13 @@ from .theme import COLORS
 
 class AirClassifierApp(QApplication):
     """
-    Main application class for Air Classifier Designer.
+    Main application class for ProteinProcessIO.
 
     Handles application-level settings, theming, and initialization.
     Uses modern UI design with proper DPI scaling and larger fonts.
     """
 
-    APP_NAME = "Air Classifier Designer"
+    APP_NAME = "ProteinProcessIO"
     APP_VERSION = "1.0.0"
     ORG_NAME = "AirClassifier"
     ORG_DOMAIN = "airclassifier.local"

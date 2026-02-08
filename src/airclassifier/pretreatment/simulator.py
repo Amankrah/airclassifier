@@ -30,6 +30,7 @@ import numpy as np
 from .config import MachineConfig, MaterialProperties, Recipe
 from .geometry.conveyor import ConveyorGeometry, ConveyorParams
 from .geometry.electrode import ElectrodeGeometry, ElectrodeParams
+from .geometry.machine import build_gp15_machine_meshes
 from .geometry.oven import OvenGeometry, OvenGeometryParams
 from .io.export import export_csv_timeseries, export_numpy_snapshot, export_vtk
 from .physics.coupling import (
@@ -169,32 +170,19 @@ class GP15Simulator:
     def get_mesh(self) -> Dict[str, Any]:
         """Return PyVista-compatible mesh data for 3D visualization.
 
-        Returns a dict containing mesh components and field data
-        suitable for adding to the Air Classifier Designer's
-        PyVista viewport (§9.3).
+        Uses the assembled machine geometry (geometry.machine.build_gp15_machine_meshes)
+        so the same oven, conveyor, electrode components and envelope are returned
+        as when building from the Assembly dialog. Includes color and opacity for
+        viewport display. Adds ``fields`` when the simulation has been run (§9.3).
         """
-        gap_m = (self._recipe.electrode_gap_mm / 1000.0
-                 if self._recipe else self.config.electrode_gap_max_m)
-
-        meshes: Dict[str, Any] = {}
-
-        # Oven walls
-        v, t, m = self._oven.generate_mesh()
-        meshes["oven"] = {"vertices": v, "triangles": t, "metadata": m}
-
-        # Electrodes
-        v, t, m = self._electrode.generate_upper_mesh(gap_m)
-        meshes["upper_electrode"] = {"vertices": v, "triangles": t, "metadata": m}
-        v, t, m = self._electrode.generate_lower_mesh()
-        meshes["lower_electrode"] = {"vertices": v, "triangles": t, "metadata": m}
-
-        # Conveyor belt
-        v, t, m = self._conveyor.generate_belt_mesh()
-        meshes["belt"] = {"vertices": v, "triangles": t, "metadata": m}
-
-        # Material bed
-        v, t, m = self._conveyor.generate_bed_mesh(self.material.bed_depth_m)
-        meshes["bed"] = {"vertices": v, "triangles": t, "metadata": m}
+        electrode_gap_mm = (
+            self._recipe.electrode_gap_mm if self._recipe else 80.0
+        )
+        meshes = build_gp15_machine_meshes(
+            config=self.config,
+            material=self.material,
+            electrode_gap_mm=electrode_gap_mm,
+        )
 
         # Field data (if simulation has run)
         if self._initialized:

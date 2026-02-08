@@ -114,11 +114,11 @@ def build_pyvista_scene(
     Returns a dict of named mesh actors that can be added to the
     Air Classifier Designer's existing PyVista viewport (§9.3).
 
-    The scene contains:
-    - Oven walls (wireframe, semi-transparent)
-    - Upper and lower electrode plates
-    - Conveyor belt
-    - Material bed with field color mapping
+    The scene contains all meshes from the assembled machine geometry
+    (geometry.machine): oven, belt, material_bed, upper/lower electrodes,
+    and envelope (legs, housing, tunnels, hopper, EMU duct, control panel).
+    When the simulator has run, the material bed field is added with scalar
+    color mapping.
 
     Args:
         simulator: A GP15Simulator instance (may or may not have run).
@@ -148,15 +148,18 @@ def build_pyvista_scene(
     meshes = simulator.get_mesh()
     scene: Dict[str, Any] = {}
 
-    # Structural meshes
-    for name in ("oven", "upper_electrode", "lower_electrode", "belt"):
-        if name in meshes:
-            v = meshes[name]["vertices"]
-            t = meshes[name]["triangles"]
-            faces = np.column_stack([
-                np.full(len(t), 3, dtype=np.int32), t
-            ]).ravel()
-            scene[name] = pv.PolyData(v, faces)
+    # Structural meshes (assembled machine geometry: oven, conveyor, electrode, envelope)
+    for name, data in meshes.items():
+        if name == "fields":
+            continue
+        if not isinstance(data, dict) or "vertices" not in data or "triangles" not in data:
+            continue
+        v = data["vertices"]
+        t = data["triangles"]
+        faces = np.column_stack([
+            np.full(len(t), 3, dtype=np.int32), t
+        ]).ravel()
+        scene[name] = pv.PolyData(v, faces)
 
     # Field grid (if simulation data is available)
     if "fields" in meshes:

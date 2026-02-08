@@ -1,5 +1,5 @@
 """
-GUI Widgets for Air Classifier Designer
+GUI Widgets for ProteinProcessIO
 ========================================
 
 Custom widgets for the main window.

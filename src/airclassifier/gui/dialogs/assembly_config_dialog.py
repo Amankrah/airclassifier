@@ -2,15 +2,14 @@
 Assembly Configuration Dialog
 ==============================
 
-Separate window for configuring the air classifier assembly.
-Parameters-driven, matching the real geometry assemblies:
+Process configuration for ProteinProcessIO.
 
-- ClassificationSystemParams  (classification.py)
-- CompleteSystemParams         (complete_system.py)
+Supports two process stages, independently enabled:
+  1. **RF Pretreatment** — QMTI GP-15 RF dielectric heating
+  2. **Air Classification** — Venturi/Zigzag/Wheel classifier
 
-The assemblies are fully programmatic -- components and connections are
-determined by parameters, not by drag-and-drop.  This dialog lets the
-user set those parameters and immediately preview the resulting geometry.
+The dialog lets the user configure both stages and immediately
+preview the resulting geometry in the 3D viewport.
 """
 
 from typing import Optional, Dict, Any, Tuple
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QTabWidget, QGroupBox, QLabel, QPushButton, QDialogButtonBox,
     QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox, QFrame,
+    QRadioButton, QButtonGroup,
     QScrollArea, QSizePolicy, QMessageBox, QSplitter,
 )
 from PySide6.QtCore import Qt, Signal
@@ -37,11 +37,11 @@ def _scrollable(w: QWidget) -> QScrollArea:
 
 
 # --------------------------------------------------------------------------
-# Flow diagram widget -- shows the current assembly topology as text
+# Flow diagram widget -- shows the process topology
 # --------------------------------------------------------------------------
 
 class _FlowDiagram(QFrame):
-    """Shows the component flow path as a styled text block."""
+    """Shows the process flow path as a styled text block."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,7 +55,7 @@ class _FlowDiagram(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
 
-        title = QLabel("Flow Path")
+        title = QLabel("Process Flow Path")
         title.setStyleSheet(
             f"font-weight: 600; font-size: 10pt; color: {COLORS.TEXT_PRIMARY};"
             " border: none; background: transparent;"
@@ -70,41 +70,90 @@ class _FlowDiagram(QFrame):
         )
         layout.addWidget(self._text)
 
-    def set_preclassification(self, enabled: bool, include_feed: bool, include_air: bool):
-        if enabled:
-            lines = []
-            if include_air:
-                lines.append("Air Filter \u2192 Blower \u2192 Dampers \u2192 Ductwork")
-                lines.append("  \u2514\u2192 Venturi (air inlet)")
-            if include_feed:
-                lines.append("Hopper \u2192 Airlock \u2192 Screw \u2192 Deagglomerator")
-                lines.append("  \u2514\u2192 Venturi (solids inlet)")
+    def update_flow(
+        self,
+        pretreatment_enabled: bool,
+        classification_enabled: bool,
+        preclassification: bool,
+        include_feed: bool,
+        include_air: bool,
+    ):
+        lines = []
+
+        # Stage 1: RF Pretreatment
+        if pretreatment_enabled:
+            lines += [
+                "━━━ STAGE 1: RF PRETREATMENT (GP-15) ━━━",
+                "",
+                "Whole Seeds/Beans",
+                "  └→ Hopper → Sizing Plate → Belt Infeed",
+                "",
+                "GP-15 Oven (27.12 MHz RF Field)",
+                "  ├→ Upper Electrode (V = V_rf)",
+                "  │     ╎  air gap",
+                "  │     ╎  material bed (T, M fields)",
+                "  │     ╎  belt (PTFE) + wear strips",
+                "  └→ Lower Electrode (ground)",
+                "",
+                "EMU: Extraction Fan + Heaters → humid air out",
+                "",
+                "Belt Outfeed → Conditioned Material",
+                f"  (moisture 8-14% → 2-4% wb)",
+            ]
+
+        # Connector
+        if pretreatment_enabled and classification_enabled:
             lines += [
                 "",
-                "Venturi \u2192 Transition \u2192 Zigzag Classifier",
-                "  \u251c\u2192 Fines \u2192 Wheel Classifier",
-                "  \u2502     \u251c\u2192 Fines \u2192 Cyclone 1 \u2192 Cy2 \u2192 Cy3 (protein)",
-                "  \u2502     \u2514\u2192 Coarse \u2192 Wheel coarse hopper",
-                "  \u2514\u2192 Coarse \u2192 Zigzag coarse airlock",
-                "",
-                "Cyclone overflow \u2192 Bag Filter \u2192 Clean Air",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "  │  conditioned material",
+                "  ↓",
             ]
-        else:
-            lines = []
-            if include_air:
-                lines.append("Air Filter \u2192 Blower \u2192 Dampers \u2192 Ductwork")
-                lines.append("  \u2514\u2192 Junction (air port)")
-            if include_feed:
-                lines.append("Hopper \u2192 Airlock \u2192 Screw \u2192 Deagglomerator")
-                lines.append("  \u2514\u2192 Junction (solids chute 15\u00b0)")
-            lines += [
+
+        # Stage 2: Air Classification
+        if classification_enabled:
+            lines += ["", "━━━ STAGE 2: AIR CLASSIFICATION ━━━", ""]
+
+            if preclassification:
+                if include_air:
+                    lines.append("Air Filter → Blower → Dampers → Ductwork")
+                    lines.append("  └→ Venturi (air inlet)")
+                if include_feed:
+                    lines.append("Hopper → Airlock → Screw → Deagglomerator")
+                    lines.append("  └→ Venturi (solids inlet)")
+                lines += [
+                    "",
+                    "Venturi → Transition → Zigzag Classifier",
+                    "  ├→ Fines → Wheel Classifier",
+                    "  │     ├→ Fines → Cyclone 1 → Cy2 → Cy3 (protein)",
+                    "  │     └→ Coarse → Wheel coarse hopper",
+                    "  └→ Coarse → Zigzag coarse airlock",
+                    "",
+                    "Cyclone overflow → Bag Filter → Clean Air",
+                ]
+            else:
+                if include_air:
+                    lines.append("Air Filter → Blower → Dampers → Ductwork")
+                    lines.append("  └→ Junction (air port)")
+                if include_feed:
+                    lines.append("Hopper → Airlock → Screw → Deagglomerator")
+                    lines.append("  └→ Junction (solids chute 15°)")
+                lines += [
+                    "",
+                    "3-Point Junction → Wheel Classifier",
+                    "  ├→ Fines → Cyclone 1 → Cy2 → Cy3 (protein)",
+                    "  └→ Coarse → Wheel coarse hopper",
+                    "",
+                    "Cyclone overflow → Bag Filter → Clean Air",
+                ]
+
+        if not pretreatment_enabled and not classification_enabled:
+            lines = [
+                "No process stages enabled.",
                 "",
-                "3-Point Junction \u2192 Wheel Classifier",
-                "  \u251c\u2192 Fines \u2192 Cyclone 1 \u2192 Cy2 \u2192 Cy3 (protein)",
-                "  \u2514\u2192 Coarse \u2192 Wheel coarse hopper",
-                "",
-                "Cyclone overflow \u2192 Bag Filter \u2192 Clean Air",
+                "Enable at least one stage above.",
             ]
+
         self._text.setText("\n".join(lines))
 
 
@@ -114,20 +163,18 @@ class _FlowDiagram(QFrame):
 
 class AssemblyConfigDialog(QDialog):
     """
-    Dialog for configuring the air classifier assembly.
+    Process configuration dialog for ProteinProcessIO.
 
-    Maps directly to ClassificationSystemParams + CompleteSystemParams.
-    Produces a params dict that can be used to build the assembly.
+    Supports independent RF Pretreatment and Air Classification stages.
     """
 
-    # Emitted with the resulting params when user clicks Build & Apply
     assembly_configured = Signal(dict)
 
     def __init__(self, parent: Optional[QWidget] = None, current_params: Optional[Dict] = None):
         super().__init__(parent)
-        self.setWindowTitle("Assembly Configuration")
-        self.setMinimumSize(780, 620)
-        self.resize(850, 700)
+        self.setWindowTitle("Process Configuration — ProteinProcessIO")
+        self.setMinimumSize(860, 680)
+        self.resize(960, 760)
 
         self._params = current_params or {}
         self._setup_ui()
@@ -138,10 +185,10 @@ class AssemblyConfigDialog(QDialog):
         layout.setSpacing(8)
 
         # Header
-        header = QLabel("Configure Air Classifier Assembly")
+        header = QLabel("Configure Process Stages")
         header.setStyleSheet(f"font-size: 14pt; font-weight: 700; color: {COLORS.TEXT_PRIMARY};")
         layout.addWidget(header)
-        sub = QLabel("Parameters drive the geometry -- components and connections are built automatically.")
+        sub = QLabel("Enable and configure each process stage. The system builds automatically from parameters.")
         sub.setStyleSheet(f"font-size: 9pt; color: {COLORS.TEXT_MUTED}; margin-bottom: 8px;")
         layout.addWidget(sub)
 
@@ -151,17 +198,18 @@ class AssemblyConfigDialog(QDialog):
 
         # Left: parameter tabs
         tabs = QTabWidget()
-        tabs.addTab(_scrollable(self._create_system_tab()), "System")
+        tabs.addTab(_scrollable(self._create_stages_tab()), "Stages")
+        tabs.addTab(_scrollable(self._create_pretreatment_tab()), "RF Pretreatment")
         tabs.addTab(_scrollable(self._create_classification_tab()), "Classification")
         tabs.addTab(_scrollable(self._create_sizing_tab()), "Sizing")
         splitter.addWidget(tabs)
 
         # Right: flow diagram
         self._flow_diagram = _FlowDiagram()
-        self._flow_diagram.setMinimumWidth(280)
+        self._flow_diagram.setMinimumWidth(300)
         splitter.addWidget(self._flow_diagram)
 
-        splitter.setSizes([480, 300])
+        splitter.setSizes([520, 340])
         layout.addWidget(splitter, 1)
 
         # Buttons
@@ -187,16 +235,50 @@ class AssemblyConfigDialog(QDialog):
         layout.addLayout(btn_layout)
 
     # ================================================================
-    # System tab
+    # Stages tab  (NEW — process stage selector)
     # ================================================================
 
-    def _create_system_tab(self) -> QWidget:
+    def _create_stages_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setSpacing(8)
         _M = (10, 14, 10, 10)
 
-        # Mode
+        # Process stage selector (mutually exclusive for now)
+        g = QGroupBox("Active Process Stage")
+        stage_layout = QVBoxLayout(g)
+        stage_layout.setContentsMargins(*_M)
+
+        self._stage_group = QButtonGroup(self)
+
+        self.radio_pretreatment = QRadioButton(
+            "RF Pretreatment — QMTI GP-15 (27.12 MHz dielectric heating)"
+        )
+        self.radio_pretreatment.setChecked(True)
+        self._stage_group.addButton(self.radio_pretreatment, 0)
+        stage_layout.addWidget(self.radio_pretreatment)
+
+        hint_pre = QLabel("Moisture conditioning of whole seeds: 8–14% → 2–4% wb before milling")
+        hint_pre.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED}; margin-left: 24px;")
+        stage_layout.addWidget(hint_pre)
+
+        stage_layout.addSpacing(6)
+
+        self.radio_classification = QRadioButton(
+            "Air Classification — Zigzag + Wheel + Cyclones"
+        )
+        self._stage_group.addButton(self.radio_classification, 1)
+        stage_layout.addWidget(self.radio_classification)
+
+        hint_cls = QLabel("Protein-starch separation via particle size / density classification")
+        hint_cls.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED}; margin-left: 24px;")
+        stage_layout.addWidget(hint_cls)
+
+        self._stage_group.idToggled.connect(self._on_stage_changed)
+
+        layout.addWidget(g)
+
+        # Classification mode (only visible if classification enabled)
         g = QGroupBox("Classification Mode")
         f = QFormLayout(g); f.setContentsMargins(*_M)
 
@@ -205,10 +287,6 @@ class AssemblyConfigDialog(QDialog):
             "Full System (Venturi + Zigzag + Wheel)",
             "Wheel-Only (Direct Feed)"
         ])
-        self.mode_combo.setToolTip(
-            "Full System: Venturi entrainment + zigzag pre-classification + wheel\n"
-            "Wheel-Only: 3-point junction (air + solids chute) \u2192 wheel"
-        )
         self.mode_combo.currentIndexChanged.connect(self._update_flow_diagram)
         f.addRow("Mode:", self.mode_combo)
         layout.addWidget(g)
@@ -217,12 +295,12 @@ class AssemblyConfigDialog(QDialog):
         g = QGroupBox("Subsystems")
         f = QFormLayout(g); f.setContentsMargins(*_M)
 
-        self.chk_feed = QCheckBox("Feed System (Hopper \u2192 Airlock \u2192 Screw \u2192 Deagglomerator)")
+        self.chk_feed = QCheckBox("Feed System (Hopper → Airlock → Screw → Deagglomerator)")
         self.chk_feed.setChecked(True)
         self.chk_feed.stateChanged.connect(self._update_flow_diagram)
         f.addRow(self.chk_feed)
 
-        self.chk_air = QCheckBox("Air System (Filter \u2192 Blower \u2192 Dampers)")
+        self.chk_air = QCheckBox("Air System (Filter → Blower → Dampers)")
         self.chk_air.setChecked(True)
         self.chk_air.stateChanged.connect(self._update_flow_diagram)
         f.addRow(self.chk_air)
@@ -258,16 +336,113 @@ class AssemblyConfigDialog(QDialog):
         self.air_flow_h_spin = QDoubleSpinBox()
         self.air_flow_h_spin.setRange(10, 10000)
         self.air_flow_h_spin.setValue(3000)
-        self.air_flow_h_spin.setSuffix("  m\u00b3/h")
-        self.air_flow_h_spin.setToolTip("Design air flow rate for geometry sizing")
+        self.air_flow_h_spin.setSuffix("  m³/h")
         f.addRow("Design Air Flow:", self.air_flow_h_spin)
 
         layout.addWidget(g)
-
         return w
 
     # ================================================================
-    # Classification tab
+    # RF Pretreatment tab  (NEW)
+    # ================================================================
+
+    def _create_pretreatment_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(8)
+        _M = (10, 14, 10, 10)
+
+        # Material
+        g = QGroupBox("Feedstock")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
+
+        self.pt_material_combo = QComboBox()
+        self.pt_material_combo.addItems(["yellow_pea", "faba_bean", "oat"])
+        f.addRow("Material preset:", self.pt_material_combo)
+
+        self.pt_moisture_spin = QDoubleSpinBox()
+        self.pt_moisture_spin.setRange(0.01, 0.25)
+        self.pt_moisture_spin.setValue(0.10)
+        self.pt_moisture_spin.setDecimals(3)
+        self.pt_moisture_spin.setSingleStep(0.005)
+        f.addRow("Inlet moisture (wb):", self.pt_moisture_spin)
+
+        self.pt_target_spin = QDoubleSpinBox()
+        self.pt_target_spin.setRange(0.01, 0.10)
+        self.pt_target_spin.setValue(0.03)
+        self.pt_target_spin.setDecimals(3)
+        f.addRow("Target moisture (wb):", self.pt_target_spin)
+
+        self.pt_bed_spin = QDoubleSpinBox()
+        self.pt_bed_spin.setRange(10, 100)
+        self.pt_bed_spin.setValue(40)
+        self.pt_bed_spin.setSuffix("  mm")
+        f.addRow("Bed depth:", self.pt_bed_spin)
+
+        layout.addWidget(g)
+
+        # Recipe
+        g = QGroupBox("GP-15 Recipe")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
+
+        self.pt_gap_spin = QDoubleSpinBox()
+        self.pt_gap_spin.setRange(20, 300)
+        self.pt_gap_spin.setValue(80)
+        self.pt_gap_spin.setSuffix("  mm")
+        f.addRow("Electrode gap:", self.pt_gap_spin)
+
+        self.pt_speed_spin = QDoubleSpinBox()
+        self.pt_speed_spin.setRange(0.1, 2.0)
+        self.pt_speed_spin.setValue(0.50)
+        self.pt_speed_spin.setDecimals(2)
+        self.pt_speed_spin.setSingleStep(0.05)
+        self.pt_speed_spin.setSuffix("  m/min")
+        f.addRow("Belt speed:", self.pt_speed_spin)
+
+        self.pt_fan_spin = QDoubleSpinBox()
+        self.pt_fan_spin.setRange(5, 60)
+        self.pt_fan_spin.setValue(30)
+        self.pt_fan_spin.setSuffix("  Hz")
+        f.addRow("Extraction fan:", self.pt_fan_spin)
+
+        self.pt_mrh_spin = QDoubleSpinBox()
+        self.pt_mrh_spin.setRange(0.5, 3.0)
+        self.pt_mrh_spin.setValue(2.6)
+        self.pt_mrh_spin.setDecimals(2)
+        self.pt_mrh_spin.setSuffix("  A")
+        f.addRow("MRH threshold:", self.pt_mrh_spin)
+
+        self.pt_heater_check = QCheckBox("Both banks on")
+        self.pt_heater_check.setChecked(True)
+        f.addRow("Heaters:", self.pt_heater_check)
+
+        layout.addWidget(g)
+
+        # Simulation
+        g = QGroupBox("Simulation")
+        f = QFormLayout(g); f.setContentsMargins(*_M)
+
+        self.pt_duration_spin = QDoubleSpinBox()
+        self.pt_duration_spin.setRange(1, 3600)
+        self.pt_duration_spin.setValue(120)
+        self.pt_duration_spin.setSuffix("  s")
+        f.addRow("Duration:", self.pt_duration_spin)
+
+        self.pt_eff_spin = QDoubleSpinBox()
+        self.pt_eff_spin.setRange(0.10, 1.0)
+        self.pt_eff_spin.setValue(0.56)
+        self.pt_eff_spin.setDecimals(2)
+        f.addRow("Oscillator efficiency:", self.pt_eff_spin)
+
+        hint = QLabel("Residence time at 0.5 m/min ≈ 180 s  |  Efficiency 0.56 matches GP-15 manual")
+        hint.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED};")
+        f.addRow("", hint)
+
+        layout.addWidget(g)
+        return w
+
+    # ================================================================
+    # Classification tab  (existing, unchanged)
     # ================================================================
 
     def _create_classification_tab(self) -> QWidget:
@@ -291,9 +466,7 @@ class AssemblyConfigDialog(QDialog):
         self.venturi_throat_spin.setDecimals(2)
         self.venturi_throat_spin.setSingleStep(0.05)
         self.venturi_throat_spin.setValue(0.5)
-        self.venturi_throat_spin.setToolTip("Throat diameter = Inlet \u00d7 Ratio. 0.5 = 40mm for 80mm inlet")
         f.addRow("Throat Ratio:", self.venturi_throat_spin)
-
         layout.addWidget(g)
 
         # Zigzag
@@ -316,7 +489,6 @@ class AssemblyConfigDialog(QDialog):
         self.zz_stages_spin.setRange(3, 12)
         self.zz_stages_spin.setValue(5)
         f.addRow("Number of Stages:", self.zz_stages_spin)
-
         layout.addWidget(g)
 
         # Wheel
@@ -335,7 +507,6 @@ class AssemblyConfigDialog(QDialog):
         self.wheel_rpm_spin.setDecimals(0)
         self.wheel_rpm_spin.setSuffix("  RPM")
         f.addRow("Wheel Speed:", self.wheel_rpm_spin)
-
         layout.addWidget(g)
 
         # Cyclones
@@ -346,20 +517,19 @@ class AssemblyConfigDialog(QDialog):
         self.cy1_spin.setRange(100, 600)
         self.cy1_spin.setValue(300)
         self.cy1_spin.setSuffix("  mm")
-        f.addRow("Primary \u00d8:", self.cy1_spin)
+        f.addRow("Primary ∅:", self.cy1_spin)
 
         self.cy2_spin = QDoubleSpinBox()
         self.cy2_spin.setRange(50, 400)
         self.cy2_spin.setValue(200)
         self.cy2_spin.setSuffix("  mm")
-        f.addRow("Secondary \u00d8:", self.cy2_spin)
+        f.addRow("Secondary ∅:", self.cy2_spin)
 
         self.cy3_spin = QDoubleSpinBox()
         self.cy3_spin.setRange(50, 300)
         self.cy3_spin.setValue(120)
         self.cy3_spin.setSuffix("  mm")
-        f.addRow("Tertiary \u00d8:", self.cy3_spin)
-
+        f.addRow("Tertiary ∅:", self.cy3_spin)
         layout.addWidget(g)
 
         # Bag filter
@@ -370,9 +540,8 @@ class AssemblyConfigDialog(QDialog):
         self.bag_flow_spin.setRange(0.01, 2.0)
         self.bag_flow_spin.setDecimals(2)
         self.bag_flow_spin.setValue(0.15)
-        self.bag_flow_spin.setSuffix("  m\u00b3/s")
+        self.bag_flow_spin.setSuffix("  m³/s")
         f.addRow("Design Flow:", self.bag_flow_spin)
-
         layout.addWidget(g)
 
         return w
@@ -389,35 +558,29 @@ class AssemblyConfigDialog(QDialog):
 
         g = QGroupBox("Feed System Sizing")
         f = QFormLayout(g); f.setContentsMargins(*_M)
-
         self.hopper_dia_spin = QDoubleSpinBox()
         self.hopper_dia_spin.setRange(200, 2000)
         self.hopper_dia_spin.setValue(600)
         self.hopper_dia_spin.setSuffix("  mm")
         f.addRow("Hopper Diameter:", self.hopper_dia_spin)
-
         layout.addWidget(g)
 
         g = QGroupBox("Ductwork Sizing")
         f = QFormLayout(g); f.setContentsMargins(*_M)
-
         self.main_duct_spin = QDoubleSpinBox()
         self.main_duct_spin.setRange(50, 500)
         self.main_duct_spin.setValue(200)
         self.main_duct_spin.setSuffix("  mm")
-        f.addRow("Main Duct \u00d8:", self.main_duct_spin)
-
+        f.addRow("Main Duct ∅:", self.main_duct_spin)
         layout.addWidget(g)
 
         g = QGroupBox("Exhaust")
         f = QFormLayout(g); f.setContentsMargins(*_M)
-
         self.stack_height_spin = QDoubleSpinBox()
         self.stack_height_spin.setRange(1, 20)
         self.stack_height_spin.setValue(4)
         self.stack_height_spin.setSuffix("  m")
         f.addRow("Stack Height:", self.stack_height_spin)
-
         layout.addWidget(g)
 
         return w
@@ -426,10 +589,20 @@ class AssemblyConfigDialog(QDialog):
     # Flow diagram update
     # ================================================================
 
+    def _on_stage_changed(self, id_: int, checked: bool):
+        """Toggle tab and flow diagram when stage selection changes."""
+        if checked:
+            self._update_flow_diagram()
+
     def _update_flow_diagram(self):
-        preclassification = self.mode_combo.currentIndex() == 0
-        self._flow_diagram.set_preclassification(
-            preclassification, self.chk_feed.isChecked(), self.chk_air.isChecked()
+        pretreatment_on = self.radio_pretreatment.isChecked()
+        classification_on = self.radio_classification.isChecked()
+        self._flow_diagram.update_flow(
+            pretreatment_enabled=pretreatment_on,
+            classification_enabled=classification_on,
+            preclassification=(self.mode_combo.currentIndex() == 0),
+            include_feed=self.chk_feed.isChecked(),
+            include_air=self.chk_air.isChecked(),
         )
 
     # ================================================================
@@ -437,9 +610,12 @@ class AssemblyConfigDialog(QDialog):
     # ================================================================
 
     def get_params(self) -> Dict[str, Any]:
-        """Build a params dict matching CompleteSystemParams + ClassificationSystemParams."""
+        """Build a params dict with all process configuration."""
         preclassification = self.mode_combo.currentIndex() == 0
         return {
+            # Process stages (mutually exclusive)
+            "enable_pretreatment": self.radio_pretreatment.isChecked(),
+            "enable_classification": self.radio_classification.isChecked(),
             # System
             "use_preclassification": preclassification,
             "include_feed_system": self.chk_feed.isChecked(),
@@ -450,6 +626,18 @@ class AssemblyConfigDialog(QDialog):
             "include_coarse_collection": self.chk_coarse_collect.isChecked(),
             "throughput_kg_h": self.throughput_spin.value(),
             "air_flow_m3_h": self.air_flow_h_spin.value(),
+            # RF Pretreatment
+            "pt_material": self.pt_material_combo.currentText(),
+            "pt_inlet_moisture": self.pt_moisture_spin.value(),
+            "pt_target_moisture": self.pt_target_spin.value(),
+            "pt_bed_depth_mm": self.pt_bed_spin.value(),
+            "pt_electrode_gap_mm": self.pt_gap_spin.value(),
+            "pt_belt_speed": self.pt_speed_spin.value(),
+            "pt_extraction_fan_hz": self.pt_fan_spin.value(),
+            "pt_mrh_amps": self.pt_mrh_spin.value(),
+            "pt_heaters_on": self.pt_heater_check.isChecked(),
+            "pt_duration_s": self.pt_duration_spin.value(),
+            "pt_oscillator_efficiency": self.pt_eff_spin.value(),
             # Classification
             "venturi_inlet_diameter": self.venturi_inlet_spin.value() / 1000.0,
             "venturi_throat_ratio": self.venturi_throat_spin.value(),
@@ -472,6 +660,11 @@ class AssemblyConfigDialog(QDialog):
         """Load existing params into the UI."""
         if not p:
             return
+        # Stages (mutually exclusive radio buttons)
+        if p.get("enable_pretreatment", False):
+            self.radio_pretreatment.setChecked(True)
+        elif p.get("enable_classification", True):
+            self.radio_classification.setChecked(True)
         if "use_preclassification" in p:
             self.mode_combo.setCurrentIndex(0 if p["use_preclassification"] else 1)
         if "include_feed_system" in p:
@@ -482,6 +675,18 @@ class AssemblyConfigDialog(QDialog):
             self.chk_exhaust.setChecked(p["include_exhaust"])
         if "include_ductwork" in p:
             self.chk_ductwork.setChecked(p["include_ductwork"])
+        # Pretreatment
+        if "pt_material" in p:
+            idx = self.pt_material_combo.findText(p["pt_material"])
+            if idx >= 0:
+                self.pt_material_combo.setCurrentIndex(idx)
+        if "pt_inlet_moisture" in p:
+            self.pt_moisture_spin.setValue(p["pt_inlet_moisture"])
+        if "pt_electrode_gap_mm" in p:
+            self.pt_gap_spin.setValue(p["pt_electrode_gap_mm"])
+        if "pt_belt_speed" in p:
+            self.pt_speed_spin.setValue(p["pt_belt_speed"])
+        # Classification
         if "venturi_throat_ratio" in p:
             self.venturi_throat_spin.setValue(p["venturi_throat_ratio"])
         if "zigzag_channel_width" in p:
@@ -499,10 +704,8 @@ class AssemblyConfigDialog(QDialog):
     # ================================================================
 
     def _on_build_preview(self):
-        """Build the assembly and emit for 3D preview (don't close dialog)."""
         self.assembly_configured.emit(self.get_params())
 
     def _on_apply_close(self):
-        """Apply and close."""
         self.assembly_configured.emit(self.get_params())
         self.accept()
