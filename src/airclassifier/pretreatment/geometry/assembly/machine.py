@@ -2,587 +2,530 @@
 GP-15 Machine Assembly
 ======================
 
-Complete GP-15 RF dielectric heating machine assembly.
+Assembles the three core GP-15 geometry components into a single
+coherent machine:
 
-Combines all components with proper port-based alignment:
-- Generator (RF oscillator cabinet)
-- Oven chamber with electrodes
-- Conveyor belt with material bed
-- Infeed/outfeed attenuation tunnels
-- Infeed hopper with sizing plate
-- EMU (extraction duct, heater banks)
-- HMI control panel
-- Outer housing and support legs
+  1. **Conveyor belt** — structural frame, rollers, belt loop, deck plate
+  2. **Oven chamber**  — sheet-metal enclosure that sits on the conveyor
+  3. **Electrodes**    — upper (movable) and lower (fixed) electrode
+                         assemblies inside the oven
 
-Follows the Air Classifier Designer's assembly pattern with:
-- ``build_mesh()`` for combined mesh
-- ``get_component_meshes()`` for individual meshes with colors
-- ``to_legacy_format()`` for backward compatibility
+Coordinate alignment (Engineering Guide §3):
+
+    The conveyor provides the world coordinate frame.  Y-up.
+    y = 0 is the lower electrode / deck-plate surface.
+    The oven is centred on the conveyor at ``oven_x_start`` (default 1.65 m).
+    Electrodes span the RF zone inside the oven.
+
+Parameter chain:
+    ConveyorBeltParams
+        → OvenChamberParams.from_conveyor(conv_params)
+            → ElectrodeParams.from_oven(oven_params)
+
+This ensures belt width, frame width, and Z positions propagate
+correctly through the entire assembly.
+
+Usage::
+
+    from airclassifier.pretreatment.geometry.assembly import (
+        create_gp15_machine,
+        build_gp15_machine_meshes,
+    )
+
+    machine = create_gp15_machine(electrode_gap_m=0.200, bed_depth_m=0.04)
+    meshes = machine.generate_all_meshes()
+
+    # Each entry: (vertices, triangles, metadata)
+    for name, (v, t, meta) in meshes.items():
+        print(f"{name}: {v.shape[0]} verts, {t.shape[0]} tris")
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ...config import MachineConfig, MaterialProperties
-from ..components import (
-    GeneratorGeometry, GeneratorParams,
-    OvenChamberGeometry, OvenChamberParams,
-    ConveyorBeltGeometry, ConveyorBeltParams,
-    ElectrodeGeometry, ElectrodeParams,
-    TunnelGeometry, TunnelParams,
-    InfeedHopperGeometry, InfeedHopperParams,
-    EMUGeometry, EMUParams,
-    HMIPanelGeometry, HMIPanelParams,
-    HousingGeometry, HousingParams,
-    SupportLegsGeometry, SupportLegsParams,
-)
-from ..mesh_utils import concat_meshes, translate_mesh
+from ..components.conveyor_belt import ConveyorBeltGeometry, ConveyorBeltParams
+from ..components.electrode import ElectrodeGeometry, ElectrodeParams
+from ..components.hopper import InfeedHopperGeometry, InfeedHopperParams
+from ..components.oven_chamber import OvenChamberGeometry, OvenChamberParams
+from ..mesh_utils import concat_meshes
 
 
-# Component colors for visualization
-COMPONENT_COLORS = {
-    'oven': ('#607080', 0.2),
-    'belt': ('#4A90D9', 0.6),
-    'material_bed': ('#D4A76A', 0.85),
-    'lower_electrode': ('#A0A0A0', 0.8),
-    'upper_electrode': ('#C0C0C0', 0.7),
-    'legs': ('#555555', 0.9),
-    'housing': ('#708090', 0.15),
-    'infeed_tunnel': ('#607080', 0.25),
-    'outfeed_tunnel': ('#607080', 0.25),
-    'infeed_hopper': ('#888888', 0.5),
-    'emu': ('#606060', 0.5),
-    'control_panel': ('#404050', 0.7),
-    'generator': ('#505050', 0.6),
+# ─────────────────────────────────────────────────────────────────────
+#  Visual styling
+# ─────────────────────────────────────────────────────────────────────
+
+COMPONENT_COLORS: Dict[str, Dict[str, object]] = {
+    "conveyor_frame": {
+        "color": "#505060",
+        "opacity": 0.22,
+        "label": "Conveyor Frame",
+    },
+    "rollers": {
+        "color": "#909090",
+        "opacity": 0.85,
+        "label": "Rollers",
+    },
+    "belt": {
+        "color": "#4169E1",
+        "opacity": 0.88,
+        "label": "Belt (PTFE)",
+    },
+    "oven_chamber": {
+        "color": "#8B6914",
+        "opacity": 0.18,
+        "label": "Oven Chamber",
+    },
+    "upper_electrode": {
+        "color": "#C0392B",
+        "opacity": 0.85,
+        "label": "Upper Electrode",
+    },
+    "lower_electrode": {
+        "color": "#7B2D8E",
+        "opacity": 0.80,
+        "label": "Lower Electrode",
+    },
+    "material_bed": {
+        "color": "#DAA520",
+        "opacity": 0.75,
+        "label": "Material Bed",
+    },
+    "infeed_hopper": {
+        "color": "#A0A0A8",
+        "opacity": 0.82,
+        "label": "Infeed Hopper",
+    },
+    "infeed_tunnel": {
+        "color": "#808088",
+        "opacity": 0.55,
+        "label": "Feed Tunnel",
+    },
 }
 
 
+# ─────────────────────────────────────────────────────────────────────
+#  Assembly-level parameters
+# ─────────────────────────────────────────────────────────────────────
+
 @dataclass
 class GP15MachineParams:
-    """Complete GP-15 machine geometry parameters."""
+    """Top-level GP-15 machine assembly parameters.
 
-    # Machine envelope
-    machine_length_m: float = 5.5
-    machine_width_m: float = 2.9
-    machine_height_m: float = 2.2
+    These control both the physical configuration and the parameter
+    chain that flows from conveyor → oven → electrodes.
 
-    # Oven parameters
-    oven_length_m: float = 1.5
-    belt_width_m: float = 0.8
+    Attributes:
+        conveyor_params: Conveyor belt / frame geometry.
+        oven_params: Oven chamber geometry (derived from conveyor if None).
+        electrode_params: Electrode geometry (derived from oven if None).
+        electrode_gap_m: Current electrode gap [m] (20–300 mm).
+        bed_depth_m: Material bed depth on belt [m].
+    """
 
-    # Heights
-    conveyor_height_m: float = 0.85  # Belt surface from floor
+    conveyor_params: ConveyorBeltParams = field(default_factory=ConveyorBeltParams)
+    oven_params: Optional[OvenChamberParams] = None
+    electrode_params: Optional[ElectrodeParams] = None
+    hopper_params: Optional[InfeedHopperParams] = None
 
-    # Current electrode gap (for visualization)
-    electrode_gap_m: float = 0.08
+    # ── Adjustable operating parameters ───────────────────────────
+    electrode_gap_m: float = 0.200       # [m] default 200 mm
+    bed_depth_m: float = 0.040           # [m] default 40 mm
 
-    # Material bed depth
-    bed_depth_m: float = 0.05
+    def __post_init__(self) -> None:
+        """Derive oven, electrode, and hopper params from conveyor if not given."""
+        if self.oven_params is None:
+            self.oven_params = OvenChamberParams.from_conveyor(self.conveyor_params)
 
-    # Extraction duct
-    extraction_duct_diameter_m: float = 0.25
+        if self.electrode_params is None:
+            self.electrode_params = ElectrodeParams.from_oven(self.oven_params)
 
-    # Resolution
-    resolution: int = 32
+        if self.hopper_params is None:
+            self.hopper_params = InfeedHopperParams.from_oven(self.oven_params)
 
-    @classmethod
-    def from_machine(
-        cls,
-        config: MachineConfig,
-        material: Optional[MaterialProperties] = None,
-        electrode_gap_mm: float = 80.0,
-    ) -> "GP15MachineParams":
-        """Create params from MachineConfig and MaterialProperties."""
-        mat = material or MaterialProperties()
-        return cls(
-            machine_length_m=config.machine_length_m,
-            machine_width_m=config.machine_width_m,
-            machine_height_m=config.machine_height_m,
-            oven_length_m=config.oven_length_m,
-            belt_width_m=config.belt_width_m,
-            electrode_gap_m=electrode_gap_mm / 1000.0,
-            bed_depth_m=mat.bed_depth_m,
-            extraction_duct_diameter_m=config.extraction_duct_diameter_m,
-        )
+    # ── Validation ────────────────────────────────────────────────
 
+    def validate(self) -> List[str]:
+        """Check parameter consistency.  Returns list of warnings."""
+        warnings: List[str] = []
+        belt_stack = self.conveyor_params.belt_stack_thickness_m
+
+        if self.bed_depth_m + belt_stack > self.electrode_gap_m:
+            warnings.append(
+                f"Bed ({self.bed_depth_m * 1000:.0f} mm) + belt stack "
+                f"({belt_stack * 1000:.1f} mm) exceeds electrode gap "
+                f"({self.electrode_gap_m * 1000:.0f} mm)."
+            )
+
+        if self.electrode_gap_m < 0.020:
+            warnings.append(
+                f"Electrode gap {self.electrode_gap_m * 1000:.0f} mm is below "
+                f"the minimum 20 mm."
+            )
+
+        if self.electrode_gap_m > 0.300:
+            warnings.append(
+                f"Electrode gap {self.electrode_gap_m * 1000:.0f} mm exceeds "
+                f"the maximum 300 mm."
+            )
+
+        return warnings
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Machine assembly
+# ─────────────────────────────────────────────────────────────────────
 
 class GP15MachineAssembly:
-    """
-    Complete GP-15 RF dielectric heating machine assembly.
+    """Complete GP-15 RF dielectric heating machine assembly.
 
-    Combines all components with proper positioning based on
-    the machine layout shown in the engineering guide and
-    machine photographs.
+    Assembles the conveyor belt, oven chamber, and electrode system
+    into a single machine with consistent coordinate alignment.
 
-    Layout (Y-up, X = conveyor direction):
+    The conveyor is the base reference.  The oven sits on the conveyor
+    frame.  The electrodes sit inside the oven in the RF zone.
 
-        Generator ─── Infeed Tunnel ─── Oven ─── Outfeed Tunnel
-                            │           │
-                         Hopper    EMU (on top)
-                                        │
-                                   Electrodes
-                                        │
-                                     Belt
-                                        │
-                                   HMI Panel (side)
-                                        │
-                               Housing + Legs
+    Typical usage::
 
-    Example::
-
-        assembly = GP15MachineAssembly.from_config(config, material)
-        meshes = assembly.get_component_meshes()
-        combined = assembly.build_mesh()
+        machine = GP15MachineAssembly()
+        meshes = machine.generate_all_meshes()
+        for name, (verts, tris, meta) in meshes.items():
+            ...
     """
 
-    def __init__(
+    def __init__(self, params: Optional[GP15MachineParams] = None) -> None:
+        self.params = params or GP15MachineParams()
+
+        # ── Instantiate component geometries ──────────────────────
+        self._conveyor = ConveyorBeltGeometry(self.params.conveyor_params)
+        self._oven = OvenChamberGeometry(self.params.oven_params)
+        self._electrodes = ElectrodeGeometry(self.params.electrode_params)
+        self._hopper = InfeedHopperGeometry(self.params.hopper_params)
+
+        # ── Cached combined mesh ──────────────────────────────────
+        self._combined_verts: Optional[np.ndarray] = None
+        self._combined_tris: Optional[np.ndarray] = None
+
+    # ─── Component accessors ──────────────────────────────────────
+
+    @property
+    def conveyor(self) -> ConveyorBeltGeometry:
+        """Access the conveyor belt geometry component."""
+        return self._conveyor
+
+    @property
+    def oven(self) -> OvenChamberGeometry:
+        """Access the oven chamber geometry component."""
+        return self._oven
+
+    @property
+    def electrodes(self) -> ElectrodeGeometry:
+        """Access the electrode geometry component."""
+        return self._electrodes
+
+    @property
+    def hopper(self) -> InfeedHopperGeometry:
+        """Access the infeed hopper geometry component."""
+        return self._hopper
+
+    # ─── Mesh generation (individual) ─────────────────────────────
+
+    def generate_conveyor_frame_mesh(
         self,
-        params: Optional[GP15MachineParams] = None,
-        config: Optional[MachineConfig] = None,
-        material: Optional[MaterialProperties] = None,
-        device: str = "cpu",
-    ):
-        """Initialize GP-15 machine assembly.
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the conveyor structural frame mesh."""
+        return self._conveyor.generate_bed_structure_mesh()
 
-        Args:
-            params: GP15MachineParams (overrides config/material if provided)
-            config: MachineConfig for component creation
-            material: MaterialProperties for bed depth
-            device: Device for mesh operations
+    def generate_rollers_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the roller system (head, tail, tension, etc.)."""
+        return self._conveyor.generate_wheels_mesh()
+
+    def generate_belt_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the continuous belt loop.
+
+        Note: generate_rollers_mesh() must be called first (or will be
+        called internally) so the roller layout is available for the
+        belt path computation.
         """
-        if params is None:
-            config = config or MachineConfig()
-            material = material or MaterialProperties()
-            params = GP15MachineParams.from_machine(config, material)
+        return self._conveyor.generate_belt_mesh()
 
-        self.params = params
-        self.config = config or MachineConfig()
-        self.material = material or MaterialProperties()
-        self.device = device
+    def generate_oven_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the oven chamber walls, doors, and openings."""
+        return self._oven.generate_mesh()
 
-        # Component instances
-        self.generator: Optional[GeneratorGeometry] = None
-        self.oven: Optional[OvenChamberGeometry] = None
-        self.conveyor: Optional[ConveyorBeltGeometry] = None
-        self.electrodes: Optional[ElectrodeGeometry] = None
-        self.infeed_tunnel: Optional[TunnelGeometry] = None
-        self.outfeed_tunnel: Optional[TunnelGeometry] = None
-        self.hopper: Optional[InfeedHopperGeometry] = None
-        self.emu: Optional[EMUGeometry] = None
-        self.hmi: Optional[HMIPanelGeometry] = None
-        self.housing: Optional[HousingGeometry] = None
-        self.legs: Optional[SupportLegsGeometry] = None
-
-        # Component positions (world coordinates)
-        self._positions: Dict[str, Tuple[float, float, float]] = {}
-
-        # Mesh cache
-        self._combined_vertices: Optional[np.ndarray] = None
-        self._combined_indices: Optional[np.ndarray] = None
-        self._mesh_built: bool = False
-
-        # Create and position components
-        self._create_components()
-        self._calculate_positions()
-
-    @classmethod
-    def from_config(
-        cls,
-        config: MachineConfig,
-        material: Optional[MaterialProperties] = None,
-        electrode_gap_mm: float = 80.0,
-        device: str = "cpu",
-    ) -> "GP15MachineAssembly":
-        """Create assembly from MachineConfig.
+    def generate_upper_electrode_mesh(
+        self,
+        electrode_gap_m: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the upper electrode assembly at the current gap.
 
         Args:
-            config: Machine configuration
-            material: Material properties
-            electrode_gap_mm: Current electrode gap for visualization
-            device: Compute device
+            electrode_gap_m: Override gap (m).  Uses ``params.electrode_gap_m``
+                             if *None*.
+        """
+        gap = electrode_gap_m if electrode_gap_m is not None else self.params.electrode_gap_m
+        return self._electrodes.generate_upper_mesh(gap)
+
+    def generate_lower_electrode_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the lower electrode trays, PET supports, chokes."""
+        return self._electrodes.generate_lower_mesh()
+
+    def generate_hopper_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the infeed hopper bin."""
+        return self._hopper.generate_hopper_mesh()
+
+    def generate_infeed_tunnel_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the feed tunnel fitted to oven infeed wall."""
+        return self._hopper.generate_tunnel_mesh()
+
+    def generate_material_bed_mesh(
+        self,
+        bed_depth_m: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the material bed (product on belt inside RF zone).
+
+        The bed is positioned on top of the belt stack within the
+        RF zone, matching the oven/electrode coordinate system.
+
+        Args:
+            bed_depth_m: Override depth (m).  Uses ``params.bed_depth_m``
+                         if *None*.
+        """
+        depth = bed_depth_m if bed_depth_m is not None else self.params.bed_depth_m
+        return self._conveyor.generate_bed_mesh(depth)
+
+    # ─── Mesh generation (all at once) ────────────────────────────
+
+    def generate_all_meshes(
+        self,
+        include_bed: bool = True,
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray, dict]]:
+        """Generate all component meshes in the correct order.
+
+        The order matters: rollers must be generated before the belt
+        so the belt path can reference the roller layout.
+
+        Args:
+            include_bed: Whether to include the material bed mesh.
 
         Returns:
-            GP15MachineAssembly instance
+            Ordered dict of ``{name: (vertices, triangles, metadata)}``.
         """
-        params = GP15MachineParams.from_machine(config, material, electrode_gap_mm)
-        return cls(params, config, material, device)
+        meshes: Dict[str, Tuple[np.ndarray, np.ndarray, dict]] = {}
 
-    def _create_components(self):
-        """Create all machine components.
+        # 1. Conveyor frame (base structure)
+        meshes["conveyor_frame"] = self.generate_conveyor_frame_mesh()
 
-        Layout reference (from GP-15 machine images):
-        - Generator: Large cabinet at BACK of machine (high Z side)
-        - Housing: Main oven enclosure, FRONT of machine (low Z side)
-        - Tunnels: Extend beyond housing at infeed/outfeed
-        - Conveyor: Runs full length through tunnels
-        - HMI: On side of generator cabinet
-        - EMU: Extraction on top of oven housing
+        # 2. Rollers (must come before belt — belt reads roller layout)
+        meshes["rollers"] = self.generate_rollers_mesh()
+
+        # 3. Belt loop (continuous PTFE loop around rollers)
+        meshes["belt"] = self.generate_belt_mesh()
+
+        # 4. Oven chamber (sits on conveyor frame)
+        meshes["oven_chamber"] = self.generate_oven_mesh()
+
+        # 5. Upper electrode (movable, inside oven)
+        meshes["upper_electrode"] = self.generate_upper_electrode_mesh()
+
+        # 6. Lower electrode (fixed, on deck plate)
+        meshes["lower_electrode"] = self.generate_lower_electrode_mesh()
+
+        # 7. Material bed (on belt, inside RF zone)
+        if include_bed:
+            meshes["material_bed"] = self.generate_material_bed_mesh()
+
+        # 8. Infeed hopper (before oven, feeds belt)
+        meshes["infeed_hopper"] = self.generate_hopper_mesh()
+
+        # 9. Feed tunnel (connects hopper zone to oven infeed wall)
+        meshes["infeed_tunnel"] = self.generate_infeed_tunnel_mesh()
+
+        return meshes
+
+    def generate_combined_mesh(
+        self,
+        include_bed: bool = True,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Concatenate all component meshes into a single mesh.
+
+        Useful for bounding-box calculations or simple renders.
+
+        Returns:
+            (combined_vertices, combined_triangles, summary_metadata)
         """
+        all_meshes = self.generate_all_meshes(include_bed=include_bed)
+
+        parts = [(v, t) for v, t, _meta in all_meshes.values()]
+        verts, tris = concat_meshes(parts)
+
+        meta = {
+            "type": "gp15_machine_assembly",
+            "component_count": len(all_meshes),
+            "total_vertices": int(verts.shape[0]),
+            "total_triangles": int(tris.shape[0]),
+            "electrode_gap_m": self.params.electrode_gap_m,
+            "bed_depth_m": self.params.bed_depth_m,
+            "components": list(all_meshes.keys()),
+        }
+        return verts, tris, meta
+
+    # ─── Derived information ──────────────────────────────────────
+
+    def get_assembly_info(self) -> dict:
+        """Return a summary of the machine assembly configuration."""
         p = self.params
+        cp = p.conveyor_params
+        op = p.oven_params
+        ep = p.electrode_params
 
-        # Key layout dimensions
-        generator_width = 1.2   # Z dimension of generator
-        generator_depth = 0.8   # X dimension
-        generator_height = 1.9  # Y dimension (floor to top)
-        housing_width = p.machine_width_m - generator_width  # Front portion
-        tunnel_length = 0.6
+        assert op is not None
+        assert ep is not None
 
-        # Oven chamber (inside housing)
-        self.oven = OvenChamberGeometry(OvenChamberParams(
-            length=p.oven_length_m,
-            width=p.belt_width_m,
-            height=p.electrode_gap_m,
-            extraction_port_diameter=p.extraction_duct_diameter_m,
-        ))
-
-        # Conveyor belt - extends through tunnels
-        conveyor_length = p.oven_length_m + 2 * tunnel_length + 0.4  # Extra for visibility
-        self.conveyor = ConveyorBeltGeometry(ConveyorBeltParams(
-            belt_width_m=p.belt_width_m,
-            belt_length_m=conveyor_length,
-        ))
-
-        # Electrodes (inside oven)
-        self.electrodes = ElectrodeGeometry(ElectrodeParams(
-            plate_width_m=p.belt_width_m,
-            plate_length_m=p.oven_length_m / 2,
-        ))
-
-        # Tunnels (attenuation tunnels extending from housing)
-        self.infeed_tunnel = TunnelGeometry(TunnelParams(
-            tunnel_type="infeed",
-            length=tunnel_length,
-            width=p.belt_width_m + 0.1,
-            height=0.35,
-        ))
-        self.outfeed_tunnel = TunnelGeometry(TunnelParams(
-            tunnel_type="outfeed",
-            length=tunnel_length,
-            width=p.belt_width_m + 0.1,
-            height=0.35,
-        ))
-
-        # Generator - LARGE cabinet at back (high Z)
-        self.generator = GeneratorGeometry(GeneratorParams(
-            width=generator_width,     # Z: full width at back
-            height=generator_height,   # Y: floor to near ceiling
-            depth=generator_depth,     # X: depth into machine
-        ))
-
-        # Hopper (before infeed tunnel)
-        self.hopper = InfeedHopperGeometry(InfeedHopperParams(
-            depth=p.belt_width_m * 0.6,
-            sizing_plate_gap=p.bed_depth_m,
-        ))
-
-        # EMU (on top of housing over oven)
-        self.emu = EMUGeometry(EMUParams(
-            duct_diameter=p.extraction_duct_diameter_m,
-        ))
-
-        # HMI Panel (on generator cabinet)
-        self.hmi = HMIPanelGeometry(HMIPanelParams(
-            width=0.5,
-            height=0.6,
-            depth=0.12,
-        ))
-
-        # Housing - main oven enclosure (FRONT portion, not full width)
-        self.housing = HousingGeometry(HousingParams(
-            length=p.oven_length_m + 0.4,  # Slightly larger than oven
-            width=housing_width,            # Front portion only
-            height=p.machine_height_m - 0.2,
-            base_height=p.conveyor_height_m,
-        ))
-
-        # Support legs
-        self.legs = SupportLegsGeometry(SupportLegsParams(
-            machine_length=p.machine_length_m,
-            machine_width=p.machine_width_m,
-            leg_height=p.conveyor_height_m,
-        ))
-
-    def _calculate_positions(self):
-        """Calculate world positions for all components.
-
-        Machine coordinate system (Y-up, matching reference images):
-        - X: Conveyor direction (infeed → outfeed)
-        - Y: Vertical (floor → ceiling)
-        - Z: Across belt width (front → back)
-
-        Layout from reference image:
-        - Generator at BACK (high Z), spanning most of X
-        - Housing/Oven at FRONT (low Z)
-        - Tunnels extend beyond housing on infeed/outfeed sides
-        - Conveyor runs full length
-        """
-        p = self.params
-
-        # Key dimensions
-        L = p.machine_length_m       # 5.5m total X
-        W = p.machine_width_m        # 2.9m total Z
-        H = p.machine_height_m       # 2.2m total Y
-        oven_L = p.oven_length_m     # 1.5m oven length
-        belt_W = p.belt_width_m      # 0.8m belt width
-        y_base = p.conveyor_height_m # 0.85m conveyor height
-
-        # Generator dimensions (large cabinet at back)
-        gen_width = 1.2    # Z
-        gen_depth = 0.8    # X
-        gen_height = 1.9   # Y
-
-        # Housing dimensions (front portion)
-        housing_width = W - gen_width  # Z: front portion
-        housing_length = oven_L + 0.4  # X: slightly larger than oven
-
-        # Tunnel length
-        tunnel_L = 0.6
-
-        # Calculate key X positions
-        # Tunnels extend beyond housing, oven centered
-        housing_x0 = (L - housing_length) / 2.0
-        oven_x0 = (L - oven_L) / 2.0
-        infeed_tunnel_x0 = housing_x0 - tunnel_L
-        outfeed_tunnel_x1 = housing_x0 + housing_length
-
-        # Calculate key Z positions (belt centered in front portion)
-        housing_z0 = 0.0  # Housing at front
-        belt_z0 = (housing_width - belt_W) / 2.0
-        gen_z0 = W - gen_width  # Generator at back
-
-        # Store positions
-        self._positions = {
-            # Core processing components (inside housing)
-            'oven': (oven_x0, y_base, belt_z0),
-            'belt': (infeed_tunnel_x0 - 0.2, y_base, belt_z0),  # Conveyor extends through tunnels
-            'material_bed': (oven_x0, y_base, belt_z0),  # Material only in oven
-            'lower_electrode': (oven_x0, y_base, belt_z0),
-            'upper_electrode': (oven_x0, y_base, belt_z0),
-
-            # Tunnels (extend beyond housing)
-            'infeed_tunnel': (infeed_tunnel_x0, y_base, belt_z0 - 0.05),
-            'outfeed_tunnel': (outfeed_tunnel_x1, y_base, belt_z0 - 0.05),
-
-            # Generator (BACK of machine, floor level)
-            'generator': ((L - gen_depth) / 2.0, 0.0, gen_z0),
-
-            # Hopper (before infeed tunnel, above belt)
-            'infeed_hopper': (infeed_tunnel_x0 - 0.6, y_base + 0.2, belt_z0 + belt_W * 0.2),
-
-            # EMU (on top of housing, centered over oven)
-            'emu': (oven_x0 + oven_L / 2, H - 0.3, belt_z0 + belt_W / 2),
-
-            # HMI panel (on generator cabinet side, facing front)
-            'control_panel': ((L - gen_depth) / 2.0 + gen_depth + 0.02, y_base, gen_z0 + 0.3),
-
-            # Housing (FRONT portion of machine)
-            'housing': (housing_x0, 0.0, housing_z0),
-
-            # Legs (at machine corners)
-            'legs': (0.0, 0.0, 0.0),
+        return {
+            "machine": "GP-15 RF Dielectric Heating Machine",
+            "frame_length_m": cp.frame_length_m,
+            "frame_width_m": cp.frame_width_m,
+            "belt_width_m": cp.belt_width_m,
+            "belt_stack_thickness_m": cp.belt_stack_thickness_m,
+            "oven_length_m": op.oven_length_m,
+            "oven_width_m": op.oven_width_m,
+            "oven_height_m": op.oven_height_m,
+            "oven_x_start_m": op.oven_x_start_m,
+            "oven_x_end_m": op.oven_x_end_m,
+            "rf_zone_length_m": op.rf_zone_length_m,
+            "rf_zone_x_start_m": op.rf_zone_x_start,
+            "rf_zone_x_end_m": op.rf_zone_x_end,
+            "electrode_gap_m": p.electrode_gap_m,
+            "bed_depth_m": p.bed_depth_m,
+            "air_gap_m": max(
+                0.0,
+                p.electrode_gap_m - p.bed_depth_m - cp.belt_stack_thickness_m,
+            ),
         }
 
-    def build_mesh(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Build combined mesh for all components.
+    def set_electrode_gap(self, gap_m: float) -> None:
+        """Update the electrode gap and invalidate upper electrode cache.
 
-        Returns:
-            Tuple of (vertices, indices) for complete machine
+        This allows animating the gap without rebuilding the entire machine.
+
+        Args:
+            gap_m: New electrode gap in metres (0.020 – 0.300).
         """
-        if self._mesh_built:
-            return self._combined_vertices, self._combined_indices
+        self.params.electrode_gap_m = gap_m
+        # Invalidate upper electrode cache
+        self._electrodes._upper_verts = None
+        self._electrodes._upper_tris = None
+        # Invalidate combined cache
+        self._combined_verts = None
+        self._combined_tris = None
 
-        parts = []
+    def set_bed_depth(self, depth_m: float) -> None:
+        """Update the material bed depth.
 
-        for name, (component, position) in self._get_component_list():
-            verts, tris, _ = component.generate_mesh()
-            verts, tris = translate_mesh(verts, tris, *position)
-            parts.append((verts, tris))
-
-        self._combined_vertices, self._combined_indices = concat_meshes(parts)
-        self._mesh_built = True
-
-        return self._combined_vertices, self._combined_indices
-
-    def get_component_meshes(self) -> Dict[str, Dict[str, Any]]:
-        """Get individual component meshes with colors.
-
-        Returns:
-            Dict mapping component names to mesh dicts:
-            {
-                'oven': {'vertices': ..., 'triangles': ..., 'color': '#...', 'opacity': ...},
-                'belt': {...},
-                ...
-            }
+        Args:
+            depth_m: New bed depth in metres.
         """
-        meshes = {}
-        p = self.params
+        self.params.bed_depth_m = depth_m
+        self._combined_verts = None
+        self._combined_tris = None
 
-        for name, (component, position) in self._get_component_list():
-            # Get mesh with special handling for electrode gap
-            if name == 'upper_electrode':
-                verts, tris, _ = self.electrodes.generate_upper_mesh(p.electrode_gap_m)
-            elif name == 'material_bed':
-                verts, tris, _ = self.conveyor.generate_bed_mesh(p.bed_depth_m)
-            else:
-                verts, tris, _ = component.generate_mesh()
 
-            # Translate to world position
-            verts, tris = translate_mesh(verts, tris, *position)
-
-            # Get color
-            color, opacity = COMPONENT_COLORS.get(name, ('#808080', 0.5))
-
-            meshes[name] = {
-                'vertices': verts,
-                'triangles': tris,
-                'color': color,
-                'opacity': opacity,
-            }
-
-        return meshes
-
-    def to_legacy_format(self) -> Dict[str, Dict[str, Any]]:
-        """Return mesh dict compatible with original build_gp15_machine_meshes().
-
-        Maintains backward compatibility with existing visualization code.
-        """
-        meshes = self.get_component_meshes()
-
-        # Combine tunnels into single entry for legacy format
-        if 'infeed_tunnel' in meshes and 'outfeed_tunnel' in meshes:
-            infeed = meshes.pop('infeed_tunnel')
-            outfeed = meshes.pop('outfeed_tunnel')
-
-            # Combine tunnel meshes
-            combined_verts = np.vstack([infeed['vertices'], outfeed['vertices']])
-            combined_tris = np.vstack([
-                infeed['triangles'],
-                outfeed['triangles'] + len(infeed['vertices'])
-            ])
-
-            meshes['tunnels'] = {
-                'vertices': combined_verts.astype(np.float32),
-                'triangles': combined_tris.astype(np.int32),
-                'color': infeed['color'],
-                'opacity': infeed['opacity'],
-            }
-
-        # Rename for legacy compatibility
-        if 'emu' in meshes:
-            meshes['emu_duct'] = meshes.pop('emu')
-
-        return meshes
-
-    def _get_component_list(self) -> List[Tuple[str, Tuple[Any, Tuple[float, float, float]]]]:
-        """Return list of (name, (component, position)) tuples."""
-        p = self.params
-
-        components = [
-            ('oven', (self.oven, self._positions['oven'])),
-            ('belt', (self.conveyor, self._positions['belt'])),
-            ('material_bed', (self.conveyor, self._positions['material_bed'])),
-            ('lower_electrode', (self.electrodes, self._positions['lower_electrode'])),
-            ('upper_electrode', (self.electrodes, self._positions['upper_electrode'])),
-            ('infeed_tunnel', (self.infeed_tunnel, self._positions['infeed_tunnel'])),
-            ('outfeed_tunnel', (self.outfeed_tunnel, self._positions['outfeed_tunnel'])),
-            ('generator', (self.generator, self._positions['generator'])),
-            ('infeed_hopper', (self.hopper, self._positions['infeed_hopper'])),
-            ('emu', (self.emu, self._positions['emu'])),
-            ('control_panel', (self.hmi, self._positions['control_panel'])),
-            ('housing', (self.housing, self._positions['housing'])),
-            ('legs', (self.legs, self._positions['legs'])),
-        ]
-
-        # Filter out None components
-        return [(name, data) for name, data in components if data[0] is not None]
-
-    def get_oven_geometry(self) -> OvenChamberGeometry:
-        """Access oven for simulation (backward compat)."""
-        return self.oven
-
-    def get_electrode_geometry(self) -> ElectrodeGeometry:
-        """Access electrodes for field corrections."""
-        return self.electrodes
-
-    def get_conveyor_geometry(self) -> ConveyorBeltGeometry:
-        """Access conveyor for advection."""
-        return self.conveyor
-
-    def get_bounds(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Get axis-aligned bounding box."""
-        p = self.params
-        return (
-            np.array([0, 0, 0]),
-            np.array([p.machine_length_m, p.machine_height_m, p.machine_width_m])
-        )
-
-    def print_summary(self):
-        """Print assembly summary."""
-        p = self.params
-        print("=" * 60)
-        print("GP-15 MACHINE ASSEMBLY")
-        print("=" * 60)
-        print(f"Machine envelope: {p.machine_length_m:.1f} x {p.machine_width_m:.1f} x {p.machine_height_m:.1f} m")
-        print(f"Oven length: {p.oven_length_m:.1f} m")
-        print(f"Belt width: {p.belt_width_m:.1f} m")
-        print(f"Electrode gap: {p.electrode_gap_m * 1000:.0f} mm")
-        print(f"Bed depth: {p.bed_depth_m * 1000:.0f} mm")
-        print()
-        print("Components:")
-        for name, (comp, pos) in self._get_component_list():
-            print(f"  - {name}: at ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})")
-        print("=" * 60)
-
+# ─────────────────────────────────────────────────────────────────────
+#  Factory functions
+# ─────────────────────────────────────────────────────────────────────
 
 def create_gp15_machine(
-    config: Optional[MachineConfig] = None,
-    material: Optional[MaterialProperties] = None,
-    electrode_gap_mm: float = 80.0,
-    device: str = "cpu",
+    electrode_gap_m: float = 0.200,
+    bed_depth_m: float = 0.040,
+    conveyor_params: Optional[ConveyorBeltParams] = None,
+    oven_params: Optional[OvenChamberParams] = None,
+    electrode_params: Optional[ElectrodeParams] = None,
+    hopper_params: Optional[InfeedHopperParams] = None,
 ) -> GP15MachineAssembly:
     """Create a standard GP-15 machine assembly.
 
-    Factory function for creating GP15MachineAssembly with standard
-    configuration.
+    This is the recommended entry point.  It builds the full parameter
+    chain (conveyor → oven → electrodes) and returns a ready-to-use
+    assembly.
 
     Args:
-        config: Machine configuration
-        material: Material properties
-        electrode_gap_mm: Current electrode gap for visualization
-        device: Compute device
+        electrode_gap_m: Electrode gap (default 200 mm).
+        bed_depth_m: Material bed depth on belt (default 40 mm).
+        conveyor_params: Override conveyor parameters.
+        oven_params: Override oven parameters (derived from conveyor
+                     if *None*).
+        electrode_params: Override electrode parameters (derived from
+                         oven if *None*).
 
     Returns:
-        GP15MachineAssembly instance
+        Configured GP15MachineAssembly.
+
+    Example::
+
+        machine = create_gp15_machine(electrode_gap_m=0.150, bed_depth_m=0.06)
+        meshes = machine.generate_all_meshes()
     """
-    config = config or MachineConfig()
-    material = material or MaterialProperties()
-    params = GP15MachineParams.from_machine(config, material, electrode_gap_mm)
-    return GP15MachineAssembly(params, config, material, device)
+    conv = conveyor_params or ConveyorBeltParams()
+
+    params = GP15MachineParams(
+        conveyor_params=conv,
+        oven_params=oven_params,
+        electrode_params=electrode_params,
+        hopper_params=hopper_params,
+        electrode_gap_m=electrode_gap_m,
+        bed_depth_m=bed_depth_m,
+    )
+
+    warnings = params.validate()
+    for w in warnings:
+        import warnings as _warnings
+        _warnings.warn(w, stacklevel=2)
+
+    return GP15MachineAssembly(params)
 
 
 def build_gp15_machine_meshes(
-    config: Optional[MachineConfig] = None,
-    material: Optional[MaterialProperties] = None,
-    electrode_gap_mm: float = 80.0,
-) -> Dict[str, Dict[str, Any]]:
-    """Build GP-15 machine meshes (backward compatible).
+    electrode_gap_m: float = 0.200,
+    bed_depth_m: float = 0.040,
+    include_bed: bool = True,
+) -> Dict[str, Tuple[np.ndarray, np.ndarray, dict]]:
+    """One-shot helper: create machine and return all meshes.
 
-    DEPRECATED: Use GP15MachineAssembly or create_gp15_machine() instead.
-
-    This function maintains backward compatibility with existing code
-    that uses the original build_gp15_machine_meshes() function.
+    Convenience wrapper around ``create_gp15_machine`` +
+    ``generate_all_meshes`` for scripts that just want the mesh data.
 
     Args:
-        config: Machine configuration
-        material: Material properties
-        electrode_gap_mm: Current electrode gap [mm]
+        electrode_gap_m: Electrode gap (default 200 mm).
+        bed_depth_m: Material bed depth on belt (default 40 mm).
+        include_bed: Whether to include the material bed mesh.
 
     Returns:
-        Dict mapping component names to mesh dicts
+        Dict of ``{component_name: (vertices, triangles, metadata)}``.
+
+    Example::
+
+        meshes = build_gp15_machine_meshes(electrode_gap_m=0.150)
+        for name, (v, t, meta) in meshes.items():
+            print(f"{name}: {v.shape[0]:,} verts, {t.shape[0]:,} tris")
     """
-    assembly = create_gp15_machine(config, material, electrode_gap_mm)
-    return assembly.to_legacy_format()
+    machine = create_gp15_machine(
+        electrode_gap_m=electrode_gap_m,
+        bed_depth_m=bed_depth_m,
+    )
+    return machine.generate_all_meshes(include_bed=include_bed)

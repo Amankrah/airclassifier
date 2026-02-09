@@ -21,11 +21,11 @@ if TYPE_CHECKING:
 
 @dataclass
 class TunnelParams:
-    """Attenuation tunnel parameters."""
+    """Attenuation tunnel parameters based on GP-15 measurements."""
 
-    length: float = 0.6         # [m] Tunnel length (X direction)
-    height: float = 0.35        # [m] Internal height (Y direction)
-    width: float = 0.9          # [m] Internal width (Z direction, > belt width)
+    length: float = 0.245       # [m] Tunnel length (X direction) - 24.5cm
+    height: float = 0.258       # [m] Internal height (Y direction) - 25.8cm
+    width: float = 0.76         # [m] Internal width (Z direction) - 76cm
     wall_thickness: float = 0.02
 
     tunnel_type: Literal["infeed", "outfeed"] = "infeed"
