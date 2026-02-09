@@ -51,7 +51,7 @@ pip install -e .
 ## Quick Start
 
 Remove-Item -Path "C:\Users\Windows\AppData\Local\NVIDIA\warp\Cache\1.11.0" -Recurse -Force -ErrorAction SilentlyContinue
-python examples/run_classification_flow.py --blower-rpm 250 --bypass-ratio 0.967 --full-system --material yellow_pea
+python examples/run_classification_flow.py --blower-rpm 50 --bypass-ratio 0.967 --full-system --material yellow_pea
 
 ```python
 import warp as wp
