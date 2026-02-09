@@ -918,39 +918,40 @@ class MainWindow(QMainWindow):
     def _build_pretreatment_meshes(self, p: Dict[str, Any]):
         """Build the complete GP-15 RF machine geometry and add to viewport.
 
-        Uses the machine geometry builder which creates: housing, legs,
-        attenuation tunnels, upper/lower electrodes with frame and lead
-        screws, conveyor belt, material bed, infeed hopper, EMU duct,
-        and control panel.
+        Uses the assembly module which creates all components: conveyor
+        frame, rollers, belt loop, oven chamber, upper/lower electrodes,
+        infeed hopper, feed/outfeed tunnels, collection bin, EMU housing,
+        RF generator, and RF feed conduit.
         """
         try:
-            from ..pretreatment.geometry.machine import build_gp15_machine_meshes
-            from ..pretreatment.config import MachineConfig, MaterialProperties
-            from ..pretreatment.materials.presets import get_material_preset
-
-            config = MachineConfig()
-            material = get_material_preset(p.get("pt_material", "yellow_pea"))
-            material.initial_moisture_wb = p.get("pt_inlet_moisture", 0.10)
-            material.bed_depth_m = p.get("pt_bed_depth_mm", 40) / 1000.0
-
-            meshes = build_gp15_machine_meshes(
-                config=config,
-                material=material,
-                electrode_gap_mm=p.get("pt_electrode_gap_mm", 80),
+            from ..pretreatment.geometry.assembly.machine import (
+                create_gp15_machine,
+                COMPONENT_COLORS,
             )
 
+            gap_mm = p.get("pt_electrode_gap_mm", 200)
+            bed_mm = p.get("pt_bed_depth_mm", 40)
+
+            machine = create_gp15_machine(
+                electrode_gap_m=gap_mm / 1000.0,
+                bed_depth_m=bed_mm / 1000.0,
+            )
+            meshes = machine.generate_all_meshes()
+
             total_verts = 0
-            for name, mesh in meshes.items():
-                v = mesh["vertices"]
-                t = mesh["triangles"]
+            for name, (verts, tris, meta) in meshes.items():
+                style = COMPONENT_COLORS.get(name, {})
+                color = style.get("color", "#888888")
+                opacity = style.get("opacity", 0.8)
+
                 self.viewport_3d.add_mesh(
                     component_id=f"gp15_{name}",
-                    vertices=v,
-                    faces=t,
-                    color=mesh["color"],
-                    opacity=mesh["opacity"],
+                    vertices=verts,
+                    faces=tris,
+                    color=color,
+                    opacity=opacity,
                 )
-                total_verts += len(v)
+                total_verts += len(verts)
 
             self.sim_control._log(
                 f"GP-15 machine built: {len(meshes)} components, "

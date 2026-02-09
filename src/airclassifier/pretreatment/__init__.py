@@ -42,6 +42,10 @@ Modules:
 """
 
 from .config import MachineConfig, MaterialProperties, Recipe
+from .kernels.transport import (
+    ConveyorDriveController,
+    ConveyorDriveState,
+)
 from .physics.coupling import (
     CoupledSimulator,
     OutletState,
@@ -61,6 +65,9 @@ __all__ = [
     "PretreatmentResult",
     "StepState",
     "OutletState",
+    # Conveyor drive
+    "ConveyorDriveController",
+    "ConveyorDriveState",
     # Internal (advanced)
     "CoupledSimulator",
 ]

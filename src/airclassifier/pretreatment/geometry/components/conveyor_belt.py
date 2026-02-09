@@ -80,6 +80,18 @@ class ConveyorBeltParams:
 
     roller_resolution: int = 20             # Cylinder mesh segments
 
+    # ── Drive system (Manual Conveyor Detail C, pp. 97-99) ────────────
+    # Motor → Gearbox → Drive sprocket → Chain 16B-1 → Driven sprocket
+    driven_sprocket_radius_m: float = 0.075  # [m]  ~150 mm dia (on head roller shaft)
+    drive_sprocket_radius_m: float = 0.038   # [m]  ~76 mm dia (on gearbox output)
+    tension_sprocket_radius_m: float = 0.022 # [m]  ~44 mm dia (chain tensioner)
+    drive_shaft_radius_m: float = 0.015      # [m]  drive shaft
+    motor_radius_m: float = 0.068            # [m]  motor body radius (IEC 80 frame)
+    motor_length_m: float = 0.20             # [m]  motor body length
+    gearbox_size_m: float = 0.16             # [m]  gearbox face (square)
+    gearbox_depth_m: float = 0.14            # [m]  gearbox depth (Z, outward)
+    encoder_ppr: int = 500                   # pulses per revolution (speed feedback)
+
     # ── End geometry ─────────────────────────────────────────────────
     # Nose plates at infeed/outfeed where belt wraps around head/tail
     nose_length_m: float = 0.050          # [m]  Minimal nose for roller clearance
@@ -547,9 +559,256 @@ class ConveyorBeltGeometry:
                 )
                 parts.append((cv, ct))
 
+        # ── 7. Drive system (outfeed end, right side) ────────────
+        # From manual Conveyor Detail C (pp. 97-99):
+        #   Motor (0.75 kW) → Gearbox → Drive sprocket
+        #   → Roller chain (16B-1) → Driven sprockets (on head roller)
+        #   + Tensioning sprocket on the slack side
+        #   + Encoder (500 PPR) on opposite end of head roller
+        #
+        # The motor/gearbox assembly is mounted BELOW the head
+        # roller on the Z+ side of the frame, suspended from the
+        # upper side rail by a mounting bracket.  The roller chain
+        # runs vertically in the X-Y plane between the drive and
+        # driven sprockets.
+        #
+        #   Side view (X-Y at z ≈ W+0.02):
+        #
+        #       ○ driven sprocket (on head roller shaft)
+        #       │ │
+        #       │ │  ← roller chain (tight + slack sides)
+        #      ◎│ │     ← tensioning sprocket (pushes slack side)
+        #       │ │
+        #       ○ drive sprocket (on gearbox output)
+        #      ┌───┐
+        #      │ GB │ ← gearbox
+        #      └─┬─┘
+        #        ◉   ← motor (cylinder, shaft along Z)
+
+        rs_ = p.rail_section_m    # shorthand for rail section
+        shaft_r = p.drive_shaft_radius_m
+
+        # ---- Sprocket Z plane (just outside the frame) ----
+        sprocket_z = W + 0.020    # centre of sprocket plane
+        sprocket_w = 0.012        # sprocket face width
+
+        # ---- Head roller shaft extension (through bearing to sprocket) ----
+        shaft_z_start = head_z0 + head_bw     # end of roller (≈ 0.97)
+        shaft_z_end = sprocket_z + sprocket_w  # past driven sprocket
+        parts.append(cylinder_mesh(
+            (x_head, head_cy, shaft_z_start),
+            shaft_r, shaft_z_end - shaft_z_start,
+            resolution=8, axis="z",
+        ))
+
+        # ---- Bearing blocks (UCFC 209) on head roller shaft ----
+        brg_size = 0.065          # bearing housing face
+        brg_depth = 0.028         # bearing housing depth (Z)
+        # Left bearing (infeed-side of roller)
+        parts.append(box_mesh(
+            x_head - brg_size / 2, head_cy - brg_size / 2,
+            head_z0 - 0.005,
+            brg_size, brg_size, brg_depth,
+        ))
+        # Right bearing (outfeed-side of roller, near frame rail)
+        parts.append(box_mesh(
+            x_head - brg_size / 2, head_cy - brg_size / 2,
+            head_z0 + head_bw - brg_depth + 0.005,
+            brg_size, brg_size, brg_depth,
+        ))
+
+        # ---- Driven sprocket (large, on head roller shaft) ----
+        driven_r = p.driven_sprocket_radius_m
+        dv, dt = cylinder_mesh(
+            (x_head, head_cy, sprocket_z - sprocket_w / 2),
+            driven_r, sprocket_w,
+            resolution=res, axis="z",
+        )
+        parts.append((dv, dt))
+
+        # ---- Motor / gearbox position ----
+        # Mounted below the head roller, hanging from the upper
+        # side rail via a bracket.  At the outfeed end the lower
+        # frame is open (shortened for the collection bin), so the
+        # motor/gearbox hangs in the open zone.
+        gb_cx = x_head             # aligned with head roller
+        gb_cy = -0.46              # gearbox centre Y (below frame)
+        gearbox_w = p.gearbox_size_m   # gearbox face width (X)
+        gearbox_h = p.gearbox_size_m   # gearbox face height (Y)
+        gearbox_d = p.gearbox_depth_m  # gearbox depth (Z, outward)
+
+        # Gearbox housing
+        parts.append(box_mesh(
+            gb_cx - gearbox_w / 2, gb_cy - gearbox_h / 2, W,
+            gearbox_w, gearbox_h, gearbox_d,
+        ))
+
+        # Motor body (0.75 kW, IEC 80 frame, shaft along Z)
+        motor_r = p.motor_radius_m
+        motor_len = p.motor_length_m
+        motor_z0 = W + gearbox_d  # starts after gearbox
+        mv, mt = cylinder_mesh(
+            (gb_cx, gb_cy, motor_z0),
+            motor_r, motor_len,
+            resolution=res, axis="z",
+        )
+        parts.append((mv, mt))
+
+        # Motor terminal box (junction box on top of motor)
+        parts.append(box_mesh(
+            gb_cx - 0.035, gb_cy + motor_r,
+            motor_z0 + motor_len * 0.3,
+            0.07, 0.05, 0.09,
+        ))
+
+        # ---- Gearbox output shaft + drive sprocket ----
+        # Output shaft extends from gearbox face to sprocket plane
+        parts.append(cylinder_mesh(
+            (gb_cx, gb_cy, W),
+            shaft_r, sprocket_z + sprocket_w / 2 - W,
+            resolution=8, axis="z",
+        ))
+
+        # Drive sprocket (small, on gearbox output)
+        drive_r = p.drive_sprocket_radius_m
+        dv2, dt2 = cylinder_mesh(
+            (gb_cx, gb_cy, sprocket_z - sprocket_w / 2),
+            drive_r, sprocket_w,
+            resolution=res, axis="z",
+        )
+        parts.append((dv2, dt2))
+
+        # ---- Roller chain 16B-1 (wraps around both sprockets) ────
+        # The chain forms a closed loop in the X-Y plane at the
+        # sprocket Z position.  It wraps over the top of the driven
+        # sprocket (arc), runs straight down on the tight side (X+),
+        # wraps under the drive sprocket (arc), and runs straight
+        # up on the slack side (X-).
+        #
+        #   View from Z+ :
+        #         ╭───○───╮   driven sprocket (top, larger)
+        #         │       │
+        #   slack │       │ tight (carries load)
+        #         │       │
+        #         ╰───○───╯   drive sprocket (bottom, smaller)
+        #
+        import math as _m
+
+        chain_hw = 0.008           # chain half-width along Z
+        n_arc = 12                 # arc resolution per sprocket
+
+        # Build 2-D chain centre-line path (X-Y)
+        chain_path: list = []
+
+        # 1. Top arc: driven sprocket, CCW from 0 to π
+        #    (right → top → left, wrapping OVER the sprocket)
+        for i in range(n_arc + 1):
+            a = i * _m.pi / n_arc
+            chain_path.append((
+                gb_cx + driven_r * _m.cos(a),
+                head_cy + driven_r * _m.sin(a),
+            ))
+
+        # 2. Slack side: straight down from driven-left to drive-left
+        chain_path.append((gb_cx - drive_r, gb_cy))
+
+        # 3. Bottom arc: drive sprocket, CCW from π to 2π
+        #    (left → bottom → right, wrapping UNDER the sprocket)
+        for i in range(n_arc + 1):
+            a = _m.pi + i * _m.pi / n_arc
+            chain_path.append((
+                gb_cx + drive_r * _m.cos(a),
+                gb_cy + drive_r * _m.sin(a),
+            ))
+
+        # 4. Tight side: straight up from drive-right to driven-right
+        chain_path.append((gb_cx + driven_r, head_cy))
+
+        # Close the loop
+        chain_path.append(chain_path[0])
+
+        # Extrude into a ribbon mesh (visible from both sides)
+        n_cp = len(chain_path)
+        chain_verts = np.zeros((n_cp * 2, 3), dtype=np.float32)
+        for i, (cx_c, cy_c) in enumerate(chain_path):
+            chain_verts[i * 2 + 0] = [cx_c, cy_c, sprocket_z - chain_hw]
+            chain_verts[i * 2 + 1] = [cx_c, cy_c, sprocket_z + chain_hw]
+
+        chain_tris_list = []
+        for i in range(n_cp - 1):
+            a_ = i * 2
+            b_ = (i + 1) * 2
+            # Front face
+            chain_tris_list.append([a_, b_, b_ + 1])
+            chain_tris_list.append([a_, b_ + 1, a_ + 1])
+            # Back face
+            chain_tris_list.append([a_ + 1, b_ + 1, b_])
+            chain_tris_list.append([a_ + 1, b_, a_])
+
+        chain_tris = np.array(chain_tris_list, dtype=np.int32)
+        parts.append((chain_verts, chain_tris))
+
+        # ---- Tensioning sprocket (pushes slack side outward) ----
+        # NOTE: use tspr_ prefix to avoid shadowing the tension ROLLER
+        # variables (tension_x, tension_cy) used in the roller layout.
+        tspr_r = p.tension_sprocket_radius_m
+        tspr_y = (head_cy + gb_cy) / 2      # midway on chain
+        tspr_x = gb_cx - driven_r - tspr_r   # pushes slack side outward
+        tv, tt = cylinder_mesh(
+            (tspr_x, tspr_y, sprocket_z - chain_hw),
+            tspr_r, chain_hw * 2 + 0.004,
+            resolution=12, axis="z",
+        )
+        parts.append((tv, tt))
+        # Tensioner pivot arm (spring-loaded bracket to frame)
+        parts.append(box_mesh(
+            tspr_x - 0.008, tspr_y - 0.008,
+            W - rs_,
+            0.016, 0.016, sprocket_z - W + rs_ + chain_hw * 2,
+        ))
+
+        # ---- Motor mounting bracket ----
+        # Vertical plate hanging from upper side rail down to gearbox.
+        # At this X position only the upper rail exists (lower frame
+        # was shortened for the collection bin).
+        bracket_t = 0.006
+        bracket_top_y = -rs_       # bottom of upper side rail
+        bracket_bot_y = gb_cy - gearbox_h / 2
+        parts.append(box_mesh(
+            gb_cx - gearbox_w / 2 - 0.005, bracket_bot_y,
+            W - rs_,
+            gearbox_w + 0.01, bracket_t,
+            rs_,
+        ))
+        # Vertical side plates (left and right of gearbox)
+        for x_off in [gb_cx - gearbox_w / 2, gb_cx + gearbox_w / 2 - bracket_t]:
+            parts.append(box_mesh(
+                x_off, bracket_bot_y,
+                W - rs_,
+                bracket_t, bracket_top_y - bracket_bot_y,
+                rs_,
+            ))
+
+        # ---- Encoder (500 PPR, opposite end of head roller) ----
+        # Small cylinder on the Z- side (left) of the head roller
+        # for belt speed feedback to the PLC.
+        encoder_r = 0.022
+        encoder_len = 0.035
+        ev, et = cylinder_mesh(
+            (x_head, head_cy, head_z0 - 0.02 - encoder_len),
+            encoder_r, encoder_len,
+            resolution=10, axis="z",
+        )
+        parts.append((ev, et))
+        # Encoder mounting plate
+        parts.append(box_mesh(
+            x_head - 0.03, head_cy - 0.03, head_z0 - 0.02,
+            0.06, 0.06, 0.005,
+        ))
+
         self._wheels_vertices, self._wheels_triangles = concat_meshes(parts)
 
-        # Store roller positions for the belt path generator
+        # Store roller positions for the belt path generator and animation
         self._roller_layout = {
             "head": (x_head, head_cy, p.head_roller_radius_m, "top"),
             "tail": (x_tail, tail_cy, p.tail_roller_radius_m, "top"),
@@ -571,6 +830,9 @@ class ConveyorBeltGeometry:
                 for xc in (np.linspace(carry_start, carry_end, n_carry)
                            if n_carry > 0 else [])
             ] if n_carry > 0 else [],
+            # Drive system (for animation)
+            "driven_sprocket": (x_head, head_cy, driven_r, "sprocket"),
+            "drive_sprocket": (gb_cx, gb_cy, drive_r, "sprocket"),
         }
 
         return (
@@ -697,13 +959,16 @@ class ConveyorBeltGeometry:
         top_rollers.extend(rl.get("carrying_idlers", []))
         top_rollers.append(rl["head"])
 
-        # Return path runs right → left (head end back to tail end)
+        # Return path runs right → left (head end back to tail end).
+        # Return rollers are stored in ascending X order by linspace,
+        # but the belt travels in DESCENDING X on the return run, so
+        # we reverse them to follow the correct path.
         return_rollers: list = []
-        return_rollers.extend(rl.get("return_rollers_after", []))
+        return_rollers.extend(reversed(rl.get("return_rollers_after", [])))
         return_rollers.append(rl["tracker_2"])
         return_rollers.append(rl["tracker_1"])
         return_rollers.append(rl["tension"])
-        return_rollers.extend(rl.get("return_rollers_before", []))
+        return_rollers.extend(reversed(rl.get("return_rollers_before", [])))
 
         loop = top_rollers + return_rollers
         N = len(loop)

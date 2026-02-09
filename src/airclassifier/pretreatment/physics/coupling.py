@@ -44,7 +44,11 @@ from ..kernels.dielectric_heating import (
     compute_power_density_np,
     update_material_properties_np,
 )
-from ..kernels.transport import advect_material_np, advect_material_tvd_np
+from ..kernels.transport import (
+    advect_material_np,
+    advect_material_tvd_np,
+    ConveyorDriveController,
+)
 from .rf_field import RFFieldSolver
 from .thermal import ThermalSolver
 from .moisture import MoistureSolver
@@ -168,6 +172,14 @@ class CoupledSimulator:
         # Phase 3: controller
         self.controller = GP15Controller(machine)
 
+        # Conveyor drive controller (motor, VFD ramp, kinematics)
+        # Uses ConveyorBeltParams as single source of truth for all
+        # roller radii, sprocket radii, and encoder PPR.
+        from ..geometry.components.conveyor_belt import ConveyorBeltParams
+        self.conveyor = ConveyorDriveController.from_params(
+            ConveyorBeltParams(), machine,
+        )
+
         # Phase 3: electrode correction fields
         self._perf_correction: np.ndarray | None = None
         self._fringe_correction: np.ndarray | None = None
@@ -252,6 +264,10 @@ class CoupledSimulator:
         CFL (thermal):  dt < factor * dmin^2 * rho_cp_min / k_max
         Courant (advection):  dt < 0.9 * dx / v_belt
 
+        Uses the *actual* belt speed from the conveyor drive controller
+        (which includes VFD ramp), falling back to the recipe setpoint
+        for the initial estimate before the conveyor has started.
+
         Returns:
             The minimum of the two constraints [s].
         """
@@ -263,8 +279,11 @@ class CoupledSimulator:
         rho_cp_min = float(np.min(self.rho_cp[mat_mask])) if mat_mask.any() else 1e5
         dt_cfl = self.thermal.get_cfl_dt(k_max, rho_cp_min)
 
-        # Courant from advection
-        v_belt = recipe.belt_speed_m_per_min / 60.0  # m/s
+        # Courant from advection — use actual belt speed (with ramp)
+        v_belt = self.conveyor.state.belt_speed_m_per_s
+        if v_belt <= 0:
+            # Conveyor not yet started: use recipe setpoint for estimate
+            v_belt = recipe.belt_speed_m_per_min / 60.0
         if v_belt > 0:
             dt_courant = 0.9 * dx / v_belt
         else:
@@ -287,7 +306,12 @@ class CoupledSimulator:
         mat_mask = (self.cell_is_material == 1)
 
         # ── 1. ADVECT ─────────────────────────────────────────────────
-        v_belt = recipe.belt_speed_m_per_min / 60.0  # m/s
+        # Update conveyor drive: set speed from recipe, step kinematics
+        self.conveyor.set_speed(recipe.belt_speed_m_per_min)
+        if not self.conveyor.state.running:
+            self.conveyor.start()
+        self.conveyor.step(dt)
+        v_belt = self.conveyor.state.belt_speed_m_per_s  # actual (ramped)
         if v_belt > 0 and v_belt * dt / dx < 1.0:
             _advect = advect_material_tvd_np if self._use_tvd else advect_material_np
             self.thermal.T = _advect(
@@ -457,7 +481,7 @@ class CoupledSimulator:
             rf_power_kw=P_rf_kw,
             anode_current_a=I_a,
             electrode_gap_mm=recipe.electrode_gap_mm,
-            belt_speed_m_per_min=recipe.belt_speed_m_per_min,
+            belt_speed_m_per_min=self.conveyor.state.belt_speed_m_per_min,
         )
         self._history.append(state)
         return state
@@ -493,6 +517,9 @@ class CoupledSimulator:
             self.controller.load_recipe(recipe)
             self.controller.start()
 
+        # Start conveyor drive at recipe belt speed
+        self.conveyor.start(speed_m_per_min=recipe.belt_speed_m_per_min)
+
         t_end = self._time + duration_s
 
         while self._time < t_end - 1e-12:
@@ -508,8 +535,8 @@ class CoupledSimulator:
         M_final = self.moisture.M[mat_mask]
         T_final = self.thermal.T[mat_mask]
 
-        # Throughput estimate
-        belt_speed = recipe.belt_speed_m_per_min / 60.0
+        # Throughput estimate (use actual belt speed from conveyor drive)
+        belt_speed = self.conveyor.state.belt_speed_m_per_s
         bed_cross = self._material.bed_depth_m * self._machine.belt_width_m
         rho_bulk = self._material.bulk_density(self._material.initial_moisture_wb)
         throughput_kg_h = rho_bulk * bed_cross * belt_speed * 3600.0
@@ -567,8 +594,10 @@ class CoupledSimulator:
         else:
             moisture_cv = 0.0
 
-        # Throughput
-        v_belt = recipe.belt_speed_m_per_min / 60.0
+        # Throughput (use actual belt speed from conveyor drive)
+        v_belt = self.conveyor.state.belt_speed_m_per_s
+        if v_belt <= 0:
+            v_belt = recipe.belt_speed_m_per_min / 60.0  # fallback
         bed_cross = mat.bed_depth_m * machine.belt_width_m
         rho_bulk = mat.bulk_density(mat.initial_moisture_wb)
         throughput_kg_h = rho_bulk * bed_cross * v_belt * 3600.0
