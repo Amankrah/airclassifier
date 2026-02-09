@@ -531,20 +531,27 @@ class GP15MachineAssembly:
     ) -> Tuple[np.ndarray, np.ndarray, dict]:
         """Generate the collection bin at the outfeed end of the belt.
 
-        A simple open-top stainless steel container that sits on the
-        floor directly under the head roller.  Product falls off the
-        belt end and drops into the bin.  No legs — it rests on the
-        floor like any real collection bin.
+        A proportionate open-top stainless steel container that sits
+        directly on the floor beneath and past the head roller.  Product
+        rolls off the belt end and drops into the bin.  No legs — it
+        rests flat on the floor like any real industrial collection bin.
+
+        The bin's back wall extends slightly under the conveyor bed
+        frame (into the open-bottom zone where the lower horizontal
+        frame members have been shortened).  The back wall is taller
+        than the other three walls to catch material falling backward
+        off the head roller.
 
         Side view (X-Y)::
 
-            belt →→→ ↓ falls off head roller
-                     │
-                ┌────┼────┐  ← bin rim (near belt level)
-                │    ↓    │
-                │  product│
-                │         │
-                └─────────┘  ← bin bottom (on the floor)
+            upper frame ──────┐   belt →→→ ↓ falls off roller
+                              │        │
+                        ┌─────┤  ┌─────┼──────┐  ← back wall (taller)
+                        │under│  │     ↓      │
+                        │ bed │  │  product    │  ← front/side wall rim
+                        │     │  │             │
+                        │     │  │             │
+                        └─────┴──┴─────────────┘  ← floor (no legs)
         """
         from ..mesh_utils import box_mesh as _box
 
@@ -556,47 +563,67 @@ class GP15MachineAssembly:
         lh = cp.leg_height_m
         W = cp.frame_width_m
         belt_w = cp.belt_width_m
-        wt = 0.003  # sheet metal
+        wt = 0.003  # 3 mm sheet metal
 
         # Floor level
         floor_y = -(H + lh)
 
-        # Bin position: directly under the head roller
-        head_x = L - nose                       # head roller X
-        bin_width_z = belt_w + 0.06             # slightly wider than belt
-        bin_z0 = (W - bin_width_z) / 2          # centred on frame
-        bin_depth_x = 0.65                      # larger for more volume
-        bin_x0 = head_x - bin_depth_x * 0.25    # shifted toward +X, past roller end
-        bin_x1 = bin_x0 + bin_depth_x
+        # Head roller position (where material falls off)
+        head_x = L - nose
 
-        # Vertical: sits on the floor, 3/4 of floor-to-belt height
-        bin_bottom_y = floor_y                  # flat on the floor
-        bin_top_y = floor_y + abs(floor_y) * 0.65 
-        bin_h = bin_top_y - bin_bottom_y
+        # ── Bin dimensions (proportionate to machine) ─────────────
+        # Most of the bin sits past the head roller (X+ direction).
+        # A small portion extends under the bed to catch material
+        # as it drops off the roller.
+        bin_under_bed = 0.15                     # 15 cm extends under bed
+        bin_past_end = 0.40                      # 40 cm past head roller
+        bin_depth_x = bin_under_bed + bin_past_end   # ~55 cm total
+
+        bin_x0 = head_x - bin_under_bed          # back wall (oven side)
+        bin_x1 = head_x + bin_past_end           # front wall (past belt)
+
+        bin_width_z = belt_w + 0.06              # slightly wider than belt
+        bin_z0 = (W - bin_width_z) / 2           # centred on frame
+
+        # Height: practical floor-standing bin (~60% of floor-to-deck)
+        bin_height = abs(floor_y) * 0.60
+        bin_bottom_y = floor_y                   # flat on the floor
+        bin_top_y = floor_y + bin_height
+
+        # Back wall is taller to catch falling material
+        back_extra = 0.15                        # 15 cm above other walls
 
         parts = []
 
-        # ── 4 walls + bottom (simple open-top box on the floor) ──
-        # Back wall (toward oven)
+        # ── Walls ─────────────────────────────────────────────────
+        # Back wall (toward oven, partially under bed) — taller
         parts.append(_box(bin_x0, bin_bottom_y, bin_z0,
-                          wt, bin_h, bin_width_z))
+                          wt, bin_height + back_extra, bin_width_z))
         # Front wall (past belt end)
         parts.append(_box(bin_x1 - wt, bin_bottom_y, bin_z0,
-                          wt, bin_h, bin_width_z))
+                          wt, bin_height, bin_width_z))
         # Left wall
         parts.append(_box(bin_x0, bin_bottom_y, bin_z0,
-                          bin_depth_x, bin_h, wt))
+                          bin_depth_x, bin_height, wt))
         # Right wall
         parts.append(_box(bin_x0, bin_bottom_y, bin_z0 + bin_width_z - wt,
-                          bin_depth_x, bin_h, wt))
-        # Bottom (on the floor)
+                          bin_depth_x, bin_height, wt))
+        # Bottom (flat on the floor)
         parts.append(_box(bin_x0, bin_bottom_y, bin_z0,
                           bin_depth_x, wt, bin_width_z))
 
         # ── Top rim flange (folded edge for rigidity) ─────────────
+        # Rim around the three shorter walls (back wall is taller)
         rim = 0.015
-        parts.append(_box(bin_x0 - rim, bin_top_y, bin_z0 - rim,
-                          bin_depth_x + 2 * rim, rim, bin_width_z + 2 * rim))
+        # Front rim
+        parts.append(_box(bin_x1 - wt - rim, bin_top_y, bin_z0 - rim,
+                          rim + wt, rim, bin_width_z + 2 * rim))
+        # Left rim
+        parts.append(_box(bin_x0, bin_top_y, bin_z0 - rim,
+                          bin_depth_x, rim, rim + wt))
+        # Right rim
+        parts.append(_box(bin_x0, bin_top_y, bin_z0 + bin_width_z - wt,
+                          bin_depth_x, rim, rim + wt))
 
         verts, tris = concat_meshes(parts)
         return verts, tris, {
@@ -605,6 +632,11 @@ class GP15MachineAssembly:
             "bin_x_end": float(bin_x1),
             "bin_top_y": float(bin_top_y),
             "bin_bottom_y": float(bin_bottom_y),
+            "bin_height_m": float(bin_height),
+            "back_wall_top_y": float(bin_top_y + back_extra),
+            "under_bed_m": float(bin_under_bed),
+            "past_end_m": float(bin_past_end),
+            "floor_standing": True,
         }
 
     # ─── Mesh generation (all at once) ────────────────────────────

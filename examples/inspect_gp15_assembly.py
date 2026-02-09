@@ -334,10 +334,70 @@ def main():
         tally(ok)
 
     # ────────────────────────────────────────────────────────────
-    # 12. PORT-TO-PORT CONNECTIONS (OVEN ↔ EMU)
+    # 12. COLLECTION BIN POSITION AND DESIGN
     # ────────────────────────────────────────────────────────────
     print("\n" + "─" * 75)
-    print("12. PORT-TO-PORT CONNECTIONS (OVEN <-> EMU)")
+    print("12. COLLECTION BIN POSITION AND DESIGN")
+    print("─" * 75)
+    if "collection_bin" in bounds:
+        cb = bounds["collection_bin"]
+        cb_meta = meshes["collection_bin"][2]
+
+        # Check bin sits on the floor (no legs)
+        ok = abs(cb["y_min"] - floor_y) < 0.02
+        print(f"    Bin bottom Y = {cb['y_min']:.3f}  Floor Y = {floor_y:.3f}"
+              f"  diff = {abs(cb['y_min'] - floor_y) * 1000:.1f} mm"
+              f"  [{'OK — on floor' if ok else 'FAIL — not on floor'}]")
+        tally(ok)
+
+        # Check bin is under head roller
+        head_x = cp.frame_length_m - cp.nose_length_m
+        ok2 = cb["x_min"] < head_x < cb["x_max"]
+        print(f"    Head roller X = {head_x:.3f}"
+              f"  Bin X = [{cb['x_min']:.3f}..{cb['x_max']:.3f}]"
+              f"  [{'OK — under roller' if ok2 else 'FAIL'}]")
+        tally(ok2)
+
+        # Check bin extends past belt end
+        past = cb["x_max"] - head_x
+        ok3 = past > 0.10
+        print(f"    Bin extends {past * 100:.1f} cm past head roller"
+              f"  [{'OK' if ok3 else 'WARN — too short'}]")
+        tally(ok3)
+
+        # Check bin partially under bed frame
+        rail_end = cp.frame_length_m - cp.bin_clearance_m
+        under = rail_end - cb["x_min"]
+        ok4 = under > 0.02
+        print(f"    Bin extends {under * 100:.1f} cm under bed frame"
+              f"  (upper rail end X = {rail_end:.3f})"
+              f"  [{'OK — partially under bed' if ok4 else 'FAIL'}]")
+        tally(ok4)
+
+        # Bin height check
+        bin_h = cb["y_max"] - cb["y_min"]
+        pct = bin_h / abs(floor_y) * 100
+        print(f"    Bin height: {bin_h * 100:.1f} cm"
+              f"  ({pct:.0f}% of floor-to-deck)")
+        ok5 = 50 < pct < 85
+        print(f"    [{'OK — proportionate' if ok5 else 'WARN — check proportions'}]")
+        tally(ok5)
+
+        # Check lower frame doesn't interfere with bin
+        lower_rail_end = cp.frame_length_m - cp.lower_frame_clearance_m
+        gap = cb["x_min"] - lower_rail_end
+        ok6 = gap > -0.02  # bin can touch but not deeply intersect lower frame
+        print(f"    Lower frame end X = {lower_rail_end:.3f}"
+              f"  Bin start X = {cb['x_min']:.3f}"
+              f"  clearance = {gap * 100:.1f} cm"
+              f"  [{'OK' if ok6 else 'FAIL — bin intersects lower frame'}]")
+        tally(ok6)
+
+    # ────────────────────────────────────────────────────────────
+    # 13. PORT-TO-PORT CONNECTIONS (OVEN ↔ EMU)
+    # ────────────────────────────────────────────────────────────
+    print("\n" + "─" * 75)
+    print("13. PORT-TO-PORT CONNECTIONS (OVEN <-> EMU)")
     print("─" * 75)
 
     oven_ports = machine.oven.ports

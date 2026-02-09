@@ -86,9 +86,12 @@ class ConveyorBeltParams:
     nose_drop_m: float = 0.15             # [m]  Vertical drop at nose
 
     # ── Collection bin clearance (outfeed end) ───────────────────────
-    # Frame is shortened at the outfeed end to leave room for the
-    # collection bin that sits under and past the head roller.
-    bin_clearance_m: float = 0.30         # [m]  frame shortening at outfeed
+    # Upper frame (side rails) extends close to the head roller for
+    # bearing support.  Lower frame (horizontal rails, cross members)
+    # shortened further to create an open-bottom zone where the
+    # collection bin can slide partially under the bed.
+    bin_clearance_m: float = 0.10         # [m]  upper frame shortening at outfeed
+    lower_frame_clearance_m: float = 0.55 # [m]  lower frame shortening for bin
 
     # ── Position ─────────────────────────────────────────────────────
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -240,8 +243,10 @@ class ConveyorBeltGeometry:
         nose = p.nose_length_m
         nd = p.nose_drop_m
 
-        bin_clr = p.bin_clearance_m    # frame shortened at outfeed for collection bin
-        rail_end = L - bin_clr        # rails stop before the bin zone
+        bin_clr = p.bin_clearance_m    # upper frame clearance at outfeed
+        lower_clr = p.lower_frame_clearance_m  # lower frame clearance for bin
+        rail_end = L - bin_clr         # upper rails extend close to head roller
+        lower_rail_end = L - lower_clr # lower rails stop early for collection bin
 
         parts = []
 
@@ -251,28 +256,29 @@ class ConveyorBeltGeometry:
         # Right rail (z ≈ W - rs)
         parts.append(box_mesh(0, -rs, W - rs, rail_end, rs, rs))
 
-        # ── 2. Lower longitudinal rails (bottom of frame) ──
-        parts.append(box_mesh(nose, -H, 0, rail_end - nose, rs, rs))
-        parts.append(box_mesh(nose, -H, W - rs, rail_end - nose, rs, rs))
+        # ── 2. Lower longitudinal rails (shortened for collection bin) ──
+        parts.append(box_mesh(nose, -H, 0, lower_rail_end - nose, rs, rs))
+        parts.append(box_mesh(nose, -H, W - rs, lower_rail_end - nose, rs, rs))
 
         # ── 3. Cross members (transverse, connecting side rails) ──
         n_cross = 8
-        cross_xs = np.linspace(nose + 0.05, L - nose - 0.05, n_cross)
+        cross_xs = np.linspace(nose + 0.05, rail_end - 0.05, n_cross)
         for xc in cross_xs:
-            # Top cross member
+            # Top cross member (spans full upper rail length)
             parts.append(box_mesh(
                 float(xc) - cmw / 2, -rs, rs,
                 cmw, cmh, W - 2 * rs,
             ))
-            # Bottom cross member
-            parts.append(box_mesh(
-                float(xc) - cmw / 2, -H, rs,
-                cmw, cmh, W - 2 * rs,
-            ))
+            # Bottom cross member (only within lower frame zone)
+            if float(xc) < lower_rail_end - 0.05:
+                parts.append(box_mesh(
+                    float(xc) - cmw / 2, -H, rs,
+                    cmw, cmh, W - 2 * rs,
+                ))
 
         # ── 4. Vertical stiffeners (connect top and bottom rails) ──
         n_stiff = 6
-        stiff_xs = np.linspace(nose + 0.15, L - nose - 0.15, n_stiff)
+        stiff_xs = np.linspace(nose + 0.15, lower_rail_end - 0.05, n_stiff)
         for xc in stiff_xs:
             # Left side
             parts.append(box_mesh(
@@ -285,9 +291,26 @@ class ConveyorBeltGeometry:
                 cmw, H - rs, rs,
             ))
 
+        # ── 4b. Transition structure at lower frame end ──────────
+        # Closing stiffeners and cross member where the lower frame
+        # ends — structural endpoint before the collection bin zone.
+        # The upper frame continues past this point (cantilevered).
+        parts.append(box_mesh(
+            lower_rail_end - cmw, -H, 0,
+            cmw, H - rs, rs,
+        ))
+        parts.append(box_mesh(
+            lower_rail_end - cmw, -H, W - rs,
+            cmw, H - rs, rs,
+        ))
+        parts.append(box_mesh(
+            lower_rail_end - cmw, -H, rs,
+            cmw, cmh, W - 2 * rs,
+        ))
+
         # ── 5. Support legs (4 pairs — 8 total) ──
-        # Last pair moved inward to clear the collection bin zone
-        leg_xs = [nose + 0.15, L * 0.35, L * 0.65, rail_end - 0.10]
+        # Last pair positioned before the bin zone (at lower frame end)
+        leg_xs = [nose + 0.15, L * 0.35, L * 0.65, lower_rail_end - 0.10]
         for xl in leg_xs:
             # Left leg
             parts.append(box_mesh(
@@ -336,7 +359,10 @@ class ConveyorBeltGeometry:
         )
         parts.append((nose_verts_R, nose_tris.copy()))
 
-        # Outfeed nose removed — collection bin occupies this zone
+        # ── 6b. Outfeed end ──────────────────────────────────────
+        # No outfeed nose or cross-member — the collection bin
+        # occupies this zone.  The upper side rails extend close
+        # to the head roller and provide bearing support directly.
 
         # ── 7. Top deck plates (where lower electrode trays sit) ──
         # Thin sheet metal supporting the electrode trays across belt width
