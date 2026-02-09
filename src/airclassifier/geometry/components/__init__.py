@@ -241,6 +241,19 @@ from .tee_junction import (
     TeeJunction,
     TeeJunctionParams,
 )
+from .three_point_junction import (
+    ThreePointJunction,
+    ThreePointJunctionParams,
+)
+
+# Wheel Classifier (centrifugal)
+from .wheel_classifier import (
+    WheelClassifier,
+    WheelClassifierParams,
+    create_standard_wheel_classifier,
+    create_high_speed_wheel_classifier,
+    create_large_capacity_wheel_classifier,
+)
 
 __all__ = [
     # Cyclone Body
@@ -413,4 +426,12 @@ __all__ = [
     # Tee Junction
     "TeeJunction",
     "TeeJunctionParams",
+    "ThreePointJunction",
+    "ThreePointJunctionParams",
+    # Wheel Classifier
+    "WheelClassifier",
+    "WheelClassifierParams",
+    "create_standard_wheel_classifier",
+    "create_high_speed_wheel_classifier",
+    "create_large_capacity_wheel_classifier",
 ]

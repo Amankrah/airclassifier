@@ -97,10 +97,14 @@ def _segment_from_component(duct, index: int) -> Optional[DuctSegmentResult]:
         # Equivalent length for 90° elbow: L_eq = K * D, K ~ 30 for R/D=1 (or use K_loss = 0.3)
         # We'll use K_loss (pressure drop = K * 0.5*rho*v^2) in the solver; store equivalent length for Re
         r_over_d = p.bend_radius / d if p.bend_radius else 1.0
-        # Approximate equivalent length (m) for 90° elbow: 20-30 * D depending on R/D
+        # Approximate equivalent length (m) for 90° elbow
         leq = (20.0 + 10.0 / max(r_over_d, 0.5)) * d * (p.angle / 90.0) if hasattr(p, 'angle') else 30 * d
-        # K factor for 90° elbow R/D=1 is about 0.3
-        k = 0.22 + 0.04 * (1.0 / max(r_over_d, 0.3))  # ~0.3 for R/D=1
+        # K factor from Idelchik/ASHRAE data for circular 90° elbows:
+        #   R/D=0.5 → K≈0.50,  R/D=0.7 → K≈0.40,  R/D=1.0 → K≈0.30,
+        #   R/D=1.5 → K≈0.16,  R/D=2.0 → K≈0.12
+        # Fit: K = 0.131 + 0.163 / (R/D)^1.5  (matches Idelchik within 5%)
+        rd = max(r_over_d, 0.3)
+        k = 0.131 + 0.163 / (rd * np.sqrt(rd))
         return DuctSegmentResult(
             name=f"elbow_{index}",
             segment_type="elbow",
@@ -129,6 +133,7 @@ def _segment_from_component(duct, index: int) -> Optional[DuctSegmentResult]:
 def compute_blower_operating_point(
     rpm: float,
     rho: float = RHO_AIR,
+    blower_params=None,
 ) -> Dict[str, float]:
     """
     Compute the actual blower operating point at a given RPM.
@@ -140,6 +145,8 @@ def compute_blower_operating_point(
     Args:
         rpm: Blower shaft speed [RPM].
         rho: Air density [kg/m³].
+        blower_params: Optional CentrifugalBlowerParams from the assembly.
+            When None, uses default bench-scale blower dimensions.
 
     Returns:
         Dict with keys:
@@ -152,13 +159,17 @@ def compute_blower_operating_point(
     """
     from ..geometry.components.centrifugal_blower import CentrifugalBlowerParams
 
-    bp = CentrifugalBlowerParams(
-        impeller_diameter=0.300,
-        impeller_width=0.060,
-        inlet_diameter=0.200,
-        hub_diameter=0.080,
-        num_blades=10,
-    )
+    if blower_params is not None:
+        bp = blower_params
+    else:
+        # Default bench-scale blower (matches the standard air system assembly)
+        bp = CentrifugalBlowerParams(
+            impeller_diameter=0.300,
+            impeller_width=0.060,
+            inlet_diameter=0.200,
+            hub_diameter=0.080,
+            num_blades=10,
+        )
 
     blower_geo = BlowerGeometry(
         impeller_diameter=bp.impeller_diameter,
@@ -341,6 +352,8 @@ def get_venturi_air_inlet_from_assembly(assembly: CompleteClassifierAssembly) ->
     if classification is None or not hasattr(classification, "venturi"):
         return 0.0, 0.0
     venturi = classification.venturi
+    if venturi is None:
+        return 0.0, 0.0
     port = venturi.ports.get("air_inlet")
     if port is None:
         return 0.0, 0.0

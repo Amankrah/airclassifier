@@ -1,0 +1,20 @@
+# GUI Requirements for Air Classifier Designer
+# Install with: pip install -r requirements-gui.txt
+
+# Core GUI framework
+PySide6>=6.5.0
+
+# 3D visualization (optional but recommended)
+pyvista>=0.42.0
+pyvistaqt>=0.11.0
+vtk>=9.2.0
+
+# Plotting and analysis
+matplotlib>=3.7.0
+numpy>=1.24.0
+
+# GPU simulation (NVIDIA Warp)
+warp-lang>=1.0.0
+
+# Additional utilities
+scipy>=1.10.0

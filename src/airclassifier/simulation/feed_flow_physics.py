@@ -1054,13 +1054,13 @@ def physics_flow_kernel(
             # Add slight downward bias to help particles reach outlet
             accel = accel + wp.vec3(0.0, -2.0, 0.0)  # Extra gravity toward outlet
         
-        # Tube wall collision (radial in YZ) - with outlet opening at bottom
+        # Consistent outlet opening definition: lower portion of tube at +X end
+        # Particles exit through the bottom of the trough at the discharge end
+        outlet_opening_threshold = -feeder_radius * 0.2  # below 20% of center → in outlet
+        in_outlet_opening = in_outlet_region and (py < outlet_opening_threshold)
+
+        # Tube wall collision (radial in YZ) — exempt inlet/outlet openings
         if r_yz + particle_radius > feeder_radius:
-            # Check if particle is in the outlet opening (lower half at +X end)
-            # Use generous threshold to match transition: py < -0.3*radius means below center
-            # Exempt particles in outlet region that are below or near center
-            in_outlet_opening = in_outlet_region and (py < feeder_radius * 0.5)  # More generous
-            
             if not in_inlet_region and not in_outlet_opening:
                 if r_yz > 1.0e-6:
                     normal_y = -py / r_yz
@@ -1069,27 +1069,23 @@ def physics_flow_kernel(
                     push = r_yz + particle_radius - feeder_radius + 0.001
                     pos = pos + normal * push
                     vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
-        
-        # Inlet end cap - block only outside inlet opening
+
+        # Inlet end cap — block outside inlet opening (top half only)
         if px < -feeder_half_length + particle_radius:
             if py < 0.0 or r_yz > inlet_radius:
                 normal = wp.vec3(1.0, 0.0, 0.0)
                 pos = wp.vec3(feeder_center[0] - feeder_half_length + particle_radius + 0.001, pos[1], pos[2])
                 vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
-        
-        # Outlet end cap - only block upper half (lower half is outlet)
+
+        # Outlet end cap — block upper portion, allow outlet opening at bottom
         if px > feeder_half_length - particle_radius:
-            # Allow passage through outlet opening (lower 60% of tube)
-            in_outlet_hole = (py < feeder_radius * 0.2) and (wp.abs(pz) < outlet_radius)
-            if not in_outlet_hole:
+            if not in_outlet_opening:
                 normal = wp.vec3(-1.0, 0.0, 0.0)
                 pos = wp.vec3(feeder_center[0] + feeder_half_length - particle_radius - 0.001, pos[1], pos[2])
                 vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
-        
-        # TRANSITION: Exit through outlet at bottom of +X end
-        # Particle exits when at outlet end and in lower portion of tube
-        # More relaxed condition - if particle is in outlet region and below center, it exits
-        at_outlet = in_outlet_region and (py < -feeder_radius * 0.3)
+
+        # TRANSITION: Exit through outlet — consistent with outlet opening definition
+        at_outlet = in_outlet_opening
         
         if at_outlet:
             zone = 12  # Enter feeder->deagg transition
@@ -1156,8 +1152,10 @@ def physics_flow_kernel(
                 wp.vec3(1.0, 0.0, 0.0),  # X axis
                 deagg_omega
             )
-            # Coupling decreases toward center, capped for stability
-            coupling = 0.3 * (1.0 - r_yz / deagg_rotor_radius)
+            # Coupling increases with radius: pins/hammers are at the rotor
+            # periphery where v = omega * r is highest. Near the center axis
+            # there is a dead zone with minimal momentum transfer.
+            coupling = 0.3 * (r_yz / deagg_rotor_radius)
             tan_accel = (v_tan - vel) * coupling / dt
             # Clamp to prevent instability from high RPM
             tan_accel_mag = wp.length(tan_accel)
@@ -1200,12 +1198,23 @@ def physics_flow_kernel(
             pos = wp.vec3(pos[0], deagg_center[1] + deagg_radius * 0.75, pos[2])
             vel = reflect_velocity_inelastic(vel, normal, restitution, friction)
         
-        # TRANSITION: Exit through outlet at bottom
-        # Particle exits when it falls below the outlet Y position
+        # TRANSITION: Exit through outlet at bottom — ONLY through the outlet opening
+        # Particle must be at the outlet Y AND within the outlet opening radius
         if pos[1] < deagg_outlet_y:
-            zone = 4  # Enter exited zone
-            # Continue with downward velocity
-            vel = wp.vec3(0.0, wp.min(vel[1], -1.0), 0.0)
+            # Check if particle is within the outlet opening (bottom of housing)
+            if in_outlet_region or r_yz < deagg_radius * 0.5:
+                zone = 4  # Enter exited zone through outlet
+                # Preserve tangential velocity from rotor (particles carry
+                # rotational energy from the deagglomerator pins/hammers).
+                # Only ensure downward Y component for gravity exit;
+                # X/Z components carry the rotor's tangential momentum which
+                # helps break aggregates in the downstream feed chute.
+                exit_vy = wp.min(vel[1], -0.5)
+                vel = wp.vec3(vel[0] * 0.5, exit_vy, vel[2] * 0.5)
+            else:
+                # Particle hit the bottom wall outside the outlet opening — bounce back
+                pos = wp.vec3(pos[0], deagg_outlet_y + particle_radius + 0.001, pos[2])
+                vel = reflect_velocity_inelastic(vel, wp.vec3(0.0, 1.0, 0.0), restitution, friction)
     
     # =========================================================================
     # ZONE 4: EXITED
@@ -2080,12 +2089,25 @@ class FeedFlowPhysicsSimulator:
             # Initial downward velocity from gravity
             velocities[i, 1] = -np.sqrt(2 * GRAVITY * self.config.pour_height)
         
-        # Particle diameters
+        # Particle diameters (visual scale for display)
         visual_diameter = self.config.visual_particle_diameter
         diameters = np.full(n_pour, visual_diameter, dtype=np.float32)
         diameters *= (1.0 + rng.uniform(-0.1, 0.1, n_pour).astype(np.float32))
         
-        # Masses
+        # Store physical-scale diameters for transfer to classification.
+        # pour_particles uses a uniform visual diameter (no material PSD), so
+        # physical diameter defaults to 50 µm (typical flour median).
+        physical_dia = 50e-6  # [m] default physical flour diameter
+        if not hasattr(self, '_physical_diameters') or self._physical_diameters is None:
+            self._physical_diameters = np.full(self.config.num_particles, physical_dia, dtype=np.float64)
+        self._physical_diameters[start_idx:start_idx + n_pour] = physical_dia * (
+            diameters / visual_diameter  # preserve relative size variation
+        )
+        if not hasattr(self, '_visual_scale_factor') or self._visual_scale_factor <= 0:
+            self._visual_scale_factor = visual_diameter / physical_dia
+
+        # Masses (from visual diameters for simulation display; classification
+        # recomputes from physical diameters via get_particle_data_for_transfer)
         masses = self.config.particle_density * (PI / 6.0) * diameters ** 3
         
         # All particles start in hopper zone
@@ -2374,11 +2396,15 @@ class FeedFlowPhysicsSimulator:
         # Sample diameters from material distribution
         diameters = material.sample_diameters(n, seed=seed)
         
+        # Store PHYSICAL diameters (micron-scale) for transfer to classification
+        # The classification system uses real physics diameters, not visual scale
+        self._physical_diameters = np.array(diameters, dtype=np.float64).copy()
+        
         # Scale to visual particle size while preserving relative distribution
         # This maintains the size ratios between protein/starch/fiber
         median_sampled = np.median(diameters)
-        scale = self.config.visual_particle_diameter / median_sampled
-        diameters = (diameters * scale).astype(np.float32)
+        self._visual_scale_factor = self.config.visual_particle_diameter / median_sampled
+        diameters = (diameters * self._visual_scale_factor).astype(np.float32)
         
         # Clamp to valid range
         min_dia = self.config.visual_particle_diameter * 0.3
@@ -2457,10 +2483,13 @@ class FeedFlowPhysicsSimulator:
             seed=seed,
         )
         
+        # Store PHYSICAL diameters (micron-scale) for transfer to classification
+        self._physical_diameters = np.array(diameters, dtype=np.float64).copy()
+        
         # Scale diameters to visual particle size
         median_sampled = np.median(diameters)
-        scale = self.config.visual_particle_diameter / median_sampled
-        diameters = (diameters * scale).astype(np.float32)
+        self._visual_scale_factor = self.config.visual_particle_diameter / median_sampled
+        diameters = (diameters * self._visual_scale_factor).astype(np.float32)
         
         # Clamp to valid range
         min_dia = self.config.visual_particle_diameter * 0.3
@@ -2533,13 +2562,18 @@ class FeedFlowPhysicsSimulator:
         These particles are ready to be transferred to the classification
         system via the venturi solids inlet.
         
+        IMPORTANT: Returns PHYSICAL diameters (micron-scale), not the visual
+        display diameters used for hopper animation.  The classification
+        system uses real physics, so it needs real particle sizes.
+        
         Returns:
             Dictionary with:
                 - positions: Nx3 particle positions
                 - velocities: Nx3 particle velocities
-                - diameters: N particle diameters
+                - diameters: N physical particle diameters [m] (micron-scale)
+                - visual_diameters: N visual display diameters [m] (mm-scale)
                 - densities: N particle densities
-                - masses: N particle masses
+                - masses: N particle masses (computed from physical diameters)
                 - types: N particle types (0=protein, 1=starch, 2=fiber)
                 - count: Number of exited particles
         """
@@ -2551,8 +2585,19 @@ class FeedFlowPhysicsSimulator:
         
         positions = self.get_positions()[exited_mask]
         velocities = self.get_velocities()[exited_mask]
-        diameters = self.get_diameters()[exited_mask]
-        masses = self.state.masses.numpy()[:self.state.particles_active][exited_mask]
+        visual_diameters = self.get_diameters()[exited_mask]
+        
+        # Use stored physical diameters if available; otherwise inverse-scale
+        if hasattr(self, '_physical_diameters') and self._physical_diameters is not None:
+            # Map from full array indices to exited subset
+            full_indices = np.where(exited_mask)[0]
+            physical_diameters = self._physical_diameters[full_indices].astype(np.float64)
+        elif hasattr(self, '_visual_scale_factor') and self._visual_scale_factor > 0:
+            # Inverse-scale visual diameters back to physical
+            physical_diameters = (visual_diameters / self._visual_scale_factor).astype(np.float64)
+        else:
+            # No scaling info — assume diameters are already physical
+            physical_diameters = visual_diameters.astype(np.float64)
         
         # Get densities and types if available
         if hasattr(self, '_particle_densities'):
@@ -2565,10 +2610,15 @@ class FeedFlowPhysicsSimulator:
         else:
             types = np.zeros(len(positions), dtype=np.int32)
         
+        # Compute masses from PHYSICAL diameters and densities (not visual)
+        vols = (np.pi / 6.0) * physical_diameters**3
+        masses = densities.astype(np.float64) * vols
+        
         return {
             'positions': positions,
             'velocities': velocities,
-            'diameters': diameters,
+            'diameters': physical_diameters,        # PHYSICAL (micron-scale)
+            'visual_diameters': visual_diameters,   # Visual (mm-scale, for display only)
             'densities': densities,
             'masses': masses,
             'types': types,
@@ -2600,24 +2650,29 @@ class FeedFlowPhysicsSimulator:
     
     def get_particle_data_for_transfer(self) -> Dict[str, Any]:
         """
-        Get all particle data formatted for transfer to another simulation.
+        Get all particle data formatted for transfer to classification system.
         
-        This method prepares particle data for injection into the
-        classification system via ClassificationFlowPhysicsSimulator.
+        Prepares particle data for injection into the classification system
+        via ClassificationFlowPhysicsSimulator.inject_particles_from_feed().
+        
+        CRITICAL: Diameters are PHYSICAL (micron-scale, e.g. 50e-6 m), NOT the
+        visual display diameters (mm-scale) used for hopper animation. The
+        classification system uses real Stokes drag, terminal velocity, and
+        centrifugal forces that require actual particle sizes.
         
         Returns:
             Dictionary with particle arrays and metadata suitable for
-            injection into another particle system.
+            injection into the classification particle system.
         """
         exited = self.get_exited_particles()
         
         return {
-            # Particle data
+            # Particle data — diameters are PHYSICAL scale [m]
             'positions': exited['positions'],
             'velocities': exited['velocities'],
-            'diameters': exited['diameters'],
+            'diameters': exited['diameters'],          # Physical [m] (e.g. 50e-6)
             'densities': exited['densities'],
-            'masses': exited['masses'],
+            'masses': exited['masses'],                # From physical diameters
             'types': exited['types'],
             'count': exited['count'],
             # Connection info

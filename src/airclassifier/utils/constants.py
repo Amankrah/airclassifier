@@ -211,28 +211,39 @@ class FoodPowderComposition:
 class FoodPowderSizeRanges:
     """
     Typical particle size ranges for food powder fractions [m].
-    Based on air classification separation characteristics.
+
+    Based on air classification of legume flours:
+    - Schutyser & van der Goot, Trends Food Sci. Technol. 22 (2011) 154-164
+    - Pelgrom et al., Food Res. Int. 53 (2013) 232-239
+    - Assatory et al., Trends Food Sci. Technol. 86 (2019) 59-77
+    - Tyler et al., Cereal Chem. 58 (1981) 144-148
+
+    Protein bodies: 1-5 µm individual; after impact milling protein aggregates
+    (protein+adhered starch) are 5-25 µm.  Pea starch granules are oval/
+    reniform, 15-40 µm, d50 ~30 µm.  Hull fibre after milling is 50-500 µm.
     """
-    
+
     # Protein-rich fraction (finer particles)
+    # Individual protein bodies 1-5 µm, aggregates after milling 5-25 µm
     PROTEIN_D_MIN = 2.0e-6         # 2 μm
-    PROTEIN_D50 = 12.0e-6          # 12 μm median
-    PROTEIN_D_MAX = 35.0e-6        # 35 μm
-    
-    # Starch-rich fraction (coarser particles)  
-    STARCH_D_MIN = 15.0e-6         # 15 μm
-    STARCH_D50 = 45.0e-6           # 45 μm median
-    STARCH_D_MAX = 120.0e-6        # 120 μm
-    
-    # Fiber fraction (large irregular particles)
+    PROTEIN_D50 = 10.0e-6          # 10 μm median (Pelgrom: 8-15 µm)
+    PROTEIN_D_MAX = 30.0e-6        # 30 μm (aggregates + adhered starch)
+
+    # Starch-rich fraction (coarser particles)
+    # Pea starch granules are oval, 15-40 µm (Tyler 1981, Assatory 2019)
+    STARCH_D_MIN = 12.0e-6         # 12 μm (small granules)
+    STARCH_D50 = 30.0e-6           # 30 μm median (Tyler: ~30 µm)
+    STARCH_D_MAX = 80.0e-6         # 80 μm (large granules + clusters)
+
+    # Fiber fraction (large irregular hull/cell wall particles)
     FIBER_D_MIN = 50.0e-6          # 50 μm
     FIBER_D50 = 150.0e-6           # 150 μm median
     FIBER_D_MAX = 500.0e-6         # 500 μm
-    
-    # Whole flour (before classification)
-    WHOLE_D_MIN = 2.0e-6           # 2 μm
-    WHOLE_D50 = 50.0e-6            # 50 μm median
-    WHOLE_D_MAX = 500.0e-6         # 500 μm
+
+    # Whole flour (before classification — all fractions combined)
+    WHOLE_D_MIN = 2.0e-6           # 2 μm (smallest protein bodies)
+    WHOLE_D50 = 35.0e-6            # 35 μm median (Pelgrom: ~35 µm after impact milling)
+    WHOLE_D_MAX = 500.0e-6         # 500 μm (largest fiber)
 
 
 # =============================================================================
