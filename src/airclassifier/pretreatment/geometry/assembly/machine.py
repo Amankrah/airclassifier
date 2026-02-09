@@ -368,28 +368,32 @@ class GP15MachineAssembly:
     def generate_material_bed_mesh(
         self,
     ) -> Tuple[np.ndarray, np.ndarray, dict]:
-        """Generate the material bed with slanted infeed profile.
+        """Generate the material bed along the full belt carrying run.
+
+        The belt moves in +X, carrying material from the hopper at the
+        infeed end all the way to the head roller at the outfeed end,
+        where it drops into the collection bin.
 
         From the manual (Illustration 3 / sizing plate design):
         the material is deposited from the hopper with a wedge profile
         that starts tall at the hopper discharge and tapers to the
-        controlled bed depth set by the sizing gate.  Inside the oven
-        the bed is at uniform depth.
+        controlled bed depth set by the sizing gate.  Through the oven
+        and the remaining belt the bed is at uniform depth.
 
         Side view::
 
-            HOPPER
-              ╲
-               ╲ slant (from sizing gate)
-                ╲___________________________
-                |                           |
-                | uniform bed in oven       |  → outfeed
-                |___________________________|
-                ← slant →←── oven RF zone ──→
+            HOPPER                                      HEAD
+              ╲                                         ROLLER
+               ╲ slant (sizing gate)                      │
+                ╲________________________________________╲│ → drops
+                |               |              |       ╲ │   into
+                | oven RF zone  | outfeed belt | → +X   ↓     bin
+                |_______________|______________|___________
+                ← slant →←── oven ──→←── post-oven ──→
 
-        The bed spans from hopper discharge through the entire oven.
+        The bed spans from hopper discharge through the oven and along
+        the remaining belt to the head roller (outfeed).
         """
-        import math
         from ..mesh_utils import box_mesh as _box
 
         assert self.params.oven_params is not None
@@ -400,24 +404,27 @@ class GP15MachineAssembly:
         cp = self.params.conveyor_params
 
         y_base = cp.belt_stack_thickness_m     # top of belt stack
-        bed_depth = self.params.bed_depth_m    # uniform bed depth in oven
+        bed_depth = self.params.bed_depth_m    # uniform bed depth
         z0 = op.conveyor_belt_z0_m
         belt_w = op.rf_zone_width_m
 
-        # ── Slant section: hopper discharge → oven infeed ─────────
-        # Material piles up at the hopper and the sizing gate sets
-        # the max height.  It tapers down to the uniform bed depth
-        # over the distance from hopper to oven entry.
+        # ── Key X positions along the material flow (+X) ──────────
         x_hopper = hp.hopper_front_x           # where material lands
         x_oven_in = op.oven_x_start_m          # oven infeed wall
+        x_head = cp.frame_length_m - cp.nose_length_m  # head roller
+
         slant_len = x_oven_in - x_hopper
         slant_top_height = bed_depth * 2.5     # pile height at hopper
 
-        parts_v = []
-        parts_t = []
+        parts_v: List[np.ndarray] = []
+        parts_t: List[np.ndarray] = []
 
+        # ── 1. Slant section: hopper discharge → oven infeed ──────
+        # Material piles up at the hopper and the sizing gate sets
+        # the max height.  It tapers down to the uniform bed depth
+        # over the distance from hopper to oven entry.
         if slant_len > 0.01:
-            # Triangular wedge: tall at hopper, tapers to bed_depth at oven
+            # Trapezoidal wedge: tall at hopper, tapers to bed_depth at oven
             slant_verts = np.array([
                 # Left (z0)
                 [x_hopper, y_base, z0],                                # 0
@@ -447,9 +454,13 @@ class GP15MachineAssembly:
             parts_v.append(slant_verts)
             parts_t.append(slant_tris)
 
-        # ── Uniform section: inside the oven (RF zone) ────────────
+        # ── 2. Uniform section: oven infeed → head roller ─────────
+        # The belt carries the material at uniform depth through
+        # the oven (RF processing zone), out the outfeed tunnel,
+        # and along the remaining belt to the head roller where
+        # it drops into the collection bin.
         uniform_x0 = op.oven_x_start_m
-        uniform_x1 = op.oven_x_end_m
+        uniform_x1 = x_head                   # extends to head roller
         uniform_len = uniform_x1 - uniform_x0
         if uniform_len > 0.01:
             uv, ut = _box(
@@ -469,8 +480,9 @@ class GP15MachineAssembly:
             "profile": "slant_plus_uniform",
             "slant_x_start": x_hopper,
             "uniform_x_start": op.oven_x_start_m,
-            "uniform_x_end": op.oven_x_end_m,
+            "uniform_x_end": float(x_head),
             "bed_depth_m": bed_depth,
+            "flow_direction": "+X (hopper → head roller → collection bin)",
         }
 
     def generate_outfeed_tunnel_mesh(
@@ -672,25 +684,28 @@ class GP15MachineAssembly:
         # 6. Lower electrode (fixed, on deck plate)
         meshes["lower_electrode"] = self.generate_lower_electrode_mesh()
 
-        # 7. Infeed hopper (before oven, feeds belt)
+        # 7. Material bed (hopper → oven → head roller → drops into bin)
+        meshes["material_bed"] = self.generate_material_bed_mesh()
+
+        # 8. Infeed hopper (before oven, feeds belt)
         meshes["infeed_hopper"] = self.generate_hopper_mesh()
 
-        # 8. Feed tunnel (connects hopper zone to oven infeed wall)
+        # 9. Feed tunnel (connects hopper zone to oven infeed wall)
         meshes["infeed_tunnel"] = self.generate_infeed_tunnel_mesh()
 
-        # 9. Outfeed tunnel (oven exit wall, proportional to infeed)
+        # 10. Outfeed tunnel (oven exit wall, proportional to infeed)
         meshes["outfeed_tunnel"] = self.generate_outfeed_tunnel_mesh()
 
-        # 10. Collection bin (outfeed end, catches product)
+        # 11. Collection bin (outfeed end, catches product off head roller)
         meshes["collection_bin"] = self.generate_collection_bin_mesh()
 
-        # 11. EMU housing (heater/extraction, behind oven)
+        # 12. EMU housing (heater/extraction, behind oven)
         meshes["emu_housing"] = self.generate_emu_mesh()
 
-        # 11. RF Generator cabinet (behind oven, +Z side)
+        # 13. RF Generator cabinet (behind oven, +Z side)
         meshes["generator"] = self.generate_generator_mesh()
 
-        # 12. RF feed connection (generator → oven → electrode)
+        # 14. RF feed connection (generator → oven → electrode)
         meshes["rf_feed"] = self.generate_rf_feed_mesh()
 
         return meshes

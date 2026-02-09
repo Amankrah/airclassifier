@@ -94,7 +94,8 @@ class MoistureSolver:
         mat = (cell_is_material == 1)
 
         # Moisture diffusivity at each cell: D_eff = D0 * exp(-Ea / (R*T_K))
-        T_K = T + 273.15
+        # Guard: clamp T_K to prevent overflow in exp() for extreme temperatures
+        T_K = np.clip(T + 273.15, 200.0, 600.0)  # 200–600 K physical range
         D_eff = np.where(mat, D0 * np.exp(-Ea / (R_GAS * T_K)), 0.0).astype(np.float32)
 
         # --- Diffusion Laplacian (constant D per cell, central differences) ---
@@ -113,10 +114,10 @@ class MoistureSolver:
         self.evap_rate[1:-1, 1:-1, 1:-1] = m_evap
 
         # Forward Euler update (interior)
-        Mn[1:-1, 1:-1, 1:-1] = np.maximum(
-            M[1:-1, 1:-1, 1:-1] + dt * (lap_M - m_evap / rho_d),
-            0.0,
-        )
+        update = M[1:-1, 1:-1, 1:-1] + dt * (lap_M - m_evap / rho_d)
+        # Guard: replace NaN/Inf before clamping
+        np.nan_to_num(update, copy=False, nan=0.0, posinf=1.0, neginf=0.0)
+        Mn[1:-1, 1:-1, 1:-1] = np.clip(update, 0.0, 1.0)
 
         # Non-material cells hold zero moisture
         Mn[cell_is_material != 1] = 0.0

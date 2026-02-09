@@ -896,7 +896,14 @@ class ConveyorBeltGeometry:
         angle_start: float, angle_end: float,
         n_seg: int = 12,
     ) -> list:
-        """Sample *n_seg + 1* points on a **clockwise** arc."""
+        """Sample points on a **clockwise** arc.
+
+        When the arrival and departure angles coincide (sweep ≈ 0) the
+        belt just touches the roller at a single point — no wrap is
+        needed.  Previously this case defaulted to a full −2π circle,
+        causing return-run rollers at the same height / radius to sprout
+        a complete belt loop around each one.
+        """
         import math
         sweep = angle_end - angle_start
         while sweep > 0:
@@ -904,7 +911,9 @@ class ConveyorBeltGeometry:
         while sweep < -2 * math.pi:
             sweep += 2 * math.pi
         if abs(sweep) < 1e-6:
-            sweep = -2 * math.pi
+            # No significant wrap — belt just touches and continues.
+            return [(cx + r * math.cos(angle_start),
+                     cy + r * math.sin(angle_start))]
         pts = []
         for i in range(n_seg + 1):
             a = angle_start + sweep * (i / n_seg)
@@ -983,57 +992,26 @@ class ConveyorBeltGeometry:
             cx1, cy1, r1, k1 = loop[i]
             cx2, cy2, r2, k2 = loop[j]
 
-            if k1 == 'top' and k2 == 'top':
-                # Upper external tangent (belt on top of both)
-                a1, a2 = self._external_tangent_angles(
-                    cx1, cy1, r1, cx2, cy2, r2)
-            elif k1 == 'ret' and k2 == 'ret':
-                # Lower external tangent (belt under both)
-                a1, a2 = self._lower_external_tangent_angles(
-                    cx1, cy1, r1, cx2, cy2, r2)
-            elif k1 == 'top' and k2 == 'ret':
-                # Head transition: belt goes from top-side of head
-                # pulley to underside of first return idler.
-                # Compute departure on c1 and arrival on c2 directly.
-                dx, dy = cx2 - cx1, cy2 - cy1
-                d = math.sqrt(dx * dx + dy * dy)
-                base = math.atan2(dy, dx)
-                if d > 1e-9:
-                    ratio = max(-1.0, min(1.0, (r1 + r2) / d))
-                    gamma = math.asin(ratio)
-                    a1 = base + math.pi / 2 - gamma
-                    a2 = a1 + math.pi
-                else:
-                    a1 = math.pi / 2
-                    a2 = -math.pi / 2
-            else:
-                # k1 == 'ret' and k2 == 'top' — tail transition:
-                # belt goes from underside of last return idler to
-                # top-side of tail pulley.
-                dx, dy = cx2 - cx1, cy2 - cy1
-                d = math.sqrt(dx * dx + dy * dy)
-                base = math.atan2(dy, dx)
-                if d > 1e-9:
-                    ratio = max(-1.0, min(1.0, (r1 + r2) / d))
-                    gamma = math.asin(ratio)
-                    a1 = base - math.pi / 2 + gamma
-                    a2 = a1 + math.pi
-                else:
-                    a1 = -math.pi / 2
-                    a2 = math.pi / 2
+            # The external tangent places the belt on the CW-leading
+            # side of the travel direction.  Because the belt forms a
+            # closed CW loop:
+            #
+            #   Carrying run (left→right, base ≈ 0):
+            #       tang ≈ +π/2  →  belt rides ON TOP of rollers  ✓
+            #
+            #   Return run (right→left, base ≈ π):
+            #       tang ≈ −π/2  →  belt hangs UNDER the rollers  ✓
+            #
+            #   Head / tail transitions (steep angles):
+            #       tangent smoothly connects top → bottom arcs  ✓
+            #
+            # One function handles all four (top→top, ret→ret,
+            # top→ret, ret→top) cases without special-casing.
+            a1, a2 = self._external_tangent_angles(
+                cx1, cy1, r1, cx2, cy2, r2)
 
             dep_angle[i] = a1
             arr_angle[j] = a2
-
-        # Special-case: no return idlers → direct bottom path
-        if len(return_rollers) == 0:
-            i_head = n_top - 1
-            cx1, cy1, r1, _ = loop[i_head]
-            cx2, cy2, r2, _ = loop[0]
-            a1, a2 = self._lower_external_tangent_angles(
-                cx1, cy1, r1, cx2, cy2, r2)
-            dep_angle[i_head] = a1
-            arr_angle[0] = a2
 
         # ---- Build 2-D centre-line ----
         arc_res = 16

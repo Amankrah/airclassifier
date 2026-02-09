@@ -170,11 +170,13 @@ def advect_material_tvd_np(
         delta_bwd = phi_i - phi_im1   # phi[i] - phi[i-1]
 
         # Slope ratio r = delta_bwd / delta_fwd (with zero-division guard)
-        r = np.where(
-            np.abs(delta_fwd) > 1e-30,
-            delta_bwd / delta_fwd,
-            np.where(delta_bwd > 0, 1e10, np.where(delta_bwd < 0, -1e10, 0.0)),
-        )
+        # Suppress expected divide-by-zero warnings — handled by np.where
+        with np.errstate(divide="ignore", invalid="ignore"):
+            r = np.where(
+                np.abs(delta_fwd) > 1e-30,
+                delta_bwd / delta_fwd,
+                np.where(delta_bwd > 0, 1e10, np.where(delta_bwd < 0, -1e10, 0.0)),
+            )
 
         psi = _van_leer_limiter(r)
 
@@ -485,7 +487,11 @@ class ConveyorDriveController:
 
         # ── 3. Encoder (PPR on head roller shaft) ──────────────────
         total_revs = s.head_roller_angle / (2.0 * math.pi)
-        s.encoder_pulses = int(total_revs * self.encoder_ppr)
+        # Guard: NaN can propagate from extreme physics; clamp to safe int
+        if math.isfinite(total_revs):
+            s.encoder_pulses = int(total_revs * self.encoder_ppr)
+        else:
+            s.encoder_pulses = 0
 
         # ── 4. Time ───────────────────────────────────────────────
         s.elapsed_time_s += dt

@@ -132,6 +132,52 @@ class OvenChamberParams:
             conveyor_belt_z0_m=conv_params.belt_z0,
         )
 
+    @classmethod
+    def from_machine(cls, config: "MachineConfig") -> "OvenChamberParams":
+        """Create oven params from a :class:`MachineConfig`.
+
+        Follows the parameter chain from the engineering guide §6.1.
+        The ``MachineConfig`` stores the key process dimensions
+        (oven_length_m = active RF zone, belt_width_m, electrode gap
+        range).  This method derives the full oven chamber envelope
+        from those values, mirroring the manual dimensions (§2.2.3):
+
+            * RF zone width = belt width (800 mm, §2.3)
+            * Oven chamber length = RF zone + 0.70 m clearance for
+              lead screws, tuning structure, and wiring each end
+            * Oven chamber width = belt width + 0.30 m frame clearance
+              (0.15 m each side, matching conveyor frame)
+            * Belt Z offset = (oven_width - belt_width) / 2
+
+        Args:
+            config: GP-15 machine configuration.
+
+        Returns:
+            Configured :class:`OvenChamberParams`.
+        """
+        rf_zone_length = config.oven_length_m
+        belt_width = config.belt_width_m
+        gap_max = config.electrode_gap_max_m
+
+        # Oven chamber is larger than RF zone (§2.2.3):
+        # clearance for lead screws, tuning, wiring each end
+        oven_length = rf_zone_length + 0.70
+
+        # Frame width: belt + 0.15 m clearance each side (§2.3)
+        frame_width = belt_width + 0.30
+
+        # Belt centred on frame
+        belt_z0 = (frame_width - belt_width) / 2.0
+
+        return cls(
+            rf_zone_length_m=rf_zone_length,
+            rf_zone_width_m=belt_width,
+            electrode_gap_max_m=gap_max,
+            oven_length_m=oven_length,
+            oven_width_m=frame_width,
+            conveyor_belt_z0_m=belt_z0,
+        )
+
     @property
     def rf_zone_x_start(self) -> float:
         """X position of RF zone start (inside oven)."""

@@ -203,6 +203,10 @@ class CoupledSimulator:
         self._total_rf_energy_j = 0.0
         self._history: List[StepState] = []
 
+        # Generator operating point — tracks the previous timestep's
+        # delivered RF power for the self-consistent Approach A solve.
+        self._last_P_rf_kw: float = 0.0
+
         # Cached bed surface index
         self._j_surface: int = 0
 
@@ -336,7 +340,7 @@ class CoupledSimulator:
             )
 
         if self._power_constrained and self._target_power_kw:
-            # Phase 2 Approach A: iterate V_rf to match target power
+            # Explicit Approach A: user-specified target power
             V_rf_kv = self.rf.solve_power_constrained(
                 electrode_gap_m=gap_m,
                 target_power_kw=self._target_power_kw,
@@ -353,15 +357,41 @@ class CoupledSimulator:
             V_rf_kv = machine.anode_voltage_kv(machine.anode_current_no_load_a)
             self.rf.solve_fdm(gap_m, V_rf_kv, self.eps_real)
         else:
-            # Phase 1: uniform parallel-plate
-            V_rf_kv = machine.anode_voltage_kv(machine.anode_current_no_load_a)
-            self.rf.solve(
+            # ── Phase 1: Approach A — power-constrained (§4.1.3) ─────
+            #
+            # The engineering guide §4.1.3 recommends Approach A for the
+            # initial implementation because the oscillator-to-electrode
+            # coupling coefficient is not modeled in Phase 1.
+            #
+            # The anode voltage (9.18 kV no-load, Manual Appendix B /
+            # Test Report) is the DC supply to the triode oscillator,
+            # NOT the RF voltage at the electrodes.  Applying V_anode
+            # directly as V_rf produces unrealistic field strengths.
+            #
+            # Instead, we determine the generator's available RF power
+            # from its operating curve (Manual Appendix E, §8.4) and
+            # solve for the electrode voltage V_rf that delivers
+            # exactly that power through the series-capacitor model.
+            #
+            # Generator model (§2.1, §8.4):
+            #   No-load:  V_a = 9.18 kV, I_a = 0.4 A, P_rf ≈ 0
+            #   Full-load: V_a = 8.38 kV, I_a = 2.58 A, P_rf = 15 kW
+            #   Oscillator efficiency η ≈ 0.56 (§10.1)
+            #
+            # The target RF power is computed from the previous step's
+            # operating point using the self-consistent generator model.
+            P_rf_target_kw = self._generator_available_power(machine)
+            V_rf_kv = self.rf.solve_power_constrained(
                 electrode_gap_m=gap_m,
-                voltage_kv=V_rf_kv,
+                target_power_kw=P_rf_target_kw,
                 eps_real=self.eps_real,
+                eps_loss=self.eps_loss,
                 cell_is_material=self.cell_is_material,
+                cell_volume_m3=self._cell_vol,
                 bed_depth_m=mat.bed_depth_m,
                 belt_stack_m=machine.belt_stack_thickness_m,
+                use_fdm=False,
+                V_guess_kv=2.0,
             )
 
         # ── 3. HEATING ────────────────────────────────────────────────
@@ -464,6 +494,7 @@ class CoupledSimulator:
         # ── 9. RECORD ─────────────────────────────────────────────────
         self._time += dt
         self._total_rf_energy_j += P_rf_w * dt
+        self._last_P_rf_kw = P_rf_kw  # track for next step's generator model
 
         T_mat = self.thermal.T[mat_mask]
         M_mat = self.moisture.M[mat_mask]
@@ -630,6 +661,52 @@ class CoupledSimulator:
             max_temperature_c=max_T,
             protein_denaturation_fraction=denaturation,
         )
+
+    # ------------------------------------------------------------------
+    # Generator model
+    # ------------------------------------------------------------------
+
+    def _generator_available_power(self, machine: MachineConfig) -> float:
+        """Compute the generator's available RF power (§4.1.3, §8.4).
+
+        The GP-15 uses a self-excited triode valve oscillator (Manual
+        Chapter 3, Appendix I).  The oscillator continuously generates
+        an RF field between the electrodes — the load (material)
+        determines how much power is absorbed.
+
+        From the GP-15 Test Report (Manual Appendix E):
+
+            No-load:  V_a = 9.18 kV, I_a = 0.4 A → P_rf ≈ 0
+            Full-load: V_a = 8.38 kV, I_a = 2.58 A → P_rf = 15 kW
+
+        The P_rf vs I_a relationship is linear between these points.
+        The oscillator's self-excitation naturally adjusts the anode
+        operating point to match the load impedance.
+
+        For Phase 1 Approach A (§4.1.3), the target RF power is the
+        generator's rated maximum output.  The ``solve_power_constrained``
+        solver then finds the electrode voltage V_rf that delivers
+        this power through the series-capacitor model (§4.1.3).
+
+        The power naturally self-regulates:
+
+        - Wet material (high ε″) → strong load → low V_rf needed
+          → most energy goes to evaporation (self-leveling, §4.3.4)
+        - Dry material (low ε″) → weak load → high V_rf needed
+          → solver finds V_rf up to the oscillator's voltage limit;
+          if the limit is reached, actual P_rf < P_target
+
+        Note: The ``oscillator_efficiency`` (η ≈ 0.56, §10.1) is the
+        overall mains-to-RF efficiency used for energy accounting
+        and the manual's validation example (§10.1).  It is NOT used
+        in the Approach A field solve — the test report's operating
+        curve (0 → 15 kW) already captures the generator's full
+        power delivery characteristic.
+
+        Returns:
+            Target RF power [kW] for the Approach A solver.
+        """
+        return machine.max_rf_power_kw
 
     # ------------------------------------------------------------------
     # Helpers

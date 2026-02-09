@@ -141,6 +141,13 @@ class ThermalSolver:
             + dt / rc[1:-1, 1:-1, 1:-1] * (laplacian + source - sink)
         )
 
+        # Guard against NaN / Inf (numerical safety net)
+        np.nan_to_num(Tn, copy=False, nan=T_inlet_c, posinf=200.0, neginf=T_inlet_c)
+        # Physical clamp: temperature cannot go below 0 °C or above 200 °C
+        # (GP-15 processes below 100 °C; 200 °C is a generous safety margin
+        # that catches runaway heating without masking real physics)
+        np.clip(Tn, 0.0, 200.0, out=Tn)
+
         # --- Boundary conditions ---
         # Infeed (x=0): Dirichlet — fresh material at T_inlet
         Tn[0, :, :] = T_inlet_c

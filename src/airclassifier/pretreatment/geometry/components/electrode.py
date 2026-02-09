@@ -122,6 +122,30 @@ class ElectrodeParams:
             belt_z0_m=oven_params.conveyor_belt_z0_m,
         )
 
+    @classmethod
+    def from_machine(cls, config: "MachineConfig") -> "ElectrodeParams":
+        """Create electrode params from a :class:`MachineConfig`.
+
+        Follows the parameter chain from the engineering guide §6.1::
+
+            MachineConfig → OvenChamberParams → ElectrodeParams
+
+        The oven chamber params are derived first via
+        :meth:`OvenChamberParams.from_machine`, then passed through
+        :meth:`from_oven` so that RF zone length, width, X position,
+        and belt Z offset all propagate consistently.
+
+        Args:
+            config: GP-15 machine configuration.
+
+        Returns:
+            Configured :class:`ElectrodeParams`.
+        """
+        from .oven_chamber import OvenChamberParams
+
+        oven = OvenChamberParams.from_machine(config)
+        return cls.from_oven(oven)
+
     @property
     def total_plate_length_m(self) -> float:
         """Combined length of all plates + seam gaps."""

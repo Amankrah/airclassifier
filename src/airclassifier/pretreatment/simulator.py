@@ -3,9 +3,27 @@ GP15Simulator — Main Entry Point
 ==================================
 
 Digital twin of the QMTI GP-15 RF dielectric heating machine.
-Orchestrates geometry, physics solvers, control logic, and the
-coupled simulation loop.  Provides the public API for the
-pretreatment module (engineering guide §7.1).
+Orchestrates the assembled machine geometry with the coupled physics
+engine, control logic, and pipeline integration.  Provides the public
+API for the pretreatment module (engineering guide §7.1).
+
+Architecture (engineering guide §6.1)::
+
+    GP15Simulator
+        ├── GP15MachineAssembly    ← 3D geometry (conveyor, oven, electrodes)
+        ├── CoupledSimulator       ← Multi-physics engine (9-step loop §6.2)
+        │     ├── RFFieldSolver    ← RF field (§4.1)
+        │     ├── ThermalSolver    ← Heat transfer (§4.2)
+        │     ├── MoistureSolver   ← Drying kinetics (§4.3)
+        │     ├── EMUAirflowModel  ← Convective BCs (§2.4)
+        │     ├── ConveyorDrive    ← Belt kinematics (§4.4)
+        │     └── GP15Controller   ← PLC / safety logic (§8)
+        └── OutletState            ← Pipeline output to milling (§9.1)
+
+The machine assembly provides the **single source of truth** for all
+geometric dimensions.  The simulation grid is derived from the
+assembly's oven chamber geometry, ensuring perfect consistency
+between the 3D render and the physics computation.
 
 Usage::
 
@@ -23,15 +41,17 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 import numpy as np
 
 from .config import MachineConfig, MaterialProperties, Recipe
-from .geometry.conveyor import ConveyorGeometry, ConveyorParams
-from .geometry.electrode import ElectrodeGeometry, ElectrodeParams
-from .geometry.machine import build_gp15_machine_meshes
-from .geometry.oven import OvenGeometry, OvenGeometryParams
+from .geometry.machine import (
+    GP15MachineAssembly,
+    COMPONENT_COLORS,
+    create_gp15_machine,
+)
+from .geometry.oven import OvenGeometryParams
 from .io.export import export_csv_timeseries, export_numpy_snapshot, export_vtk
 from .physics.coupling import (
     CoupledSimulator,
@@ -44,21 +64,38 @@ from .physics.coupling import (
 class GP15Simulator:
     """Digital twin of the QMTI GP-15 RF dielectric heating machine.
 
-    Orchestrates geometry, physics solvers, control logic, and the
-    coupled simulation loop.  Provides the public API for the
-    pretreatment module.
+    Orchestrates the assembled machine geometry (§2) with the coupled
+    physics engine (§4–6) and PLC control logic (§8).
+
+    The ``GP15MachineAssembly`` is the **single source of truth** for
+    all geometric dimensions.  The simulation grid (nx × ny × nz) is
+    derived from the assembly's oven chamber, so the 3D visualisation
+    and the physics computation are always consistent.
+
+    The assembly follows the parameter chain from §6.1::
+
+        MachineConfig
+          → OvenChamberParams.from_machine(config)
+              → ElectrodeParams.from_oven(oven)
+              → InfeedHopperParams.from_oven(oven)
+              → EMUParams.from_oven(oven)
+              → GeneratorParams.from_oven(oven)
+
+    This ensures belt width, RF zone length, electrode gap range, and
+    all dependent dimensions propagate consistently through geometry
+    and physics.
 
     Args:
-        config: Machine specifications (electrode dimensions, power, etc.)
+        config: Machine specifications (generator, oven, conveyor, EMU).
         material: Feedstock properties (dielectric, thermal, moisture).
-        device: Warp device (``"cuda"`` or ``"cpu"``).
+        device: Compute device (``"cuda"`` or ``"cpu"``).
         use_fdm: Phase 2 FDM RF field solver.
-        use_tvd: Phase 2 Van Leer TVD advection.
-        power_constrained: Phase 2 power-constrained voltage iteration.
+        use_tvd: Phase 2 Van Leer TVD advection (§4.4.1).
+        power_constrained: Phase 2 Approach A voltage iteration (§4.1.3).
         target_power_kw: Target RF power for power-constrained mode.
-        enable_controller: Phase 3 full PLC control logic.
+        enable_controller: Phase 3 full PLC control logic (§8).
         oscillator_efficiency: Generator efficiency (default 0.56, §10.1).
-        enable_corrections: Phase 3 fringe + perforation corrections.
+        enable_corrections: Phase 3 fringe + perforation corrections (§4.1.4–5).
     """
 
     def __init__(
@@ -80,12 +117,26 @@ class GP15Simulator:
         self._device = device
         self._recipe: Optional[Recipe] = None
 
-        # Build geometry
-        self._oven = OvenGeometry(OvenGeometryParams.from_machine(self.config))
-        self._grid_shape = self._oven.get_grid_shape()
-        self._cell_sizes = self._oven.get_cell_sizes()
+        # ── Machine assembly (single source of truth for geometry) ──
+        # Derive oven params from MachineConfig so the simulation grid
+        # (RF zone length, belt width, gap range) matches the physics
+        # engine exactly.  The assembly's parameter chain (§6.1)
+        # propagates these values to electrodes, hopper, EMU, and
+        # generator automatically via __post_init__.
+        oven_params = OvenGeometryParams.from_machine(self.config)
+        self._assembly = create_gp15_machine(
+            electrode_gap_m=self.config.electrode_gap_max_m,
+            bed_depth_m=self.material.bed_depth_m,
+            oven_params=oven_params,
+        )
 
-        # Build simulator
+        # ── Simulation grid from assembly's oven geometry ───────────
+        # The oven component provides get_grid_shape() and
+        # get_cell_sizes() which discretize the RF zone (§3.2).
+        self._grid_shape = self._assembly.oven.get_grid_shape()
+        self._cell_sizes = self._assembly.oven.get_cell_sizes()
+
+        # ── Physics engine (§6.2 nine-step coupling loop) ───────────
         self._sim = CoupledSimulator(
             machine=self.config,
             material=self.material,
@@ -101,15 +152,24 @@ class GP15Simulator:
             enable_corrections=enable_corrections,
         )
 
-        # Geometry helpers (for visualization)
-        self._electrode = ElectrodeGeometry(
-            ElectrodeParams.from_machine(self.config)
-        )
-        self._conveyor = ConveyorGeometry(
-            ConveyorParams.from_machine(self.config)
-        )
-
         self._initialized = False
+
+    # ── Component accessors ─────────────────────────────────────────
+
+    @property
+    def assembly(self) -> GP15MachineAssembly:
+        """The underlying machine assembly (geometry)."""
+        return self._assembly
+
+    @property
+    def grid_shape(self) -> Tuple[int, int, int]:
+        """Simulation grid dimensions ``(nx, ny, nz)``."""
+        return self._grid_shape
+
+    @property
+    def cell_sizes(self) -> Tuple[float, float, float]:
+        """Simulation cell sizes ``(dx, dy, dz)`` in metres."""
+        return self._cell_sizes
 
     # ------------------------------------------------------------------
     # Public API  (§7.1)
@@ -119,10 +179,14 @@ class GP15Simulator:
         """Load a processing recipe (mirrors HMI recipe system).
 
         Sets electrode gap, belt speed, RF power, extraction fan,
-        heater settings, MRH/MRL thresholds.
+        heater settings, MRH/MRL thresholds.  Updates the assembly's
+        electrode gap so subsequent ``get_mesh()`` calls render the
+        upper electrode at the correct position.
         """
         self._recipe = recipe
-        # Controller will receive the recipe at run() time
+        # Sync assembly geometry with recipe setpoints
+        self._assembly.set_electrode_gap(recipe.electrode_gap_mm / 1000.0)
+        self._assembly.set_bed_depth(self.material.bed_depth_m)
 
     def run(
         self,
@@ -132,8 +196,8 @@ class GP15Simulator:
     ) -> PretreatmentResult:
         """Run the full simulation for the specified duration.
 
-        Executes the coupled physics loop, returns complete results
-        including time-series of all fields and KPIs.
+        Executes the coupled physics loop (§6.2), returns complete
+        results including time-series of all fields and KPIs.
 
         Args:
             duration_s: Total simulation time [s].
@@ -168,23 +232,25 @@ class GP15Simulator:
         return self._sim.get_outlet_conditions(self._recipe)
 
     def get_mesh(self) -> Dict[str, Any]:
-        """Return PyVista-compatible mesh data for 3D visualization.
+        """Return all component meshes for 3D visualization (§9.3).
 
-        Uses the assembled machine geometry (geometry.machine.build_gp15_machine_meshes)
-        so the same oven, conveyor, electrode components and envelope are returned
-        as when building from the Assembly dialog. Includes color and opacity for
-        viewport display. Adds ``fields`` when the simulation has been run (§9.3).
+        Uses the machine assembly's ``generate_all_meshes()`` directly,
+        ensuring perfect consistency between geometry and physics.
+        The assembly holds the correct electrode gap from
+        ``load_recipe``, so the upper electrode renders at the recipe
+        setpoint.
+
+        When the simulation has been run, adds a ``"fields"`` entry
+        containing the 3D temperature, moisture, and power density
+        arrays for colour-mapping the material bed.
+
+        Returns:
+            Dict of ``{name: (vertices, triangles, metadata)}``
+            plus optional ``"fields"`` dict with simulation data.
         """
-        electrode_gap_mm = (
-            self._recipe.electrode_gap_mm if self._recipe else 80.0
-        )
-        meshes = build_gp15_machine_meshes(
-            config=self.config,
-            material=self.material,
-            electrode_gap_mm=electrode_gap_mm,
-        )
+        meshes = self._assembly.generate_all_meshes()
 
-        # Field data (if simulation has run)
+        # Attach field data if simulation has run
         if self._initialized:
             meshes["fields"] = {
                 "temperature": self._sim.thermal.T.copy(),
@@ -195,6 +261,24 @@ class GP15Simulator:
             }
 
         return meshes
+
+    def get_field_world_origin(self) -> Tuple[float, float, float]:
+        """World-coordinate origin of the simulation field volume.
+
+        The simulation grid covers the RF zone inside the oven (§3).
+        This method returns the (x, y, z) offset needed to place the
+        field arrays in the machine assembly's world frame.
+
+        Returns:
+            ``(x0, y0, z0)`` in metres — the lower-left-near corner
+            of the simulation domain in assembly coordinates.
+        """
+        info = self._assembly.get_assembly_info()
+        return (
+            info["rf_zone_x_start_m"],
+            0.0,  # y = 0 is deck-plate / lower electrode
+            self._assembly.oven.params.conveyor_belt_z0_m,
+        )
 
     # ------------------------------------------------------------------
     # Export helpers
@@ -251,7 +335,9 @@ class GP15Simulator:
             return
         gap_m = (self._recipe.electrode_gap_mm / 1000.0
                  if self._recipe else self.config.electrode_gap_max_m)
-        mask = self._oven.build_material_mask(
+
+        # Build material mask from the assembly's oven geometry (§3.1)
+        mask = self._assembly.oven.build_material_mask(
             electrode_gap_m=gap_m,
             bed_depth_m=self.material.bed_depth_m,
             belt_stack_m=self.config.belt_stack_thickness_m,
