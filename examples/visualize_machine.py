@@ -78,6 +78,9 @@ def add_solid(plotter: pv.Plotter, meshes: dict, xray: bool = False) -> None:
         "material_bed": 0.80,
         "infeed_hopper": 0.88,
         "infeed_tunnel": 0.30,
+        "emu_housing": 0.15,
+        "generator": 0.25,
+        "rf_feed": 0.95,
     }
 
     for name, (v, t, meta) in meshes.items():
@@ -120,6 +123,9 @@ def add_wireframe(plotter: pv.Plotter, meshes: dict) -> None:
         "material_bed": "#DAA520",
         "infeed_hopper": "#707078",
         "infeed_tunnel": "#505058",
+        "emu_housing": "#909098",
+        "generator": "#607080",
+        "rf_feed": "#CD7F32",
     }
     for name, (v, t, meta) in meshes.items():
         label = COMPONENT_COLORS.get(name, {}).get("label", name)
@@ -147,6 +153,9 @@ def add_exploded(plotter: pv.Plotter, meshes: dict) -> None:
         "material_bed": 0.08,
         "infeed_hopper": 0.10,
         "infeed_tunnel": 0.05,
+        "emu_housing": 0.50,
+        "generator": 0.0,
+        "rf_feed": 0.15,
     }
 
     for name, (v, t, meta) in meshes.items():

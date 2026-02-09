@@ -49,6 +49,8 @@ import numpy as np
 
 from ..components.conveyor_belt import ConveyorBeltGeometry, ConveyorBeltParams
 from ..components.electrode import ElectrodeGeometry, ElectrodeParams
+from ..components.emu import EMUGeometry, EMUParams
+from ..components.generator import GeneratorGeometry, GeneratorParams
 from ..components.hopper import InfeedHopperGeometry, InfeedHopperParams
 from ..components.oven_chamber import OvenChamberGeometry, OvenChamberParams
 from ..mesh_utils import concat_meshes
@@ -104,6 +106,21 @@ COMPONENT_COLORS: Dict[str, Dict[str, object]] = {
         "opacity": 0.55,
         "label": "Feed Tunnel",
     },
+    "emu_housing": {
+        "color": "#B0B0B8",
+        "opacity": 0.35,
+        "label": "EMU Housing",
+    },
+    "generator": {
+        "color": "#707880",
+        "opacity": 0.45,
+        "label": "RF Generator",
+    },
+    "rf_feed": {
+        "color": "#CD7F32",
+        "opacity": 0.90,
+        "label": "RF Feed (copper)",
+    },
 }
 
 
@@ -130,13 +147,15 @@ class GP15MachineParams:
     oven_params: Optional[OvenChamberParams] = None
     electrode_params: Optional[ElectrodeParams] = None
     hopper_params: Optional[InfeedHopperParams] = None
+    emu_params: Optional[EMUParams] = None
+    generator_params: Optional[GeneratorParams] = None
 
     # ── Adjustable operating parameters ───────────────────────────
     electrode_gap_m: float = 0.200       # [m] default 200 mm
     bed_depth_m: float = 0.040           # [m] default 40 mm
 
     def __post_init__(self) -> None:
-        """Derive oven, electrode, and hopper params from conveyor if not given."""
+        """Derive all component params from the conveyor → oven chain."""
         if self.oven_params is None:
             self.oven_params = OvenChamberParams.from_conveyor(self.conveyor_params)
 
@@ -145,6 +164,12 @@ class GP15MachineParams:
 
         if self.hopper_params is None:
             self.hopper_params = InfeedHopperParams.from_oven(self.oven_params)
+
+        if self.emu_params is None:
+            self.emu_params = EMUParams.from_oven(self.oven_params)
+
+        if self.generator_params is None:
+            self.generator_params = GeneratorParams.from_oven(self.oven_params)
 
     # ── Validation ────────────────────────────────────────────────
 
@@ -204,6 +229,8 @@ class GP15MachineAssembly:
         self._oven = OvenChamberGeometry(self.params.oven_params)
         self._electrodes = ElectrodeGeometry(self.params.electrode_params)
         self._hopper = InfeedHopperGeometry(self.params.hopper_params)
+        self._emu = EMUGeometry(self.params.emu_params)
+        self._generator = GeneratorGeometry(self.params.generator_params)
 
         # ── Cached combined mesh ──────────────────────────────────
         self._combined_verts: Optional[np.ndarray] = None
@@ -230,6 +257,16 @@ class GP15MachineAssembly:
     def hopper(self) -> InfeedHopperGeometry:
         """Access the infeed hopper geometry component."""
         return self._hopper
+
+    @property
+    def emu(self) -> EMUGeometry:
+        """Access the EMU housing geometry (infeed end)."""
+        return self._emu
+
+    @property
+    def generator(self) -> GeneratorGeometry:
+        """Access the RF generator cabinet geometry (behind oven)."""
+        return self._generator
 
     # ─── Mesh generation (individual) ─────────────────────────────
 
@@ -281,6 +318,31 @@ class GP15MachineAssembly:
         """Generate the lower electrode trays, PET supports, chokes."""
         return self._electrodes.generate_lower_mesh()
 
+    def generate_emu_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the EMU housing at oven infeed end."""
+        return self._emu.generate_mesh()
+
+    def generate_generator_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the RF generator cabinet behind the oven."""
+        return self._generator.generate_mesh()
+
+    def generate_rf_feed_mesh(
+        self,
+        electrode_gap_m: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the RF feed connection (generator → electrode).
+
+        Copper busbars, tuning plates, and feed strip extensions
+        running from the generator through the oven back wall and
+        down to the upper electrode assembly.
+        """
+        gap = electrode_gap_m if electrode_gap_m is not None else self.params.electrode_gap_m
+        return self._generator.generate_rf_feed_mesh(gap)
+
     def generate_hopper_mesh(
         self,
     ) -> Tuple[np.ndarray, np.ndarray, dict]:
@@ -299,15 +361,37 @@ class GP15MachineAssembly:
     ) -> Tuple[np.ndarray, np.ndarray, dict]:
         """Generate the material bed (product on belt inside RF zone).
 
-        The bed is positioned on top of the belt stack within the
-        RF zone, matching the oven/electrode coordinate system.
+        The bed is a flat slab of material sitting on the belt stack
+        inside the RF zone.  It spans the full RF zone length and belt
+        width.
 
         Args:
             bed_depth_m: Override depth (m).  Uses ``params.bed_depth_m``
                          if *None*.
         """
+        from ..mesh_utils import box_mesh as _box
+
         depth = bed_depth_m if bed_depth_m is not None else self.params.bed_depth_m
-        return self._conveyor.generate_bed_mesh(depth)
+        assert self.params.oven_params is not None
+
+        op = self.params.oven_params
+        cp = self.params.conveyor_params
+        y_base = cp.belt_stack_thickness_m  # top of belt stack
+
+        verts, tris = _box(
+            op.rf_zone_x_start,            # x: RF zone start
+            y_base,                         # y: on top of belt stack
+            op.conveyor_belt_z0_m,          # z: belt left edge
+            op.rf_zone_length_m,            # dx: RF zone length
+            depth,                          # dy: bed depth
+            op.rf_zone_width_m,             # dz: belt width
+        )
+        return verts, tris, {
+            "type": "material_bed",
+            "x_start": op.rf_zone_x_start,
+            "x_end": op.rf_zone_x_end,
+            "depth_m": depth,
+        }
 
     # ─── Mesh generation (all at once) ────────────────────────────
 
@@ -355,6 +439,15 @@ class GP15MachineAssembly:
 
         # 9. Feed tunnel (connects hopper zone to oven infeed wall)
         meshes["infeed_tunnel"] = self.generate_infeed_tunnel_mesh()
+
+        # 10. EMU housing (heater/extraction, at oven infeed end)
+        meshes["emu_housing"] = self.generate_emu_mesh()
+
+        # 11. RF Generator cabinet (behind oven, +Z side)
+        meshes["generator"] = self.generate_generator_mesh()
+
+        # 12. RF feed connection (generator → oven → electrode)
+        meshes["rf_feed"] = self.generate_rf_feed_mesh()
 
         return meshes
 
@@ -457,6 +550,7 @@ def create_gp15_machine(
     oven_params: Optional[OvenChamberParams] = None,
     electrode_params: Optional[ElectrodeParams] = None,
     hopper_params: Optional[InfeedHopperParams] = None,
+    emu_params: Optional[EMUParams] = None,
 ) -> GP15MachineAssembly:
     """Create a standard GP-15 machine assembly.
 
@@ -488,6 +582,7 @@ def create_gp15_machine(
         oven_params=oven_params,
         electrode_params=electrode_params,
         hopper_params=hopper_params,
+        emu_params=emu_params,
         electrode_gap_m=electrode_gap_m,
         bed_depth_m=bed_depth_m,
     )

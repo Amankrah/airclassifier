@@ -70,16 +70,16 @@ class OvenChamberParams:
     """
 
     # ── Active RF zone (between electrodes) ──────────────────────
-    rf_zone_length_m: float = 1.50      # [m] active zone [TBD — MEASURE]
+    rf_zone_length_m: float = 1.80      # [m] active zone (increased)
     rf_zone_width_m: float = 0.80       # [m] = belt width (800 mm)
     electrode_gap_max_m: float = 0.300  # [m] max gap [TBD — MEASURE]
 
     # ── Oven chamber envelope ────────────────────────────────────
     # The oven is BIGGER than the RF zone — it includes clearance
     # for the lead screws, tuning structure, wiring, and doors.
-    oven_length_m: float = 2.20         # [m] total chamber length (X)
+    oven_length_m: float = 2.50         # [m] total chamber length (X)
     oven_width_m: float = 1.10          # [m] total chamber width (Z) = frame width
-    oven_height_m: float = 0.90         # [m] floor-to-ceiling inside
+    oven_height_m: float = 1.10         # [m] floor-to-ceiling inside
     # RF zone is centred inside the oven chamber
     # Remaining space is for lead screw clearance, wiring, ducts
 
@@ -93,8 +93,8 @@ class OvenChamberParams:
     door_height_m: float = 0.60         # [m] door panel height
     door_y_offset_m: float = 0.04       # [m] bottom of door above deck
 
-    # ── Infeed / outfeed openings (connect to attenuation ducts) ─
-    opening_height_m: float = 0.10      # [m]
+    # ── Infeed / outfeed openings (connect to attenuation tunnels) ─
+    opening_height_m: float = 0.258     # [m] matches feed tunnel height (25.8 cm)
     opening_width_m: float = 0.84       # [m] slightly > belt (820 mm)
 
     # ── EMU extraction port (top centre) ─────────────────────────
