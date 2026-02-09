@@ -566,7 +566,7 @@ class GP15MachineAssembly:
         bin_width_z = belt_w + 0.06             # slightly wider than belt
         bin_z0 = (W - bin_width_z) / 2          # centred on frame
         bin_depth_x = 0.65                      # larger for more volume
-        bin_x0 = head_x - bin_depth_x * 0.45    # mostly under roller
+        bin_x0 = head_x - bin_depth_x * 0.25    # shifted toward +X, past roller end
         bin_x1 = bin_x0 + bin_depth_x
 
         # Vertical: sits on the floor, 3/4 of floor-to-belt height
