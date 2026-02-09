@@ -100,15 +100,22 @@ class OvenChamberParams:
     # ── EMU extraction port (top centre) ─────────────────────────
     extraction_diameter_m: float = 0.25 # [m] 250 mm (Manual)
 
+    # ── Back wall air supply opening (EMU heated air inlet) ────
+    # Rectangular opening on the +Z back wall for EMU air duct
+    air_supply_width_m: float = 0.84    # [m] opening width (X direction)
+    air_supply_height_m: float = 0.40   # [m] opening height (Y direction)
+    air_supply_y_offset_m: float = 0.05 # [m] bottom of opening above deck
+
     # ── Lead screw brackets (4 posts inside oven) ────────────────
     lead_screw_section_m: float = 0.030 # [m] square bracket section
     lead_screw_inset_x_m: float = 0.08  # [m] from RF-zone X edges
     lead_screw_inset_z_m: float = 0.04  # [m] from RF-zone Z edges
 
     # ── Positioning on conveyor frame ────────────────────────────
-    # oven_x_start: distance from conveyor origin to oven front wall
-    # The oven is roughly centred on the 5.5 m conveyor frame.
-    oven_x_start_m: float = 1.65        # [m] → oven ends at 1.65+2.20 = 3.85 m
+    # Oven centred on the bed (4.624 m usable, centre at 2.362 m).
+    # oven_x_start = bed_centre - oven_length / 2
+    #              = 2.362 - 1.250 = 1.112 m
+    oven_x_start_m: float = 1.112       # [m] → oven ends at 1.112 + 2.50 = 3.612 m
 
     # Belt Z position on conveyor (from conveyor_belt.py)
     conveyor_belt_z0_m: float = 0.15    # [m] = (frame_width - belt_width) / 2
@@ -212,15 +219,52 @@ class OvenChamberGeometry:
         parts.append(box_mesh(door_x0 + dx_door, door_y0, z0,
                               x1 - door_x0 - dx_door, dy_door, wt))
 
-        # ── 2. Right side wall (z = z1 - wt) — mirror of left ───
+        # ── 2. Back wall (z = z1 - wt) with door + air supply opening ─
+        # The back wall has two cutouts:
+        #   a) Door (same as front wall)
+        #   b) Air supply opening for EMU duct (rectangular, lower section)
         rz = z1 - wt
-        parts.append(box_mesh(x0, y0, rz, oL, p.door_y_offset_m, wt))
-        parts.append(box_mesh(x0, door_y0 + dy_door, rz,
-                              oL, oH - door_y0 - dy_door, wt))
+
+        # Air supply opening geometry (centred on EMU X range = infeed half)
+        emu_housing_len = 1.00  # EMU housing length along X
+        as_w = p.air_supply_width_m
+        as_h = p.air_supply_height_m
+        as_y0 = p.air_supply_y_offset_m
+        as_y1 = as_y0 + as_h
+        as_x0 = x0 + (emu_housing_len - as_w) / 2  # centred on EMU
+        as_x1 = as_x0 + as_w
+
+        # Build back wall in sections around both openings
+        # Below both openings (y0 to min of door_y0 and as_y0)
+        y_below = min(door_y0, as_y0)
+        if y_below > y0:
+            parts.append(box_mesh(x0, y0, rz, oL, y_below - y0, wt))
+
+        # Above both openings
+        y_above = max(door_y0 + dy_door, as_y1)
+        parts.append(box_mesh(x0, y_above, rz, oL, oH - y_above, wt))
+
+        # Left of door (full door height range)
         parts.append(box_mesh(x0, door_y0, rz,
                               door_x0 - x0, dy_door, wt))
+        # Right of door
         parts.append(box_mesh(door_x0 + dx_door, door_y0, rz,
                               x1 - door_x0 - dx_door, dy_door, wt))
+
+        # Between door bottom and air supply top (if they don't fully overlap)
+        # Fill strips between the two openings
+        # Strip between as_y1 and door_y0 (if air supply is below door)
+        if as_y1 < door_y0:
+            parts.append(box_mesh(x0, as_y1, rz, oL, door_y0 - as_y1, wt))
+
+        # Left of air supply opening (in the air supply Y range)
+        if as_x0 > x0:
+            parts.append(box_mesh(x0, as_y0, rz,
+                                  as_x0 - x0, as_h, wt))
+        # Right of air supply opening
+        if as_x1 < x1:
+            parts.append(box_mesh(as_x1, as_y0, rz,
+                                  x1 - as_x1, as_h, wt))
 
         # ── 3. Top panel ─────────────────────────────────────────
         parts.append(box_mesh(x0, y1, z0, oL, wt, oW))
@@ -363,16 +407,21 @@ class OvenChamberGeometry:
 
     @property
     def ports(self) -> Dict[str, "ConnectionPort"]:
-        """Ports for ducts and EMU.
+        """Ports for tunnels, EMU air supply, and extraction.
 
-        - inlet:      infeed duct connection
-        - outlet:     outfeed duct connection
-        - extraction: EMU exhaust at top centre
+        - inlet:        infeed tunnel connection (X face, -X direction)
+        - outlet:       outfeed tunnel connection (X face, +X direction)
+        - air_supply:   EMU heated air inlet (back wall +Z face, infeed half)
+        - extraction:   EMU extraction outlet (top, above infeed half)
         """
         from airclassifier.geometry.connection_ports import ConnectionPort, PortType
         p = self.params
         z_mid = p.oven_width_m / 2
         x0 = p.oven_x_start_m
+        # EMU housing is 1.0 m long starting at oven_x_start
+        emu_housing_length = 1.00
+        emu_x_center = x0 + emu_housing_length / 2  # aligned to EMU centre
+
         return {
             'inlet': ConnectionPort(
                 position=(x0, p.opening_height_m / 2, z_mid),
@@ -390,9 +439,17 @@ class OvenChamberGeometry:
                 port_type=PortType.RECTANGULAR,
                 name="oven_outlet",
             ),
+            'air_supply': ConnectionPort(
+                position=(emu_x_center, 0.25, p.oven_width_m),
+                direction=(0.0, 0.0, 1.0),  # points out through back wall
+                width=p.oven_length_m * 0.35,
+                height=0.40,
+                port_type=PortType.RECTANGULAR,
+                name="oven_air_supply",
+            ),
             'extraction': ConnectionPort(
-                position=(x0 + p.oven_length_m / 2, p.oven_height_m, z_mid),
-                direction=(0.0, 1.0, 0.0),
+                position=(emu_x_center, p.oven_height_m, z_mid),
+                direction=(0.0, 1.0, 0.0),  # points up through ceiling
                 diameter=p.extraction_diameter_m,
                 port_type=PortType.CIRCULAR,
                 name="oven_extraction",

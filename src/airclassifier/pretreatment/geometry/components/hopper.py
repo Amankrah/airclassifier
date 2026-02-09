@@ -308,25 +308,25 @@ class InfeedHopperGeometry:
         # ── 6. Top rim flanges (folded stiffener around top edge) ──
         fl_w = p.flange_width_m
         fl_h = p.flange_height_m
-        # Front rim
+        # Front rim (horizontal bar across front wall top, in Z)
         parts.append(box_mesh(
             x_front - fl_w, y_front_top, z0 - t,
-            p.hopper_depth_m + fl_w, fl_h, t,
+            fl_w + t, fl_h, p.hopper_width_m + 2 * t,
         ))
-        # Back rim (at top of vertical section)
+        # Back rim (horizontal bar across back wall top, in Z)
         parts.append(box_mesh(
             x_back_top - t - fl_w, y_top, z0 - t,
             fl_w + t, fl_h, p.hopper_width_m + 2 * t,
         ))
-        # Left rim
+        # Left side rim (runs along X from front to back at z0)
         parts.append(box_mesh(
-            x_front, y_front_top, z0 - t - fl_w,
-            t, fl_h, fl_w,
+            x_back_top - fl_w, y_front_top, z0 - t - fl_w,
+            x_front - x_back_top + 2 * fl_w, fl_h, fl_w,
         ))
-        # Right rim
+        # Right side rim (runs along X from front to back at z1)
         parts.append(box_mesh(
-            x_front, y_front_top, z1 + t,
-            t, fl_h, fl_w,
+            x_back_top - fl_w, y_front_top, z1 + t,
+            x_front - x_back_top + 2 * fl_w, fl_h, fl_w,
         ))
 
         # ── 7. Bottom support lips (guide rails at belt level) ─────

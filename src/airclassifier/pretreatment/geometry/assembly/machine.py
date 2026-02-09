@@ -96,6 +96,16 @@ COMPONENT_COLORS: Dict[str, Dict[str, object]] = {
         "opacity": 0.75,
         "label": "Material Bed",
     },
+    "outfeed_tunnel": {
+        "color": "#808088",
+        "opacity": 0.55,
+        "label": "Outfeed Tunnel",
+    },
+    "collection_bin": {
+        "color": "#606068",
+        "opacity": 0.70,
+        "label": "Collection Bin",
+    },
     "infeed_hopper": {
         "color": "#A0A0A8",
         "opacity": 0.82,
@@ -357,55 +367,255 @@ class GP15MachineAssembly:
 
     def generate_material_bed_mesh(
         self,
-        bed_depth_m: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray, dict]:
-        """Generate the material bed (product on belt inside RF zone).
+        """Generate the material bed with slanted infeed profile.
 
-        The bed is a flat slab of material sitting on the belt stack
-        inside the RF zone.  It spans the full RF zone length and belt
-        width.
+        From the manual (Illustration 3 / sizing plate design):
+        the material is deposited from the hopper with a wedge profile
+        that starts tall at the hopper discharge and tapers to the
+        controlled bed depth set by the sizing gate.  Inside the oven
+        the bed is at uniform depth.
 
-        Args:
-            bed_depth_m: Override depth (m).  Uses ``params.bed_depth_m``
-                         if *None*.
+        Side view::
+
+            HOPPER
+              ╲
+               ╲ slant (from sizing gate)
+                ╲___________________________
+                |                           |
+                | uniform bed in oven       |  → outfeed
+                |___________________________|
+                ← slant →←── oven RF zone ──→
+
+        The bed spans from hopper discharge through the entire oven.
+        """
+        import math
+        from ..mesh_utils import box_mesh as _box
+
+        assert self.params.oven_params is not None
+        assert self.params.hopper_params is not None
+
+        op = self.params.oven_params
+        hp = self.params.hopper_params
+        cp = self.params.conveyor_params
+
+        y_base = cp.belt_stack_thickness_m     # top of belt stack
+        bed_depth = self.params.bed_depth_m    # uniform bed depth in oven
+        z0 = op.conveyor_belt_z0_m
+        belt_w = op.rf_zone_width_m
+
+        # ── Slant section: hopper discharge → oven infeed ─────────
+        # Material piles up at the hopper and the sizing gate sets
+        # the max height.  It tapers down to the uniform bed depth
+        # over the distance from hopper to oven entry.
+        x_hopper = hp.hopper_front_x           # where material lands
+        x_oven_in = op.oven_x_start_m          # oven infeed wall
+        slant_len = x_oven_in - x_hopper
+        slant_top_height = bed_depth * 2.5     # pile height at hopper
+
+        parts_v = []
+        parts_t = []
+
+        if slant_len > 0.01:
+            # Triangular wedge: tall at hopper, tapers to bed_depth at oven
+            slant_verts = np.array([
+                # Left (z0)
+                [x_hopper, y_base, z0],                                # 0
+                [x_hopper, y_base + slant_top_height, z0],             # 1
+                [x_oven_in, y_base + bed_depth, z0],                   # 2
+                [x_oven_in, y_base, z0],                               # 3
+                # Right (z0 + belt_w)
+                [x_hopper, y_base, z0 + belt_w],                      # 4
+                [x_hopper, y_base + slant_top_height, z0 + belt_w],   # 5
+                [x_oven_in, y_base + bed_depth, z0 + belt_w],         # 6
+                [x_oven_in, y_base, z0 + belt_w],                     # 7
+            ], dtype=np.float32)
+            slant_tris = np.array([
+                # Left face
+                [0, 1, 2], [0, 2, 3],
+                # Right face
+                [4, 6, 5], [4, 7, 6],
+                # Bottom
+                [0, 3, 7], [0, 7, 4],
+                # Front (hopper face)
+                [0, 4, 5], [0, 5, 1],
+                # Back (oven face)
+                [3, 2, 6], [3, 6, 7],
+                # Top slope
+                [1, 5, 6], [1, 6, 2],
+            ], dtype=np.int32)
+            parts_v.append(slant_verts)
+            parts_t.append(slant_tris)
+
+        # ── Uniform section: inside the oven (RF zone) ────────────
+        uniform_x0 = op.oven_x_start_m
+        uniform_x1 = op.oven_x_end_m
+        uniform_len = uniform_x1 - uniform_x0
+        if uniform_len > 0.01:
+            uv, ut = _box(
+                uniform_x0, y_base, z0,
+                uniform_len, bed_depth, belt_w,
+            )
+            # Offset triangle indices
+            offset = sum(v.shape[0] for v in parts_v)
+            parts_v.append(uv)
+            parts_t.append(ut + offset)
+
+        all_verts = np.vstack(parts_v).astype(np.float32)
+        all_tris = np.vstack(parts_t).astype(np.int32)
+
+        return all_verts, all_tris, {
+            "type": "material_bed",
+            "profile": "slant_plus_uniform",
+            "slant_x_start": x_hopper,
+            "uniform_x_start": op.oven_x_start_m,
+            "uniform_x_end": op.oven_x_end_m,
+            "bed_depth_m": bed_depth,
+        }
+
+    def generate_outfeed_tunnel_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the outfeed attenuation tunnel at the oven exit wall.
+
+        Proportional to the infeed tunnel: same height, same length,
+        same construction.  Sits at the oven outfeed wall (x = oven_x_end).
         """
         from ..mesh_utils import box_mesh as _box
 
-        depth = bed_depth_m if bed_depth_m is not None else self.params.bed_depth_m
         assert self.params.oven_params is not None
+        assert self.params.hopper_params is not None
 
         op = self.params.oven_params
-        cp = self.params.conveyor_params
-        y_base = cp.belt_stack_thickness_m  # top of belt stack
+        hp = self.params.hopper_params
 
-        verts, tris = _box(
-            op.rf_zone_x_start,            # x: RF zone start
-            y_base,                         # y: on top of belt stack
-            op.conveyor_belt_z0_m,          # z: belt left edge
-            op.rf_zone_length_m,            # dx: RF zone length
-            depth,                          # dy: bed depth
-            op.rf_zone_width_m,             # dz: belt width
-        )
+        # Same dimensions as infeed tunnel
+        tL = hp.tunnel_length_m               # 0.248 m
+        tH = hp.tunnel_height_m               # 0.258 m
+        tw = hp.tunnel_wall_thickness_m        # 0.003 m
+
+        # Position: starts at oven outfeed wall, extends in +X
+        x0 = op.oven_x_end_m
+        y0 = 0.0                               # deck level
+        z_center = op.belt_z_center
+        tunnel_z_width = hp.hopper_width_m + 0.04  # same as infeed tunnel
+        tz0 = z_center - tunnel_z_width / 2.0
+
+        parts = []
+        # Bottom
+        parts.append(_box(x0, y0 - tw, tz0, tL, tw, tunnel_z_width))
+        # Top
+        parts.append(_box(x0, y0 + tH, tz0, tL, tw, tunnel_z_width))
+        # Left wall
+        parts.append(_box(x0, y0, tz0, tL, tH, tw))
+        # Right wall
+        parts.append(_box(x0, y0, tz0 + tunnel_z_width - tw, tL, tH, tw))
+        # End flange (outer end)
+        fl = 0.015
+        parts.append(_box(x0 + tL, y0 + tH, tz0 - fl, fl, tw, tunnel_z_width + 2 * fl))
+        parts.append(_box(x0 + tL, y0 - tw, tz0 - fl, fl, tw, tunnel_z_width + 2 * fl))
+        parts.append(_box(x0 + tL, y0, tz0 - fl, fl, tH, tw + fl))
+        parts.append(_box(x0 + tL, y0, tz0 + tunnel_z_width, fl, tH, tw + fl))
+
+        verts, tris = concat_meshes(parts)
         return verts, tris, {
-            "type": "material_bed",
-            "x_start": op.rf_zone_x_start,
-            "x_end": op.rf_zone_x_end,
-            "depth_m": depth,
+            "type": "outfeed_tunnel",
+            "x_start": x0,
+            "x_end": x0 + tL,
+            "tunnel_length_m": tL,
+            "tunnel_height_m": tH,
+        }
+
+    def generate_collection_bin_mesh(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Generate the collection bin at the outfeed end of the belt.
+
+        A simple open-top stainless steel container that sits on the
+        floor directly under the head roller.  Product falls off the
+        belt end and drops into the bin.  No legs — it rests on the
+        floor like any real collection bin.
+
+        Side view (X-Y)::
+
+            belt →→→ ↓ falls off head roller
+                     │
+                ┌────┼────┐  ← bin rim (near belt level)
+                │    ↓    │
+                │  product│
+                │         │
+                └─────────┘  ← bin bottom (on the floor)
+        """
+        from ..mesh_utils import box_mesh as _box
+
+        cp = self.params.conveyor_params
+
+        L = cp.frame_length_m
+        nose = cp.nose_length_m
+        H = cp.frame_height_m
+        lh = cp.leg_height_m
+        W = cp.frame_width_m
+        belt_w = cp.belt_width_m
+        wt = 0.003  # sheet metal
+
+        # Floor level
+        floor_y = -(H + lh)
+
+        # Bin position: directly under the head roller
+        head_x = L - nose                       # head roller X
+        bin_width_z = belt_w + 0.06             # slightly wider than belt
+        bin_z0 = (W - bin_width_z) / 2          # centred on frame
+        bin_depth_x = 0.65                      # larger for more volume
+        bin_x0 = head_x - bin_depth_x * 0.45    # mostly under roller
+        bin_x1 = bin_x0 + bin_depth_x
+
+        # Vertical: sits on the floor, 3/4 of floor-to-belt height
+        bin_bottom_y = floor_y                  # flat on the floor
+        bin_top_y = floor_y + abs(floor_y) * 0.65 
+        bin_h = bin_top_y - bin_bottom_y
+
+        parts = []
+
+        # ── 4 walls + bottom (simple open-top box on the floor) ──
+        # Back wall (toward oven)
+        parts.append(_box(bin_x0, bin_bottom_y, bin_z0,
+                          wt, bin_h, bin_width_z))
+        # Front wall (past belt end)
+        parts.append(_box(bin_x1 - wt, bin_bottom_y, bin_z0,
+                          wt, bin_h, bin_width_z))
+        # Left wall
+        parts.append(_box(bin_x0, bin_bottom_y, bin_z0,
+                          bin_depth_x, bin_h, wt))
+        # Right wall
+        parts.append(_box(bin_x0, bin_bottom_y, bin_z0 + bin_width_z - wt,
+                          bin_depth_x, bin_h, wt))
+        # Bottom (on the floor)
+        parts.append(_box(bin_x0, bin_bottom_y, bin_z0,
+                          bin_depth_x, wt, bin_width_z))
+
+        # ── Top rim flange (folded edge for rigidity) ─────────────
+        rim = 0.015
+        parts.append(_box(bin_x0 - rim, bin_top_y, bin_z0 - rim,
+                          bin_depth_x + 2 * rim, rim, bin_width_z + 2 * rim))
+
+        verts, tris = concat_meshes(parts)
+        return verts, tris, {
+            "type": "collection_bin",
+            "bin_x_start": float(bin_x0),
+            "bin_x_end": float(bin_x1),
+            "bin_top_y": float(bin_top_y),
+            "bin_bottom_y": float(bin_bottom_y),
         }
 
     # ─── Mesh generation (all at once) ────────────────────────────
 
     def generate_all_meshes(
         self,
-        include_bed: bool = True,
     ) -> Dict[str, Tuple[np.ndarray, np.ndarray, dict]]:
         """Generate all component meshes in the correct order.
 
         The order matters: rollers must be generated before the belt
         so the belt path can reference the roller layout.
-
-        Args:
-            include_bed: Whether to include the material bed mesh.
 
         Returns:
             Ordered dict of ``{name: (vertices, triangles, metadata)}``.
@@ -430,17 +640,19 @@ class GP15MachineAssembly:
         # 6. Lower electrode (fixed, on deck plate)
         meshes["lower_electrode"] = self.generate_lower_electrode_mesh()
 
-        # 7. Material bed (on belt, inside RF zone)
-        if include_bed:
-            meshes["material_bed"] = self.generate_material_bed_mesh()
-
-        # 8. Infeed hopper (before oven, feeds belt)
+        # 7. Infeed hopper (before oven, feeds belt)
         meshes["infeed_hopper"] = self.generate_hopper_mesh()
 
-        # 9. Feed tunnel (connects hopper zone to oven infeed wall)
+        # 8. Feed tunnel (connects hopper zone to oven infeed wall)
         meshes["infeed_tunnel"] = self.generate_infeed_tunnel_mesh()
 
-        # 10. EMU housing (heater/extraction, at oven infeed end)
+        # 9. Outfeed tunnel (oven exit wall, proportional to infeed)
+        meshes["outfeed_tunnel"] = self.generate_outfeed_tunnel_mesh()
+
+        # 10. Collection bin (outfeed end, catches product)
+        meshes["collection_bin"] = self.generate_collection_bin_mesh()
+
+        # 11. EMU housing (heater/extraction, behind oven)
         meshes["emu_housing"] = self.generate_emu_mesh()
 
         # 11. RF Generator cabinet (behind oven, +Z side)
@@ -453,7 +665,6 @@ class GP15MachineAssembly:
 
     def generate_combined_mesh(
         self,
-        include_bed: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray, dict]:
         """Concatenate all component meshes into a single mesh.
 
@@ -462,7 +673,7 @@ class GP15MachineAssembly:
         Returns:
             (combined_vertices, combined_triangles, summary_metadata)
         """
-        all_meshes = self.generate_all_meshes(include_bed=include_bed)
+        all_meshes = self.generate_all_meshes()
 
         parts = [(v, t) for v, t, _meta in all_meshes.values()]
         verts, tris = concat_meshes(parts)
@@ -598,7 +809,6 @@ def create_gp15_machine(
 def build_gp15_machine_meshes(
     electrode_gap_m: float = 0.200,
     bed_depth_m: float = 0.040,
-    include_bed: bool = True,
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray, dict]]:
     """One-shot helper: create machine and return all meshes.
 
@@ -608,7 +818,6 @@ def build_gp15_machine_meshes(
     Args:
         electrode_gap_m: Electrode gap (default 200 mm).
         bed_depth_m: Material bed depth on belt (default 40 mm).
-        include_bed: Whether to include the material bed mesh.
 
     Returns:
         Dict of ``{component_name: (vertices, triangles, metadata)}``.
@@ -623,4 +832,4 @@ def build_gp15_machine_meshes(
         electrode_gap_m=electrode_gap_m,
         bed_depth_m=bed_depth_m,
     )
-    return machine.generate_all_meshes(include_bed=include_bed)
+    return machine.generate_all_meshes()

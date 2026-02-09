@@ -105,9 +105,20 @@ class GeneratorParams:
     floor_y_m: float = -1.30             # [m] floor level
 
     @classmethod
-    def from_oven(cls, oven_params: "OvenChamberParams") -> "GeneratorParams":
-        """Position the generator behind the oven (+Z), outfeed half."""
+    def from_oven(
+        cls,
+        oven_params: "OvenChamberParams",
+        floor_y_m: float = -1.30,
+    ) -> "GeneratorParams":
+        """Position the generator behind the oven (+Z), outfeed half.
+
+        Height is calculated so the cabinet top reaches the oven ceiling.
+        """
+        # Generator top = oven ceiling (flush)
+        height = oven_params.oven_height_m - floor_y_m
+
         return cls(
+            cabinet_height_m=height,
             oven_x_start_m=oven_params.oven_x_start_m,
             oven_x_end_m=oven_params.oven_x_end_m,
             oven_width_m=oven_params.oven_width_m,
@@ -116,6 +127,7 @@ class GeneratorParams:
             rf_zone_x_end_m=oven_params.rf_zone_x_end,
             rf_zone_width_m=oven_params.rf_zone_width_m,
             belt_z0_m=oven_params.conveyor_belt_z0_m,
+            floor_y_m=floor_y_m,
         )
 
     @property
@@ -261,6 +273,7 @@ class GeneratorGeometry:
         # Key coordinates
         oven_z_back = p.oven_width_m         # oven back wall
         gen_z_start = p.cabinet_z_start      # generator front face (includes gap)
+        gen_x_center = p.cabinet_x_start + p.cabinet_length_m / 2
         z_belt_center = p.belt_z0_m + p.rf_zone_width_m / 2
         rf_x0 = p.rf_zone_x_start_m
         rf_xL = p.rf_zone_x_end_m - rf_x0   # RF zone length
@@ -272,23 +285,25 @@ class GeneratorGeometry:
         fs_w = p.feed_strip_width_m
 
         # ── 1. Enclosed conduit housing: generator → oven wall ─────
-        # A sheet-metal cable tray / conduit that physically connects
-        # the generator cabinet face to the oven back wall.  The copper
-        # busbar runs inside it.
+        # Runs at the generator's X centre so it physically connects
+        # to the generator cabinet face.  Inside the oven, a
+        # distribution rail connects the conduit to the RF zone.
         #
-        #   Side view (Y-Z):
-        #       ┌──────────────────────────────────────────┐
-        #       │  copper busbar inside enclosed conduit    │
-        #       └──────────────────────────────────────────┘
-        #       oven wall                          generator
-        #       z = oven_z_back                    z = gen_z_start
+        #   Top view (X-Z):
+        #
+        #       RF zone              conduit           generator
+        #       X=1.46..3.26    ←── distribution ──→  X=3.11
+        #                            rail               │
+        #       oven                                    │ conduit
+        #       z=1.10 ────────────────────────────── z=2.40
 
-        conduit_x = rf_x_center - bus_s / 2
+        conduit_x = gen_x_center - bus_s / 2  # aligned to generator centre
         conduit_y = y_ceiling - bus_s
 
-        # Conduit runs from oven back wall to generator front face
-        conduit_z0 = oven_z_back          # starts at oven wall
-        conduit_z1 = gen_z_start          # ends at generator face
+        # Conduit runs from oven back wall, across the gap, and
+        # physically INTO the generator cabinet (past its front wall)
+        conduit_z0 = oven_z_back                           # starts at oven wall
+        conduit_z1 = gen_z_start + p.cabinet_depth_m * 0.5  # halfway into cabinet
         conduit_span = conduit_z1 - conduit_z0
 
         # Conduit enclosure dimensions (larger than busbar)
@@ -359,25 +374,40 @@ class GeneratorGeometry:
                 bus_s, riser_y_top - riser_y_bot, bus_s,
             ))
 
-        # ── 3. Main busbar along oven ceiling ─────────────────────
-        # Runs from the back wall toward belt centre (Z direction)
-        busbar_z0 = z_belt_center - bus_s / 2  # terminate above belt center
+        # ── 3. Main busbar along oven ceiling (Z direction) ────────
+        # Runs from the oven back wall toward belt centre at the
+        # conduit X position (generator's X centre).
+        busbar_z0 = z_belt_center - bus_s / 2
         busbar_z1 = oven_z_back - 0.08
         busbar_len_z = busbar_z1 - busbar_z0
         parts.append(box_mesh(
-            rf_x_center - bus_s / 2, y_ceiling,
+            conduit_x, y_ceiling,
             busbar_z0,
             bus_s, bus_s, busbar_len_z,
         ))
 
         # ── 4. Distribution rail along X (above RF zone) ─────────
-        # A horizontal rail at ceiling height, spanning the RF zone length
-        # This distributes RF from the main busbar to the feed strips
+        # Spans the full RF zone length at belt centre Z,
+        # connecting the feed strips to the main busbar.
         parts.append(box_mesh(
             rf_x0, y_ceiling,
             z_belt_center - bus_s / 2,
             rf_xL, bus_s, bus_s,
         ))
+
+        # ── 4b. Connecting piece: distribution rail → main busbar ─
+        # The distribution rail (at rf_x_center) and main busbar
+        # (at gen_x_center) are at different X positions.  A short
+        # bus connects them along X at the ceiling.
+        conn_x_min = min(rf_x_center, conduit_x + bus_s / 2)
+        conn_x_max = max(rf_x_center, conduit_x + bus_s / 2)
+        conn_x_len = conn_x_max - conn_x_min
+        if conn_x_len > bus_s:
+            parts.append(box_mesh(
+                conn_x_min, y_ceiling,
+                z_belt_center - bus_s / 2,
+                conn_x_len, bus_s, bus_s,
+            ))
 
         # ── 5. Tuning feed plates (4, from ceiling rail downward) ─
         # These hang from the distribution rail and bridge to the

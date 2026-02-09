@@ -78,6 +78,8 @@ def add_solid(plotter: pv.Plotter, meshes: dict, xray: bool = False) -> None:
         "material_bed": 0.80,
         "infeed_hopper": 0.88,
         "infeed_tunnel": 0.30,
+        "outfeed_tunnel": 0.30,
+        "collection_bin": 0.75,
         "emu_housing": 0.15,
         "generator": 0.25,
         "rf_feed": 0.95,
@@ -123,6 +125,8 @@ def add_wireframe(plotter: pv.Plotter, meshes: dict) -> None:
         "material_bed": "#DAA520",
         "infeed_hopper": "#707078",
         "infeed_tunnel": "#505058",
+        "outfeed_tunnel": "#505058",
+        "collection_bin": "#505058",
         "emu_housing": "#909098",
         "generator": "#607080",
         "rf_feed": "#CD7F32",
@@ -153,6 +157,8 @@ def add_exploded(plotter: pv.Plotter, meshes: dict) -> None:
         "material_bed": 0.08,
         "infeed_hopper": 0.10,
         "infeed_tunnel": 0.05,
+        "outfeed_tunnel": 0.05,
+        "collection_bin": 0.0,
         "emu_housing": 0.50,
         "generator": 0.0,
         "rf_feed": 0.15,
@@ -210,8 +216,7 @@ Examples:
                         help="Electrode gap in mm (default 200)")
     parser.add_argument("--bed-depth", type=float, default=40,
                         help="Material bed depth in mm (default 40)")
-    parser.add_argument("--no-bed", action="store_true",
-                        help="Omit material bed")
+    # material bed removed — product flows from hopper through oven dynamically
     parser.add_argument("--wireframe", action="store_true",
                         help="Wireframe rendering")
     parser.add_argument("--xray", action="store_true",
@@ -237,7 +242,7 @@ Examples:
     )
 
     info = machine.get_assembly_info()
-    meshes = machine.generate_all_meshes(include_bed=not args.no_bed)
+    meshes = machine.generate_all_meshes()
 
     print_mesh_stats(meshes)
     print(f"  Oven position:     x = {info['oven_x_start_m']:.2f} – "

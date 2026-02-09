@@ -91,16 +91,32 @@ class EMUParams:
     oven_x_start_m: float = 1.65
     oven_x_end_m: float = 4.15
     oven_width_m: float = 1.10           # [m] oven Z extent (back wall at this Z)
+    oven_height_m: float = 1.10          # [m] oven internal height
     floor_y_m: float = -1.30             # [m] floor level
 
     @classmethod
-    def from_oven(cls, oven_params: "OvenChamberParams") -> "EMUParams":
-        """Create EMU params: behind the oven, infeed half."""
+    def from_oven(
+        cls,
+        oven_params: "OvenChamberParams",
+        floor_y_m: float = -1.30,
+    ) -> "EMUParams":
+        """Create EMU params: behind the oven, infeed half.
+
+        Height is calculated relative to the oven ceiling so the
+        extraction duct extends above the oven top.
+        """
+        # EMU top = oven ceiling + 0.50 m clearance for extraction duct/fan
+        emu_top_y = oven_params.oven_height_m + 0.50
+        height = emu_top_y - floor_y_m
+
         return cls(
+            housing_height_m=height,
             oven_x_start_m=oven_params.oven_x_start_m,
             oven_x_end_m=oven_params.oven_x_end_m,
             oven_width_m=oven_params.oven_width_m,
+            oven_height_m=oven_params.oven_height_m,
             duct_diameter_m=oven_params.extraction_diameter_m,
+            floor_y_m=floor_y_m,
         )
 
     @property
@@ -200,7 +216,97 @@ class EMUGeometry:
             (duct_r + fl) * 2, wt, (duct_r + fl) * 2,
         ))
 
-        # ── 4. Heater bank intake louvres (back face) ────────────
+        # ── 4. Supply air duct (EMU → oven, across the gap) ───────
+        # Rectangular duct carrying heated air from the EMU blower
+        # through the gap to the oven back wall.
+        oven_z_back = p.oven_width_m             # oven back wall Z
+        duct_gap = z0 - oven_z_back              # gap span
+        supply_w = hL - 2 * passage_margin        # duct width (X)
+        supply_h = 0.40                            # duct height (Y)
+        supply_y = 0.05                            # just above deck
+        supply_wt = 0.003                          # duct wall thickness
+
+        # Bottom
+        parts.append(box_mesh(x0 + passage_margin, supply_y,
+                              oven_z_back, supply_w, supply_wt, duct_gap))
+        # Top
+        parts.append(box_mesh(x0 + passage_margin, supply_y + supply_h,
+                              oven_z_back, supply_w, supply_wt, duct_gap))
+        # Left side
+        parts.append(box_mesh(x0 + passage_margin, supply_y,
+                              oven_z_back, supply_wt, supply_h, duct_gap))
+        # Right side
+        parts.append(box_mesh(x0 + hL - passage_margin - supply_wt, supply_y,
+                              oven_z_back, supply_wt, supply_h, duct_gap))
+        # Flanges at both ends
+        fl_d = 0.006
+        fl_e = 0.03
+        parts.append(box_mesh(x0 + passage_margin - fl_e,
+                              supply_y - fl_e, oven_z_back - fl_d,
+                              supply_w + 2 * fl_e, supply_h + 2 * fl_e, fl_d))
+        parts.append(box_mesh(x0 + passage_margin - fl_e,
+                              supply_y - fl_e, z0,
+                              supply_w + 2 * fl_e, supply_h + 2 * fl_e, fl_d))
+
+        # ── 5. Extraction duct (oven top → EMU top, across gap) ───
+        # The extraction path:
+        #   a) Vertical stub through oven ceiling (visible on oven top)
+        #   b) Horizontal run from oven back wall across gap to EMU
+        #   c) Vertical riser up to EMU top where fan sits
+        ext_r = p.duct_diameter_m / 2
+        ext_section = p.duct_diameter_m + 0.02    # square duct section
+        ext_cx = x0 + hL / 2                      # centred on EMU in X
+        ext_fl = 0.03
+
+        # (a) Vertical stub ON TOP of oven — visible connection point
+        #     Goes from inside the oven (y = oven_height - 0.08)
+        #     up through the oven ceiling to above it
+        stub_y_bot = p.oven_height_m - 0.08
+        stub_y_top = p.oven_height_m + ext_section + 0.02
+        stub_z_center = p.oven_width_m / 2        # oven centre in Z
+        parts.append(box_mesh(
+            ext_cx - ext_section / 2, stub_y_bot,
+            stub_z_center - ext_section / 2,
+            ext_section, stub_y_top - stub_y_bot, ext_section,
+        ))
+        # Flange ring on oven ceiling
+        parts.append(box_mesh(
+            ext_cx - ext_section / 2 - ext_fl,
+            p.oven_height_m - 0.003,
+            stub_z_center - ext_section / 2 - ext_fl,
+            ext_section + 2 * ext_fl, 0.006,
+            ext_section + 2 * ext_fl,
+        ))
+
+        # (b) Horizontal run from stub top across to oven back wall
+        #     and then across the gap to the EMU
+        horiz_y = stub_y_top - ext_section        # align with stub top
+        horiz_z_start = stub_z_center + ext_section / 2  # from stub
+        horiz_z_end = z0 + ext_section              # into EMU
+        horiz_z_len = horiz_z_end - horiz_z_start
+        if horiz_z_len > 0.01:
+            parts.append(box_mesh(
+                ext_cx - ext_section / 2, horiz_y,
+                horiz_z_start,
+                ext_section, ext_section, horiz_z_len,
+            ))
+            # Flanges at transitions
+            parts.append(box_mesh(
+                ext_cx - ext_section / 2 - ext_fl,
+                horiz_y - ext_fl, oven_z_back - fl_d,
+                ext_section + 2 * ext_fl, ext_section + 2 * ext_fl, fl_d,
+            ))
+
+        # (c) Vertical riser from horizontal run up to EMU top duct
+        riser_y_bot = horiz_y + ext_section
+        riser_y_top = y0 + hH
+        if riser_y_top > riser_y_bot:
+            parts.append(box_mesh(
+                ext_cx - ext_section / 2, riser_y_bot,
+                z0, ext_section, riser_y_top - riser_y_bot, ext_section,
+            ))
+
+        # ── 7. Heater bank intake louvres (back face) ────────────
         hb_w = p.heater_box_width_m
         hb_h = p.heater_box_height_m
         hb_d = p.heater_box_depth_m
@@ -210,7 +316,7 @@ class EMUGeometry:
             # Protruding louvre on back face
             parts.append(box_mesh(hb_x, hb_y, z0 + hD, hb_w, hb_h, hb_d))
 
-        # ── 5. Access panel outlines (back face) ─────────────────
+        # ── 8. Access panel outlines (back face) ─────────────────
         pw = p.access_panel_width_m
         ph = p.access_panel_height_m
         trim = 0.004
@@ -242,30 +348,49 @@ class EMUGeometry:
 
     @property
     def ports(self) -> Dict[str, "ConnectionPort"]:
+        """EMU connection ports.
+
+        - air_to_oven:       supply air outlet → oven back wall air_supply port
+        - extraction_inlet:  extraction duct inlet ← oven extraction port
+        - exhaust:           fan exhaust (top, to atmosphere)
+        """
         from airclassifier.geometry.connection_ports import ConnectionPort, PortType
         p = self.params
+        emu_x_center = p.emu_x_start + p.housing_length_m / 2
+
         return {
+            'air_to_oven': ConnectionPort(
+                position=(
+                    emu_x_center,
+                    0.25,           # matches oven air_supply Y
+                    p.oven_width_m,  # oven back wall Z (duct spans the gap)
+                ),
+                direction=(0.0, 0.0, -1.0),  # points toward oven (-Z)
+                width=p.housing_length_m - 0.16,
+                height=0.40,       # matches oven air_supply height
+                port_type=PortType.RECTANGULAR,
+                name="emu_air_to_oven",
+            ),
+            'extraction_inlet': ConnectionPort(
+                position=(
+                    emu_x_center,
+                    p.oven_height_m,  # oven ceiling height
+                    p.oven_width_m,   # oven back wall Z
+                ),
+                direction=(0.0, 0.0, -1.0),  # from oven ceiling via duct
+                diameter=p.duct_diameter_m + 0.02,  # duct section
+                port_type=PortType.CIRCULAR,
+                name="emu_extraction_inlet",
+            ),
             'exhaust': ConnectionPort(
                 position=(
-                    p.emu_x_start + p.housing_length_m / 2,
+                    emu_x_center,
                     p.base_y + p.housing_height_m + p.duct_height_m,
                     p.emu_z_start + p.housing_depth_m / 2,
                 ),
-                direction=(0.0, 1.0, 0.0),
+                direction=(0.0, 1.0, 0.0),  # up to atmosphere
                 diameter=p.duct_diameter_m,
                 port_type=PortType.CIRCULAR,
                 name="emu_exhaust",
-            ),
-            'air_to_oven': ConnectionPort(
-                position=(
-                    p.emu_x_start + p.housing_length_m / 2,
-                    0.35,
-                    p.emu_z_start,
-                ),
-                direction=(0.0, 0.0, -1.0),
-                width=p.housing_length_m - 0.16,
-                height=0.70,
-                port_type=PortType.RECTANGULAR,
-                name="emu_to_oven",
             ),
         }
