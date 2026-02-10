@@ -655,11 +655,18 @@ class GP15MachineAssembly:
 
     def generate_all_meshes(
         self,
+        skip_material_bed: bool = False,
     ) -> Dict[str, Tuple[np.ndarray, np.ndarray, dict]]:
         """Generate all component meshes in the correct order.
 
         The order matters: rollers must be generated before the belt
         so the belt path can reference the roller layout.
+
+        Args:
+            skip_material_bed: If ``True``, omit the static material
+                bed mesh.  Set this when using the Lagrangian particle
+                system (``MaterialParticleSystem``) for material
+                visualization instead.
 
         Returns:
             Ordered dict of ``{name: (vertices, triangles, metadata)}``.
@@ -684,8 +691,9 @@ class GP15MachineAssembly:
         # 6. Lower electrode (fixed, on deck plate)
         meshes["lower_electrode"] = self.generate_lower_electrode_mesh()
 
-        # 7. Material bed (hopper → oven → head roller → drops into bin)
-        meshes["material_bed"] = self.generate_material_bed_mesh()
+        # 7. Material bed (static mesh — skipped when particles are active)
+        if not skip_material_bed:
+            meshes["material_bed"] = self.generate_material_bed_mesh()
 
         # 8. Infeed hopper (before oven, feeds belt)
         meshes["infeed_hopper"] = self.generate_hopper_mesh()

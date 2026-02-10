@@ -346,20 +346,24 @@ def _collect_roller_entries(layout):
 def _run_live_3d(sim, recipe, args, info, material):
     """Run the simulation live with coupled conveyor belt animation.
 
-    Combines the physics simulation (temperature field updates) with
-    the conveyor belt drive animation (roller rotation + belt scroll)
-    from ``visualize_conveyor.py``, all driven by the same
-    ``ConveyorDriveController`` inside the CoupledSimulator.
+    All simulation logic (physics stepping, particle updates, conveyor
+    control) is handled by ``GP15Simulator`` and its internal
+    ``CoupledSimulator``.  This function only does visualization:
+    reading state from the simulator's public API and updating
+    PyVista meshes.
     """
     import math
     import pyvista as pv
     from airclassifier.pretreatment.geometry.assembly import COMPONENT_COLORS
     from airclassifier.pretreatment.kernels.transport import rotate_mesh_around_z_axis
 
+    # Ensure simulator is ready (builds mask, connects particles)
     sim._ensure_initialized()
-    recipe_obj = sim._recipe or recipe
 
-    meshes = sim.assembly.generate_all_meshes()
+    # Use simulator's get_mesh() which skips the static material_bed
+    # (particles replace it) and attaches field data
+    meshes = sim.get_mesh()
+    particle_sys = sim.particles     # owned by the simulator
 
     # ── Build plotter ─────────────────────────────────────────────
     plotter = pv.Plotter()
@@ -367,30 +371,22 @@ def _run_live_3d(sim, recipe, args, info, material):
     plotter.set_background(bg)
     plotter.camera.up = (0, 1, 0)
 
-    # X-ray opacities
     xray_opacities = {
-        "conveyor_frame": 0.08,
-        "oven_chamber": 0.06,
-        "rollers": 0.60,
-        "belt": 0.40,
-        "upper_electrode": 0.30,
-        "lower_electrode": 0.25,
-        "material_bed": 0.0,
-        "infeed_hopper": 0.70,
-        "infeed_tunnel": 0.20,
-        "outfeed_tunnel": 0.20,
-        "collection_bin": 0.55,
-        "emu_housing": 0.10,
-        "generator": 0.20,
-        "rf_feed": 0.80,
+        "conveyor_frame": 0.08, "oven_chamber": 0.06,
+        "rollers": 0.60, "belt": 0.40,
+        "upper_electrode": 0.30, "lower_electrode": 0.25,
+        "infeed_hopper": 0.70, "infeed_tunnel": 0.20,
+        "outfeed_tunnel": 0.20, "collection_bin": 0.55,
+        "emu_housing": 0.10, "generator": 0.20, "rf_feed": 0.80,
     }
 
-    # Names that get animated (handled separately below)
-    animated_names = {"rollers", "belt"}
+    animated_names = {"rollers", "belt", "fields"}
 
     # ── Add STATIC machine geometry ───────────────────────────────
     for name, item in meshes.items():
         if name in animated_names:
+            continue
+        if not isinstance(item, tuple) or len(item) != 3:
             continue
         v, t, meta = item
         style = COMPONENT_COLORS.get(name, {})
@@ -405,12 +401,11 @@ def _run_live_3d(sim, recipe, args, info, material):
 
     # ── Add ANIMATED rollers ──────────────────────────────────────
     rollers_v, rollers_t, _ = meshes["rollers"]
-    rollers_base = rollers_v.copy()          # reference (never modified)
+    rollers_base = rollers_v.copy()
     rollers_pd = _mesh_to_polydata(rollers_v, rollers_t)
     plotter.add_mesh(rollers_pd, color="#808090", opacity=0.85,
                      smooth_shading=True, label="Rollers", name="rollers")
 
-    # Pre-compute roller vertex masks for rotation (from visualize_conveyor.py)
     conveyor_geom = sim.assembly.conveyor
     conv_params = conveyor_geom.params
     roller_layout = conveyor_geom._roller_layout
@@ -436,7 +431,6 @@ def _run_live_3d(sim, recipe, args, info, material):
     belt_v, belt_t, _ = meshes["belt"]
     belt_pd = _mesh_to_polydata(belt_v, belt_t)
 
-    # Belt arc-length for scroll animation (from visualize_conveyor.py)
     belt_path_xy = belt_v[0::4, :2]
     _seg = np.diff(belt_path_xy, axis=0)
     _seg_lens = np.sqrt(_seg[:, 0] ** 2 + _seg[:, 1] ** 2)
@@ -448,7 +442,6 @@ def _run_live_3d(sim, recipe, args, info, material):
     n_belt_bands = max(1, round(belt_total_len / head_circ))
     belt_band_len = belt_total_len / n_belt_bands
 
-    # Initial belt pattern
     belt_pd.point_data["motion"] = (
         0.5 + 0.5 * np.cos(2.0 * math.pi * belt_arc_per_vert / belt_band_len)
     ).astype(np.float32)
@@ -462,6 +455,20 @@ def _run_live_3d(sim, recipe, args, info, material):
         show_scalar_bar=False, label="Belt (PTFE)",
     )
 
+    # ── Add particle point cloud ──────────────────────────────────
+    # Fixed-size buffer; dead particles hidden off-screen.
+    particle_cloud = pv.PolyData(particle_sys.pos.copy())
+    particle_cloud["Temperature"] = particle_sys.temperature.copy()
+
+    T_ambient = material.initial_temperature_c
+    plotter.add_mesh(
+        particle_cloud, scalars="Temperature",
+        cmap="hot", clim=[T_ambient, T_ambient + 15],
+        point_size=5.0, render_points_as_spheres=True,
+        opacity=0.90, show_scalar_bar=False,
+        name="particles", label="Material Particles",
+    )
+
     # ── Build rectilinear grid for temperature field ──────────────
     nx, ny, nz = sim.grid_shape
     dx, dy, dz = sim.cell_sizes
@@ -471,29 +478,16 @@ def _run_live_3d(sim, recipe, args, info, material):
     y_coords = np.linspace(y0, y0 + ny * dy, ny + 1)
     z_coords = np.linspace(z0, z0 + nz * dz, nz + 1)
 
-    # ── Temperature field: extract material cells ONCE ──────────────
-    # The material mask is static, so we extract once and update the
-    # scalar array in-place each frame.  This avoids the expensive
-    # remove_actor / threshold / add_mesh cycle that caused the field
-    # to appear frozen (no visible change between frames).
-    T_ambient = material.initial_temperature_c
-    T_max_expected = T_ambient + 15.0   # fixed colour range
-
     field_grid = pv.RectilinearGrid(x_coords, y_coords, z_coords)
-    mask_flat = sim._sim.cell_is_material.flatten(order="F")
-    field_grid.cell_data["Temperature"] = sim._sim.thermal.T.flatten(order="F")
+    mask_flat = sim.material_mask.flatten(order="F")
+    field_grid.cell_data["Temperature"] = sim.temperature_field.flatten(order="F")
     field_grid.cell_data["zone"] = mask_flat
-
-    # Indices of material cells in the Fortran-order flat array.
-    # VTK threshold preserves this order, so we can use it to
-    # update the extracted mesh's scalars directly.
     mat_indices = np.where(mask_flat == 1)[0]
 
     mat_grid = field_grid.threshold(value=1, scalars="zone")
-
     plotter.add_mesh(
         mat_grid, scalars="Temperature",
-        cmap="hot", clim=[T_ambient, T_max_expected],
+        cmap="hot", clim=[T_ambient, T_ambient + 15],
         opacity=0.90, show_scalar_bar=True,
         scalar_bar_args={
             "title": "Temperature [\u00b0C]",
@@ -502,133 +496,114 @@ def _run_live_3d(sim, recipe, args, info, material):
         label="Temperature Field",
     )
 
-    # ── Legend, axes, title ────────────────────────────────────────
+    # ── Legend, axes, title, camera ────────────────────────────────
     legend_bg = (0.1, 0.1, 0.15, 0.8) if args.dark else "white"
     plotter.add_legend(loc="upper left", bcolor=legend_bg)
     plotter.add_title("GP-15 Live  |  Initializing...", font_size=10)
     plotter.add_axes()
-
-    # Camera
     plotter.reset_camera()
     plotter.camera.azimuth = -55
     plotter.camera.elevation = 18
     plotter.camera.zoom(1.1)
 
-    # ── References for the render loop ──────────────────────────────
-    sim_internal = sim._sim
-    conv_ctrl = sim_internal.conveyor
-    t_end = args.duration
+    # ── Adaptive pacing ───────────────────────────────────────────
+    v_belt_init = recipe.belt_speed_m_per_min / 60.0
+    residence_s = sim.config.oven_length_m / max(v_belt_init, 1e-6)
+    transient_sim_s = 2.0 * residence_s
     target_fps = 20.0
     frame_dt = 1.0 / target_fps
-    t0_wall = time.time()
-
-    # Adaptive pacing: advance slowly during the transient so you
-    # can watch the temperature gradient build up, then speed up
-    # once steady state is reached.
-    #   Residence time ≈ L_oven / v_belt.  The transient lasts
-    #   ~2 residence times.  We want that to take ~15-20 s of
-    #   wall-clock so the colour change is clearly visible.
-    v_belt = recipe.belt_speed_m_per_min / 60.0
-    residence_s = sim.config.oven_length_m / max(v_belt, 1e-6)
-    transient_sim_s = 2.0 * residence_s       # ~360 s sim-time
-    transient_wall_s = 15.0                   # show transient in 15 s
-    # steps/frame during transient (dt ≈ 0.3 s per step)
-    avg_dt = 0.3
-    steps_transient = max(1, int(
-        transient_sim_s / (transient_wall_s * target_fps * avg_dt)
-    ))
-    # After transient: go fast (100 steps/frame)
+    steps_transient = max(1, int(transient_sim_s / (15.0 * target_fps * 0.3)))
     steps_steady = 100
 
-    # Open window in non-blocking mode
+    t_end = args.duration
+    t0_wall = time.time()
+    conv_ctrl = sim.conveyor  # public accessor
+
     plotter.show(interactive_update=True, auto_close=False)
 
-    # ── Render loop ───────────────────────────────────────────────
+    # ── Render loop (visualization only — sim logic in simulator) ─
     try:
         while True:
             t_frame_start = time.perf_counter()
 
-            # Process VTK events (mouse, keyboard, window close)
             try:
                 plotter.iren.process_events()
             except Exception:
                 break
 
-            # Adaptive step count: slow during transient, fast after
-            t_sim = sim_internal._time
-            if t_sim < transient_sim_s:
-                steps_this_frame = steps_transient
-            else:
-                steps_this_frame = steps_steady
+            # Adaptive steps: slow during transient, fast after
+            t_sim = sim.sim_time
+            steps = steps_transient if t_sim < transient_sim_s else steps_steady
 
-            # ── Run simulation steps ──────────────────────────────
+            # Step the simulator (physics + particles via coupling loop)
             finished = False
-            for _ in range(steps_this_frame):
-                if sim_internal._time >= t_end - 1e-12:
+            for _ in range(steps):
+                if sim.sim_time >= t_end - 1e-12:
                     finished = True
                     break
-                dt = sim_internal.compute_stable_dt(recipe_obj)
-                dt = min(dt, t_end - sim_internal._time)
-                sim_internal.step(dt, recipe_obj)
+                dt = sim.compute_stable_dt()
+                dt = min(dt, t_end - sim.sim_time)
+                sim.step(dt)
 
-            # ── Animate rollers ───────────────────────────────────
+            # ── Visual updates (read-only from simulator state) ───
+
+            # Rollers
             animated_verts = rollers_base.copy()
             for rname, (mask, cx, cy, r) in roller_vert_masks.items():
                 angle = -conv_ctrl.roller_angle(r)
-                rotated = rotate_mesh_around_z_axis(
+                animated_verts[mask] = rotate_mesh_around_z_axis(
                     rollers_base[mask], cx, cy, angle,
                 )
-                animated_verts[mask] = rotated
             rollers_pd.points = animated_verts
 
-            # ── Animate belt scroll ───────────────────────────────
+            # Belt scroll
             _phase = conv_ctrl.state.belt_position_m % belt_total_len
             _shifted = (belt_arc_per_vert - _phase + belt_total_len) % belt_total_len
             belt_pd.point_data["motion"] = (
                 0.5 + 0.5 * np.cos(2.0 * math.pi * _shifted / belt_band_len)
             ).astype(np.float32)
 
-            # ── Update temperature field IN-PLACE ─────────────────
-            # No mesh rebuild — just overwrite the scalar array on
-            # the already-added mesh.  This is fast and gives smooth
-            # visual progression as the temperature gradient develops.
-            T_new_flat = sim_internal.thermal.T.flatten(order="F")
-            mat_grid.cell_data["Temperature"] = T_new_flat[mat_indices]
+            # Particles (already stepped by coupling loop step 10)
+            updated_pos = particle_sys.pos.copy()
+            dead = (particle_sys.state == particle_sys._STATE_DEAD)
+            updated_pos[dead] = [0.0, -100.0, 0.0]
+            particle_cloud.points = updated_pos
+            particle_cloud.point_data["Temperature"] = particle_sys.temperature.copy()
 
-            # ── Update title ──────────────────────────────────────
-            t_sim = sim_internal._time
-            hist = sim_internal._history
+            # Temperature field
+            T_flat = sim.temperature_field.flatten(order="F")
+            mat_grid.cell_data["Temperature"] = T_flat[mat_indices]
+
+            # Title
+            hist = sim.history
             if hist:
                 last = hist[-1]
-                belt_spd = conv_ctrl.state.belt_speed_m_per_min
-                title = (f"GP-15 Live  |  t={t_sim:.0f}/{t_end:.0f} s  |  "
+                title = (f"GP-15 Live  |  t={sim.sim_time:.0f}/{t_end:.0f} s  |  "
                          f"T_out={last.T_outfeed_c:.1f} C  |  "
                          f"M_out={last.M_outfeed_wb:.1%}  |  "
                          f"P={last.rf_power_kw:.1f} kW  |  "
-                         f"Belt {belt_spd:.1f} m/min")
+                         f"Belt {conv_ctrl.state.belt_speed_m_per_min:.1f} m/min")
             else:
-                title = f"GP-15 Live  |  t={t_sim:.0f}/{t_end:.0f} s"
+                title = f"GP-15 Live  |  t={sim.sim_time:.0f}/{t_end:.0f} s"
 
             if finished:
                 elapsed_w = time.time() - t0_wall
-                title = (f"GP-15 DONE  |  {t_sim:.0f} s  |  "
+                title = (f"GP-15 DONE  |  {sim.sim_time:.0f} s  |  "
                          f"M_out={hist[-1].M_outfeed_wb:.1%}  |  "
                          f"wall={elapsed_w:.1f} s")
 
             plotter.add_title(title, font_size=10)
 
-            # ── Render frame ──────────────────────────────────────
             try:
                 plotter.render()
             except Exception:
                 break
 
-            # ── Frame-rate limiter ────────────────────────────────
             elapsed_frame = time.perf_counter() - t_frame_start
             time.sleep(max(0.0, frame_dt - elapsed_frame))
 
             if finished:
-                plotter.show()   # block for inspection
+                plotter.show()
                 break
 
     except KeyboardInterrupt:
@@ -639,10 +614,10 @@ def _run_live_3d(sim, recipe, args, info, material):
         except Exception:
             pass
 
-    # ── After window closes ───────────────────────────────────────
     elapsed = time.time() - t0_wall
-    _print_results(sim, sim_internal._build_result(), elapsed)
-    return sim_internal._build_result()
+    result = sim.build_result()
+    _print_results(sim, result, elapsed)
+    return result
 
 
 if __name__ == "__main__":

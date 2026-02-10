@@ -53,6 +53,7 @@ from .geometry.machine import (
 )
 from .geometry.oven import OvenGeometryParams
 from .io.export import export_csv_timeseries, export_numpy_snapshot, export_vtk
+from .particles import MaterialParticleSystem
 from .physics.coupling import (
     CoupledSimulator,
     OutletState,
@@ -171,6 +172,16 @@ class GP15Simulator:
             enable_corrections=enable_corrections,
         )
 
+        # ── Lagrangian particle system (visual + E-L coupling) ────
+        # Particles are created from the assembly geometry and the
+        # pretreatment material.  Density and sphericity come from the
+        # particles.material system; inlet T and M from the
+        # pretreatment MaterialProperties.  See particles.py for the
+        # full data-flow trace.
+        self._particles = MaterialParticleSystem.from_assembly(
+            self._assembly, self.material,
+        )
+
         self._initialized = False
 
     # ── Component accessors ─────────────────────────────────────────
@@ -181,6 +192,11 @@ class GP15Simulator:
         return self._assembly
 
     @property
+    def particles(self) -> MaterialParticleSystem:
+        """The Lagrangian particle system for material visualization."""
+        return self._particles
+
+    @property
     def grid_shape(self) -> Tuple[int, int, int]:
         """Simulation grid dimensions ``(nx, ny, nz)``."""
         return self._grid_shape
@@ -189,6 +205,62 @@ class GP15Simulator:
     def cell_sizes(self) -> Tuple[float, float, float]:
         """Simulation cell sizes ``(dx, dy, dz)`` in metres."""
         return self._cell_sizes
+
+    @property
+    def sim_time(self) -> float:
+        """Current simulation time [s]."""
+        return self._sim._time
+
+    @property
+    def conveyor(self):
+        """The conveyor drive controller (for animation state)."""
+        return self._sim.conveyor
+
+    @property
+    def history(self):
+        """Time-series of :class:`StepState` snapshots."""
+        return self._sim._history
+
+    @property
+    def temperature_field(self) -> np.ndarray:
+        """Current 3D temperature field (nx, ny, nz) [C]."""
+        return self._sim.thermal.T
+
+    @property
+    def moisture_field(self) -> np.ndarray:
+        """Current 3D moisture field (nx, ny, nz) [wet-basis]."""
+        return self._sim.moisture.M
+
+    @property
+    def material_mask(self) -> np.ndarray:
+        """3D material zone mask (nx, ny, nz): 0=air, 1=material, 2=belt."""
+        return self._sim.cell_is_material
+
+    def compute_stable_dt(self) -> float:
+        """Compute a stable timestep from CFL and Courant constraints."""
+        self._ensure_initialized()
+        recipe = self._recipe or Recipe()
+        return self._sim.compute_stable_dt(recipe)
+
+    def step_n(self, n_steps: int, recipe: Recipe | None = None) -> StepState:
+        """Advance *n_steps* simulation timesteps with adaptive dt.
+
+        Convenience for the live visualization loop.  Returns the
+        last :class:`StepState`.
+        """
+        self._ensure_initialized()
+        recipe = recipe or self._recipe or Recipe()
+        state = None
+        for _ in range(n_steps):
+            dt = self._sim.compute_stable_dt(recipe)
+            remaining = max(0.0, 1e12)  # no end-time limit
+            dt = min(dt, remaining)
+            state = self._sim.step(dt, recipe)
+        return state
+
+    def build_result(self) -> PretreatmentResult:
+        """Build a :class:`PretreatmentResult` from current state."""
+        return self._sim._build_result()
 
     # ------------------------------------------------------------------
     # Public API  (§7.1)
@@ -267,7 +339,7 @@ class GP15Simulator:
             Dict of ``{name: (vertices, triangles, metadata)}``
             plus optional ``"fields"`` dict with simulation data.
         """
-        meshes = self._assembly.generate_all_meshes()
+        meshes = self._assembly.generate_all_meshes(skip_material_bed=True)
 
         # Attach field data if simulation has run
         if self._initialized:
@@ -362,6 +434,11 @@ class GP15Simulator:
             belt_stack_m=self.config.belt_stack_thickness_m,
         )
         self._sim.initialize(cell_is_material=mask, electrode_gap_m=gap_m)
+
+        # Connect particle system to the coupling loop (step 10)
+        self._sim._particles = self._particles
+        self._sim._grid_origin = self.get_field_world_origin()
+
         if self._recipe:
             self._sim.controller.load_recipe(self._recipe)
             self._sim.controller.start()

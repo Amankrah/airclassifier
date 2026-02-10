@@ -4,15 +4,16 @@ Multi-Physics Coupling Orchestrator
 
 Sequences the coupled physics solvers each timestep:
 
-    1. ADVECT — shift T and M fields by belt velocity
-    2. RF FIELD — solve Laplace for |E|^2
-    3. HEATING — compute P_v from |E|^2 and eps''
-    4. EVAPORATION — (computed inside moisture.step)
-    5. THERMAL — advance T with RF source and latent sink
-    6. MOISTURE — advance M with diffusion and evaporation
-    7. PROPERTIES — update eps', eps'', rho, c_p, k, D_eff
-    8. CONTROLLER — PLC logic (MRH/MRL, gap, temperature control)
-    9. RECORD — log outfeed state and KPIs
+    1.  ADVECT     — shift T and M fields by belt velocity
+    2.  RF FIELD   — solve Laplace for |E|^2
+    3.  HEATING    — compute P_v from |E|^2 and eps''
+    4.  EVAPORATION — (computed inside moisture.step)
+    5.  THERMAL    — advance T with RF source and latent sink
+    6.  MOISTURE   — advance M with diffusion and evaporation
+    7.  PROPERTIES — update eps', eps'', rho, c_p, k, D_eff
+    8.  CONTROLLER — PLC logic (MRH/MRL, gap, temperature control)
+    9.  RECORD     — log outfeed state and KPIs
+    10. PARTICLES  — Lagrangian tracers: belt transport + E-L field interpolation
 
 Phase 2 additions:
     - Phase 2 FDM RF field solver (Jacobi / SOR)
@@ -204,6 +205,11 @@ class CoupledSimulator:
 
         # RF heating field
         self.P_v = np.zeros(grid_shape, dtype=np.float32)
+
+        # Lagrangian particle system (set by GP15Simulator after init)
+        self._particles = None
+        # Grid world origin (set by GP15Simulator for E-L interpolation)
+        self._grid_origin = (0.0, 0.0, 0.0)
 
         # KPI accumulators
         self._total_rf_energy_j = 0.0
@@ -540,6 +546,22 @@ class CoupledSimulator:
             M_outfeed_wb=M_outfeed,
         )
         self._history.append(state)
+
+        # ── 10. PARTICLES ─────────────────────────────────────────────
+        # Lagrangian tracer update: move particles with belt, sample
+        # T and M from the Eulerian grid via trilinear interpolation.
+        # One-way coupling (E→L): particles don't affect the grid.
+        if self._particles is not None:
+            self._particles.step(
+                dt_sim=dt,
+                belt_speed_m_per_s=self.conveyor.state.belt_speed_m_per_s,
+                T_field=self.thermal.T,
+                M_field=self.moisture.M,
+                cell_is_material=self.cell_is_material,
+                grid_origin=self._grid_origin,
+                cell_sizes=self._cell_sizes,
+            )
+
         return state
 
     # ------------------------------------------------------------------
