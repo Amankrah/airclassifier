@@ -471,18 +471,29 @@ def _run_live_3d(sim, recipe, args, info, material):
     y_coords = np.linspace(y0, y0 + ny * dy, ny + 1)
     z_coords = np.linspace(z0, z0 + nz * dz, nz + 1)
 
+    # ── Temperature field: extract material cells ONCE ──────────────
+    # The material mask is static, so we extract once and update the
+    # scalar array in-place each frame.  This avoids the expensive
+    # remove_actor / threshold / add_mesh cycle that caused the field
+    # to appear frozen (no visible change between frames).
+    T_ambient = material.initial_temperature_c
+    T_max_expected = T_ambient + 15.0   # fixed colour range
+
     field_grid = pv.RectilinearGrid(x_coords, y_coords, z_coords)
-    T_flat = sim._sim.thermal.T.flatten(order="F")
     mask_flat = sim._sim.cell_is_material.flatten(order="F")
-    field_grid.cell_data["Temperature"] = T_flat
+    field_grid.cell_data["Temperature"] = sim._sim.thermal.T.flatten(order="F")
     field_grid.cell_data["zone"] = mask_flat
 
-    T_ambient = material.initial_temperature_c
+    # Indices of material cells in the Fortran-order flat array.
+    # VTK threshold preserves this order, so we can use it to
+    # update the extracted mesh's scalars directly.
+    mat_indices = np.where(mask_flat == 1)[0]
+
     mat_grid = field_grid.threshold(value=1, scalars="zone")
 
-    field_actor = plotter.add_mesh(
+    plotter.add_mesh(
         mat_grid, scalars="Temperature",
-        cmap="hot", clim=[T_ambient, T_ambient + 15],
+        cmap="hot", clim=[T_ambient, T_max_expected],
         opacity=0.90, show_scalar_bar=True,
         scalar_bar_args={
             "title": "Temperature [\u00b0C]",
@@ -507,13 +518,29 @@ def _run_live_3d(sim, recipe, args, info, material):
     sim_internal = sim._sim
     conv_ctrl = sim_internal.conveyor
     t_end = args.duration
-    steps_per_frame = 50       # sim steps per render frame
     target_fps = 20.0
     frame_dt = 1.0 / target_fps
     t0_wall = time.time()
-    cur_field_actor = field_actor
 
-    # Open window in non-blocking mode (same pattern as visualize_conveyor.py)
+    # Adaptive pacing: advance slowly during the transient so you
+    # can watch the temperature gradient build up, then speed up
+    # once steady state is reached.
+    #   Residence time ≈ L_oven / v_belt.  The transient lasts
+    #   ~2 residence times.  We want that to take ~15-20 s of
+    #   wall-clock so the colour change is clearly visible.
+    v_belt = recipe.belt_speed_m_per_min / 60.0
+    residence_s = sim.config.oven_length_m / max(v_belt, 1e-6)
+    transient_sim_s = 2.0 * residence_s       # ~360 s sim-time
+    transient_wall_s = 15.0                   # show transient in 15 s
+    # steps/frame during transient (dt ≈ 0.3 s per step)
+    avg_dt = 0.3
+    steps_transient = max(1, int(
+        transient_sim_s / (transient_wall_s * target_fps * avg_dt)
+    ))
+    # After transient: go fast (100 steps/frame)
+    steps_steady = 100
+
+    # Open window in non-blocking mode
     plotter.show(interactive_update=True, auto_close=False)
 
     # ── Render loop ───────────────────────────────────────────────
@@ -527,9 +554,16 @@ def _run_live_3d(sim, recipe, args, info, material):
             except Exception:
                 break
 
-            # ── Run a batch of simulation steps ───────────────────
+            # Adaptive step count: slow during transient, fast after
+            t_sim = sim_internal._time
+            if t_sim < transient_sim_s:
+                steps_this_frame = steps_transient
+            else:
+                steps_this_frame = steps_steady
+
+            # ── Run simulation steps ──────────────────────────────
             finished = False
-            for _ in range(steps_per_frame):
+            for _ in range(steps_this_frame):
                 if sim_internal._time >= t_end - 1e-12:
                     finished = True
                     break
@@ -554,25 +588,12 @@ def _run_live_3d(sim, recipe, args, info, material):
                 0.5 + 0.5 * np.cos(2.0 * math.pi * _shifted / belt_band_len)
             ).astype(np.float32)
 
-            # ── Update temperature field ──────────────────────────
-            T_new = sim_internal.thermal.T.flatten(order="F")
-            field_grid.cell_data["Temperature"] = T_new
-            new_mat_grid = field_grid.threshold(value=1, scalars="zone")
-
-            if cur_field_actor is not None:
-                plotter.remove_actor(cur_field_actor)
-                cur_field_actor = None
-            if new_mat_grid.n_cells > 0:
-                T_max_vis = max(float(np.max(T_new)), T_ambient + 5)
-                cur_field_actor = plotter.add_mesh(
-                    new_mat_grid, scalars="Temperature",
-                    cmap="hot", clim=[T_ambient, T_max_vis],
-                    opacity=0.90, show_scalar_bar=True,
-                    scalar_bar_args={
-                        "title": "Temperature [\u00b0C]",
-                        "position_x": 0.82, "width": 0.12,
-                    },
-                )
+            # ── Update temperature field IN-PLACE ─────────────────
+            # No mesh rebuild — just overwrite the scalar array on
+            # the already-added mesh.  This is fast and gives smooth
+            # visual progression as the temperature gradient develops.
+            T_new_flat = sim_internal.thermal.T.flatten(order="F")
+            mat_grid.cell_data["Temperature"] = T_new_flat[mat_indices]
 
             # ── Update title ──────────────────────────────────────
             t_sim = sim_internal._time
@@ -607,9 +628,7 @@ def _run_live_3d(sim, recipe, args, info, material):
             time.sleep(max(0.0, frame_dt - elapsed_frame))
 
             if finished:
-                # Keep window open for inspection after sim completes;
-                # user closes it manually
-                plotter.show()  # blocking until window closed
+                plotter.show()   # block for inspection
                 break
 
     except KeyboardInterrupt:
