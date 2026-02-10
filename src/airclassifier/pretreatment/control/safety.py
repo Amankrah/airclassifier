@@ -151,11 +151,17 @@ class SafetyMonitor:
             return self.status
 
         # --- Check 2: MRH (overcurrent) ---
-        if anode_current_a > mrh_amps:
-            return self._trigger_recycle(
-                SafetyEvent.MRH_TRIP,
-                f"MRH trip: Ia={anode_current_a:.2f} A > {mrh_amps:.2f} A",
-            )
+        # MRH overcurrent is handled ENTIRELY by the GP15Controller's
+        # proportional gap control (electrode opens to reduce power).
+        # It is NOT a safety trip / recycle event.
+        #
+        # Run#1 PLC data confirms: when Ia reaches 1.7 A the gap
+        # opens smoothly from 75 to 87 mm with RF staying ON.  No RF
+        # shutdown, no recycle.  The controller manages the current
+        # by continuously adjusting the electrode position.
+        #
+        # The safety monitor only handles arcs and thermal fuse.
+        # MRH gap control is in GP15Controller.step() lines 184-191.
 
         # --- Check 3: Arc detection ---
         if e_field_max_v_per_m > arc_threshold_v_per_m or reflected_power_kw > 5.0:

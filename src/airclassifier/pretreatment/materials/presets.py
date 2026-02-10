@@ -46,8 +46,8 @@ def create_yellow_pea(
         rho_solid=1450.0,          # solid density of whole pea seed
         D_eff_D0=5.7e-4,
         D_eff_Ea=28500.0,
-        k_evap=1.5e-4,
-        T_evap_threshold_c=40.0,
+        k_evap=5.0e-5,            # whole seeds: 0.6 kg/kWh (Manual Ch.5)
+        T_evap_threshold_c=25.0,   # onset of accelerated evaporation
         bed_depth_m=bed_depth_m,
         bed_porosity=0.40,         # packed bed of whole seeds
     )
@@ -77,8 +77,8 @@ def create_faba_bean(
         rho_solid=1400.0,          # solid density of whole faba bean
         D_eff_D0=4.8e-4,
         D_eff_Ea=29000.0,
-        k_evap=1.4e-4,
-        T_evap_threshold_c=40.0,
+        k_evap=4.5e-5,            # whole seeds: 0.6 kg/kWh (Manual Ch.5)
+        T_evap_threshold_c=25.0,
         bed_depth_m=bed_depth_m,
         bed_porosity=0.42,         # packed bed porosity (larger seeds)
     )
@@ -109,8 +109,8 @@ def create_oat(
         rho_solid=1350.0,          # solid density of oat groat
         D_eff_D0=6.2e-4,
         D_eff_Ea=27500.0,
-        k_evap=1.3e-4,
-        T_evap_threshold_c=42.0,
+        k_evap=4.0e-5,            # whole groats: 0.6 kg/kWh (Manual Ch.5)
+        T_evap_threshold_c=25.0,
         bed_depth_m=bed_depth_m,
         bed_porosity=0.38,         # packed bed of oat groats
     )

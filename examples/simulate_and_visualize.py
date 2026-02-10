@@ -68,6 +68,9 @@ Examples:
     python examples/simulate_and_visualize.py --duration 120         # Override: 120 s fixed
     python examples/simulate_and_visualize.py --plots-only           # Batch mode (no 3D)
     python examples/simulate_and_visualize.py --gap 80 --bed-depth 50 --mass 100
+
+    # Calibrate model against actual PLC data, then simulate:
+    python examples/simulate_and_visualize.py --calibrate "utility_docs/Run1 RF data(in).csv"
 """,
     )
     parser.add_argument("--mass", type=float, default=61.0,
@@ -86,6 +89,12 @@ Examples:
                         help="Initial temperature in C (default 17.6, from Run#1)")
     parser.add_argument("--plots-only", action="store_true",
                         help="Skip 3D PyVista view, show only matplotlib plots")
+    parser.add_argument("--calibrate", type=str, default=None, metavar="CSV",
+                        help="Calibrate model against PLC CSV data before running "
+                             "(e.g., --calibrate utility_docs/Run1\\ RF\\ data\\(in\\).csv)")
+    parser.add_argument("--cal-duration", type=float, default=300,
+                        help="Calibration window in seconds (default 300). "
+                             "Use 0 for full PLC recording.")
     parser.add_argument("--cpu", action="store_true",
                         help="Force CPU device (default: auto-detect CUDA)")
     parser.add_argument("--dark", action="store_true",
@@ -107,6 +116,45 @@ Examples:
         initial_temperature_c=args.temp,
         bed_depth_m=args.bed_depth / 1000.0,
     )
+
+    # ── 1b. Calibrate against PLC data (optional) ────────────────────
+    if args.calibrate:
+        from airclassifier.pretreatment.calibration import (
+            CalibrationOptimizer, load_plc_data,
+        )
+        print(f"Loading PLC data: {args.calibrate}")
+        plc = load_plc_data(args.calibrate)
+        print(f"  {plc.n_samples} samples, {plc.duration_s:.0f} s")
+        print(f"  Ia: {plc.anode_current_a.min():.2f}-{plc.anode_current_a.max():.2f} A")
+        print(f"  Temp: {plc.product_temp_c.min():.0f}-{plc.product_temp_c.max():.0f} C")
+        print()
+
+        cal_dur = args.cal_duration if args.cal_duration > 0 else plc.duration_s
+        print(f"  Calibration window: {cal_dur:.0f} s ({cal_dur/60:.1f} min)")
+
+        cal = CalibrationOptimizer(
+            plc, config=config, material=material,
+            sim_duration_s=cal_dur,
+        )
+
+        print("Baseline fit (before calibration):")
+        baseline = cal.evaluate_current()
+        print(f"  T_sim={baseline['T_sim_final']:.1f} vs T_plc={baseline['T_plc_final']:.1f} C")
+        print(f"  gap_sim={baseline['gap_sim_final']:.1f} vs gap_plc={baseline['gap_plc_final']:.1f} mm")
+        print(f"  loss={baseline['loss_total']:.1f}")
+        print()
+
+        print("Running calibration optimizer...")
+        cal_result = cal.run(maxiter=15)
+        print()
+        print(cal_result)
+        print()
+
+        # Apply calibrated parameters
+        cal_result.apply(config, material)
+        print(f"Applied: coupling={config.oscillator_coupling_factor:.4f}, "
+              f"k_evap={material.k_evap:.2e}")
+        print()
 
     # ── 2. Create simulator (builds machine assembly + physics) ──────
     print("=" * 60)
@@ -216,91 +264,186 @@ Examples:
         return
 
     t_arr = np.array(ts["time_s"])
+    t_min = t_arr / 60.0  # time in minutes for readability
 
-    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    fig, axes = plt.subplots(3, 3, figsize=(16, 11))
     fig.suptitle(
-        f"GP-15 Simulation -- Gap {args.gap:.0f} mm  |  "
-        f"Bed {args.bed_depth:.0f} mm  |  "
+        f"GP-15 Digital Twin -- {args.mass:.0f} kg Whole Yellow Pea  |  "
+        f"Gap {args.gap:.0f} mm  |  Bed {args.bed_depth:.0f} mm  |  "
         f"Belt {args.speed} m/min  |  {args.duration:.0f} s",
         fontsize=12, fontweight="bold",
     )
 
-    # Temperature
+    # ── Row 1: Temperature, Moisture, Electrode Gap ──────────────
+
+    # [0,0] Temperature
     ax = axes[0, 0]
-    ax.plot(t_arr, ts["T_mean_c"], "r-", linewidth=1.0, alpha=0.5, label="T mean (all)")
-    ax.plot(t_arr, ts["T_outfeed_c"], "r-", linewidth=1.5, label="T outfeed")
-    ax.plot(t_arr, ts["T_max_c"], "r--", linewidth=1.0, alpha=0.4, label="T max")
-    ax.axhline(70, color="orange", linestyle=":", alpha=0.5, label="Denaturation onset")
-    ax.set_xlabel("Time [s]")
+    ax.fill_between(t_min, ts["T_mean_c"], ts["T_max_c"],
+                    alpha=0.15, color="red", label="T range")
+    ax.plot(t_min, ts["T_outfeed_c"], "r-", linewidth=2, label="T outfeed")
+    ax.plot(t_min, ts["T_mean_c"], "r-", linewidth=0.8, alpha=0.5, label="T mean")
+    ax.axhline(70, color="orange", linestyle=":", alpha=0.6, label="Denaturation 70\u00b0C")
+    ax.set_xlabel("Time [min]")
     ax.set_ylabel("Temperature [\u00b0C]")
-    ax.set_title("Material Temperature (\u00a74.2)")
-    ax.legend(fontsize=8)
+    ax.set_title("Material Temperature")
+    ax.legend(fontsize=7, loc="upper left")
     ax.grid(True, alpha=0.3)
 
-    # Moisture
+    # [0,1] Moisture
     ax = axes[0, 1]
-    ax.plot(t_arr, np.array(ts["M_mean_wb"]) * 100, "b-", linewidth=1.0,
-            alpha=0.5, label="M mean (all)")
-    ax.plot(t_arr, np.array(ts["M_outfeed_wb"]) * 100, "b-", linewidth=1.5,
+    ax.plot(t_min, np.array(ts["M_outfeed_wb"]) * 100, "b-", linewidth=2,
             label="M outfeed")
+    ax.plot(t_min, np.array(ts["M_mean_wb"]) * 100, "b-", linewidth=0.8,
+            alpha=0.4, label="M mean (all)")
     ax.axhline(material.target_moisture_wb * 100, color="green",
-               linestyle="--", alpha=0.5, label=f"Target {material.target_moisture_wb:.0%}")
-    ax.set_xlabel("Time [s]")
+               linestyle="--", alpha=0.7, linewidth=1.5,
+               label=f"Target {material.target_moisture_wb:.0%}")
+    ax.set_xlabel("Time [min]")
     ax.set_ylabel("Moisture [% wb]")
-    ax.set_title("Moisture Content (\u00a74.3)")
-    ax.legend(fontsize=8)
+    ax.set_title("Moisture Content")
+    ax.legend(fontsize=7, loc="upper right")
     ax.grid(True, alpha=0.3)
 
-    # RF Power
+    # [0,2] Electrode gap (MRH controller)
+    ax = axes[0, 2]
+    ax.plot(t_min, ts["electrode_gap_mm"], "g-", linewidth=2, label="Actual gap")
+    ax.axhline(args.gap, color="gray", linestyle="--", alpha=0.5,
+               label=f"Setpoint {args.gap:.0f} mm")
+    ax.set_xlabel("Time [min]")
+    ax.set_ylabel("Electrode Gap [mm]")
+    ax.set_title("MRH Gap Control")
+    ax.legend(fontsize=7)
+    ax.grid(True, alpha=0.3)
+
+    # ── Row 2: RF Power, Anode Current, Energy Balance ───────────
+
+    # [1,0] RF Power + Evaporative power
     ax = axes[1, 0]
-    ax.plot(t_arr, ts["rf_power_kw"], "m-", linewidth=1.5)
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("RF Power [kW]")
-    ax.set_title("RF Power Delivered (\u00a74.1)")
+    ax.plot(t_min, ts["rf_power_kw"], "m-", linewidth=2, label="RF power (in)")
+    ax.plot(t_min, ts["evap_power_kw"], "c-", linewidth=1.5,
+            alpha=0.8, label="Evap. cooling")
+    ax.axhline(config.max_rf_power_kw, color="gray", linestyle=":",
+               alpha=0.4, label=f"Rated max {config.max_rf_power_kw} kW")
+    ax.set_xlabel("Time [min]")
+    ax.set_ylabel("Power [kW]")
+    ax.set_title("Energy Balance")
+    ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
 
-    # Anode current
+    # [1,1] Anode current
     ax = axes[1, 1]
-    ax.plot(t_arr, ts["anode_current_a"], "k-", linewidth=1.5, label="Ia")
-    ax.axhline(recipe.mrh_amps, color="red", linestyle="--", alpha=0.5,
-               label=f"MRH = {recipe.mrh_amps} A")
-    ax.axhline(recipe.mrl_amps, color="orange", linestyle="--", alpha=0.5,
-               label=f"MRL = {recipe.mrl_amps} A")
-    ax.set_xlabel("Time [s]")
+    ax.plot(t_min, ts["anode_current_a"], "k-", linewidth=2, label="Ia")
+    ax.axhline(recipe.mrh_amps, color="red", linestyle="--", alpha=0.6,
+               linewidth=1.5, label=f"MRH = {recipe.mrh_amps} A")
+    ax.axhline(recipe.mrl_amps, color="orange", linestyle="--", alpha=0.6,
+               linewidth=1.5, label=f"MRL = {recipe.mrl_amps} A")
+    ax.set_xlabel("Time [min]")
     ax.set_ylabel("Anode Current [A]")
-    ax.set_title("Anode Current (\u00a78.4)")
-    ax.legend(fontsize=8)
+    ax.set_title("Anode Current (Ia)")
+    ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
+
+    # [1,2] Cumulative energy consumed
+    ax = axes[1, 2]
+    ax.plot(t_min, ts["total_energy_kwh"], "m-", linewidth=2, label="RF energy")
+    ax2 = ax.twinx()
+    ax2.plot(t_min, np.array(ts["water_removed_kg"]) * 1000, "c-",
+             linewidth=1.5, label="Water removed")
+    ax.set_xlabel("Time [min]")
+    ax.set_ylabel("Energy [kWh]", color="m")
+    ax2.set_ylabel("Water Removed [g]", color="c")
+    ax.set_title("Cumulative Totals")
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=7, loc="upper left")
+    ax.grid(True, alpha=0.3)
+
+    # ── Row 3: Specific energy, Mass in bin, Outfeed cross-section ─
+
+    # [2,0] Specific energy
+    ax = axes[2, 0]
+    se = np.array(ts["specific_energy_kwh_per_kg"])
+    valid = se > 0
+    if valid.any():
+        ax.plot(t_min[valid], se[valid], "k-", linewidth=1.5)
+        ax.axhline(1.0, color="green", linestyle="--", alpha=0.5,
+                   label="Manual target: 1.0 kWh/kg")
+        ax.axhline(1.0/0.6, color="orange", linestyle=":", alpha=0.5,
+                   label="Low S/V factor: 1.67 kWh/kg")
+    ax.set_xlabel("Time [min]")
+    ax.set_ylabel("kWh / kg water")
+    ax.set_title("Specific Energy")
+    ax.legend(fontsize=7)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
+
+    # [2,1] Collected mass in bin
+    ax = axes[2, 1]
+    if hasattr(sim.particles, 'collected_mass_kg'):
+        collected_kg = sim.particles.collected_mass_kg
+        n_collected = sim.particles.collected_count
+        ax.bar(["Infeed\n(run mass)", "Collected\n(bin)"],
+               [args.mass, collected_kg],
+               color=["#4169E1", "#DAA520"], alpha=0.8)
+        ax.set_ylabel("Mass [kg]")
+        ax.set_title(f"Material Accounting ({n_collected} particles)")
+    else:
+        ax.text(0.5, 0.5, "No particle data", ha="center", va="center",
+                transform=ax.transAxes)
+    ax.grid(True, alpha=0.3, axis="y")
+
+    # [2,2] Outfeed temperature cross-section
+    if outlet.temperature_field is not None:
+        im = axes[2, 2].imshow(
+            outlet.temperature_field,
+            aspect="auto", origin="lower", cmap="hot",
+            extent=[0, info["belt_width_m"] * 1000, 0, args.gap],
+        )
+        axes[2, 2].set_xlabel("Z -- belt width [mm]")
+        axes[2, 2].set_ylabel("Y -- gap [mm]")
+        axes[2, 2].set_title(
+            f"Outfeed T  (avg {outlet.avg_temperature_c:.1f}\u00b0C, "
+            f"max {outlet.max_temperature_c:.1f}\u00b0C)")
+        plt.colorbar(im, ax=axes[2, 2], label="\u00b0C", shrink=0.8)
+    else:
+        axes[2, 2].text(0.5, 0.5, "No field data", ha="center", va="center",
+                        transform=axes[2, 2].transAxes)
 
     plt.tight_layout()
 
     # ── 7. Outfeed cross-section (\u00a79.1) ──────────────────────────────
     if outlet.temperature_field is not None and outlet.moisture_field is not None:
-        fig2, (ax_t, ax_m) = plt.subplots(1, 2, figsize=(11, 4))
+        fig2, axes2 = plt.subplots(1, 2, figsize=(12, 4.5))
         fig2.suptitle(
-            "Outfeed Cross-Section (x = L_oven)  --  Pipeline Output to Milling (\u00a79.1)",
+            f"Outfeed Cross-Section  --  Pipeline Output to Milling  |  "
+            f"Residence {outlet.residence_time_s:.0f} s  |  "
+            f"Throughput {outlet.throughput_kg_per_hr:.0f} kg/h",
             fontsize=11, fontweight="bold",
         )
-        im_t = ax_t.imshow(
+        im_t = axes2[0].imshow(
             outlet.temperature_field, aspect="auto", origin="lower",
             cmap="hot",
             extent=[0, info["belt_width_m"] * 1000, 0, args.gap],
         )
-        ax_t.set_xlabel("Z -- across belt [mm]")
-        ax_t.set_ylabel("Y -- electrode gap [mm]")
-        ax_t.set_title(f"Temperature  (avg {outlet.avg_temperature_c:.1f} \u00b0C)")
-        plt.colorbar(im_t, ax=ax_t, label="\u00b0C")
+        axes2[0].set_xlabel("Z -- belt width [mm]")
+        axes2[0].set_ylabel("Y -- gap [mm]")
+        axes2[0].set_title(
+            f"Temperature  (avg {outlet.avg_temperature_c:.1f}\u00b0C, "
+            f"max {outlet.max_temperature_c:.1f}\u00b0C)")
+        plt.colorbar(im_t, ax=axes2[0], label="\u00b0C")
 
-        im_m = ax_m.imshow(
+        im_m = axes2[1].imshow(
             outlet.moisture_field * 100, aspect="auto", origin="lower",
             cmap="Blues",
             extent=[0, info["belt_width_m"] * 1000, 0, args.gap],
         )
-        ax_m.set_xlabel("Z -- across belt [mm]")
-        ax_m.set_ylabel("Y -- electrode gap [mm]")
-        ax_m.set_title(f"Moisture  (avg {outlet.avg_moisture_wb:.1%},  "
-                        f"CV {outlet.moisture_uniformity:.3f})")
-        plt.colorbar(im_m, ax=ax_m, label="% wb")
+        axes2[1].set_xlabel("Z -- belt width [mm]")
+        axes2[1].set_ylabel("Y -- gap [mm]")
+        axes2[1].set_title(
+            f"Moisture  (avg {outlet.avg_moisture_wb:.1%}, "
+            f"CV {outlet.moisture_uniformity:.3f})  |  "
+            f"Spec. energy {outlet.specific_energy_kwh_per_kg:.2f} kWh/kg water")
+        plt.colorbar(im_m, ax=axes2[1], label="% wb")
         plt.tight_layout()
 
     plt.show()
@@ -312,23 +455,29 @@ Examples:
 
 def _print_results(sim, result, elapsed):
     outlet = sim.get_outlet_conditions()
+    ts = result.time_series
     print()
     print("-" * 60)
     print("  RESULTS")
     print("-" * 60)
-    print(f"  Final moisture (mean):     {result.final_moisture_mean_wb:.2%}")
-    print(f"  Final temperature (mean):  {result.final_temperature_mean_c:.1f} C")
-    print(f"  RF energy consumed:        {result.energy_consumed_kwh:.4f} kWh")
-    print(f"  Throughput:                {result.throughput_kg_per_h:.0f} kg/h")
-    print()
     print(f"  Outfeed moisture:          {outlet.avg_moisture_wb:.2%}")
     print(f"  Outfeed temperature:       {outlet.avg_temperature_c:.1f} C")
-    print(f"  Moisture uniformity (CV):  {outlet.moisture_uniformity:.4f}")
     print(f"  Max temperature:           {outlet.max_temperature_c:.1f} C")
+    print(f"  Moisture uniformity (CV):  {outlet.moisture_uniformity:.4f}")
+    print()
+    print(f"  RF energy consumed:        {result.energy_consumed_kwh:.4f} kWh")
     print(f"  Specific energy:           {outlet.specific_energy_kwh_per_kg:.3f} kWh/kg water")
+    print(f"  Throughput:                {result.throughput_kg_per_h:.0f} kg/h")
+    # Final gap from controller
+    if ts.get("electrode_gap_mm"):
+        final_gap = ts["electrode_gap_mm"][-1]
+        print(f"  Final electrode gap:       {final_gap:.1f} mm")
+    # Particle mass collected
+    if hasattr(sim.particles, 'collected_mass_kg'):
+        print(f"  Mass collected (bin):      {sim.particles.collected_mass_kg:.2f} kg")
     print()
     print(f"  Simulation wall-clock:     {elapsed:.2f} s")
-    n_steps = len(result.time_series.get("time_s", []))
+    n_steps = len(ts.get("time_s", []))
     if n_steps > 0:
         print(f"  Timesteps completed:       {n_steps}")
         print(f"  Speed:                     {n_steps / max(elapsed, 0.001):.0f} steps/s")

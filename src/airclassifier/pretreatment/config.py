@@ -39,6 +39,23 @@ class MachineConfig:
     supply_voltage_v: float = 600.0              # 3-phase
     supply_kva_max: float = 42.0
 
+    # Oscillator-to-electrode coupling factor.
+    # Converts the anode DC voltage to the RF voltage appearing
+    # across the electrodes:  V_rf = V_anode * coupling_factor.
+    #
+    # Calibrated against Run#1 PLC data (25-Mar-2025) using
+    # differential evolution (calibration.py).
+    #
+    # Run#1: 61 kg whole yellow pea, gap=75mm, speed=0.2 m/min,
+    #        bed=25mm, MRH=1.7 A, PLC Ia=1.65-1.70 A at steady state,
+    #        gap opens 75→87 mm under MRH control.
+    #
+    # Calibrated:  k=0.201, loss_T=9.4, loss_gap=23.8, total=21.3
+    # The previous analytical estimate (0.258) over-predicted power,
+    # causing the gap to overshoot to 104 mm.  The calibrated value
+    # (0.201) matches the PLC gap trajectory (75→84mm vs 75→87mm).
+    oscillator_coupling_factor: float = 0.201
+
     # --- Oven / Applicator ---
     oven_length_m: float = 1.5                   # [TBD - MEASURE from drawing]
     electrode_gap_min_m: float = 0.02            # [TBD - MEASURE from test report]
@@ -138,13 +155,18 @@ class MaterialProperties:
 
     # --- Evaporation model ---
     # The threshold temperature controls the onset of active moisture
-    # removal.  At 40 °C the material barely reaches it with the GP-15's
-    # power density, producing zero drying.  Legume seeds lose moisture
-    # to dry air at any temperature above the dew point (~10-15 °C).
-    # A threshold of 25 °C models the practical onset of accelerated
-    # evaporation from RF heating while allowing drying to begin as
-    # soon as material warms above ambient.
-    k_evap: float = 1.5e-4                       # 1/(degC*s) rate constant
+    # removal.  A threshold of 25 C models the practical onset of
+    # accelerated evaporation from RF heating.
+    #
+    # k_evap for whole seeds (GP-15 processes WHOLE beans/seeds, not
+    # flour — Manual Chapter 1).  The manual (Chapter 5) states:
+    #   - 1.0 kg/kWh for high surface-to-volume (fine powders)
+    #   - 0.6 kg/kWh for low surface-to-volume (whole seeds)
+    #
+    # Whole seeds (6-8 mm dia) have ~100x lower surface-to-volume
+    # than flour (50 um).  k_evap is reduced accordingly so the
+    # drying rate matches the manual's 0.6 factor.
+    k_evap: float = 5.9e-5                       # 1/(degC*s) — calibrated from Run#1
     T_evap_threshold_c: float = 25.0             # degC
 
     # --- Bed geometry (packed bed of whole seeds on the conveyor) ---
@@ -227,8 +249,12 @@ class Recipe:
     run_mass_kg: float = 0.0
 
     # --- Anode current protection ---
-    mrh_amps: float = 2.6                        # Meter Relay High (overcurrent trip)
-    mrl_amps: float = 2.0                        # Meter Relay Low (drive stop threshold)
+    # Run#1 PLC data shows: Ia 2nd Limit=1.7, Ia 1st Limit=1.5
+    # These are the actual configured limits on the machine.
+    # The manual's default MRH=2.6 / MRL=2.0 are the maximum
+    # allowed values; the operator sets tighter limits per recipe.
+    mrh_amps: float = 1.7                        # Meter Relay High (from Run#1 PLC)
+    mrl_amps: float = 1.5                        # Meter Relay Low (from Run#1 PLC)
 
     # --- EMU settings ---
     extraction_fan_hz: float = 30.0

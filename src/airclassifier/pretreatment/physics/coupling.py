@@ -62,17 +62,26 @@ from .airflow import EMUAirflowModel
 class StepState:
     """State snapshot after a single simulation step."""
     time_s: float = 0.0
+    # Temperature
     T_mean_c: float = 0.0
     T_max_c: float = 0.0
+    T_outfeed_c: float = 0.0
+    # Moisture
     M_mean_wb: float = 0.0
     M_min_wb: float = 0.0
+    M_outfeed_wb: float = 0.0
+    # RF system
     rf_power_kw: float = 0.0
     anode_current_a: float = 0.0
+    # Controller
     electrode_gap_mm: float = 0.0
     belt_speed_m_per_min: float = 0.0
-    # Outfeed cross-section averages (last X-slice, material only)
-    T_outfeed_c: float = 0.0
-    M_outfeed_wb: float = 0.0
+    controller_state: str = ""
+    # Energy balance
+    evap_power_kw: float = 0.0          # latent heat sink
+    total_energy_kwh: float = 0.0       # cumulative RF energy
+    water_removed_kg: float = 0.0       # cumulative water removed
+    specific_energy_kwh_per_kg: float = 0.0
 
 
 @dataclass
@@ -352,7 +361,13 @@ class CoupledSimulator:
             self.moisture.M[~mat_mask] = 0.0
 
         # ── 2. RF FIELD ───────────────────────────────────────────────
-        gap_m = recipe.electrode_gap_mm / 1000.0
+        # Use the controller's current gap (which may differ from the
+        # recipe setpoint if MRH has opened the gap).  Run#1 PLC data
+        # shows gap opening from 75mm to 87mm under MRH control.
+        if self._enable_controller:
+            gap_m = self.controller.status.electrode_gap_mm / 1000.0
+        else:
+            gap_m = recipe.electrode_gap_mm / 1000.0
 
         # Update fringe correction for current gap (Phase 3)
         if self._enable_corrections:
@@ -376,44 +391,37 @@ class CoupledSimulator:
             )
         elif self._use_fdm:
             # Phase 2 FDM: voltage-driven with per-cell eps'
-            V_rf_kv = machine.anode_voltage_kv(machine.anode_current_no_load_a)
+            V_rf_kv = self._compute_electrode_voltage(machine)
             self.rf.solve_fdm(gap_m, V_rf_kv, self.eps_real)
         else:
-            # ── Phase 1: Approach A — power-constrained (§4.1.3) ─────
+            # ── Approach B — voltage-driven (§4.1.3) ─────────────
             #
-            # The engineering guide §4.1.3 recommends Approach A for the
-            # initial implementation because the oscillator-to-electrode
-            # coupling coefficient is not modeled in Phase 1.
+            # The generator produces an RF voltage at the electrodes
+            # determined by the anode voltage and the oscillator
+            # coupling factor (tank circuit, trombocones, feed strips):
             #
-            # The anode voltage (9.18 kV no-load, Manual Appendix B /
-            # Test Report) is the DC supply to the triode oscillator,
-            # NOT the RF voltage at the electrodes.  Applying V_anode
-            # directly as V_rf produces unrealistic field strengths.
+            #     V_rf = V_anode * oscillator_coupling_factor
             #
-            # Instead, we determine the generator's available RF power
-            # from its operating curve (Manual Appendix E, §8.4) and
-            # solve for the electrode voltage V_rf that delivers
-            # exactly that power through the series-capacitor model.
+            # The material absorbs whatever power results from this
+            # voltage applied through the series-capacitor model.
+            # This naturally self-regulates:
             #
-            # Generator model (§2.1, §8.4):
-            #   No-load:  V_a = 9.18 kV, I_a = 0.4 A, P_rf ≈ 0
-            #   Full-load: V_a = 8.38 kV, I_a = 2.58 A, P_rf = 15 kW
-            #   Oscillator efficiency η ≈ 0.56 (§10.1)
+            #   - Thin bed + large gap → most voltage drops across
+            #     the air gap → low P_rf (matches Run#1: Ia=0.29 A)
+            #   - Thick bed + small gap → more voltage in material
+            #     → high P_rf (matches full-load: Ia=2.58 A)
             #
-            # The target RF power is computed from the previous step's
-            # operating point using the self-consistent generator model.
-            P_rf_target_kw = self._generator_available_power(machine)
-            V_rf_kv = self.rf.solve_power_constrained(
+            # The voltage droop under load is included: as more power
+            # is absorbed, V_anode drops (linear droop model from
+            # Manual Appendix E test report), reducing V_rf.
+            V_rf_kv = self._compute_electrode_voltage(machine)
+            self.rf.solve(
                 electrode_gap_m=gap_m,
-                target_power_kw=P_rf_target_kw,
+                voltage_kv=V_rf_kv,
                 eps_real=self.eps_real,
-                eps_loss=self.eps_loss,
                 cell_is_material=self.cell_is_material,
-                cell_volume_m3=self._cell_vol,
                 bed_depth_m=mat.bed_depth_m,
                 belt_stack_m=machine.belt_stack_thickness_m,
-                use_fdm=False,
-                V_guess_kv=2.0,
             )
 
         # ── 3. HEATING ────────────────────────────────────────────────
@@ -475,8 +483,12 @@ class CoupledSimulator:
         # ── 8. CONTROLLER ──────────────────────────────────────────────
         # Anode current from delivered power (generator model §8.4)
         # Generator power = RF power / oscillator efficiency
+        # Do NOT clamp fraction at 1.0 — if the voltage-driven model
+        # delivers more than 15 kW (e.g., at small gaps), Ia must
+        # exceed the full-load value so MRH gap control can respond.
+        # Run#1 PLC data shows Ia up to 1.70 A with MRH at 1.7 A.
         P_gen_kw = P_rf_kw / max(self._oscillator_efficiency, 0.01)
-        fraction = min(P_gen_kw / machine.max_rf_power_kw, 1.0) if P_gen_kw > 0 else 0.0
+        fraction = P_gen_kw / max(machine.max_rf_power_kw, 0.01) if P_gen_kw > 0 else 0.0
         I_a = (
             machine.anode_current_no_load_a
             + (machine.anode_current_full_load_a - machine.anode_current_no_load_a) * fraction
@@ -532,18 +544,46 @@ class CoupledSimulator:
         T_outfeed = float(np.mean(T_out_cells)) if T_out_cells.size else mat.initial_temperature_c
         M_outfeed = float(np.mean(M_out_cells)) if M_out_cells.size else mat.initial_moisture_wb
 
+        # Evaporative power (latent heat sink)
+        evap_rate_mat = self.moisture.evap_rate[mat_mask]
+        evap_power_w = float(np.sum(evap_rate_mat)) * self._cell_vol * 2.26e6
+        evap_power_kw = evap_power_w / 1000.0
+
+        # Cumulative energy and water removal
+        total_energy_kwh = self._total_rf_energy_j / 3.6e6
+        # Water removed = throughput * (M_initial - M_outfeed) * sim_time
+        v_belt = self.conveyor.state.belt_speed_m_per_s
+        bed_cross = mat.bed_depth_m * self._machine.belt_width_m
+        rho_bulk = mat.bulk_density(mat.initial_moisture_wb)
+        throughput_kg_s = rho_bulk * bed_cross * v_belt
+        delta_M = max(mat.initial_moisture_wb - M_outfeed, 0.0)
+        water_removed_kg = throughput_kg_s * delta_M * self._time
+        spec_energy = (total_energy_kwh / max(water_removed_kg, 1e-6)
+                       if water_removed_kg > 0.001 else 0.0)
+
+        # Controller state
+        ctrl_state = ""
+        if self._enable_controller:
+            ctrl_state = self.controller.status.state.value
+
         state = StepState(
             time_s=self._time,
             T_mean_c=T_mean,
             T_max_c=T_max,
+            T_outfeed_c=T_outfeed,
             M_mean_wb=M_mean,
             M_min_wb=M_min,
+            M_outfeed_wb=M_outfeed,
             rf_power_kw=P_rf_kw,
             anode_current_a=I_a,
-            electrode_gap_mm=recipe.electrode_gap_mm,
+            electrode_gap_mm=(self.controller.status.electrode_gap_mm
+                              if self._enable_controller else recipe.electrode_gap_mm),
             belt_speed_m_per_min=self.conveyor.state.belt_speed_m_per_min,
-            T_outfeed_c=T_outfeed,
-            M_outfeed_wb=M_outfeed,
+            controller_state=ctrl_state,
+            evap_power_kw=evap_power_kw,
+            total_energy_kwh=total_energy_kwh,
+            water_removed_kg=water_removed_kg,
+            specific_energy_kwh_per_kg=spec_energy,
         )
         self._history.append(state)
 
@@ -641,7 +681,12 @@ class CoupledSimulator:
                 "M_mean_wb": [s.M_mean_wb for s in self._history],
                 "M_outfeed_wb": [s.M_outfeed_wb for s in self._history],
                 "rf_power_kw": [s.rf_power_kw for s in self._history],
+                "evap_power_kw": [s.evap_power_kw for s in self._history],
                 "anode_current_a": [s.anode_current_a for s in self._history],
+                "electrode_gap_mm": [s.electrode_gap_mm for s in self._history],
+                "total_energy_kwh": [s.total_energy_kwh for s in self._history],
+                "water_removed_kg": [s.water_removed_kg for s in self._history],
+                "specific_energy_kwh_per_kg": [s.specific_energy_kwh_per_kg for s in self._history],
             },
             T_final=self.thermal.T.copy(),
             M_final=self.moisture.M.copy(),
@@ -727,47 +772,44 @@ class CoupledSimulator:
     # Generator model
     # ------------------------------------------------------------------
 
-    def _generator_available_power(self, machine: MachineConfig) -> float:
-        """Compute the generator's available RF power (§4.1.3, §8.4).
+    def _compute_electrode_voltage(self, machine: MachineConfig) -> float:
+        """Compute the RF voltage at the electrodes (Approach B, §4.1.3).
 
-        The GP-15 uses a self-excited triode valve oscillator (Manual
-        Chapter 3, Appendix I).  The oscillator continuously generates
-        an RF field between the electrodes — the load (material)
-        determines how much power is absorbed.
+        The GP-15's self-excited triode oscillator produces an RF
+        voltage that depends on the anode DC supply and the tank
+        circuit coupling:
 
-        From the GP-15 Test Report (Manual Appendix E):
+            V_rf = V_anode × oscillator_coupling_factor
 
-            No-load:  V_a = 9.18 kV, I_a = 0.4 A → P_rf ≈ 0
-            Full-load: V_a = 8.38 kV, I_a = 2.58 A → P_rf = 15 kW
+        The anode voltage droops under load.  The oscillator cannot
+        deliver more than its rated maximum (15 kW) — beyond that
+        the triode de-excites and the tank circuit detuning limits
+        the output.  The droop model is valid between no-load and
+        full-load; we clamp the fraction at 1.0 to prevent the
+        voltage computation from extrapolating into the unphysical
+        de-excitation region.
 
-        The P_rf vs I_a relationship is linear between these points.
-        The oscillator's self-excitation naturally adjusts the anode
-        operating point to match the load impedance.
-
-        For Phase 1 Approach A (§4.1.3), the target RF power is the
-        generator's rated maximum output.  The ``solve_power_constrained``
-        solver then finds the electrode voltage V_rf that delivers
-        this power through the series-capacitor model (§4.1.3).
-
-        The power naturally self-regulates:
-
-        - Wet material (high ε″) → strong load → low V_rf needed
-          → most energy goes to evaporation (self-leveling, §4.3.4)
-        - Dry material (low ε″) → weak load → high V_rf needed
-          → solver finds V_rf up to the oscillator's voltage limit;
-          if the limit is reached, actual P_rf < P_target
-
-        Note: The ``oscillator_efficiency`` (η ≈ 0.56, §10.1) is the
-        overall mains-to-RF efficiency used for energy accounting
-        and the manual's validation example (§10.1).  It is NOT used
-        in the Approach A field solve — the test report's operating
-        curve (0 → 15 kW) already captures the generator's full
-        power delivery characteristic.
+        The MRH gap control (which sees the UNCLAMPED Ia from actual
+        delivered power) reduces the gap to bring the operating point
+        back into the rated range.
 
         Returns:
-            Target RF power [kW] for the Approach A solver.
+            V_rf [kV] at the electrodes.
         """
-        return machine.max_rf_power_kw
+        k = machine.oscillator_coupling_factor
+
+        # Anode current from previous step's delivered power.
+        # Clamp fraction at 1.0 for the VOLTAGE computation:
+        # the oscillator's tank circuit physically limits the output
+        # voltage to the range covered by the droop model.
+        P_gen_kw = self._last_P_rf_kw / max(self._oscillator_efficiency, 0.01)
+        fraction = min(P_gen_kw / machine.max_rf_power_kw, 1.0) if P_gen_kw > 0 else 0.0
+        I_a = (machine.anode_current_no_load_a
+               + (machine.anode_current_full_load_a - machine.anode_current_no_load_a) * fraction)
+
+        V_a_kv = machine.anode_voltage_kv(I_a)
+        V_rf_kv = V_a_kv * k
+        return V_rf_kv
 
     # ------------------------------------------------------------------
     # Helpers

@@ -45,15 +45,16 @@ except ImportError:
     # Fallback if running outside the full package (e.g., tests)
     GRAVITY = 9.80665  # standard gravitational acceleration [m/s^2]
 
-# ── Pretreatment material system ─────────────────────────────────────
+# ── Pretreatment material system (whole seeds, NOT flour) ────────────
+# The GP-15 processes whole beans/seeds/groats BEFORE milling.
+# All material properties come from pretreatment.config, which
+# defines rho_solid, bed_porosity, dielectric coefficients, etc.
+# for the raw seed form.
+#
+# Do NOT import from airclassifier.particles.material — that module
+# defines flour particles (post-milling: 5-50 um) for the air
+# classifier, a completely different material at a different scale.
 from .config import MaterialProperties as PretreatmentMaterial
-
-# ── Particle material system (density, sphericity, size distributions)
-try:
-    from ..particles.material import ParticleMaterial
-    _HAS_PARTICLE_MATERIAL = True
-except ImportError:
-    _HAS_PARTICLE_MATERIAL = False
 
 
 @dataclass
@@ -90,9 +91,9 @@ class ParticleSystemConfig:
     T_inlet_c: float = 22.0          # infeed temperature [C]
     M_inlet_wb: float = 0.10         # infeed moisture [wet-basis]
 
-    # Particle physical properties (from ParticleMaterial / MaterialDensities)
-    particle_density: float = 1450.0  # solid density [kg/m^3]
-    particle_sphericity: float = 0.70 # shape factor [-]
+    # Whole seed physical properties (from PretreatmentMaterial.rho_solid)
+    particle_density: float = 1450.0  # whole seed solid density [kg/m^3]
+    particle_sphericity: float = 0.85 # whole seeds are roughly spherical [-]
 
     # Physics constant (from utils.constants)
     gravity: float = GRAVITY          # [m/s^2]
@@ -108,32 +109,6 @@ class ParticleSystemConfig:
     rf_x_end: float = 1.5
 
 
-def _get_particle_material_for_feedstock(material: PretreatmentMaterial) -> Optional[dict]:
-    """Look up the particle-system material for the pretreatment feedstock.
-
-    Bridges the two material systems:
-        pretreatment.config.MaterialProperties  -->  particles.material.ParticleMaterial
-
-    The pretreatment material carries dielectric/thermal properties
-    (for the Eulerian grid).  The particle material carries density,
-    sphericity, and size distribution (for Lagrangian tracers).
-
-    Both are keyed by feedstock name (yellow_pea, faba_bean, oat).
-    """
-    if not _HAS_PARTICLE_MATERIAL:
-        return None
-
-    name = material.name.lower().replace(" ", "_")
-    try:
-        pm = ParticleMaterial.create_food_powder(name, "whole")
-        return {
-            "density": pm.density,
-            "sphericity": pm.sphericity,
-        }
-    except (ValueError, KeyError):
-        return None
-
-
 class MaterialParticleSystem:
     """Lagrangian tracer particles coupled to the Eulerian physics grid.
 
@@ -144,9 +119,9 @@ class MaterialParticleSystem:
         moisture[i]    -- trilinearly interpolated from grid M [wb]
         state[i]       -- RIDING / FALLING / DEAD
 
-    Material properties are sourced dynamically:
+    Material properties are sourced from the pretreatment system:
         - Inlet T, M          from PretreatmentMaterial (config.py)
-        - Particle density     from particles.material.ParticleMaterial
+        - Particle density     from PretreatmentMaterial.rho_solid (whole seed density)
         - Gravity              from utils.constants.GRAVITY
         - Geometry             from machine assembly components
     """
@@ -210,10 +185,8 @@ class MaterialParticleSystem:
 
         Geometry comes from the assembly's component parameters
         (single source of truth).  Inlet T and M come from the
-        pretreatment MaterialProperties.  Particle density and
-        sphericity come from the project's particle material system
-        (if available), falling back to the pretreatment material's
-        rho_solid.
+        pretreatment MaterialProperties.  Particle density comes
+        from ``rho_solid`` (whole seed solid density, measured).
         """
         cp = assembly.conveyor.params
         op = assembly.oven.params
@@ -227,15 +200,12 @@ class MaterialParticleSystem:
         belt_z0 = op.conveyor_belt_z0_m
         belt_z1 = belt_z0 + op.rf_zone_width_m
 
-        # Look up particle-system material for density and sphericity
-        pm_props = _get_particle_material_for_feedstock(material)
-        if pm_props is not None:
-            p_density = pm_props["density"]
-            p_sphericity = pm_props["sphericity"]
-        else:
-            # Fallback: use pretreatment material's solid density
-            p_density = material.rho_solid
-            p_sphericity = 0.70  # typical for whole seeds
+        # Whole seed properties from the pretreatment material system.
+        # rho_solid is the measured particle density of whole seeds
+        # (e.g., 1450 kg/m3 for yellow peas — NOT flour density).
+        # Sphericity ~0.85 for roughly spherical legume seeds.
+        p_density = material.rho_solid
+        p_sphericity = 0.85  # whole seeds are roughly spherical
 
         # Collection bin geometry from the assembly
         head_x = cp.frame_length_m - cp.nose_length_m

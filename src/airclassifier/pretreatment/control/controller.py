@@ -74,8 +74,11 @@ class GP15Controller:
        the outfeed temperature at the recipe setpoint.
     """
 
-    # Gap adjustment rate during MRH correction [mm/s]
-    _GAP_ADJUST_RATE_MM_S = 20.0
+    # Gap adjustment rate during MRH correction [mm/s].
+    # Calibrated from Run#1 PLC data: gap opens 75→87 mm over ~1000 s
+    # = 12 mm / 1000 s = 0.012 mm/s.  The electrode drive motor
+    # (0.37 kW, inverter-controlled) moves very slowly under MRH.
+    _GAP_ADJUST_RATE_MM_S = 0.012
 
     # Gap adjustment step for temperature control [mm]
     _TEMP_GAP_STEP_MM = 2.0
@@ -171,11 +174,12 @@ class GP15Controller:
             self.status.electrode_gap_mm = self._machine.electrode_gap_max_m * 1000.0
             return self.status
 
-        # If we were in recycle and safety cleared, restore
+        # If we were in recycle and safety cleared, restore RF
+        # but keep the current gap (don't reset to recipe setpoint —
+        # MRH may have opened it, and resetting would cause another trip)
         if self.status.state == ControllerState.RECYCLE:
             self.status.state = ControllerState.RUNNING
             self.status.rf_enabled = recipe.rf_power_enabled
-            self.status.electrode_gap_mm = recipe.electrode_gap_mm
 
         # ── 2. MRH / MRL GAP CONTROL ─────────────────────────────────
         self.status.mrh_active = anode_current_a > recipe.mrh_amps
