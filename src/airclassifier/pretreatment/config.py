@@ -192,6 +192,24 @@ class Recipe:
     """GP-15 HMI recipe. Up to 30 can be stored.
 
     Maps directly to the GP-15 Recipe Edit Screen parameters.
+
+    The ``run_mass_kg`` field sets the total mass of material for
+    the production run.  The simulation duration is computed from::
+
+        duration = run_mass_kg / (rho_bulk * bed_depth * belt_width * belt_speed)
+
+    This matches how the real machine operates: the operator loads
+    a known mass, sets the belt speed and sizing gate, and the
+    machine runs until all material has passed through the oven
+    (Manual Chapter 5, Chapter 6).
+
+    Example from actual Run#1 (25-Mar-2025):
+        Material:       Whole Yellow Pea
+        Run mass:       61 kg
+        Feeder gap:     25 mm (bed depth from sizing gate)
+        Belt speed:     0.2 m/min
+        Electrode gap:  75 mm
+        Start temp:     17.6 C
     """
 
     name: str = "default"
@@ -201,6 +219,12 @@ class Recipe:
     electrode_gap_mm: float = 80.0               # Gap setpoint
     belt_speed_m_per_min: float = 0.5            # Conveyor speed
     rf_power_enabled: bool = True
+
+    # --- Run mass (Manual Chapter 5: "600 kg of product per hour") ---
+    # Total mass of material for the production run [kg].
+    # If > 0, the simulation duration is computed from mass / throughput.
+    # If 0, the caller must specify duration_s explicitly.
+    run_mass_kg: float = 0.0
 
     # --- Anode current protection ---
     mrh_amps: float = 2.6                        # Meter Relay High (overcurrent trip)

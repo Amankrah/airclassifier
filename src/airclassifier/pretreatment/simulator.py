@@ -262,6 +262,41 @@ class GP15Simulator:
         """Build a :class:`PretreatmentResult` from current state."""
         return self._sim._build_result()
 
+    def compute_run_duration(self, recipe: Recipe | None = None) -> float:
+        """Compute the production run duration from mass and throughput.
+
+        Uses the formula from the GP-15 manual (Chapter 5)::
+
+            duration = run_mass_kg / (rho_bulk * bed_depth * belt_width * belt_speed)
+
+        This is how the real machine operates: the operator loads a
+        known mass of material, sets the belt speed and sizing gate
+        (bed depth), and the machine runs until all material has
+        passed through.
+
+        Returns 0.0 if ``run_mass_kg`` is not set on the recipe.
+
+        Returns:
+            Estimated run duration [s].
+        """
+        recipe = recipe or self._recipe or Recipe()
+        if recipe.run_mass_kg <= 0:
+            return 0.0
+
+        mat = self.material
+        v_belt = recipe.belt_speed_m_per_min / 60.0  # m/s
+        if v_belt <= 0:
+            return 0.0
+
+        rho_bulk = mat.bulk_density(mat.initial_moisture_wb)
+        bed_cross = mat.bed_depth_m * self.config.belt_width_m
+        throughput_kg_per_s = rho_bulk * bed_cross * v_belt
+
+        if throughput_kg_per_s <= 0:
+            return 0.0
+
+        return recipe.run_mass_kg / throughput_kg_per_s
+
     # ------------------------------------------------------------------
     # Public API  (§7.1)
     # ------------------------------------------------------------------
@@ -281,17 +316,25 @@ class GP15Simulator:
 
     def run(
         self,
-        duration_s: float,
+        duration_s: float | None = None,
         dt: float | None = None,
         adaptive_dt: bool = True,
     ) -> PretreatmentResult:
-        """Run the full simulation for the specified duration.
+        """Run the full simulation.
 
-        Executes the coupled physics loop (§6.2), returns complete
-        results including time-series of all fields and KPIs.
+        If ``duration_s`` is not provided, it is computed from the
+        recipe's ``run_mass_kg`` using the throughput formula from
+        the GP-15 manual (Chapter 5)::
+
+            duration = mass / (rho_bulk * bed_depth * belt_width * belt_speed)
+
+        This matches how the real machine operates: the operator
+        loads a known mass, and the machine runs until all material
+        has passed through.
 
         Args:
-            duration_s: Total simulation time [s].
+            duration_s: Total simulation time [s].  If ``None``,
+                computed from ``recipe.run_mass_kg``.
             dt: Fixed timestep [s].  If ``None``, auto-computed.
             adaptive_dt: Recompute ``dt`` each step for stability.
 
@@ -300,6 +343,15 @@ class GP15Simulator:
         """
         self._ensure_initialized()
         recipe = self._recipe or Recipe()
+
+        if duration_s is None:
+            duration_s = self.compute_run_duration(recipe)
+            if duration_s <= 0:
+                raise ValueError(
+                    "Cannot compute run duration: set recipe.run_mass_kg "
+                    "or pass duration_s explicitly."
+                )
+
         return self._sim.run(
             duration_s=duration_s,
             dt=dt,

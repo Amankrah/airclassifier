@@ -63,23 +63,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-    python examples/simulate_and_visualize.py
-    python examples/simulate_and_visualize.py --duration 120
-    python examples/simulate_and_visualize.py --gap 100 --speed 0.3
-    python examples/simulate_and_visualize.py --plots-only
-    python examples/simulate_and_visualize.py --gap 150 --bed-depth 60
+    python examples/simulate_and_visualize.py                        # Run#1 defaults (61 kg)
+    python examples/simulate_and_visualize.py --mass 30 --speed 0.5  # 30 kg at 0.5 m/min
+    python examples/simulate_and_visualize.py --duration 120         # Override: 120 s fixed
+    python examples/simulate_and_visualize.py --plots-only           # Batch mode (no 3D)
+    python examples/simulate_and_visualize.py --gap 80 --bed-depth 50 --mass 100
 """,
     )
-    parser.add_argument("--duration", type=float, default=60.0,
-                        help="Simulation duration in seconds (default 60)")
-    parser.add_argument("--gap", type=float, default=80.0,
-                        help="Electrode gap in mm (default 80)")
-    parser.add_argument("--bed-depth", type=float, default=50.0,
-                        help="Material bed depth in mm (default 50)")
-    parser.add_argument("--speed", type=float, default=0.5,
-                        help="Belt speed in m/min (default 0.5)")
+    parser.add_argument("--mass", type=float, default=61.0,
+                        help="Run mass in kg (default 61, from Run#1)")
+    parser.add_argument("--duration", type=float, default=None,
+                        help="Override: simulation duration in seconds (computed from mass if omitted)")
+    parser.add_argument("--gap", type=float, default=75.0,
+                        help="Electrode gap in mm (default 75, from Run#1)")
+    parser.add_argument("--bed-depth", type=float, default=25.0,
+                        help="Material bed depth / feeder gap in mm (default 25, from Run#1)")
+    parser.add_argument("--speed", type=float, default=0.2,
+                        help="Belt speed in m/min (default 0.2, from Run#1)")
     parser.add_argument("--moisture", type=float, default=0.10,
                         help="Initial moisture wet basis fraction (default 0.10)")
+    parser.add_argument("--temp", type=float, default=17.6,
+                        help="Initial temperature in C (default 17.6, from Run#1)")
     parser.add_argument("--plots-only", action="store_true",
                         help="Skip 3D PyVista view, show only matplotlib plots")
     parser.add_argument("--cpu", action="store_true",
@@ -100,6 +104,7 @@ Examples:
     config = MachineConfig()
     material = MaterialProperties(
         initial_moisture_wb=args.moisture,
+        initial_temperature_c=args.temp,
         bed_depth_m=args.bed_depth / 1000.0,
     )
 
@@ -129,11 +134,19 @@ Examples:
         recipe_number=1,
         electrode_gap_mm=args.gap,
         belt_speed_m_per_min=args.speed,
+        run_mass_kg=args.mass,
         extraction_fan_hz=35.0,
         heater_bank_1_on=True,
         heater_bank_2_on=True,
     )
     sim.load_recipe(recipe)
+
+    # Compute run duration from mass (or use explicit override)
+    if args.duration is not None:
+        run_duration = args.duration
+    else:
+        run_duration = sim.compute_run_duration(recipe)
+    args.duration = run_duration
 
     # ── 4. Print assembly info ───────────────────────────────────────
     info = sim.assembly.get_assembly_info()
@@ -143,13 +156,17 @@ Examples:
     air_gap = max(0, args.gap / 1000.0 - args.bed_depth / 1000.0 - belt_stack)
     residence_s = config.oven_length_m / (args.speed / 60.0) if args.speed > 0 else 0
 
+    # Throughput from manual Chapter 5 formula
+    rho_bulk = material.bulk_density(material.initial_moisture_wb)
+    throughput_kg_h = rho_bulk * material.bed_depth_m * config.belt_width_m * (args.speed / 60.0) * 3600
+
     print()
     print(f"  Machine:           {info['machine']}")
     print(f"  RF zone:           {info['rf_zone_length_m']:.2f} m  "
           f"(x = {info['rf_zone_x_start_m']:.2f} - {info['rf_zone_x_end_m']:.2f} m)")
     print(f"  Belt width:        {info['belt_width_m'] * 1000:.0f} mm")
     print(f"  Electrode gap:     {args.gap:.0f} mm")
-    print(f"  Bed depth:         {args.bed_depth:.0f} mm")
+    print(f"  Bed depth:         {args.bed_depth:.0f} mm (feeder gap)")
     print(f"  Belt stack:        {belt_stack * 1000:.1f} mm")
     print(f"  Air gap:           {air_gap * 1000:.0f} mm")
     print(f"  Residence time:    {residence_s:.1f} s")
@@ -157,14 +174,19 @@ Examples:
     print(f"  Cell sizes:        dx={dx * 1000:.1f} mm  dy={dy * 1000:.1f} mm  "
           f"dz={dz * 1000:.1f} mm")
     print(f"  Initial moisture:  {args.moisture:.0%} (wet basis)")
+    print(f"  Initial temp:      {args.temp:.1f} C")
+    print(f"  Run mass:          {args.mass:.1f} kg")
+    print(f"  Throughput:        {throughput_kg_h:.0f} kg/h")
+    print(f"  Run duration:      {run_duration:.0f} s ({run_duration/60:.1f} min)")
     print()
 
     # ── 5. Run simulation or launch live 3D ─────────────────────────
     if not args.plots_only:
         try:
             import pyvista as pv
-            print(f"Running LIVE simulation for {args.duration:.0f} s "
-                  f"(belt speed {args.speed} m/min) ...")
+            print(f"Running LIVE simulation  |  {args.mass:.1f} kg  |  "
+                  f"{run_duration:.0f} s ({run_duration/60:.1f} min)  |  "
+                  f"belt {args.speed} m/min ...")
             print("  3D window will update in real-time.")
             print()
             result = _run_live_3d(sim, recipe, args, info, material)
@@ -177,10 +199,10 @@ Examples:
             args.plots_only = True
 
     if args.plots_only:
-        print(f"Running simulation for {args.duration:.0f} s "
-              f"(belt speed {args.speed} m/min) ...")
+        print(f"Running simulation for {run_duration:.0f} s ({run_duration/60:.1f} min)  |  "
+              f"{args.mass:.1f} kg  |  belt {args.speed} m/min ...")
         t0 = time.time()
-        result = sim.run(duration_s=args.duration, adaptive_dt=True)
+        result = sim.run(duration_s=run_duration, adaptive_dt=True)
         elapsed = time.time() - t0
         _print_results(sim, result, elapsed)
 

@@ -97,6 +97,12 @@ class ParticleSystemConfig:
     # Physics constant (from utils.constants)
     gravity: float = GRAVITY          # [m/s^2]
 
+    # Mass accounting (from manual Chapter 5: 600 kg/h example)
+    # Each visual particle represents a portion of the continuous
+    # mass flow.  mass_per_particle = throughput / spawn_rate.
+    # Throughput = rho_bulk * bed_cross * v_belt [kg/s]
+    throughput_kg_per_s: float = 0.0  # set by from_assembly()
+
     # Grid info (for field interpolation bounds)
     rf_x_start: float = 0.0
     rf_x_end: float = 1.5
@@ -160,6 +166,15 @@ class MaterialParticleSystem:
         self.moisture = np.full(n, config.M_inlet_wb, dtype=np.float32)
         self.state = np.full(n, self._STATE_DEAD, dtype=np.int32)
         self.age = np.zeros(n, dtype=np.float32)
+
+        # Mass accounting (manual Chapter 5).
+        # Each particle represents mass_per_particle kg of material.
+        # throughput [kg/s] / spawn_rate [particles/s] = kg/particle.
+        if config.throughput_kg_per_s > 0 and config.spawn_rate > 0:
+            self.mass_per_particle = config.throughput_kg_per_s / config.spawn_rate
+        else:
+            self.mass_per_particle = 0.0
+        self._total_collected_kg = 0.0
 
         self._alive_count = 0
         self._spawn_accumulator = 0.0
@@ -237,6 +252,15 @@ class MaterialParticleSystem:
         bin_bottom = floor_y
         bin_top = floor_y + bin_height
 
+        # Throughput from manual Chapter 5 formula:
+        # throughput = rho_bulk * bed_cross_area * v_belt
+        rho_bulk = material.bulk_density(material.initial_moisture_wb)
+        bed_cross = material.bed_depth_m * cp.belt_width_m
+        # Use a nominal belt speed for mass accounting; actual speed
+        # comes from the conveyor controller during the simulation.
+        nominal_v_belt = 0.5 / 60.0  # 0.5 m/min default
+        throughput = rho_bulk * bed_cross * nominal_v_belt
+
         cfg = ParticleSystemConfig(
             spawn_x=spawn_x,
             spawn_z0=belt_z0,
@@ -256,6 +280,7 @@ class MaterialParticleSystem:
             particle_density=p_density,
             particle_sphericity=p_sphericity,
             gravity=GRAVITY,
+            throughput_kg_per_s=throughput,
             rf_x_start=op.rf_zone_x_start,
             rf_x_end=op.rf_zone_x_end,
         )
@@ -332,21 +357,32 @@ class MaterialParticleSystem:
                 & (self.pos[:, 2] <= cfg.bin_z1)
             )
 
-            # Landed in the bin: settle as COLLECTED
+            # Landed in the bin: settle as COLLECTED.
+            # Particles scatter across the full bin volume (X, Y, Z)
+            # to represent bulk material piling up from the bottom.
+            # The fill level Y rises as more particles accumulate.
             landed = in_bin_xz & (self.pos[:, 1] <= cfg.bin_top_y)
             if landed.any():
-                # Fill level rises as particles accumulate
                 n_collected = int(np.sum(self.state == self._STATE_COLLECTED))
                 fill_frac = min(n_collected / max(cfg.max_particles * 0.3, 1), 0.95)
                 fill_y = cfg.bin_bottom_y + fill_frac * (cfg.bin_top_y - cfg.bin_bottom_y)
                 n_land = int(landed.sum())
-                self.pos[landed, 1] = np.random.uniform(
+                # Spread across the full bin footprint (X, Z)
+                self.pos[landed, 0] = rng.uniform(
+                    cfg.bin_x0 + 0.01, cfg.bin_x1 - 0.01, size=n_land,
+                )
+                self.pos[landed, 2] = rng.uniform(
+                    cfg.bin_z0 + 0.01, cfg.bin_z1 - 0.01, size=n_land,
+                )
+                # Settle at random Y within the current fill level
+                self.pos[landed, 1] = rng.uniform(
                     cfg.bin_bottom_y + 0.005,
-                    max(fill_y + 0.01, cfg.bin_bottom_y + 0.02),
+                    max(fill_y + 0.01, cfg.bin_bottom_y + 0.03),
                     size=n_land,
                 )
                 self.vel[landed] = 0.0
                 self.state[landed] = self._STATE_COLLECTED
+                self._total_collected_kg += n_land * self.mass_per_particle
 
             # Fell outside the bin entirely → recycle
             missed = falling & ~in_bin_xz & (self.pos[:, 1] < cfg.bin_bottom_y)
@@ -467,3 +503,18 @@ class MaterialParticleSystem:
     @property
     def alive_count(self) -> int:
         return self._alive_count
+
+    @property
+    def collected_count(self) -> int:
+        """Number of particles currently in the collection bin."""
+        return int(np.sum(self.state == self._STATE_COLLECTED))
+
+    @property
+    def collected_mass_kg(self) -> float:
+        """Total mass collected in the bin [kg].
+
+        Based on the throughput formula from the GP-15 manual
+        (Chapter 5): throughput = rho_bulk * bed_cross * v_belt.
+        Each particle represents throughput / spawn_rate kg.
+        """
+        return self._total_collected_kg
