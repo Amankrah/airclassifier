@@ -394,15 +394,32 @@ class OvenChamberGeometry:
 
     # ── Simulation grid helpers ──────────────────────────────────
 
+    # Maximum cell height for adequate vertical resolution [m].
+    # A typical bed depth is 50 mm; dy ≤ 10 mm gives ≥ 5 material
+    # cells, enough to resolve the vertical temperature profile
+    # (bottom contact BC → interior heating → surface convection).
+    _DY_MAX_M = 0.010
+
     def get_grid_shape(self) -> Tuple[int, int, int]:
-        """Return (nx, ny, nz) for simulation grid over RF zone."""
+        """Return (nx, ny, nz) for simulation grid over RF zone.
+
+        The Y dimension spans ``electrode_gap_max`` (the full
+        mechanical travel of the upper electrode).  ``ny`` is chosen
+        to keep ``dy ≤ _DY_MAX_M`` so that a typical 50 mm bed
+        contains at least 5 material cells.
+        """
         p = self.params
         r = p.resolution
         aspect_xz = p.rf_zone_length_m / p.rf_zone_width_m
-        aspect_yz = p.electrode_gap_max_m / p.rf_zone_width_m
         nz = r
         nx = max(4, int(r * aspect_xz))
-        ny = max(4, int(r * aspect_yz))
+        # Ensure adequate vertical resolution in the material bed.
+        # The old formula (ny = int(r * gap_max/belt_width) = 11)
+        # gave dy = 27.3 mm — only 2 cells in a 50 mm bed.
+        aspect_yz = p.electrode_gap_max_m / p.rf_zone_width_m
+        ny_from_aspect = max(4, int(r * aspect_yz))
+        ny_for_bed = max(4, int(round(p.electrode_gap_max_m / self._DY_MAX_M)))
+        ny = max(ny_from_aspect, ny_for_bed)
         return (nx, ny, nz)
 
     def get_cell_sizes(self) -> Tuple[float, float, float]:
@@ -439,14 +456,22 @@ class OvenChamberGeometry:
             np.ndarray shape (nx, ny, nz), dtype int32.
         """
         nx, ny, nz = self.get_grid_shape()
-        dy = electrode_gap_m / ny
+        # Use the ACTUAL grid cell size (grid spans electrode_gap_max,
+        # not the current operating gap).  The previous code used
+        # electrode_gap_m / ny which mapped all ny cells into the
+        # current gap, wildly over-counting material cells.
+        dy_actual = self.params.electrode_gap_max_m / ny
         mask = np.zeros((nx, ny, nz), dtype=np.int32)
         for j in range(ny):
-            yc = (j + 0.5) * dy
-            if yc < belt_stack_m:
+            yc = (j + 0.5) * dy_actual
+            if yc >= electrode_gap_m:
+                # Above upper electrode — outside active domain
+                mask[:, j, :] = 0
+            elif yc < belt_stack_m:
                 mask[:, j, :] = 2
             elif yc < belt_stack_m + bed_depth_m:
                 mask[:, j, :] = 1
+            # else: air gap between bed top and upper electrode → 0
         return mask
 
     # ── Connection ports ─────────────────────────────────────────

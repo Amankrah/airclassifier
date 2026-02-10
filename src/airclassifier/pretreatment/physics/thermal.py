@@ -39,15 +39,21 @@ class ThermalSolver:
       :meth:`apply_convection_bc`
     """
 
+    # Belt thermal properties for contact BC at lower electrode
+    _K_BELT = 0.25       # PTFE thermal conductivity [W/(m*K)]
+    _D_BELT = 0.0035     # Belt stack thickness [m]
+
     def __init__(
         self,
         grid_shape: Tuple[int, int, int],
         cell_sizes: Tuple[float, float, float],
         device: str = "cuda",
+        belt_stack_m: float = 0.0035,
     ):
         self._grid_shape = grid_shape
         self._cell_sizes = cell_sizes
         self._device = device
+        self._D_BELT = belt_stack_m
 
         nx, ny, nz = grid_shape
         self.T = np.zeros(grid_shape, dtype=np.float32)         # Temperature [degC]
@@ -159,8 +165,29 @@ class ThermalSolver:
         Tn[:, :, 0] = Tn[:, :, 1]
         Tn[:, :, -1] = Tn[:, :, -2]
 
-        # Bottom electrode (j=0): isothermal sink at T_inlet
-        Tn[:, 0, :] = T_inlet_c
+        # Bottom (j=0): Robin BC for material cells — models heat
+        # transfer through the PTFE belt stack to the isothermal
+        # lower electrode (ground plate at T_inlet).
+        #
+        # The old Dirichlet BC (Tn[:,0,:] = T_inlet) pinned the
+        # entire bottom row at ambient, destroying all RF energy
+        # deposited in material cells there.  With only 2 material
+        # cells in Y (coarse grid), this discarded ~50% of the
+        # heating.
+        #
+        # Robin BC:  q = h_contact * (T - T_electrode)
+        # where h_contact = k_belt / d_belt ≈ 71 W/(m²·K)
+        mat_j0 = (cell_is_material[:, 0, :] == 1)
+        if np.any(mat_j0):
+            h_contact = self._K_BELT / max(self._D_BELT, 1e-6)
+            q_contact = h_contact * (Tn[:, 0, :] - T_inlet_c)
+            rc_0 = np.maximum(rho_cp[:, 0, :], 1.0)
+            correction = dt * q_contact / (rc_0 * dy * 0.5)
+            Tn[:, 0, :] = np.where(mat_j0,
+                                    Tn[:, 0, :] - correction,
+                                    T_inlet_c)
+        else:
+            Tn[:, 0, :] = T_inlet_c
 
         # Top (j=ny-1): copy for now — convection BC applied separately
         Tn[:, -1, :] = Tn[:, -2, :]

@@ -82,13 +82,13 @@ COMPONENT_COLORS: Dict[str, Dict[str, object]] = {
         "label": "Oven Chamber",
     },
     "upper_electrode": {
-        "color": "#C0392B",
-        "opacity": 0.85,
+        "color": "#A8A8B0",
+        "opacity": 0.40,
         "label": "Upper Electrode",
     },
     "lower_electrode": {
-        "color": "#7B2D8E",
-        "opacity": 0.80,
+        "color": "#909098",
+        "opacity": 0.35,
         "label": "Lower Electrode",
     },
     "material_bed": {

@@ -137,8 +137,15 @@ class MaterialProperties:
     D_eff_Ea: float = 28500.0                    # J/mol
 
     # --- Evaporation model ---
+    # The threshold temperature controls the onset of active moisture
+    # removal.  At 40 °C the material barely reaches it with the GP-15's
+    # power density, producing zero drying.  Legume seeds lose moisture
+    # to dry air at any temperature above the dew point (~10-15 °C).
+    # A threshold of 25 °C models the practical onset of accelerated
+    # evaporation from RF heating while allowing drying to begin as
+    # soon as material warms above ambient.
     k_evap: float = 1.5e-4                       # 1/(degC*s) rate constant
-    T_evap_threshold_c: float = 40.0             # degC
+    T_evap_threshold_c: float = 25.0             # degC
 
     # --- Bed geometry (packed bed of whole seeds on the conveyor) ---
     bed_depth_m: float = 0.05                    # 50 mm typical

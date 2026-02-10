@@ -61,6 +61,22 @@ from .physics.coupling import (
 )
 
 
+def _detect_device() -> str:
+    """Return ``"cuda"`` if an NVIDIA GPU is available, else ``"cpu"``.
+
+    Checks for CUDA via Warp first (primary compute engine), then
+    falls back to a basic ``torch.cuda`` / env-var check.
+    """
+    try:
+        import warp as wp
+        wp.init()
+        if wp.is_cuda_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 class GP15Simulator:
     """Digital twin of the QMTI GP-15 RF dielectric heating machine.
 
@@ -102,7 +118,7 @@ class GP15Simulator:
         self,
         config: MachineConfig | None = None,
         material: MaterialProperties | None = None,
-        device: str = "cpu",
+        device: str | None = None,
         *,
         use_fdm: bool = False,
         use_tvd: bool = True,
@@ -114,6 +130,9 @@ class GP15Simulator:
     ):
         self.config = config or MachineConfig()
         self.material = material or MaterialProperties()
+        # Auto-detect CUDA: use GPU if available, fall back to CPU.
+        if device is None:
+            device = _detect_device()
         self._device = device
         self._recipe: Optional[Recipe] = None
 

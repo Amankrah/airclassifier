@@ -142,34 +142,41 @@ class RFFieldSolver:
         self._E_belt = D / eps_belt
 
         # --- Fill the 3D field ---
-        # Potential linearly interpolated from 0 (ground) to V_total.
-        # |E|^2 is constant within each layer.
+        # Use the ACTUAL grid cell size (grid spans electrode_gap_max,
+        # not the current operating gap).  The previous code used
+        # electrode_gap_m / ny which placed layer boundaries at wrong
+        # Y-positions, assigning E_bed to cells that are physically
+        # in the air gap or above the electrode.
         nx, ny, nz = self._grid_shape
-        dy = electrode_gap_m / ny
+        dy_actual = self._cell_sizes[1]  # from grid (gap_max / ny)
 
         for j in range(ny):
-            y_centre = (j + 0.5) * dy
-            if y_centre < d_belt:
-                E = self._E_belt
-            elif y_centre < d_belt + d_bed:
+            y_centre = (j + 0.5) * dy_actual
+            if y_centre >= electrode_gap_m:
+                E = 0.0  # above upper electrode — no field
+            elif y_centre >= d_belt + d_bed:
+                E = self._E_air
+            elif y_centre >= d_belt:
                 E = self._E_bed
             else:
-                E = self._E_air
+                E = self._E_belt
             self.e_field_sq[:, j, :] = E * E
 
         # Build approximate potential (useful for diagnostics)
         # phi(y) integrated from y = 0 (ground, phi = 0)
         phi = 0.0
         for j in range(ny):
-            y_centre = (j + 0.5) * dy
-            if y_centre < d_belt:
-                E = self._E_belt
-            elif y_centre < d_belt + d_bed:
+            y_centre = (j + 0.5) * dy_actual
+            if y_centre >= electrode_gap_m:
+                E = 0.0
+            elif y_centre >= d_belt + d_bed:
+                E = self._E_air
+            elif y_centre >= d_belt:
                 E = self._E_bed
             else:
-                E = self._E_air
-            phi += E * dy
-            self.potential[:, j, :] = phi
+                E = self._E_belt
+            phi += E * dy_actual
+            self.potential[:, j, :] = min(phi, V_total)
 
         return self.e_field_sq
 

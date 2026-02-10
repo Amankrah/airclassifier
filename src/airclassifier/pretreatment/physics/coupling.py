@@ -69,6 +69,9 @@ class StepState:
     anode_current_a: float = 0.0
     electrode_gap_mm: float = 0.0
     belt_speed_m_per_min: float = 0.0
+    # Outfeed cross-section averages (last X-slice, material only)
+    T_outfeed_c: float = 0.0
+    M_outfeed_wb: float = 0.0
 
 
 @dataclass
@@ -165,7 +168,10 @@ class CoupledSimulator:
 
         # Solvers
         self.rf = RFFieldSolver(grid_shape, cell_sizes, machine, device)
-        self.thermal = ThermalSolver(grid_shape, cell_sizes, device)
+        self.thermal = ThermalSolver(
+            grid_shape, cell_sizes, device,
+            belt_stack_m=machine.belt_stack_thickness_m,
+        )
         self.moisture = MoistureSolver(grid_shape, cell_sizes, device)
         self.airflow = EMUAirflowModel(machine)
 
@@ -272,15 +278,25 @@ class CoupledSimulator:
         (which includes VFD ramp), falling back to the recipe setpoint
         for the initial estimate before the conveyor has started.
 
+        The CFL must consider ALL cell types (material, air, belt)
+        because the thermal solver updates every cell.  Air cells have
+        much smaller rho*c_p than material, requiring smaller timesteps
+        to remain stable.
+
         Returns:
             The minimum of the two constraints [s].
         """
         dx, dy, dz = self._cell_sizes
-        mat_mask = (self.cell_is_material == 1)
 
-        # CFL from thermal diffusivity
-        k_max = float(np.max(self.k_eff[mat_mask])) if mat_mask.any() else 0.2
-        rho_cp_min = float(np.min(self.rho_cp[mat_mask])) if mat_mask.any() else 1e5
+        # CFL from thermal diffusivity — worst case across ALL cells
+        # (the thermal solver updates air cells too)
+        active = (self.rho_cp > 1.0)  # any cell with valid properties
+        if active.any():
+            k_max = float(np.max(self.k_eff[active]))
+            rho_cp_min = float(np.min(self.rho_cp[active]))
+        else:
+            k_max = 0.2
+            rho_cp_min = 1e5
         dt_cfl = self.thermal.get_cfl_dt(k_max, rho_cp_min)
 
         # Courant from advection — use actual belt speed (with ramp)
@@ -503,6 +519,13 @@ class CoupledSimulator:
         M_mean = float(np.mean(M_mat)) if M_mat.size else mat.initial_moisture_wb
         M_min = float(np.min(M_mat)) if M_mat.size else 0.0
 
+        # Outfeed cross-section (last X-slice, material cells only)
+        outfeed_mat = (self.cell_is_material[-1, :, :] == 1)
+        T_out_cells = self.thermal.T[-1, :, :][outfeed_mat]
+        M_out_cells = self.moisture.M[-1, :, :][outfeed_mat]
+        T_outfeed = float(np.mean(T_out_cells)) if T_out_cells.size else mat.initial_temperature_c
+        M_outfeed = float(np.mean(M_out_cells)) if M_out_cells.size else mat.initial_moisture_wb
+
         state = StepState(
             time_s=self._time,
             T_mean_c=T_mean,
@@ -513,6 +536,8 @@ class CoupledSimulator:
             anode_current_a=I_a,
             electrode_gap_mm=recipe.electrode_gap_mm,
             belt_speed_m_per_min=self.conveyor.state.belt_speed_m_per_min,
+            T_outfeed_c=T_outfeed,
+            M_outfeed_wb=M_outfeed,
         )
         self._history.append(state)
         return state
@@ -562,6 +587,14 @@ class CoupledSimulator:
             _dt = min(_dt, t_end - self._time)
             self.step(_dt, recipe)
 
+        return self._build_result()
+
+    def _build_result(self) -> PretreatmentResult:
+        """Assemble a :class:`PretreatmentResult` from current state.
+
+        Called by :meth:`run` at the end and also by the live 3-D
+        visualisation callback after the PyVista window closes.
+        """
         mat_mask = (self.cell_is_material == 1)
         M_final = self.moisture.M[mat_mask]
         T_final = self.thermal.T[mat_mask]
@@ -572,7 +605,7 @@ class CoupledSimulator:
         rho_bulk = self._material.bulk_density(self._material.initial_moisture_wb)
         throughput_kg_h = rho_bulk * bed_cross * belt_speed * 3600.0
 
-        result = PretreatmentResult(
+        return PretreatmentResult(
             duration_s=self._time,
             final_moisture_mean_wb=float(np.mean(M_final)) if M_final.size else 0.0,
             final_temperature_mean_c=float(np.mean(T_final)) if T_final.size else 0.0,
@@ -582,14 +615,15 @@ class CoupledSimulator:
                 "time_s": [s.time_s for s in self._history],
                 "T_mean_c": [s.T_mean_c for s in self._history],
                 "T_max_c": [s.T_max_c for s in self._history],
+                "T_outfeed_c": [s.T_outfeed_c for s in self._history],
                 "M_mean_wb": [s.M_mean_wb for s in self._history],
+                "M_outfeed_wb": [s.M_outfeed_wb for s in self._history],
                 "rf_power_kw": [s.rf_power_kw for s in self._history],
                 "anode_current_a": [s.anode_current_a for s in self._history],
             },
             T_final=self.thermal.T.copy(),
             M_final=self.moisture.M.copy(),
         )
-        return result
 
     # ------------------------------------------------------------------
     # Outlet conditions  (§9.1)
@@ -639,10 +673,15 @@ class CoupledSimulator:
         # Energy metrics
         total_kwh = self._total_rf_energy_j / 3.6e6
         water_removed_kg_h = throughput_kg_h * max(mat.initial_moisture_wb - avg_M, 0.0)
-        if water_removed_kg_h > 0:
-            specific_energy = total_kwh / (water_removed_kg_h / 3600.0 * residence_s)
+        # Specific energy: average RF power [kW] / water removal rate [kg/h]
+        # gives kWh per kg water removed.  Guard against division by zero
+        # when no water has been removed (e.g. simulation too short or
+        # drying model inactive).
+        if water_removed_kg_h > 1e-6:
+            avg_power_kw = (self._total_rf_energy_j / max(self._time, 1.0)) / 1000.0
+            specific_energy = avg_power_kw / water_removed_kg_h
         else:
-            specific_energy = 0.0
+            specific_energy = float("inf") if total_kwh > 0 else 0.0
 
         # Protein denaturation estimate (simplified: fraction of time T > 70 C)
         # For now, report 0 — detailed model in Phase 4
