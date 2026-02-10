@@ -190,7 +190,7 @@ Examples:
         enable_corrections=False,  # skip corrections for speed
     )
     print(f"  Device:  {sim._device}")
-    print(f"  Physics: {'GPU (Warp)' if getattr(sim._sim, '_use_gpu', False) else 'CPU (NumPy)'}")
+    print(f"  Physics: {'GPU (Warp CUDA kernels)' if getattr(sim._sim, '_use_gpu', False) else 'CPU (NumPy)'}")
     sim._sim.update_parameters(gap_adjust_rate=gap_rate_to_apply)
 
     # ── 3. Load recipe ───────────────────────────────────────────────
@@ -770,19 +770,28 @@ def _run_live_3d(sim, recipe, args, info, material):
             hist = sim.history
             if hist:
                 last = hist[-1]
+                hopper_n = particle_sys.hopper_count
+                riding_n = particle_sys.riding_count
                 title = (f"GP-15 Live  |  t={sim.sim_time:.0f}/{t_end:.0f} s  |  "
                          f"T_out={last.T_outfeed_c:.1f} C  |  "
                          f"M_out={last.M_outfeed_wb:.1%}  |  "
                          f"P={last.rf_power_kw:.1f} kW  |  "
-                         f"Belt {conv_ctrl.state.belt_speed_m_per_min:.1f} m/min")
+                         f"Hopper:{hopper_n}  Belt:{riding_n}")
             else:
                 title = f"GP-15 Live  |  t={sim.sim_time:.0f}/{t_end:.0f} s"
 
             if finished:
                 elapsed_w = time.time() - t0_wall
-                title = (f"GP-15 DONE  |  {sim.sim_time:.0f} s  |  "
-                         f"M_out={hist[-1].M_outfeed_wb:.1%}  |  "
-                         f"wall={elapsed_w:.1f} s")
+                riding_n = particle_sys.riding_count
+                hopper_n = particle_sys.hopper_count
+                if riding_n > 0 or hopper_n > 0:
+                    title = (f"GP-15 Wind-down  |  Belt clearing: "
+                             f"{riding_n} on belt, {hopper_n} in hopper  |  "
+                             f"wall={elapsed_w:.1f} s")
+                else:
+                    title = (f"GP-15 DONE  |  {sim.sim_time:.0f} s  |  "
+                             f"M_out={hist[-1].M_outfeed_wb:.1%}  |  "
+                             f"wall={elapsed_w:.1f} s  |  Belt clear")
 
             plotter.add_title(title, font_size=10)
 
@@ -795,8 +804,34 @@ def _run_live_3d(sim, recipe, args, info, material):
             time.sleep(max(0.0, frame_dt - elapsed_frame))
 
             if finished:
-                plotter.show()
-                break
+                riding_n = particle_sys.riding_count
+                falling_n = int(np.sum(particle_sys.state == particle_sys._STATE_FALLING))
+                hopper_n = particle_sys.hopper_count
+                belt_active = riding_n + falling_n + hopper_n
+
+                if belt_active > 0:
+                    # ── Wind-down: step particles in large time chunks
+                    # No physics needed — just belt transport + free-fall.
+                    # Use large dt (Courant limit for advection only) and
+                    # many sub-steps per frame to clear the belt quickly.
+                    v_belt = conv_ctrl.state.belt_speed_m_per_s
+                    if v_belt > 0:
+                        dt_wind = 0.8 * dx / v_belt  # Courant-safe for advection
+                    else:
+                        dt_wind = 1.0
+                    for _ in range(200):  # many sub-steps per render frame
+                        particle_sys.step(
+                            dt_sim=dt_wind,
+                            belt_speed_m_per_s=v_belt,
+                        )
+                        if particle_sys.riding_count == 0 and particle_sys.hopper_count == 0:
+                            break
+                    conv_ctrl.step(dt_wind * 200)
+                    finished = False  # keep looping until belt clear
+                else:
+                    # Belt is fully clear — show final state and stop
+                    plotter.show()
+                    break
 
     except KeyboardInterrupt:
         pass

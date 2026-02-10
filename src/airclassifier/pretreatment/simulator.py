@@ -308,11 +308,26 @@ class GP15Simulator:
         heater settings, MRH/MRL thresholds.  Updates the assembly's
         electrode gap so subsequent ``get_mesh()`` calls render the
         upper electrode at the correct position.
+
+        When ``run_mass_kg > 0``, configures the particle system for
+        finite-mass feed: particles start in the hopper, dispatch onto
+        the belt, and the belt clears at the end of the run.
         """
         self._recipe = recipe
         # Sync assembly geometry with recipe setpoints
         self._assembly.set_electrode_gap(recipe.electrode_gap_mm / 1000.0)
         self._assembly.set_bed_depth(self.material.bed_depth_m)
+
+        # Configure particle system for finite mass feed (hopper → belt → bin)
+        if self._particles is not None and recipe.run_mass_kg > 0:
+            v_belt = recipe.belt_speed_m_per_min / 60.0
+            rho_bulk = self.material.bulk_density(self.material.initial_moisture_wb)
+            bed_cross = self.material.bed_depth_m * self.config.belt_width_m
+            throughput = rho_bulk * bed_cross * v_belt
+            self._particles.set_run_mass(
+                recipe.run_mass_kg,
+                throughput_kg_per_s=throughput,
+            )
 
     def run(
         self,
