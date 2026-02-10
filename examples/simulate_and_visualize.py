@@ -53,11 +53,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import argparse
 import time
+from pathlib import Path
 
 import numpy as np
 
+# Where to store/load latest calibration (coupling_factor, k_evap, gap_rate)
+_CALIBRATION_FILE = Path(__file__).resolve().parent.parent / "utility_docs" / "calibration_latest.json"
+
 
 def main():
+    # Single source of truth: config/controller/calibration all read from this file
+    os.environ.setdefault("AIRCLASSIFIER_CALIBRATION_FILE", str(_CALIBRATION_FILE))
+
     parser = argparse.ArgumentParser(
         description="Run GP-15 RF heating simulation and visualize results",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -117,7 +124,11 @@ Examples:
         bed_depth_m=args.bed_depth / 1000.0,
     )
 
-    # ── 1b. Calibrate against PLC data (optional) ────────────────────
+    # Gap rate to apply to controller after simulator is created (from JSON or calibration result)
+    from airclassifier.pretreatment.calibration_store import get_calibration_defaults
+    gap_rate_to_apply = get_calibration_defaults()[2]
+
+    # ── 1b. Calibrate against PLC data (optional) ───────────────────
     if args.calibrate:
         from airclassifier.pretreatment.calibration import (
             CalibrationOptimizer, load_plc_data,
@@ -150,10 +161,14 @@ Examples:
         print(cal_result)
         print()
 
-        # Apply calibrated parameters
+        # Apply calibrated parameters and persist for future runs (single source of truth)
         cal_result.apply(config, material)
+        gap_rate_to_apply = cal_result.gap_adjust_rate_mm_s
+        from airclassifier.pretreatment.calibration_store import save_calibration
+        save_calibration(cal_result, _CALIBRATION_FILE)
         print(f"Applied: coupling={config.oscillator_coupling_factor:.4f}, "
-              f"k_evap={material.k_evap:.2e}")
+              f"k_evap={material.k_evap:.2e}, gap_rate={gap_rate_to_apply:.4f} mm/s")
+        print(f"Saved to {_CALIBRATION_FILE} (used when running without --calibrate)")
         print()
 
     # ── 2. Create simulator (builds machine assembly + physics) ──────
@@ -175,6 +190,7 @@ Examples:
         enable_corrections=False,  # skip corrections for speed
     )
     print(f"  Device:  {sim._device}")
+    sim._sim.update_parameters(gap_adjust_rate=gap_rate_to_apply)
 
     # ── 3. Load recipe ───────────────────────────────────────────────
     recipe = Recipe(

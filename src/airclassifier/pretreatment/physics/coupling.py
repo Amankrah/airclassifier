@@ -37,7 +37,7 @@ from typing import Optional, Dict, Any, List
 import numpy as np
 
 from ..config import MachineConfig, MaterialProperties, Recipe
-from ..control.controller import GP15Controller, ControllerState
+from ..control.controller import GP15Controller, ControllerState, ControllerStatus
 from ..geometry.electrode import ElectrodeGeometry, ElectrodeParams
 from ..geometry.oven import OvenGeometry, OvenGeometryParams
 from ..kernels.dielectric_heating import (
@@ -232,8 +232,65 @@ class CoupledSimulator:
         self._j_surface: int = 0
 
     # ------------------------------------------------------------------
-    # Initialisation
+    # Initialisation / Reset
     # ------------------------------------------------------------------
+
+    def update_parameters(
+        self,
+        coupling_factor: float | None = None,
+        k_evap: float | None = None,
+        gap_adjust_rate: float | None = None,
+    ):
+        """Update calibratable parameters on all sub-solvers.
+
+        Single entry point that propagates to every component that
+        caches material or machine properties.  Avoids the fragile
+        pattern of poking multiple objects independently.
+
+        Args:
+            coupling_factor: Oscillator-to-electrode coupling.
+            k_evap: Evaporation rate constant [1/(C*s)].
+            gap_adjust_rate: MRH gap drive speed [mm/s].
+        """
+        if coupling_factor is not None:
+            self._machine.oscillator_coupling_factor = coupling_factor
+        if k_evap is not None:
+            self._material.k_evap = k_evap
+        if gap_adjust_rate is not None:
+            self.controller.gap_adjust_rate_mm_s = gap_adjust_rate
+
+    def reset(self):
+        """Reset all fields and accumulators for a fresh run.
+
+        Re-uses existing array allocations (no re-construction).
+        Called by the calibration optimizer to avoid creating a new
+        GP15Simulator for every parameter evaluation.
+        """
+        mat = self._material
+        self.thermal.initialize(mat.initial_temperature_c)
+        self.moisture.initialize(mat.initial_moisture_wb)
+        self.moisture.evap_rate[:] = 0.0
+        self.P_v[:] = 0.0
+        self._time = 0.0
+        self._total_rf_energy_j = 0.0
+        self._last_P_rf_kw = 0.0
+        self._history.clear()
+        self._update_properties()
+
+        # Re-stamp rho_dry from current material (in case porosity
+        # or rho_solid changed between evaluations)
+        mat_mask = (self.cell_is_material == 1)
+        self.rho_dry[mat_mask] = mat.rho_solid * (1.0 - mat.bed_porosity)
+        self.rho_dry[~mat_mask] = 1.0
+
+        # Reset controller
+        self.controller.status = ControllerStatus()
+        self.controller.safety.reset()
+        self.controller._sim_time = 0.0
+
+        # Reset conveyor
+        self.conveyor.state.belt_position_m = 0.0
+        self.conveyor.state.elapsed_time_s = 0.0
 
     def initialize(
         self,

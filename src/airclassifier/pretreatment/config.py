@@ -15,6 +15,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Tuple
 
+from .calibration_store import get_calibration_defaults
+
 
 # ============================================================================
 #  Machine Configuration
@@ -43,18 +45,21 @@ class MachineConfig:
     # Converts the anode DC voltage to the RF voltage appearing
     # across the electrodes:  V_rf = V_anode * coupling_factor.
     #
-    # Calibrated against Run#1 PLC data (25-Mar-2025) using
-    # differential evolution (calibration.py).
+    # Calibrated against Run#1 PLC data (25-Mar-2025, full 2794 s)
+    # using differential_evolution (calibration.py).
     #
     # Run#1: 61 kg whole yellow pea, gap=75mm, speed=0.2 m/min,
-    #        bed=25mm, MRH=1.7 A, PLC Ia=1.65-1.70 A at steady state,
-    #        gap opens 75→87 mm under MRH control.
+    #        bed=25mm, MRH=1.7 A.  PLC shows T reaching 101 C,
+    #        Ia=1.65-1.70 A, gap opens 75→87 mm.
     #
-    # Calibrated:  k=0.201, loss_T=9.4, loss_gap=23.8, total=21.3
-    # The previous analytical estimate (0.258) over-predicted power,
-    # causing the gap to overshoot to 104 mm.  The calibrated value
-    # (0.201) matches the PLC gap trajectory (75→84mm vs 75→87mm).
-    oscillator_coupling_factor: float = 0.201
+    # Full calibration found k_evap ≈ 0 — whole seeds barely
+    # evaporate moisture (intact seed coat).  The GP-15 at these
+    # settings performs thermal conditioning, not drying.
+    # Max temp reaches 84 C (vs 82-93 C temperature strips).
+    # Default from utility_docs/calibration_latest.json (single source of truth).
+    oscillator_coupling_factor: float = field(
+        default_factory=lambda: get_calibration_defaults()[0]
+    )
 
     # --- Oven / Applicator ---
     oven_length_m: float = 1.5                   # [TBD - MEASURE from drawing]
@@ -166,7 +171,8 @@ class MaterialProperties:
     # Whole seeds (6-8 mm dia) have ~100x lower surface-to-volume
     # than flour (50 um).  k_evap is reduced accordingly so the
     # drying rate matches the manual's 0.6 factor.
-    k_evap: float = 5.9e-5                       # 1/(degC*s) — calibrated from Run#1
+    # Default from utility_docs/calibration_latest.json (single source of truth).
+    k_evap: float = field(default_factory=lambda: get_calibration_defaults()[1])
     T_evap_threshold_c: float = 25.0             # degC
 
     # --- Bed geometry (packed bed of whole seeds on the conveyor) ---

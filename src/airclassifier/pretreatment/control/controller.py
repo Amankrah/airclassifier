@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Optional, Tuple
 
 from ..config import MachineConfig, Recipe
+from ..calibration_store import get_calibration_defaults
 from .safety import SafetyMonitor, SafetyEvent
 
 
@@ -74,20 +75,18 @@ class GP15Controller:
        the outfeed temperature at the recipe setpoint.
     """
 
-    # Gap adjustment rate during MRH correction [mm/s].
-    # Calibrated from Run#1 PLC data: gap opens 75→87 mm over ~1000 s
-    # = 12 mm / 1000 s = 0.012 mm/s.  The electrode drive motor
-    # (0.37 kW, inverter-controlled) moves very slowly under MRH.
-    _GAP_ADJUST_RATE_MM_S = 0.012
-
     # Gap adjustment step for temperature control [mm]
     _TEMP_GAP_STEP_MM = 2.0
 
     # Belt speed adjustment step for temperature control [m/min]
     _TEMP_SPEED_STEP = 0.05
 
-    def __init__(self, machine: MachineConfig):
+    def __init__(self, machine: MachineConfig, gap_adjust_rate_mm_s: float | None = None):
         self._machine = machine
+        self.gap_adjust_rate_mm_s = (
+            gap_adjust_rate_mm_s if gap_adjust_rate_mm_s is not None
+            else get_calibration_defaults()[2]
+        )
         self.status = ControllerStatus()
         self._recipe: Optional[Recipe] = None
         self.safety = SafetyMonitor(
@@ -187,7 +186,7 @@ class GP15Controller:
 
         if self.status.mrh_active:
             # Overcurrent: increase gap to reduce power density
-            self.status.electrode_gap_mm += self._GAP_ADJUST_RATE_MM_S * dt
+            self.status.electrode_gap_mm += self.gap_adjust_rate_mm_s * dt
             gap_max_mm = self._machine.electrode_gap_max_m * 1000.0
             self.status.electrode_gap_mm = min(
                 self.status.electrode_gap_mm, gap_max_mm,
