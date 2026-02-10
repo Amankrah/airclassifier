@@ -506,14 +506,16 @@ def _run_live_3d(sim, recipe, args, info, material):
     plotter.camera.elevation = 18
     plotter.camera.zoom(1.1)
 
-    # ── Adaptive pacing ───────────────────────────────────────────
+    # ── Smooth adaptive pacing ──────────────────────────────────────
+    # Steps per frame ramps smoothly from slow (transient visible)
+    # to fast (steady state).  No abrupt jump that causes flicker.
     v_belt_init = recipe.belt_speed_m_per_min / 60.0
     residence_s = sim.config.oven_length_m / max(v_belt_init, 1e-6)
     transient_sim_s = 2.0 * residence_s
     target_fps = 20.0
     frame_dt = 1.0 / target_fps
-    steps_transient = max(1, int(transient_sim_s / (15.0 * target_fps * 0.3)))
-    steps_steady = 100
+    steps_min = max(1, int(transient_sim_s / (15.0 * target_fps * 0.3)))
+    steps_max = 60
 
     t_end = args.duration
     t0_wall = time.time()
@@ -531,9 +533,11 @@ def _run_live_3d(sim, recipe, args, info, material):
             except Exception:
                 break
 
-            # Adaptive steps: slow during transient, fast after
+            # Smooth ramp: steps_min during transient, linearly
+            # increasing to steps_max over 2x the transient period.
             t_sim = sim.sim_time
-            steps = steps_transient if t_sim < transient_sim_s else steps_steady
+            ramp = min(t_sim / max(transient_sim_s * 2, 1.0), 1.0)
+            steps = int(steps_min + ramp * (steps_max - steps_min))
 
             # Step the simulator (physics + particles via coupling loop)
             finished = False

@@ -77,7 +77,14 @@ class ParticleSystemConfig:
     bed_depth_m: float = 0.05        # bed thickness above belt [m]
     head_roller_x: float = 4.5       # head roller centre X [m]
     head_roller_r: float = 0.075     # head roller radius [m]
-    bin_bottom_y: float = -0.6       # collection bin floor Y [m]
+
+    # Collection bin geometry (from assembly, machine.py)
+    bin_x0: float = 4.0              # bin back wall X [m]
+    bin_x1: float = 5.0              # bin front wall X [m]
+    bin_z0: float = 0.0              # bin left wall Z [m]
+    bin_z1: float = 1.0              # bin right wall Z [m]
+    bin_bottom_y: float = -1.3       # bin floor Y [m]
+    bin_top_y: float = -0.5          # bin rim Y [m]
 
     # Material inlet conditions (from PretreatmentMaterial)
     T_inlet_c: float = 22.0          # infeed temperature [C]
@@ -140,7 +147,8 @@ class MaterialParticleSystem:
 
     _STATE_RIDING = 0
     _STATE_FALLING = 1
-    _STATE_DEAD = 2
+    _STATE_COLLECTED = 2   # sitting in the collection bin
+    _STATE_DEAD = 3        # recycled (off-screen, awaiting respawn)
 
     def __init__(self, config: ParticleSystemConfig):
         self.cfg = config
@@ -214,15 +222,35 @@ class MaterialParticleSystem:
             p_density = material.rho_solid
             p_sphericity = 0.70  # typical for whole seeds
 
+        # Collection bin geometry from the assembly
+        head_x = cp.frame_length_m - cp.nose_length_m
+        bin_under_bed = 0.15
+        bin_past_end = 0.40
+        bin_x0 = head_x - bin_under_bed
+        bin_x1 = head_x + bin_past_end
+        belt_w = cp.belt_width_m
+        bin_width_z = belt_w + 0.06
+        bin_z0_abs = (cp.frame_width_m - bin_width_z) / 2
+        bin_z1_abs = bin_z0_abs + bin_width_z
+        floor_y = -(cp.frame_height_m + cp.leg_height_m)
+        bin_height = abs(floor_y) * 0.60
+        bin_bottom = floor_y
+        bin_top = floor_y + bin_height
+
         cfg = ParticleSystemConfig(
             spawn_x=spawn_x,
             spawn_z0=belt_z0,
             spawn_z1=belt_z1,
             belt_y=cp.belt_stack_thickness_m,
             bed_depth_m=material.bed_depth_m,
-            head_roller_x=cp.frame_length_m - cp.nose_length_m,
+            head_roller_x=head_x,
             head_roller_r=cp.head_roller_radius_m,
-            bin_bottom_y=-(cp.frame_height_m + cp.leg_height_m),
+            bin_x0=bin_x0,
+            bin_x1=bin_x1,
+            bin_z0=bin_z0_abs,
+            bin_z1=bin_z1_abs,
+            bin_bottom_y=bin_bottom,
+            bin_top_y=bin_top,
             T_inlet_c=material.initial_temperature_c,
             M_inlet_wb=material.initial_moisture_wb,
             particle_density=p_density,
@@ -295,8 +323,42 @@ class MaterialParticleSystem:
             self.vel[falling, 1] -= cfg.gravity * dt_sim
             self.pos[falling] += self.vel[falling] * dt_sim
 
-            below = falling & (self.pos[:, 1] < cfg.bin_bottom_y)
-            self.state[below] = self._STATE_DEAD
+            # Check if particle is within the bin's XZ footprint
+            in_bin_xz = (
+                falling
+                & (self.pos[:, 0] >= cfg.bin_x0)
+                & (self.pos[:, 0] <= cfg.bin_x1)
+                & (self.pos[:, 2] >= cfg.bin_z0)
+                & (self.pos[:, 2] <= cfg.bin_z1)
+            )
+
+            # Landed in the bin: settle as COLLECTED
+            landed = in_bin_xz & (self.pos[:, 1] <= cfg.bin_top_y)
+            if landed.any():
+                # Fill level rises as particles accumulate
+                n_collected = int(np.sum(self.state == self._STATE_COLLECTED))
+                fill_frac = min(n_collected / max(cfg.max_particles * 0.3, 1), 0.95)
+                fill_y = cfg.bin_bottom_y + fill_frac * (cfg.bin_top_y - cfg.bin_bottom_y)
+                n_land = int(landed.sum())
+                self.pos[landed, 1] = np.random.uniform(
+                    cfg.bin_bottom_y + 0.005,
+                    max(fill_y + 0.01, cfg.bin_bottom_y + 0.02),
+                    size=n_land,
+                )
+                self.vel[landed] = 0.0
+                self.state[landed] = self._STATE_COLLECTED
+
+            # Fell outside the bin entirely → recycle
+            missed = falling & ~in_bin_xz & (self.pos[:, 1] < cfg.bin_bottom_y)
+            self.state[missed] = self._STATE_DEAD
+
+        # ── Recycle oldest collected particles when bin is full ────
+        # Keeps a pool of dead slots available for spawning.
+        n_collected = int(np.sum(self.state == self._STATE_COLLECTED))
+        n_dead = int(np.sum(self.state == self._STATE_DEAD))
+        if n_dead < 50 and n_collected > cfg.max_particles * 0.3:
+            collected_idx = np.where(self.state == self._STATE_COLLECTED)[0]
+            self.state[collected_idx[:50]] = self._STATE_DEAD
 
         # ── Trilinear interpolation of T, M from Eulerian grid ────
         if T_field is not None and grid_origin is not None and cell_sizes is not None:
