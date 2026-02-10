@@ -190,6 +190,7 @@ Examples:
         enable_corrections=False,  # skip corrections for speed
     )
     print(f"  Device:  {sim._device}")
+    print(f"  Physics: {'GPU (Warp)' if getattr(sim._sim, '_use_gpu', False) else 'CPU (NumPy)'}")
     sim._sim.update_parameters(gap_adjust_rate=gap_rate_to_apply)
 
     # ── 3. Load recipe ───────────────────────────────────────────────

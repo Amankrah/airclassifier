@@ -55,6 +55,26 @@ from .thermal import ThermalSolver
 from .moisture import MoistureSolver
 from .airflow import EMUAirflowModel
 
+# ── GPU kernel imports (Warp / CUDA) ─────────────────────────────────
+# When Warp is installed and CUDA is available, the simulation loop
+# dispatches to these pre-compiled GPU kernels instead of NumPy.
+_GPU_KERNELS_OK = False
+try:
+    import warp as wp
+    from ..kernels.heat_transfer import (
+        heat_conduction_step as _k_thermal,
+        apply_convection_bc as _k_conv_bc,
+    )
+    from ..kernels.drying import moisture_step as _k_moisture
+    from ..kernels.dielectric_heating import (
+        _compute_power_density_kernel as _k_power_density,
+        _update_properties_kernel as _k_update_props,
+    )
+    from ..kernels.transport import advect_material_wp_kernel as _k_advect
+    _GPU_KERNELS_OK = True
+except (ImportError, AttributeError):
+    pass
+
 
 # ── Dataclasses ──────────────────────────────────────────────────────
 
@@ -231,6 +251,16 @@ class CoupledSimulator:
         # Cached bed surface index
         self._j_surface: int = 0
 
+        # ── GPU acceleration ─────────────────────────────────────────
+        # When device="cuda" and Warp GPU kernels are available, the
+        # physics loop (advection, thermal, moisture, power density,
+        # material properties) runs on the GPU via Warp kernels.
+        # Data is synced to CPU only for controller logic, KPI
+        # recording, and boundary condition application.
+        self._use_gpu = (device == "cuda" and _GPU_KERNELS_OK)
+        self._wp_device = "cuda:0"
+        self._gpu: dict = {}  # persistent GPU arrays, allocated in initialize()
+
     # ------------------------------------------------------------------
     # Initialisation / Reset
     # ------------------------------------------------------------------
@@ -258,6 +288,138 @@ class CoupledSimulator:
             self._material.k_evap = k_evap
         if gap_adjust_rate is not None:
             self.controller.gap_adjust_rate_mm_s = gap_adjust_rate
+
+    # ------------------------------------------------------------------
+    # GPU array management
+    # ------------------------------------------------------------------
+
+    def _alloc_gpu_arrays(self):
+        """Allocate persistent Warp GPU arrays (called once from initialize)."""
+        if not self._use_gpu:
+            return
+        nx, ny, nz = self._grid_shape
+        shape = (nx, ny, nz)
+        d = self._wp_device
+        f = wp.float32
+        self._gpu = {
+            'T':        wp.zeros(shape, dtype=f, device=d),
+            'T_buf':    wp.zeros(shape, dtype=f, device=d),
+            'M':        wp.zeros(shape, dtype=f, device=d),
+            'M_buf':    wp.zeros(shape, dtype=f, device=d),
+            'P_v':      wp.zeros(shape, dtype=f, device=d),
+            'evap_rate': wp.zeros(shape, dtype=f, device=d),
+            'e_field_sq': wp.zeros(shape, dtype=f, device=d),
+            'eps_loss':  wp.zeros(shape, dtype=f, device=d),
+            'eps_real':  wp.zeros(shape, dtype=f, device=d),
+            'rho_cp':    wp.zeros(shape, dtype=f, device=d),
+            'k_eff':     wp.zeros(shape, dtype=f, device=d),
+            'rho_dry':   wp.zeros(shape, dtype=f, device=d),
+            'cell_mask': wp.zeros(shape, dtype=wp.int32, device=d),
+        }
+
+    def _upload_to_gpu(self, name: str, np_array: np.ndarray):
+        """Copy a NumPy array to the named persistent GPU array."""
+        g = self._gpu[name]
+        cpu = wp.array(np_array, dtype=g.dtype, device="cpu")
+        wp.copy(g, cpu)
+
+    def _sync_all_to_gpu(self):
+        """Upload all physics fields from CPU to GPU."""
+        self._upload_to_gpu('T', self.thermal.T)
+        self._upload_to_gpu('M', self.moisture.M)
+        self._upload_to_gpu('P_v', self.P_v)
+        self._upload_to_gpu('evap_rate', self.moisture.evap_rate)
+        self._upload_to_gpu('eps_loss', self.eps_loss)
+        self._upload_to_gpu('eps_real', self.eps_real)
+        self._upload_to_gpu('rho_cp', self.rho_cp)
+        self._upload_to_gpu('k_eff', self.k_eff)
+        self._upload_to_gpu('rho_dry', self.rho_dry)
+        self._upload_to_gpu('cell_mask', self.cell_is_material)
+
+    def _sync_physics_from_gpu(self):
+        """Download key physics fields from GPU to CPU."""
+        wp.synchronize()
+        g = self._gpu
+        self.thermal.T[:]          = g['T'].numpy()
+        self.moisture.M[:]         = g['M'].numpy()
+        self.P_v[:]                = g['P_v'].numpy()
+        self.moisture.evap_rate[:] = g['evap_rate'].numpy()
+        self.eps_loss[:]           = g['eps_loss'].numpy()
+        self.eps_real[:]           = g['eps_real'].numpy()
+        self.rho_cp[:]             = g['rho_cp'].numpy()
+        self.k_eff[:]              = g['k_eff'].numpy()
+
+    def _apply_thermal_bcs_cpu(self, dt: float):
+        """Apply thermal boundary conditions on CPU after GPU kernel.
+
+        The GPU thermal kernel handles the interior FDM update but
+        leaves boundary cells as copies.  This method applies the
+        full set of BCs from the ThermalSolver (infeed Dirichlet,
+        outfeed Neumann, belt adiabatic, bottom Robin, top Neumann).
+        """
+        T = self.thermal.T
+        mat = self._material
+        T_inlet = mat.initial_temperature_c
+        dy = self._cell_sizes[1]
+
+        # NaN / Inf guard and physical clamp
+        np.nan_to_num(T, copy=False, nan=T_inlet, posinf=200.0, neginf=T_inlet)
+        np.clip(T, 0.0, 200.0, out=T)
+
+        # Infeed (x=0): Dirichlet
+        T[0, :, :] = T_inlet
+        # Outfeed (x=-1): Neumann
+        T[-1, :, :] = T[-2, :, :]
+        # Belt edges (z): adiabatic
+        T[:, :, 0] = T[:, :, 1]
+        T[:, :, -1] = T[:, :, -2]
+
+        # Bottom (j=0): Robin BC through PTFE belt to lower electrode
+        mat_j0 = (self.cell_is_material[:, 0, :] == 1)
+        if np.any(mat_j0):
+            K_BELT = self.thermal._K_BELT
+            D_BELT = self.thermal._D_BELT
+            h_contact = K_BELT / max(D_BELT, 1e-6)
+            q_contact = h_contact * (T[:, 0, :] - T_inlet)
+            rc_0 = np.maximum(self.rho_cp[:, 0, :], 1.0)
+            correction = dt * q_contact / (rc_0 * dy * 0.5)
+            T[:, 0, :] = np.where(mat_j0, T[:, 0, :] - correction, T_inlet)
+        else:
+            T[:, 0, :] = T_inlet
+
+        # Top (j=-1): Neumann
+        T[:, -1, :] = T[:, -2, :]
+
+    def _apply_moisture_bcs_cpu(self):
+        """Apply moisture boundary conditions on CPU after GPU kernel.
+
+        The GPU moisture kernel zeros non-material cells and handles
+        interior diffusion + evaporation.  This method adds the BC
+        set from the MoistureSolver (infeed, outfeed, edges).
+        """
+        M = self.moisture.M
+        mat = self._material
+        cell_mask = self.cell_is_material
+
+        # NaN guard
+        np.nan_to_num(M, copy=False, nan=0.0, posinf=1.0, neginf=0.0)
+        np.clip(M, 0.0, 1.0, out=M)
+
+        # Non-material cells = 0
+        M[cell_mask != 1] = 0.0
+        # Infeed
+        M[0, :, :] = np.where(cell_mask[0, :, :] == 1,
+                               mat.initial_moisture_wb, 0.0)
+        # Outfeed
+        M[-1, :, :] = M[-2, :, :]
+        # Z edges
+        M[:, :, 0] = M[:, :, 1]
+        M[:, :, -1] = M[:, :, -2]
+        # Y edges
+        M[:, 0, :] = M[:, 1, :]
+        M[:, -1, :] = M[:, -2, :]
+        # Re-enforce non-material = 0
+        M[cell_mask != 1] = 0.0
 
     def reset(self):
         """Reset all fields and accumulators for a fresh run.
@@ -291,6 +453,10 @@ class CoupledSimulator:
         # Reset conveyor
         self.conveyor.state.belt_position_m = 0.0
         self.conveyor.state.elapsed_time_s = 0.0
+
+        # Re-sync GPU arrays with reset state
+        if self._use_gpu and self._gpu:
+            self._sync_all_to_gpu()
 
     def initialize(
         self,
@@ -335,6 +501,11 @@ class CoupledSimulator:
 
         # Cache bed surface index
         self._j_surface = self._find_bed_surface_j()
+
+        # Allocate GPU arrays and upload initial state
+        if self._use_gpu:
+            self._alloc_gpu_arrays()
+            self._sync_all_to_gpu()
 
     # ------------------------------------------------------------------
     # Adaptive timestep
@@ -391,8 +562,12 @@ class CoupledSimulator:
         """Execute one coupled physics timestep.
 
         Follows the 9-step sequence from the engineering guide (§6.2).
+        When ``device="cuda"`` and Warp kernels are available, steps
+        1 and 3–7 run on the GPU; steps 2 (RF field) and 8–10
+        (controller, recording, particles) remain on the CPU.
         """
         dx, dy, dz = self._cell_sizes
+        nx, ny, nz = self._grid_shape
         mat = self._material
         machine = self._machine
         mat_mask = (self.cell_is_material == 1)
@@ -405,17 +580,34 @@ class CoupledSimulator:
         self.conveyor.step(dt)
         v_belt = self.conveyor.state.belt_speed_m_per_s  # actual (ramped)
         if v_belt > 0 and v_belt * dt / dx < 1.0:
-            _advect = advect_material_tvd_np if self._use_tvd else advect_material_np
-            self.thermal.T = _advect(
-                self.thermal.T, v_belt, dx, dt,
-                inlet_value=mat.initial_temperature_c,
-            )
-            self.moisture.M = _advect(
-                self.moisture.M, v_belt, dx, dt,
-                inlet_value=mat.initial_moisture_wb,
-            )
-            # Zero moisture in non-material cells after advection
-            self.moisture.M[~mat_mask] = 0.0
+            if self._use_gpu:
+                # GPU upwind advection (Warp kernel)
+                C = float(v_belt * dt / dx)
+                g = self._gpu
+                wp.launch(_k_advect, dim=(nx, ny, nz),
+                          inputs=[g['T'], g['T_buf'], C,
+                                  float(mat.initial_temperature_c),
+                                  nx, ny, nz],
+                          device=self._wp_device)
+                g['T'], g['T_buf'] = g['T_buf'], g['T']
+                wp.launch(_k_advect, dim=(nx, ny, nz),
+                          inputs=[g['M'], g['M_buf'], C,
+                                  float(mat.initial_moisture_wb),
+                                  nx, ny, nz],
+                          device=self._wp_device)
+                g['M'], g['M_buf'] = g['M_buf'], g['M']
+            else:
+                _advect = advect_material_tvd_np if self._use_tvd else advect_material_np
+                self.thermal.T = _advect(
+                    self.thermal.T, v_belt, dx, dt,
+                    inlet_value=mat.initial_temperature_c,
+                )
+                self.moisture.M = _advect(
+                    self.moisture.M, v_belt, dx, dt,
+                    inlet_value=mat.initial_moisture_wb,
+                )
+                # Zero moisture in non-material cells after advection
+                self.moisture.M[~mat_mask] = 0.0
 
         # ── 2. RF FIELD ───────────────────────────────────────────────
         # Use the controller's current gap (which may differ from the
@@ -492,50 +684,127 @@ class CoupledSimulator:
                 # Fringe: (nz,) → broadcast over X, Y
                 e_field = e_field * self._fringe_correction[np.newaxis, np.newaxis, :]**2
 
-        compute_power_density_np(e_field, self.eps_loss, out=self.P_v)
+        if self._use_gpu:
+            g = self._gpu
+            self._upload_to_gpu('e_field_sq', e_field.astype(np.float32))
+            wp.launch(_k_power_density, dim=(nx, ny, nz),
+                      inputs=[g['e_field_sq'], g['eps_loss'], g['P_v'],
+                              float(TWO_PI_F_EPS0), nx, ny, nz],
+                      device=self._wp_device)
+            wp.synchronize()
+            self.P_v[:] = g['P_v'].numpy()
+        else:
+            compute_power_density_np(e_field, self.eps_loss, out=self.P_v)
         P_rf_w = float(np.sum(self.P_v[mat_mask]) * self._cell_vol)
         P_rf_kw = P_rf_w / 1000.0
 
         # ── 4. EVAPORATION (computed inside moisture.step) ────────────
 
         # ── 5. THERMAL ────────────────────────────────────────────────
-        self.thermal.step(
-            dt=dt,
-            P_v=self.P_v,
-            evap_rate=self.moisture.evap_rate,
-            rho_cp=self.rho_cp,
-            k_eff=self.k_eff,
-            cell_is_material=self.cell_is_material,
-            T_inlet_c=mat.initial_temperature_c,
-        )
+        if self._use_gpu:
+            g = self._gpu
+            wp.launch(_k_thermal, dim=(nx, ny, nz),
+                      inputs=[g['T'], g['T_buf'], g['P_v'], g['evap_rate'],
+                              g['rho_cp'], g['k_eff'],
+                              2.26e6, dx, dy, dz, dt, nx, ny, nz],
+                      device=self._wp_device)
+            g['T'], g['T_buf'] = g['T_buf'], g['T']
 
-        # Convective BC at bed surface
-        self.airflow.update(recipe, dt)
-        if self._j_surface > 0:
-            self.thermal.apply_convection_bc(
-                j_surface=self._j_surface,
-                h_conv=self.airflow.state.convective_htc_w_per_m2k,
-                T_air_c=self.airflow.state.air_temperature_c,
+            # Convective BC on GPU
+            self.airflow.update(recipe, dt)
+            if self._j_surface > 0:
+                wp.launch(_k_conv_bc, dim=(nx, nz),
+                          inputs=[g['T'], self._j_surface,
+                                  float(self.airflow.state.convective_htc_w_per_m2k),
+                                  float(self.airflow.state.air_temperature_c),
+                                  g['rho_cp'], dy, dt, nx, nz],
+                          device=self._wp_device)
+
+            # Sync T to CPU, apply remaining BCs, re-upload
+            wp.synchronize()
+            self.thermal.T[:] = g['T'].numpy()
+            self._apply_thermal_bcs_cpu(dt)
+            self._upload_to_gpu('T', self.thermal.T)
+        else:
+            self.thermal.step(
+                dt=dt,
+                P_v=self.P_v,
+                evap_rate=self.moisture.evap_rate,
                 rho_cp=self.rho_cp,
                 k_eff=self.k_eff,
-                dt=dt,
+                cell_is_material=self.cell_is_material,
+                T_inlet_c=mat.initial_temperature_c,
             )
 
+            # Convective BC at bed surface
+            self.airflow.update(recipe, dt)
+            if self._j_surface > 0:
+                self.thermal.apply_convection_bc(
+                    j_surface=self._j_surface,
+                    h_conv=self.airflow.state.convective_htc_w_per_m2k,
+                    T_air_c=self.airflow.state.air_temperature_c,
+                    rho_cp=self.rho_cp,
+                    k_eff=self.k_eff,
+                    dt=dt,
+                )
+
         # ── 6. MOISTURE ───────────────────────────────────────────────
-        self.moisture.step(
-            dt=dt,
-            T=self.thermal.T,
-            cell_is_material=self.cell_is_material,
-            rho_dry=self.rho_dry,
-            D0=mat.D_eff_D0,
-            Ea=mat.D_eff_Ea,
-            k_evap=mat.k_evap,
-            T_threshold=mat.T_evap_threshold_c,
-            M_inlet_wb=mat.initial_moisture_wb,
-        )
+        if self._use_gpu:
+            g = self._gpu
+            wp.launch(_k_moisture, dim=(nx, ny, nz),
+                      inputs=[g['M'], g['M_buf'], g['T'], g['evap_rate'],
+                              g['cell_mask'], g['rho_dry'],
+                              float(mat.D_eff_D0), float(mat.D_eff_Ea),
+                              8.314, float(mat.k_evap),
+                              float(mat.T_evap_threshold_c),
+                              dx, dy, dz, dt, nx, ny, nz],
+                      device=self._wp_device)
+            g['M'], g['M_buf'] = g['M_buf'], g['M']
+
+            # Sync M and evap_rate to CPU, apply BCs, re-upload
+            wp.synchronize()
+            self.moisture.M[:] = g['M'].numpy()
+            self.moisture.evap_rate[:] = g['evap_rate'].numpy()
+            self._apply_moisture_bcs_cpu()
+            self._upload_to_gpu('M', self.moisture.M)
+        else:
+            self.moisture.step(
+                dt=dt,
+                T=self.thermal.T,
+                cell_is_material=self.cell_is_material,
+                rho_dry=self.rho_dry,
+                D0=mat.D_eff_D0,
+                Ea=mat.D_eff_Ea,
+                k_evap=mat.k_evap,
+                T_threshold=mat.T_evap_threshold_c,
+                M_inlet_wb=mat.initial_moisture_wb,
+            )
 
         # ── 7. PROPERTIES ─────────────────────────────────────────────
-        self._update_properties()
+        if self._use_gpu:
+            g = self._gpu
+            a = mat.dielectric_loss_coeffs
+            b = mat.dielectric_const_coeffs
+            wp.launch(_k_update_props, dim=(nx, ny, nz),
+                      inputs=[g['T'], g['M'], g['cell_mask'],
+                              g['eps_loss'], g['eps_real'],
+                              g['rho_cp'], g['k_eff'],
+                              float(a[0]), float(a[1]), float(a[2]),
+                              float(a[3]), float(a[4]),
+                              float(b[0]), float(b[1]), float(b[2]),
+                              float(mat.c_p_dry), float(mat.c_p_water),
+                              float(mat.k_dry), float(mat.k_moisture_beta),
+                              float(mat.rho_solid), float(mat.bed_porosity),
+                              nx, ny, nz],
+                      device=self._wp_device)
+            # Sync material properties to CPU for CFL and diagnostics
+            wp.synchronize()
+            self.eps_loss[:] = g['eps_loss'].numpy()
+            self.eps_real[:] = g['eps_real'].numpy()
+            self.rho_cp[:] = g['rho_cp'].numpy()
+            self.k_eff[:] = g['k_eff'].numpy()
+        else:
+            self._update_properties()
 
         # ── 8. CONTROLLER ──────────────────────────────────────────────
         # Anode current from delivered power (generator model §8.4)

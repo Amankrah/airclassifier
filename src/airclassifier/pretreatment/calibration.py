@@ -295,6 +295,8 @@ class CalibrationOptimizer:
             self._sim.load_recipe(self._recipe)
             self._sim._ensure_initialized()
             self._sim._sim.controller.gap_adjust_rate_mm_s = gap_rate
+            _gpu = getattr(self._sim._sim, "_use_gpu", False)
+            print(f"  Physics: {'GPU (Warp)' if _gpu else 'CPU (NumPy)'}")
         else:
             # Reuse: single-point parameter update + field reset
             self._sim._sim.update_parameters(
