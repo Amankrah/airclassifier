@@ -76,6 +76,12 @@ Examples:
     python examples/simulate_and_visualize.py --plots-only           # Batch mode (no 3D)
     python examples/simulate_and_visualize.py --gap 80 --bed-depth 50 --mass 100
 
+    # Run#2 defaults (90 kg)
+    python examples/simulate_and_visualize.py --mass 90 --gap 75 --bed-depth 35 --speed 0.2 --temp 17.0 --duration 2820
+
+    # Run#3 defaults (60.5 kg)
+    python examples/simulate_and_visualize.py --mass 60.5 --gap 75 --bed-depth 25--speed 0.2 --temp 17.0 --duration 2820
+
     # Calibrate model against actual PLC data, then simulate:
     python examples/simulate_and_visualize.py --calibrate "utility_docs/Run1 RF data(in).csv"
 """,
