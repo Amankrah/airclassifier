@@ -77,6 +77,7 @@ class ThermalSolver:
         cell_is_material: np.ndarray,
         L_v: float = 2.26e6,
         T_inlet_c: float = 22.0,
+        T_electrode_c: float | None = None,
     ):
         """Advance temperature field by one explicit timestep.
 
@@ -96,6 +97,9 @@ class ThermalSolver:
             cell_is_material: Material mask (1=material, 2=belt, 0=air).
             L_v: Latent heat of vaporization [J/kg].
             T_inlet_c: Inlet temperature for Dirichlet BC [degC].
+            T_electrode_c: Lower electrode temperature [degC] for the
+                Robin BC at j=0.  If None, defaults to T_inlet_c
+                (legacy: cold electrode at ambient).
         """
         dx, dy, dz = self._cell_sizes
         T = self.T
@@ -166,28 +170,26 @@ class ThermalSolver:
         Tn[:, :, -1] = Tn[:, :, -2]
 
         # Bottom (j=0): Robin BC for material cells — models heat
-        # transfer through the PTFE belt stack to the isothermal
-        # lower electrode (ground plate at T_inlet).
-        #
-        # The old Dirichlet BC (Tn[:,0,:] = T_inlet) pinned the
-        # entire bottom row at ambient, destroying all RF energy
-        # deposited in material cells there.  With only 2 material
-        # cells in Y (coarse grid), this discarded ~50% of the
-        # heating.
+        # transfer through the PTFE belt stack to the lower
+        # electrode / aluminum trays.
         #
         # Robin BC:  q = h_contact * (T - T_electrode)
         # where h_contact = k_belt / d_belt ≈ 71 W/(m²·K)
+        #
+        # T_electrode tracks the lumped tray temperature (updated
+        # in coupling.py).  Falls back to T_inlet_c if not provided.
+        T_elec = T_electrode_c if T_electrode_c is not None else T_inlet_c
         mat_j0 = (cell_is_material[:, 0, :] == 1)
         if np.any(mat_j0):
             h_contact = self._K_BELT / max(self._D_BELT, 1e-6)
-            q_contact = h_contact * (Tn[:, 0, :] - T_inlet_c)
+            q_contact = h_contact * (Tn[:, 0, :] - T_elec)
             rc_0 = np.maximum(rho_cp[:, 0, :], 1.0)
             correction = dt * q_contact / (rc_0 * dy * 0.5)
             Tn[:, 0, :] = np.where(mat_j0,
                                     Tn[:, 0, :] - correction,
-                                    T_inlet_c)
+                                    T_elec)
         else:
-            Tn[:, 0, :] = T_inlet_c
+            Tn[:, 0, :] = T_elec
 
         # Top (j=ny-1): copy for now — convection BC applied separately
         Tn[:, -1, :] = Tn[:, -2, :]

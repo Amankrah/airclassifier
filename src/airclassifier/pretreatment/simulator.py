@@ -121,7 +121,7 @@ class GP15Simulator:
         material: MaterialProperties | None = None,
         device: str | None = None,
         *,
-        use_fdm: bool = False,
+        use_fdm: bool = True,
         use_tvd: bool = True,
         power_constrained: bool = False,
         target_power_kw: float | None = None,

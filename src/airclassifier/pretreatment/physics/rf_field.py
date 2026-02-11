@@ -27,8 +27,18 @@ from ..config import MachineConfig, MaterialProperties
 from ..kernels.field_solve import (
     solve_laplace_jacobi,
     compute_gradient_sq_np,
+    _HAS_WARP_FIELD,
 )
 from ..kernels.dielectric_heating import TWO_PI_F_EPS0
+
+# GPU-accelerated field solver (used when Warp + CUDA available)
+_solve_laplace_gpu = None
+_compute_grad_sq_gpu = None
+if _HAS_WARP_FIELD:
+    from ..kernels.field_solve import (
+        solve_laplace_jacobi_gpu as _solve_laplace_gpu,
+        compute_gradient_sq_wp as _compute_grad_sq_gpu,
+    )
 
 
 class RFFieldSolver:
@@ -191,6 +201,8 @@ class RFFieldSolver:
         eps_real: np.ndarray,
         max_iter: int = 500,
         tol: float = 1e-5,
+        bed_depth_m: float = 0.05,
+        belt_stack_m: float = 0.0035,
     ) -> np.ndarray:
         """Solve div(eps' * grad(phi)) = 0 via Jacobi / SOR.
 
@@ -198,8 +210,13 @@ class RFFieldSolver:
         distribution of eps'(T, M).  It captures cell-by-cell field
         variations that the Phase 1 layer-average model cannot.
 
+        The upper electrode BC is placed at the correct Y-index
+        corresponding to ``electrode_gap_m``, not at the grid top.
+        This is critical because the grid spans electrode_gap_max
+        (300 mm) while the operating gap is typically 75 mm.
+
         Boundary conditions (from the engineering guide §4.1.2):
-            phi = V_rf  on the upper electrode (j = ny-1)
+            phi = V_rf  on the upper electrode (j = j_upper)
             phi = 0     on the lower electrode (j = 0)
             dφ/dn = 0   on lateral faces (Neumann)
 
@@ -209,35 +226,60 @@ class RFFieldSolver:
             eps_real: eps'(T, M) field of shape *grid_shape*.
             max_iter: Max SOR iterations.
             tol: Convergence tolerance.
+            bed_depth_m: Material bed depth [m].
+            belt_stack_m: Belt stack thickness [m].
 
         Returns:
             |E|^2 array of shape *grid_shape* [V^2/m^2].
         """
         V_total = voltage_kv * 1000.0
         dx, dy, dz = self._cell_sizes
+        ny = self._grid_shape[1]
 
-        # Solve Laplace equation
-        self.potential = solve_laplace_jacobi(
-            eps=eps_real,
-            V_upper=V_total,
-            dx=dx, dy=dy, dz=dz,
-            max_iter=max_iter,
-            tol=tol,
-            phi_init=self.potential,
-        )
+        # Place upper electrode at the correct Y-index for the current gap.
+        # Grid dy = electrode_gap_max / ny (typically 300mm / 30 = 10mm).
+        # At 75mm gap: j_upper = round(0.075 / 0.010) = 8.
+        j_upper = min(ny - 1, max(1, round(electrode_gap_m / dy)))
+
+        # Solve Laplace equation with gap-aware BCs.
+        # Use GPU-accelerated solver when Warp + CUDA available.
+        if self._device == "cuda" and _solve_laplace_gpu is not None:
+            self.potential = _solve_laplace_gpu(
+                eps=eps_real,
+                V_upper=V_total,
+                dx=dx, dy=dy, dz=dz,
+                max_iter=max_iter,
+                tol=tol,
+                phi_init=self.potential,
+                j_upper=j_upper,
+                device="cuda:0",
+            )
+        else:
+            self.potential = solve_laplace_jacobi(
+                eps=eps_real,
+                V_upper=V_total,
+                dx=dx, dy=dy, dz=dz,
+                max_iter=max_iter,
+                tol=tol,
+                phi_init=self.potential,
+                j_upper=j_upper,
+            )
 
         # Compute |E|^2 = |grad(phi)|^2
         self.e_field_sq = compute_gradient_sq_np(self.potential, dx, dy, dz)
 
-        # Update layer-average caches (for diagnostics)
-        ny = self._grid_shape[1]
-        belt_top_j = max(1, int(0.0035 / (electrode_gap_m / ny)))
-        bed_top_j = min(ny - 1, belt_top_j + max(1, int(0.05 / (electrode_gap_m / ny))))
+        # Zero E² above the upper electrode (inside the conductor)
+        self.e_field_sq[:, j_upper:, :] = 0.0
+
+        # Update layer-average caches (for diagnostics).
+        # Use dy (actual grid cell size) for layer boundary computation.
+        belt_top_j = max(1, round(belt_stack_m / dy))
+        bed_top_j = min(j_upper, belt_top_j + max(1, round(bed_depth_m / dy)))
         E_bed_cells = self.e_field_sq[:, belt_top_j:bed_top_j, :]
         self._E_bed = float(np.sqrt(np.mean(E_bed_cells))) if E_bed_cells.size else 0.0
         self._E_air = float(np.sqrt(np.mean(
-            self.e_field_sq[:, bed_top_j:, :]
-        ))) if bed_top_j < ny else 0.0
+            self.e_field_sq[:, bed_top_j:j_upper, :]
+        ))) if bed_top_j < j_upper else 0.0
         self._E_belt = float(np.sqrt(np.mean(
             self.e_field_sq[:, :belt_top_j, :]
         ))) if belt_top_j > 0 else 0.0
@@ -298,7 +340,11 @@ class RFFieldSolver:
 
         def _power_at_voltage(V_kv: float) -> float:
             if use_fdm:
-                self.solve_fdm(electrode_gap_m, V_kv, eps_real)
+                self.solve_fdm(
+                    electrode_gap_m, V_kv, eps_real,
+                    bed_depth_m=bed_depth_m,
+                    belt_stack_m=belt_stack_m,
+                )
             else:
                 self.solve(
                     electrode_gap_m, V_kv,

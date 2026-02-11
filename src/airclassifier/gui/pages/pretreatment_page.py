@@ -65,6 +65,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..theme import COLORS
+from ...pretreatment.desirability import (
+    DesirabilityProfile,
+    DesirabilityResult,
+    PROFILES,
+    score_desirability,
+)
 
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -602,6 +608,10 @@ class PretreatmentPage(QWidget):
         kpi_section = self._build_results_kpi_section()
         content_layout.addWidget(kpi_section)
 
+        # Process Desirability scoring
+        desirability_section = self._build_desirability_section()
+        content_layout.addWidget(desirability_section)
+
         # Matplotlib sections
         if _HAS_MATPLOTLIB:
             plots_section = self._build_results_plots_section()
@@ -725,6 +735,183 @@ class PretreatmentPage(QWidget):
 
         layout.addLayout(grid)
         return section
+
+    # ── Desirability Section ───────────────────────────────────────────
+    def _build_desirability_section(self) -> QWidget:
+        """Build the Process Desirability scoring section for results view."""
+        section = QFrame()
+        section.setStyleSheet(f"""
+            QFrame {{
+                background: {COLORS.BG_BASE};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 8px;
+            }}
+        """)
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(16, 12, 16, 12)
+
+        section_title = QLabel("Process Desirability  (Protein Separation & Flavour)")
+        section_title.setStyleSheet(
+            f"font-size: 10pt; font-weight: 600; color: {COLORS.TEXT_SECONDARY};"
+            " border: none; background: transparent;"
+        )
+        layout.addWidget(section_title)
+
+        # Row: overall score (large) + 5 dimension cards
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        # Overall score — large prominent card
+        self._ds_overall = QFrame()
+        self._ds_overall.setFixedWidth(160)
+        self._ds_overall.setStyleSheet(f"""
+            QFrame {{
+                background: {COLORS.BG_DARK};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 6px;
+            }}
+        """)
+        ov_layout = QVBoxLayout(self._ds_overall)
+        ov_layout.setContentsMargins(12, 10, 12, 10)
+        ov_layout.setSpacing(2)
+
+        self._ds_overall_value = QLabel("--")
+        self._ds_overall_value.setStyleSheet(
+            f"font-size: 22pt; font-weight: 800; color: {COLORS.ACCENT};"
+            " border: none; background: transparent;"
+        )
+        self._ds_overall_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ov_layout.addWidget(self._ds_overall_value)
+
+        ov_subtitle = QLabel("Overall Score")
+        ov_subtitle.setStyleSheet(
+            f"font-size: 8pt; color: {COLORS.TEXT_MUTED};"
+            " border: none; background: transparent;"
+        )
+        ov_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ov_layout.addWidget(ov_subtitle)
+        row.addWidget(self._ds_overall)
+
+        # 5 dimension score cards with progress bars
+        self._ds_cards: Dict[str, tuple] = {}  # key → (value_label, bar_widget)
+        dim_defs = [
+            ("d_thermal",     "Thermal\nTreatment",      COLORS.DANGER),
+            ("d_flavour",     "Flavour\nImprovement",    COLORS.WARNING),
+            ("d_protein",     "Protein\nPreservation",   COLORS.SUCCESS),
+            ("d_moisture",    "Moisture\nRetention",     COLORS.INFO),
+            ("d_energy",      "Energy\nEfficiency",      COLORS.CAT_FEED),
+        ]
+
+        for key, label_text, color in dim_defs:
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: {COLORS.BG_DARK};
+                    border: 1px solid {COLORS.BORDER_SUBTLE};
+                    border-radius: 6px;
+                }}
+            """)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 6, 8, 6)
+            card_layout.setSpacing(3)
+
+            val_label = QLabel("--")
+            val_label.setStyleSheet(
+                f"font-size: 13pt; font-weight: 700; color: {color};"
+                " border: none; background: transparent;"
+            )
+            val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card_layout.addWidget(val_label)
+
+            # Score bar (QProgressBar styled as colored fill)
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(False)
+            bar.setFixedHeight(6)
+            bar.setStyleSheet(f"""
+                QProgressBar {{
+                    background: {COLORS.BG_DARKEST};
+                    border: none;
+                    border-radius: 3px;
+                }}
+                QProgressBar::chunk {{
+                    background: {color};
+                    border-radius: 3px;
+                }}
+            """)
+            card_layout.addWidget(bar)
+
+            title_label = QLabel(label_text)
+            title_label.setStyleSheet(
+                f"font-size: 7pt; color: {COLORS.TEXT_MUTED};"
+                " border: none; background: transparent;"
+            )
+            title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card_layout.addWidget(title_label)
+
+            self._ds_cards[key] = (val_label, bar)
+            row.addWidget(card, 1)
+
+        layout.addLayout(row)
+        return section
+
+    def _update_desirability(self, results: dict):
+        """Compute and display desirability scores from simulation results."""
+        outlet = results.get("outlet")
+        if outlet is None:
+            return
+
+        # Determine profile from material name
+        material_name = getattr(self._material, "name", "yellow_pea") if self._material else "yellow_pea"
+        profile = PROFILES.get(material_name)
+        if profile is None:
+            profile = PROFILES["yellow_pea"]
+
+        # Get run parameters
+        initial_m = results.get("initial_moisture", 0.10)
+        run_mass = results.get("run_mass_kg", 0.0)
+        result_obj = results.get("result")
+        energy_kwh = result_obj.energy_consumed_kwh if result_obj else 0.0
+
+        dr = score_desirability(
+            outfeed_temperature_c=outlet.avg_temperature_c,
+            max_temperature_c=outlet.max_temperature_c,
+            outfeed_moisture_wb=outlet.avg_moisture_wb,
+            initial_moisture_wb=initial_m,
+            energy_kwh=energy_kwh,
+            run_mass_kg=run_mass,
+            profile=profile,
+        )
+
+        # Update overall score with dynamic color
+        score_10 = dr.overall_10
+        if score_10 >= 7.0:
+            ov_color = COLORS.SUCCESS
+        elif score_10 >= 4.0:
+            ov_color = COLORS.WARNING
+        else:
+            ov_color = COLORS.DANGER
+        self._ds_overall_value.setText(f"{score_10:.1f}")
+        self._ds_overall_value.setStyleSheet(
+            f"font-size: 22pt; font-weight: 800; color: {ov_color};"
+            " border: none; background: transparent;"
+        )
+
+        # Update individual dimension cards
+        dim_scores = {
+            "d_thermal": dr.d_thermal,
+            "d_flavour": dr.d_flavour,
+            "d_protein": dr.d_protein,
+            "d_moisture": dr.d_moisture,
+            "d_energy": dr.d_energy,
+        }
+        for key, score in dim_scores.items():
+            if key in self._ds_cards:
+                val_label, bar = self._ds_cards[key]
+                pct = int(round(score * 100))
+                val_label.setText(f"{pct}%")
+                bar.setValue(pct)
 
     def _build_results_plots_section(self) -> QWidget:
         section = QFrame()
@@ -862,7 +1049,7 @@ class PretreatmentPage(QWidget):
 
         settings = {
             "tvd": self._tvd_check.isChecked(),
-            "fdm": False,
+            "fdm": True,
             "controller": self._ctrl_check.isChecked(),
             "corrections": self._corr_check.isChecked(),
             "efficiency": self._eff_spin.value(),
@@ -1794,6 +1981,9 @@ class PretreatmentPage(QWidget):
         if n_steps > 0 and elapsed > 0:
             wall_str += f"  ({n_steps / elapsed:.0f} steps/s)"
         self._rc_wall.set_value(wall_str)
+
+        # Desirability scoring
+        self._update_desirability(results)
 
     # ──────────────────────────────────────────────────────────────
     #  Export

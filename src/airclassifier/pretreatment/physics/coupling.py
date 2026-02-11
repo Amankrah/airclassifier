@@ -102,6 +102,8 @@ class StepState:
     total_energy_kwh: float = 0.0       # cumulative RF energy
     water_removed_kg: float = 0.0       # cumulative water removed
     specific_energy_kwh_per_kg: float = 0.0
+    # Electrode
+    electrode_temperature_c: float = 0.0
 
 
 @dataclass
@@ -251,6 +253,16 @@ class CoupledSimulator:
         # Cached bed surface index
         self._j_surface: int = 0
 
+        # Lumped lower electrode / tray temperature model.
+        # The aluminum trays on the conveyor absorb heat from the bed
+        # through the PTFE belt and lose it via natural convection to
+        # the oven air.  This prevents the Robin BC from draining
+        # excessive heat to a fixed cold-temperature sink.
+        self._T_electrode_c: float = material.initial_temperature_c
+        self._ELECTRODE_MASS_KG: float = 15.0     # aluminum trays
+        self._ELECTRODE_CP: float = 900.0          # J/(kg·K) aluminum
+        self._ELECTRODE_H_LOSS: float = 5.0        # W/(m²·K) natural convection
+
         # ── GPU acceleration ─────────────────────────────────────────
         # When device="cuda" and Warp GPU kernels are available, the
         # physics loop (advection, thermal, moisture, power density,
@@ -374,18 +386,19 @@ class CoupledSimulator:
         T[:, :, 0] = T[:, :, 1]
         T[:, :, -1] = T[:, :, -2]
 
-        # Bottom (j=0): Robin BC through PTFE belt to lower electrode
+        # Bottom (j=0): Robin BC through PTFE belt to lower electrode / trays
+        T_elec = self._T_electrode_c
         mat_j0 = (self.cell_is_material[:, 0, :] == 1)
         if np.any(mat_j0):
             K_BELT = self.thermal._K_BELT
             D_BELT = self.thermal._D_BELT
             h_contact = K_BELT / max(D_BELT, 1e-6)
-            q_contact = h_contact * (T[:, 0, :] - T_inlet)
+            q_contact = h_contact * (T[:, 0, :] - T_elec)
             rc_0 = np.maximum(self.rho_cp[:, 0, :], 1.0)
             correction = dt * q_contact / (rc_0 * dy * 0.5)
-            T[:, 0, :] = np.where(mat_j0, T[:, 0, :] - correction, T_inlet)
+            T[:, 0, :] = np.where(mat_j0, T[:, 0, :] - correction, T_elec)
         else:
-            T[:, 0, :] = T_inlet
+            T[:, 0, :] = T_elec
 
         # Top (j=-1): Neumann
         T[:, -1, :] = T[:, -2, :]
@@ -501,6 +514,9 @@ class CoupledSimulator:
 
         # Cache bed surface index
         self._j_surface = self._find_bed_surface_j()
+
+        # Reset electrode temperature to ambient
+        self._T_electrode_c = mat.initial_temperature_c
 
         # Allocate GPU arrays and upload initial state
         if self._use_gpu:
@@ -641,7 +657,11 @@ class CoupledSimulator:
         elif self._use_fdm:
             # Phase 2 FDM: voltage-driven with per-cell eps'
             V_rf_kv = self._compute_electrode_voltage(machine)
-            self.rf.solve_fdm(gap_m, V_rf_kv, self.eps_real)
+            self.rf.solve_fdm(
+                gap_m, V_rf_kv, self.eps_real,
+                bed_depth_m=mat.bed_depth_m,
+                belt_stack_m=machine.belt_stack_thickness_m,
+            )
         else:
             # ── Approach B — voltage-driven (§4.1.3) ─────────────
             #
@@ -684,25 +704,47 @@ class CoupledSimulator:
                 # Fringe: (nz,) → broadcast over X, Y
                 e_field = e_field * self._fringe_correction[np.newaxis, np.newaxis, :]**2
 
+        # ── Generator power limiting ─────────────────────────────────
+        # The triode oscillator physically cannot deliver more than its
+        # rated maximum (max_rf_power_kw).  When the voltage-driven model
+        # (Approach B) produces a theoretical P_rf exceeding the generator
+        # capacity, the oscillator saturates.  Since the Laplace equation
+        # is linear, scaling |E|^2 by (P_max / P_theoretical) correctly
+        # reduces the delivered power without re-solving.
+        #
+        # The anode current Ia is computed from the UNCLAMPED demand:
+        # the plate ammeter reflects the oscillator stress, which is what
+        # the MRH relay sees.  But Ia is capped at the tube's physical
+        # limit (~3.0 A for the YL-1057 triode).
+        compute_power_density_np(e_field, self.eps_loss, out=self.P_v)
+        P_rf_w_theoretical = float(np.sum(self.P_v[mat_mask]) * self._cell_vol)
+        P_rf_kw_theoretical = P_rf_w_theoretical / 1000.0
+
+        # Scale P_v and e_field if generator-limited
+        P_rf_max_kw = machine.max_rf_power_kw
+        if P_rf_kw_theoretical > P_rf_max_kw and P_rf_kw_theoretical > 0:
+            scale = P_rf_max_kw / P_rf_kw_theoretical
+            self.P_v *= scale
+            e_field = e_field * scale  # for GPU upload below
+            P_rf_w = P_rf_max_kw * 1000.0
+            P_rf_kw = P_rf_max_kw
+        else:
+            P_rf_w = P_rf_w_theoretical
+            P_rf_kw = P_rf_kw_theoretical
+
         if self._use_gpu:
             g = self._gpu
             self._upload_to_gpu('e_field_sq', e_field.astype(np.float32))
-            wp.launch(_k_power_density, dim=(nx, ny, nz),
-                      inputs=[g['e_field_sq'], g['eps_loss'], g['P_v'],
-                              float(TWO_PI_F_EPS0), nx, ny, nz],
-                      device=self._wp_device)
-            wp.synchronize()
-            self.P_v[:] = g['P_v'].numpy()
-        else:
-            compute_power_density_np(e_field, self.eps_loss, out=self.P_v)
-        P_rf_w = float(np.sum(self.P_v[mat_mask]) * self._cell_vol)
-        P_rf_kw = P_rf_w / 1000.0
+            # P_v was computed on CPU with generator limiting already applied;
+            # upload the clamped P_v for the GPU thermal kernel.
+            self._upload_to_gpu('P_v', self.P_v)
 
-        # ── 4. EVAPORATION (computed inside moisture.step) ────────────
+            # ── GPU BATCH: thermal + convection + moisture + properties
+            # Launch all kernels without sync — Warp serialises them on
+            # the same CUDA stream, so ordering is guaranteed.  We sync
+            # once after the batch, halving CPU/GPU round-trips.
 
-        # ── 5. THERMAL ────────────────────────────────────────────────
-        if self._use_gpu:
-            g = self._gpu
+            # 5. Thermal (reads P_v produced above — same stream, ordered)
             wp.launch(_k_thermal, dim=(nx, ny, nz),
                       inputs=[g['T'], g['T_buf'], g['P_v'], g['evap_rate'],
                               g['rho_cp'], g['k_eff'],
@@ -720,37 +762,7 @@ class CoupledSimulator:
                                   g['rho_cp'], dy, dt, nx, nz],
                           device=self._wp_device)
 
-            # Sync T to CPU, apply remaining BCs, re-upload
-            wp.synchronize()
-            self.thermal.T[:] = g['T'].numpy()
-            self._apply_thermal_bcs_cpu(dt)
-            self._upload_to_gpu('T', self.thermal.T)
-        else:
-            self.thermal.step(
-                dt=dt,
-                P_v=self.P_v,
-                evap_rate=self.moisture.evap_rate,
-                rho_cp=self.rho_cp,
-                k_eff=self.k_eff,
-                cell_is_material=self.cell_is_material,
-                T_inlet_c=mat.initial_temperature_c,
-            )
-
-            # Convective BC at bed surface
-            self.airflow.update(recipe, dt)
-            if self._j_surface > 0:
-                self.thermal.apply_convection_bc(
-                    j_surface=self._j_surface,
-                    h_conv=self.airflow.state.convective_htc_w_per_m2k,
-                    T_air_c=self.airflow.state.air_temperature_c,
-                    rho_cp=self.rho_cp,
-                    k_eff=self.k_eff,
-                    dt=dt,
-                )
-
-        # ── 6. MOISTURE ───────────────────────────────────────────────
-        if self._use_gpu:
-            g = self._gpu
+            # 6. Moisture (reads T produced above — same stream, ordered)
             wp.launch(_k_moisture, dim=(nx, ny, nz),
                       inputs=[g['M'], g['M_buf'], g['T'], g['evap_rate'],
                               g['cell_mask'], g['rho_dry'],
@@ -761,28 +773,7 @@ class CoupledSimulator:
                       device=self._wp_device)
             g['M'], g['M_buf'] = g['M_buf'], g['M']
 
-            # Sync M and evap_rate to CPU, apply BCs, re-upload
-            wp.synchronize()
-            self.moisture.M[:] = g['M'].numpy()
-            self.moisture.evap_rate[:] = g['evap_rate'].numpy()
-            self._apply_moisture_bcs_cpu()
-            self._upload_to_gpu('M', self.moisture.M)
-        else:
-            self.moisture.step(
-                dt=dt,
-                T=self.thermal.T,
-                cell_is_material=self.cell_is_material,
-                rho_dry=self.rho_dry,
-                D0=mat.D_eff_D0,
-                Ea=mat.D_eff_Ea,
-                k_evap=mat.k_evap,
-                T_threshold=mat.T_evap_threshold_c,
-                M_inlet_wb=mat.initial_moisture_wb,
-            )
-
-        # ── 7. PROPERTIES ─────────────────────────────────────────────
-        if self._use_gpu:
-            g = self._gpu
+            # 7. Properties (reads T, M produced above — same stream)
             a = mat.dielectric_loss_coeffs
             b = mat.dielectric_const_coeffs
             wp.launch(_k_update_props, dim=(nx, ny, nz),
@@ -797,28 +788,118 @@ class CoupledSimulator:
                               float(mat.rho_solid), float(mat.bed_porosity),
                               nx, ny, nz],
                       device=self._wp_device)
-            # Sync material properties to CPU for CFL and diagnostics
+
+            # ── SINGLE SYNC: download all results at once ────────────
             wp.synchronize()
-            self.eps_loss[:] = g['eps_loss'].numpy()
-            self.eps_real[:] = g['eps_real'].numpy()
-            self.rho_cp[:] = g['rho_cp'].numpy()
-            self.k_eff[:] = g['k_eff'].numpy()
-        else:
+            self.P_v[:]                = g['P_v'].numpy()
+            self.thermal.T[:]          = g['T'].numpy()
+            self.moisture.M[:]         = g['M'].numpy()
+            self.moisture.evap_rate[:] = g['evap_rate'].numpy()
+            self.eps_loss[:]           = g['eps_loss'].numpy()
+            self.eps_real[:]           = g['eps_real'].numpy()
+            self.rho_cp[:]             = g['rho_cp'].numpy()
+            self.k_eff[:]              = g['k_eff'].numpy()
+
+            # Apply BCs on CPU (boundary rows only — cheap)
+            self._apply_thermal_bcs_cpu(dt)
+            self._apply_moisture_bcs_cpu()
+
+            # Re-upload corrected T and M (boundary rows changed)
+            self._upload_to_gpu('T', self.thermal.T)
+            self._upload_to_gpu('M', self.moisture.M)
+        # (else: CPU path — P_v already computed above with generator limiting)
+
+        # ── 4. EVAPORATION (computed inside moisture.step) ────────────
+
+        # ── 5–7. THERMAL + MOISTURE + PROPERTIES (CPU path) ──────────
+        if not self._use_gpu:
+            self.thermal.step(
+                dt=dt,
+                P_v=self.P_v,
+                evap_rate=self.moisture.evap_rate,
+                rho_cp=self.rho_cp,
+                k_eff=self.k_eff,
+                cell_is_material=self.cell_is_material,
+                T_inlet_c=mat.initial_temperature_c,
+                T_electrode_c=self._T_electrode_c,
+            )
+
+            # Convective BC at bed surface
+            self.airflow.update(recipe, dt)
+            if self._j_surface > 0:
+                self.thermal.apply_convection_bc(
+                    j_surface=self._j_surface,
+                    h_conv=self.airflow.state.convective_htc_w_per_m2k,
+                    T_air_c=self.airflow.state.air_temperature_c,
+                    rho_cp=self.rho_cp,
+                    k_eff=self.k_eff,
+                    dt=dt,
+                )
+
+            self.moisture.step(
+                dt=dt,
+                T=self.thermal.T,
+                cell_is_material=self.cell_is_material,
+                rho_dry=self.rho_dry,
+                D0=mat.D_eff_D0,
+                Ea=mat.D_eff_Ea,
+                k_evap=mat.k_evap,
+                T_threshold=mat.T_evap_threshold_c,
+                M_inlet_wb=mat.initial_moisture_wb,
+            )
+
             self._update_properties()
 
+        # ── 5b. ELECTRODE TEMPERATURE ────────────────────────────────
+        # Lumped thermal model for the lower electrode / aluminum trays.
+        # Heat flows from bed bottom through the PTFE belt into the
+        # trays, and the trays lose heat via natural convection.
+        #   Q_in  = h_contact * A * (T_bed_bottom_avg - T_electrode)
+        #   Q_out = h_loss * A * (T_electrode - T_ambient)
+        #   dT = (Q_in - Q_out) * dt / (m * c_p)
+        T_bed_j0 = self.thermal.T[:, 0, :]
+        mat_j0 = (self.cell_is_material[:, 0, :] == 1)
+        if np.any(mat_j0):
+            T_bed_avg = float(np.mean(T_bed_j0[mat_j0]))
+        else:
+            T_bed_avg = self._T_electrode_c
+        h_contact = self.thermal._K_BELT / max(self.thermal._D_BELT, 1e-6)
+        belt_area = self._machine.oven_length_m * self._machine.belt_width_m
+        Q_in = h_contact * belt_area * (T_bed_avg - self._T_electrode_c)
+        Q_out = self._ELECTRODE_H_LOSS * belt_area * (
+            self._T_electrode_c - mat.initial_temperature_c
+        )
+        dT_elec = (Q_in - Q_out) * dt / (
+            self._ELECTRODE_MASS_KG * self._ELECTRODE_CP
+        )
+        self._T_electrode_c += dT_elec
+
         # ── 8. CONTROLLER ──────────────────────────────────────────────
-        # Anode current from delivered power (generator model §8.4)
-        # Generator power = RF power / oscillator efficiency
-        # Do NOT clamp fraction at 1.0 — if the voltage-driven model
-        # delivers more than 15 kW (e.g., at small gaps), Ia must
-        # exceed the full-load value so MRH gap control can respond.
-        # Run#1 PLC data shows Ia up to 1.70 A with MRH at 1.7 A.
-        P_gen_kw = P_rf_kw / max(self._oscillator_efficiency, 0.01)
-        fraction = P_gen_kw / max(machine.max_rf_power_kw, 0.01) if P_gen_kw > 0 else 0.0
+        # Anode current from THEORETICAL demand (generator model §8.4).
+        # The plate ammeter reflects the oscillator's loading, which is
+        # what the MRH relay sees.  Use the UNCLAMPED theoretical P_rf
+        # (before generator limiting) so the MRH relay detects overload.
+        #
+        # The fraction interpolates linearly between no-load and full-load
+        # operating points from the test report:
+        #   fraction = 0 → Ia = 0.4 A (no-load)
+        #   fraction = 1 → Ia = 2.58 A (full-load, P_rf = 15 kW)
+        #
+        # fraction uses P_rf directly (NOT P_gen = P_rf/eta) because the
+        # test-report endpoints already encode the efficiency:
+        #   no-load:  P_rf=0, Ia=0.4A
+        #   full-load: P_rf=15kW, Ia=2.58A
+        # Dividing by efficiency would double-count it, inflating Ia
+        # by 1/eta ≈ 1.79x.
+        #
+        # Cap Ia at the tube's maximum plate current (~3.0 A for the
+        # YL-1057 triode) — the tube physically can't draw more.
+        fraction = P_rf_kw_theoretical / max(machine.max_rf_power_kw, 0.01) if P_rf_kw_theoretical > 0 else 0.0
         I_a = (
             machine.anode_current_no_load_a
             + (machine.anode_current_full_load_a - machine.anode_current_no_load_a) * fraction
         )
+        I_a = min(I_a, 3.0)  # tube maximum plate current
 
         if self._enable_controller:
             T_outfeed = float(np.mean(
@@ -910,6 +991,7 @@ class CoupledSimulator:
             total_energy_kwh=total_energy_kwh,
             water_removed_kg=water_removed_kg,
             specific_energy_kwh_per_kg=spec_energy,
+            electrode_temperature_c=self._T_electrode_c,
         )
         self._history.append(state)
 
@@ -1013,6 +1095,7 @@ class CoupledSimulator:
                 "total_energy_kwh": [s.total_energy_kwh for s in self._history],
                 "water_removed_kg": [s.water_removed_kg for s in self._history],
                 "specific_energy_kwh_per_kg": [s.specific_energy_kwh_per_kg for s in self._history],
+                "electrode_temperature_c": [s.electrode_temperature_c for s in self._history],
             },
             T_final=self.thermal.T.copy(),
             M_final=self.moisture.M.copy(),
@@ -1128,8 +1211,10 @@ class CoupledSimulator:
         # Clamp fraction at 1.0 for the VOLTAGE computation:
         # the oscillator's tank circuit physically limits the output
         # voltage to the range covered by the droop model.
-        P_gen_kw = self._last_P_rf_kw / max(self._oscillator_efficiency, 0.01)
-        fraction = min(P_gen_kw / machine.max_rf_power_kw, 1.0) if P_gen_kw > 0 else 0.0
+        #
+        # fraction uses P_rf directly (same reasoning as step 8 Ia):
+        # the test-report endpoints already encode efficiency.
+        fraction = min(self._last_P_rf_kw / max(machine.max_rf_power_kw, 0.01), 1.0) if self._last_P_rf_kw > 0 else 0.0
         I_a = (machine.anode_current_no_load_a
                + (machine.anode_current_full_load_a - machine.anode_current_no_load_a) * fraction)
 
