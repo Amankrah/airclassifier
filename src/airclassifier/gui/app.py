@@ -10,7 +10,7 @@ import os
 from typing import Optional
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QLocale
 from PySide6.QtGui import QFont, QPalette, QColor, QFontDatabase
 
 # Re-export COLORS so existing `from .app import COLORS` still works
@@ -39,6 +39,9 @@ class AirClassifierApp(QApplication):
         os.environ["QT_SCALE_FACTOR"] = str(self.UI_SCALE)
 
         super().__init__(argv)
+
+        # Force C locale so spin boxes use '.' decimal separator
+        QLocale.setDefault(QLocale.c())
 
         # Set application metadata
         self.setApplicationName(self.APP_NAME)
