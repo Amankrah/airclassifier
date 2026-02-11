@@ -167,9 +167,9 @@ class SimulationConfig:
     include_air_system: bool = True
     include_exhaust: bool = True
 
-    # Wheel classifier parameters
+    # Wheel classifier parameters (optimized: 975 RPM, d50≈36 µm)
     wheel_diameter: float = 0.20
-    wheel_rpm: float = 8000.0
+    wheel_rpm: float = 975.0
     wheel_target_d50: float = 25e-6  # 25 µm
 
     # Zigzag parameters (when use_preclassification=True)
@@ -401,7 +401,7 @@ class SimulationBackend(QObject):
                 )
                 air_assembly = self._complete_assembly.get_subsystem("air_system")
                 if air_assembly is not None:
-                    blower_rpm = getattr(self.config, 'blower_rpm', 3000.0)
+                    blower_rpm = getattr(self.config, 'blower_rpm', 700.0)
                     # Use airclass operating point if blower_rpm is set
                     if blower_rpm > 0:
                         try:

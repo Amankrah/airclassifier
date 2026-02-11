@@ -99,12 +99,16 @@ Usage:
     python examples/run_classification_flow.py --no-sim --material faba_bean --diagnostics
 
 Operating point (bench-scale geometry: 40 mm venturi, 200 mm wheel):
+    Defaults: --blower-rpm 700 --wheel-rpm 975 (optimized for yellow pea protein recovery,
+    wheel-only mode: 30% protein recovery, 59% starch yield, 72% purity).
+
     - Low blower (e.g. 350 RPM): air cannot carry fines through the wheel; most go to wheel coarse.
-    - Medium blower (400–600 RPM): enough flow to transport fines; pair with wheel 2000–4000 RPM for
-      real protein/starch selectivity (wheel d50 ~10–25 µm). Best balance for this geometry.
+    - Medium blower (600–750 RPM): optimal range for wheel-only protein/starch separation.
+      Wheel RPM 800–1500 gives d50 ~25–45 µm, good for protein/starch cut.
     - High blower (e.g. 2500 RPM): venturi can choke at the throat (Ma≈1). Use `--throat-diameter`
       to raise choked-flow limit if needed, but be aware high flow can break the cyclone cascade.
-    Example: --blower-rpm 500 --wheel-rpm 3000 --full-system --material yellow_pea
+    Example: --full-system --material yellow_pea --wheel-only
+    Example: --full-system --material yellow_pea --wheel-only --recirculate cy1 --passes 3
 
 Options:
     -n, --particles N     Number of particles (default: 1000)
@@ -123,7 +127,7 @@ Options:
     --target-d50          Target cut size in microns (auto air flow)
     --zigzag-width        Override zigzag channel width in mm
     --zigzag-depth        Override zigzag channel depth in mm
-    --wheel-rpm           Wheel classifier RPM (main classifier; default: from geometry, e.g. 8000)
+    --wheel-rpm           Wheel classifier RPM (main classifier; default: 975)
     --turbulence          Turbulent intensity (default: 0.15)
     --device              cuda or cpu (default: cuda)
     --recirculate FRAC    Fractions to refeed: cy1, cy2, cy3, wheel_coarse, zigzag_coarse, bagfilter
@@ -171,9 +175,10 @@ def main():
         help="Air flow rate in m³/s (default: 1768 m³/h from air system at 2500 RPM)"
     )
     parser.add_argument(
-        "--blower-rpm", type=float, default=None,
+        "--blower-rpm", type=float, default=700,
         help="VFD blower speed in RPM (overrides --air-flow via fan law: "
-             "Q = 3000 m³/h × RPM/3000). Design: 3000 RPM = 3000 m³/h."
+             "Q = 3000 m³/h × RPM/3000). Design: 3000 RPM = 3000 m³/h. "
+             "Default: 700 RPM (optimized for yellow pea protein recovery)."
     )
     parser.add_argument(
         "--bypass-ratio", type=float, default=0.0,
@@ -235,8 +240,9 @@ def main():
         help="Override zigzag channel depth in mm (default: 200mm from geometry)"
     )
     parser.add_argument(
-        "--wheel-rpm", type=float, default=None,
-        help="Wheel classifier speed in RPM (main classifier; default: from geometry, e.g. 8000)"
+        "--wheel-rpm", type=float, default=975,
+        help="Wheel classifier speed in RPM (main classifier; default: 975 RPM, "
+             "optimized for yellow pea protein recovery with d50=36 µm)."
     )
     parser.add_argument(
         "--wheel-only", action="store_true",
@@ -335,8 +341,7 @@ def main():
         print(f"       P = {op['P_operating_Pa']:.0f} Pa, eff = {op['efficiency']:.1%}, W = {op['shaft_power_W']:.0f} W")
     if args.bypass_ratio > 0:
         print(f"  Bypass: {args.bypass_ratio*100:.1f}% around venturi+zigzag")
-    if getattr(args, 'wheel_rpm', None) is not None:
-        print(f"  Wheel RPM (main classifier): {args.wheel_rpm:.0f} (override)")
+    print(f"  Wheel RPM (main classifier): {args.wheel_rpm:.0f}")
     
     # Import modules
     from airclassifier.simulation.classification_flow_physics import (

@@ -83,13 +83,13 @@ class SimulationSettings:
     # --- Assembly mode (CLI: default preclassification, --wheel-only) ---
     use_preclassification: bool = True
 
-    # --- Wheel classifier (CLI: --wheel-rpm defaults from geometry ~8000) ---
+    # --- Wheel classifier (optimized default: 975 RPM, d50≈36 µm) ---
     wheel_diameter: float = 0.20        # [m]
-    wheel_rpm: float = 8000.0           # [RPM]
+    wheel_rpm: float = 975.0            # [RPM] optimized for yellow pea protein recovery
 
-    # --- Air flow (CLI default: 1768 m³/h ≈ 0.491 m³/s) ---
-    air_flow_m3s: float = 0.491         # [m³/s]
-    blower_rpm: float = 0.0             # [RPM] 0 = use air_flow_m3s directly; >0 overrides via operating point
+    # --- Air flow (optimized default: 700 RPM → ~495 m³/h) ---
+    air_flow_m3s: float = 0.491         # [m³/s] (used when blower_rpm=0)
+    blower_rpm: float = 700.0           # [RPM] optimized for yellow pea protein recovery; 0 = use air_flow_m3s directly
 
     # --- Geometry overrides (CLI: --throat-diameter, --zigzag-width/depth) ---
     venturi_throat_diameter_mm: float = 0.0   # [mm] 0 = use geometry default (40mm)

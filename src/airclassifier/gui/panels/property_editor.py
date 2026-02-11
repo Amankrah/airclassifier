@@ -59,7 +59,7 @@ COMPONENT_PROPERTIES: Dict[str, List[PropertyDefinition]] = {
     ],
     "Wheel Classifier": [
         PropertyDefinition("wheel_diameter", "Wheel Diameter", "float", 0.20, 0.1, 0.5, 0.01, unit="m", group="Wheel"),
-        PropertyDefinition("wheel_rpm", "Wheel Speed", "float", 8000.0, 1000.0, 15000.0, 100.0, unit="RPM", group="Operation"),
+        PropertyDefinition("wheel_rpm", "Wheel Speed", "float", 975.0, 500.0, 15000.0, 25.0, unit="RPM", group="Operation"),
         PropertyDefinition("num_blades", "Number of Blades", "int", 24, 8, 48, 2, group="Wheel"),
         PropertyDefinition("blade_thickness", "Blade Thickness", "float", 0.002, 0.001, 0.005, 0.0005, unit="m", group="Wheel"),
         PropertyDefinition("hub_diameter", "Hub Diameter", "float", 0.08, 0.03, 0.15, 0.005, unit="m", group="Wheel"),

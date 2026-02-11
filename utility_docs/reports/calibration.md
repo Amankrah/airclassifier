@@ -91,3 +91,251 @@ The manual therefore discourages prolonged empty running; any initial "RF on for
 
 **Implication for simulation**  
 If in Run#1 the RF (and conveyor) were on for some time before the 61 kg feed or before the PLC log start (10:59:01), the oven and electrode could already be in a different state than "cold start" at t = 0 in the simulation. The simulation currently starts from a cold initial condition; adding an optional short "pre-run" or "RF on / electrode to setpoint" phase could better match the experimental procedure when comparing to PLC data.
+
+
+(venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier> python examples/simulate_and_visualize.py --calibrate "utility_docs/Run1 RF data(in).csv" --cal-duration 0
+Loading PLC data: utility_docs/Run1 RF data(in).csv
+  559 samples, 2794 s
+  Ia: 0.01-1.72 A
+  Temp: 19-101 C
+
+  Calibration window: 2794 s (46.6 min)
+Baseline fit (before calibration):
+Warp 1.11.0 initialized:
+   CUDA Toolkit 12.9, Driver 12.0
+   Devices:
+     "cpu"      : "AMD64 Family 25 Model 24 Stepping 1, AuthenticAMD"
+     "cuda:0"   : "NVIDIA RTX 6000 Ada Generation" (48 GiB, sm_89, mempool enabled)
+   Kernel cache:
+     \\?\C:\Users\Windows\AppData\Local\NVIDIA\warp\Cache\1.11.0
+  Physics: GPU (Warp)
+Module airclassifier.pretreatment.kernels.transport 21f9392 load on device 'cuda:0' took 589.90 ms  (compiled)
+Module airclassifier.pretreatment.kernels.dielectric_heating 859e3c8 load on device 'cuda:0' took 245.50 ms  (compiled)
+Module airclassifier.pretreatment.kernels.heat_transfer fd9ea03 load on device 'cuda:0' took 294.74 ms  (compiled)
+Module airclassifier.pretreatment.kernels.drying b18a1ab load on device 'cuda:0' took 216.16 ms  (compiled)
+  T_sim=43.5 vs T_plc=45.0 C
+  gap_sim=82.4 vs gap_plc=75.2 mm
+  loss=4.5
+
+Running calibration optimizer...
+Calibration: 559 PLC samples, 2794 s, device=auto-detect
+  Normalization: var_T=612.1, var_Ia=0.3895, var_gap=43.0
+  Weights: w_T=1.0, w_Ia=1.0, w_gap=1.0
+
+  eval  10: k=0.1936 k_evap=1.66e-04 gap_rate=0.3203  L_T=2.824 L_Ia=2.088 L_gap=1.190 total=6.102
+  eval  20: k=0.3350 k_evap=3.67e-04 gap_rate=0.0625  L_T=3.028 L_Ia=5.318 L_gap=29.058 total=37.404
+  eval  30: k=0.1322 k_evap=1.07e-04 gap_rate=0.0928  L_T=2.894 L_Ia=0.985 L_gap=1.796 total=5.675
+  eval  40: k=0.3576 k_evap=3.61e-04 gap_rate=0.5513  L_T=3.033 L_Ia=3.211 L_gap=49.992 total=56.236
+  eval  50: k=0.1798 k_evap=2.76e-04 gap_rate=0.4050  L_T=2.986 L_Ia=1.867 L_gap=1.796 total=6.648
+  eval  60: k=0.2462 k_evap=1.77e-05 gap_rate=0.2275  L_T=1.711 L_Ia=2.286 L_gap=11.544 total=15.541
+  eval  70: k=0.2359 k_evap=3.12e-04 gap_rate=0.1897  L_T=3.002 L_Ia=2.222 L_gap=3.412 total=8.635
+  eval  80: k=0.1164 k_evap=1.56e-04 gap_rate=0.2693  L_T=3.036 L_Ia=1.020 L_gap=1.796 total=5.852
+  eval  90: k=0.3104 k_evap=7.92e-05 gap_rate=0.0485  L_T=2.517 L_Ia=7.146 L_gap=27.569 total=37.232
+differential_evolution step 1: f(x)= 5.095931122403392
+  eval 100: k=0.2139 k_evap=8.57e-05 gap_rate=0.4225  L_T=2.520 L_Ia=2.144 L_gap=2.062 total=6.726
+  eval 110: k=0.1543 k_evap=1.48e-04 gap_rate=0.0547  L_T=2.896 L_Ia=1.199 L_gap=1.796 total=5.891
+  eval 120: k=0.1450 k_evap=2.96e-04 gap_rate=0.1436  L_T=3.075 L_Ia=1.055 L_gap=1.796 total=5.926
+  eval 130: k=0.1473 k_evap=2.70e-05 gap_rate=0.0815  L_T=2.208 L_Ia=1.164 L_gap=1.796 total=5.168
+differential_evolution step 2: f(x)= 4.81577358783477
+  eval 140: k=0.1326 k_evap=9.00e-05 gap_rate=0.4330  L_T=2.838 L_Ia=0.985 L_gap=1.796 total=5.619
+  eval 150: k=0.1514 k_evap=4.14e-04 gap_rate=0.2041  L_T=3.109 L_Ia=1.121 L_gap=1.796 total=6.025
+  eval 160: k=0.1436 k_evap=1.34e-05 gap_rate=0.1450  L_T=2.028 L_Ia=1.115 L_gap=1.796 total=4.939
+  eval 170: k=0.2119 k_evap=2.57e-04 gap_rate=0.5744  L_T=2.958 L_Ia=2.123 L_gap=1.369 total=6.450
+  eval 180: k=0.3211 k_evap=1.93e-05 gap_rate=0.6621  L_T=1.742 L_Ia=2.772 L_gap=49.815 total=54.329
+differential_evolution step 3: f(x)= 4.682530315602346
+  eval 190: k=0.1687 k_evap=6.78e-05 gap_rate=0.1115  L_T=2.440 L_Ia=1.728 L_gap=1.796 total=5.965
+  eval 200: k=0.1312 k_evap=1.29e-04 gap_rate=0.2220  L_T=2.948 L_Ia=0.984 L_gap=1.796 total=5.728
+  eval 210: k=0.1502 k_evap=8.11e-05 gap_rate=0.8711  L_T=2.689 L_Ia=1.159 L_gap=1.796 total=5.644
+  eval 220: k=0.3852 k_evap=1.92e-04 gap_rate=0.4273  L_T=2.883 L_Ia=3.827 L_gap=74.956 total=81.665
+differential_evolution step 4: f(x)= 4.682530315602346
+  eval 230: k=0.1670 k_evap=9.94e-05 gap_rate=0.5395  L_T=2.669 L_Ia=1.576 L_gap=1.796 total=6.042
+  eval 240: k=0.1376 k_evap=1.07e-04 gap_rate=0.2275  L_T=2.867 L_Ia=1.008 L_gap=1.796 total=5.671
+  eval 250: k=0.1493 k_evap=1.37e-04 gap_rate=0.3530  L_T=2.892 L_Ia=1.121 L_gap=1.796 total=5.809
+  eval 260: k=0.1524 k_evap=1.23e-05 gap_rate=0.9477  L_T=1.832 L_Ia=1.348 L_gap=1.796 total=4.975
+  eval 270: k=0.1266 k_evap=3.53e-05 gap_rate=0.4738  L_T=2.572 L_Ia=0.969 L_gap=1.796 total=5.338
+differential_evolution step 5: f(x)= 4.682530315602346
+  eval 280: k=0.1936 k_evap=2.63e-05 gap_rate=0.9566  L_T=1.873 L_Ia=2.082 L_gap=1.323 total=5.277
+  eval 290: k=0.1301 k_evap=2.90e-06 gap_rate=0.6005  L_T=2.082 L_Ia=0.970 L_gap=1.796 total=4.848
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+differential_evolution step 6: f(x)= 4.682530315602346
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+differential_evolution step 6: f(x)= 4.682530315602346
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+differential_evolution step 6: f(x)= 4.682530315602346
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+differential_evolution step 6: f(x)= 4.682530315602346
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+differential_evolution step 6: f(x)= 4.682530315602346
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+differential_evolution step 6: f(x)= 4.682530315602346
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+differential_evolution step 6: f(x)= 4.682530315602346
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 300: k=0.1281 k_evap=1.73e-05 gap_rate=0.7311  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+  eval 310: k=0.1392 k_evap=2.06e-04 gap_rate=0.6739  L_T=3.027 L_Ia=1.014 L_gap=1.796 total=5.838
+differential_evolution step 6: f(x)= 4.682530315602346
+differential_evolution step 6: f(x)= 4.682530315602346
+  eval 320: k=0.1480 k_evap=7.44e-05 gap_rate=0.9127  L_T=2.666 L_Ia=1.127 L_gap=1.796 total=5.589
+  eval 330: k=0.1480 k_evap=8.27e-05 gap_rate=0.1113  L_T=2.713 L_Ia=1.121 L_gap=1.796 total=5.630
+  eval 330: k=0.1480 k_evap=8.27e-05 gap_rate=0.1113  L_T=2.713 L_Ia=1.121 L_gap=1.796 total=5.630
+  eval 340: k=0.1351 k_evap=1.34e-05 gap_rate=0.8984  L_T=2.180 L_Ia=1.002 L_gap=1.796 total=4.978
+  eval 350: k=0.1514 k_evap=4.56e-04 gap_rate=0.3714  L_T=3.119 L_Ia=1.119 L_gap=1.796 total=6.034
+  eval 360: k=0.1326 k_evap=1.46e-04 gap_rate=0.4686  L_T=2.973 L_Ia=0.987 L_gap=1.796 total=5.756
+differential_evolution step 7: f(x)= 4.682530315602346
+  eval 370: k=0.1493 k_evap=1.86e-05 gap_rate=0.2649  L_T=2.026 L_Ia=1.230 L_gap=1.796 total=5.053
+  eval 380: k=0.1432 k_evap=1.33e-05 gap_rate=0.5084  L_T=2.033 L_Ia=1.107 L_gap=1.796 total=4.936
+  eval 390: k=0.1281 k_evap=1.73e-05 gap_rate=0.7713  L_T=2.356 L_Ia=0.966 L_gap=1.796 total=5.118
+  eval 400: k=0.1495 k_evap=2.70e-05 gap_rate=0.2301  L_T=2.175 L_Ia=1.212 L_gap=1.796 total=5.183
+differential_evolution step 8: f(x)= 4.682530315602346
+  eval 410: k=0.1490 k_evap=1.03e-05 gap_rate=0.2957  L_T=1.855 L_Ia=1.249 L_gap=1.796 total=4.900
+  eval 420: k=0.1460 k_evap=9.87e-05 gap_rate=0.9912  L_T=2.795 L_Ia=1.088 L_gap=1.796 total=5.679
+  eval 430: k=0.1436 k_evap=7.08e-06 gap_rate=0.7047  L_T=1.891 L_Ia=1.128 L_gap=1.796 total=4.815
+  eval 440: k=0.1524 k_evap=4.65e-05 gap_rate=0.2933  L_T=2.398 L_Ia=1.244 L_gap=1.796 total=5.438
+  eval 450: k=0.1628 k_evap=2.97e-04 gap_rate=0.3210  L_T=3.041 L_Ia=1.333 L_gap=1.796 total=6.170
+differential_evolution step 9: f(x)= 4.682530315602346
+  eval 460: k=0.1535 k_evap=3.37e-04 gap_rate=0.4249  L_T=3.079 L_Ia=1.154 L_gap=1.796 total=6.029
+  eval 470: k=0.1434 k_evap=4.69e-06 gap_rate=0.9634  L_T=1.838 L_Ia=1.130 L_gap=1.796 total=4.764
+  eval 480: k=0.1340 k_evap=1.73e-05 gap_rate=0.6015  L_T=2.263 L_Ia=0.992 L_gap=1.796 total=5.051
+  eval 490: k=0.1473 k_evap=4.79e-06 gap_rate=0.0815  L_T=1.753 L_Ia=1.224 L_gap=1.796 total=4.774
+differential_evolution step 10: f(x)= 4.5815003328503305
+  eval 500: k=0.1741 k_evap=2.82e-04 gap_rate=0.1281  L_T=3.005 L_Ia=1.654 L_gap=1.796 total=6.455
+  eval 510: k=0.1934 k_evap=3.36e-06 gap_rate=0.0603  L_T=1.398 L_Ia=2.078 L_gap=1.760 total=5.236
+  eval 520: k=0.1673 k_evap=1.30e-05 gap_rate=0.9248  L_T=1.620 L_Ia=1.904 L_gap=1.500 total=5.025
+  eval 590: k=0.1690 k_evap=1.02e-04 gap_rate=0.1551  L_T=2.667 L_Ia=1.644 L_gap=1.796 total=6.107
+  eval 600: k=0.2120 k_evap=1.88e-05 gap_rate=0.4177  L_T=1.733 L_Ia=2.135 L_gap=3.330 total=7.197
+  eval 610: k=0.1436 k_evap=3.35e-05 gap_rate=0.2756  L_T=2.350 L_Ia=1.089 L_gap=1.796 total=5.235
+  eval 620: k=0.1444 k_evap=5.04e-06 gap_rate=0.0765  L_T=1.826 L_Ia=1.149 L_gap=1.796 total=4.771
+  eval 630: k=0.1463 k_evap=4.85e-04 gap_rate=0.4030  L_T=3.131 L_Ia=1.062 L_gap=1.796 total=5.989
+differential_evolution step 13: f(x)= 4.441527869390225
+  eval 640: k=0.1799 k_evap=8.08e-06 gap_rate=0.7540  L_T=1.507 L_Ia=2.020 L_gap=1.094 total=4.620
+  eval 650: k=0.1462 k_evap=8.11e-05 gap_rate=0.7678  L_T=2.716 L_Ia=1.096 L_gap=1.796 total=5.609
+  eval 660: k=0.2003 k_evap=3.83e-06 gap_rate=0.0634  L_T=1.409 L_Ia=2.096 L_gap=2.436 total=5.941
+  eval 670: k=0.1473 k_evap=3.57e-04 gap_rate=0.2284  L_T=3.097 L_Ia=1.075 L_gap=1.796 total=5.968
+differential_evolution step 14: f(x)= 4.441527869390225
+  eval 680: k=0.1731 k_evap=4.99e-04 gap_rate=0.2957  L_T=3.101 L_Ia=1.572 L_gap=1.796 total=6.469
+  eval 690: k=0.1951 k_evap=7.74e-05 gap_rate=0.0340  L_T=2.463 L_Ia=2.112 L_gap=1.128 total=5.704
+  eval 700: k=0.1638 k_evap=8.03e-06 gap_rate=0.4616  L_T=1.501 L_Ia=1.872 L_gap=1.670 total=5.043
+  eval 710: k=0.1772 k_evap=1.60e-04 gap_rate=0.1785  L_T=2.827 L_Ia=1.869 L_gap=1.796 total=6.492
+  eval 720: k=0.1913 k_evap=1.06e-05 gap_rate=0.5480  L_T=1.561 L_Ia=2.076 L_gap=1.435 total=5.072
+differential_evolution step 15: f(x)= 4.426078652982303
+Polishing solution with 'L-BFGS-B'
+  eval 730: k=0.1578 k_evap=1.03e-06 gap_rate=0.1268  L_T=1.387 L_Ia=1.685 L_gap=1.796 total=4.868
+  eval 740: k=0.1738 k_evap=1.04e-06 gap_rate=0.1472  L_T=1.338 L_Ia=1.983 L_gap=1.107 total=4.428
+  eval 750: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.335 L_Ia=1.988 L_gap=1.106 total=4.429
+  eval 760: k=0.1741 k_evap=1.02e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.984 L_gap=1.103 total=4.425
+  eval 770: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.984 L_gap=1.103 total=4.424
+  eval 780: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.984 L_gap=1.103 total=4.424
+  eval 790: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 800: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.335 L_Ia=1.989 L_gap=1.106 total=4.429
+  eval 810: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 820: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 830: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 840: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 850: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 860: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 870: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 880: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 890: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 900: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 910: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+  eval 920: k=0.1741 k_evap=1.00e-06 gap_rate=0.1475  L_T=1.338 L_Ia=1.983 L_gap=1.103 total=4.424
+
+CalibrationResult:
+  coupling_factor = 0.1741
+  k_evap          = 1.00e-06
+  gap_rate         = 0.1475 mm/s
+  loss_total       = 4.4243
+    L_temperature  = 1.3377
+    L_anode_current = 1.9834
+    L_gap          = 1.1032
+  evaluations      = 926
+  iterations       = 15
+  converged        = False
+  sensitivity (dL/dp):
+    coupling_factor                = -6.8097
+    k_evap                         = +31868.8187
+    gap_rate_mm_s                  = -0.2663
+
+Applied: coupling=0.1741, k_evap=1.00e-06, gap_rate=0.1475 mm/s
+Saved to C:\Users\Windows\Desktop\Dev_Projects\airclassifier\utility_docs\calibration_latest.json (used when running without --calibrate)
+
+============================================================
+  GP-15 RF Dielectric Heating -- Simulation
+============================================================
+
+Creating GP-15 simulator ...
+  Architecture: GP15Simulator -> GP15MachineAssembly
+                             -> CoupledSimulator (9-step loop)
+  Device:  cuda
+  Physics: GPU (Warp)
+
+  Machine:           GP-15 RF Dielectric Heating Machine
+  RF zone:           1.50 m  (x = 1.46 - 2.96 m)
+  Belt width:        800 mm
+  Electrode gap:     75 mm
+  Bed depth:         25 mm (feeder gap)
+  Belt stack:        3.5 mm
+  Air gap:           46 mm
+  Residence time:    450.0 s
+  Simulation grid:   60 x 30 x 32 = 57,600 cells
+  Cell sizes:        dx=25.0 mm  dy=10.0 mm  dz=25.0 mm
+  Initial moisture:  10% (wet basis)
+  Initial temp:      17.6 C
+  Run mass:          61.0 kg
+  Throughput:        232 kg/h
+  Run duration:      947 s (15.8 min)
+
+Running LIVE simulation  |  61.0 kg  |  947 s (15.8 min)  |  belt 0.2 m/min ...
+  3D window will update in real-time.
+
+
+------------------------------------------------------------
+  RESULTS
+------------------------------------------------------------
+  Outfeed moisture:          9.80%
+  Outfeed temperature:       43.2 C
+  Max temperature:           60.6 C
+  Moisture uniformity (CV):  0.0218
+
+  RF energy consumed:        1.2818 kWh
+  Specific energy:           10.259 kWh/kg water
+  Throughput:                232 kg/h
+  Final electrode gap:       79.6 mm
+  Mass collected (bin):      5.19 kg
+
+  Simulation wall-clock:     1336.95 s
+  Timesteps completed:       3171
+  Speed:                     2 steps/s
+------------------------------------------------------------
+
+(venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier> 

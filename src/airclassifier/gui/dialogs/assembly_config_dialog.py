@@ -503,7 +503,7 @@ class AssemblyConfigDialog(QDialog):
 
         self.wheel_rpm_spin = QDoubleSpinBox()
         self.wheel_rpm_spin.setRange(500, 20000)
-        self.wheel_rpm_spin.setValue(8000)
+        self.wheel_rpm_spin.setValue(975)
         self.wheel_rpm_spin.setDecimals(0)
         self.wheel_rpm_spin.setSuffix("  RPM")
         f.addRow("Wheel Speed:", self.wheel_rpm_spin)
