@@ -38,6 +38,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -352,7 +353,12 @@ class CalibrationOptimizer:
             return np.full(n, 100.0), np.full(n, 0.0), np.full(n, 300.0)
 
         t_sim = np.array(ts["time_s"])
-        T_sim = np.interp(self._plc_times, t_sim, ts["T_outfeed_c"])
+        # Use sensor-comparable temperature (75th percentile) for calibration.
+        # The PLC's Product_Temp sensor and temperature strips measure surface/
+        # exposed temperatures, not the bulk volume average.  T_outfeed_sensor_c
+        # is the 75th percentile of outfeed cell temperatures, which better
+        # represents what these sensors measure than the volume mean.
+        T_sim = np.interp(self._plc_times, t_sim, ts["T_outfeed_sensor_c"])
         Ia_sim = np.interp(self._plc_times, t_sim, ts["anode_current_a"])
         gap_sim = np.interp(self._plc_times, t_sim, ts["electrode_gap_mm"])
 
@@ -377,41 +383,77 @@ class CalibrationOptimizer:
     def _objective(self, params: np.ndarray) -> float:
         """Objective function for scipy optimizer."""
         coupling, k_evap, gap_rate = float(params[0]), float(params[1]), float(params[2])
+        t0 = time.perf_counter()
         self._eval_count += 1
 
         T_sim, Ia_sim, gap_sim = self._simulate(coupling, k_evap, gap_rate)
         total, L_T, L_Ia, L_gap = self._compute_loss(T_sim, Ia_sim, gap_sim)
 
+        elapsed = time.perf_counter() - t0
+        self._eval_times.append(elapsed)
+        total_so_far = time.perf_counter() - self._run_start
+        n = len(self._eval_times)
+        avg_sec = sum(self._eval_times) / n
+        eta_sec = max(0, (self._max_evals_estimate - self._eval_count) * avg_sec) if self._max_evals_estimate else 0
+
         if self._eval_count % 10 == 0:
+            eta_str = f"  ETA ~{eta_sec / 60:.1f} min" if eta_sec > 0 else ""
             print(f"  eval {self._eval_count:3d}: "
                   f"k={coupling:.4f} k_evap={k_evap:.2e} "
                   f"gap_rate={gap_rate:.4f}  "
                   f"L_T={L_T:.3f} L_Ia={L_Ia:.3f} L_gap={L_gap:.3f} "
-                  f"total={total:.3f}")
+                  f"total={total:.3f}  ({elapsed:.1f}s{eta_str})")
 
         return total
 
-    def run(self, maxiter: int = 30, seed: int = 42) -> CalibrationResult:
-        """Run calibration with differential evolution + local polish.
-
-        Args:
-            maxiter: Maximum DE generations.
-            seed: Random seed.
-
-        Returns:
-            :class:`CalibrationResult` with optimized parameters.
-        """
-        try:
-            from scipy.optimize import differential_evolution
-        except ImportError:
-            raise ImportError("Calibration requires scipy: pip install scipy")
-
-        bounds = [
+    def _bounds(self) -> List[Tuple[float, float]]:
+        return [
             (0.10, 0.40),     # oscillator_coupling_factor
             (1e-6, 5e-4),     # k_evap
             (0.005, 1.0),     # gap_adjust_rate_mm_s
         ]
 
+    def _x0_baseline(self) -> np.ndarray:
+        """Baseline from calibration_latest.json (single source of truth)."""
+        coupling, k_evap, gap_rate = get_calibration_defaults()
+        return np.array([
+            float(coupling),
+            float(k_evap),
+            float(gap_rate),
+        ])
+
+    def _objective_bounded(self, params: np.ndarray) -> float:
+        """Objective with out-of-bounds penalty for methods that don't support bounds."""
+        bounds = self._bounds()
+        for i, (lo, hi) in enumerate(bounds):
+            if params[i] < lo or params[i] > hi:
+                return 1e10 + np.sum(np.maximum(0, lo - params) ** 2) + np.sum(np.maximum(0, params - hi) ** 2)
+        return self._objective(params)
+
+    def run(
+        self,
+        method: str = "de",
+        maxiter: int = 30,
+        seed: int = 42,
+    ) -> CalibrationResult:
+        """Run calibration.
+
+        Args:
+            method: "de" = differential evolution (global, many evals, robust).
+                    "nelder-mead" = local from current baseline (few evals, ~5x faster).
+                    "lbfgsb" = L-BFGS-B from baseline (bounded, gradient-free approx).
+            maxiter: For "de": max generations. For "nelder-mead"/"lbfgsb": max iterations.
+            seed: Random seed (used only for "de").
+
+        Returns:
+            :class:`CalibrationResult` with optimized parameters.
+        """
+        try:
+            from scipy.optimize import differential_evolution, minimize
+        except ImportError:
+            raise ImportError("Calibration requires scipy: pip install scipy")
+
+        bounds = self._bounds()
         dev_name = self._device or "auto-detect"
         print(f"Calibration: {self._plc.n_samples} PLC samples, "
               f"{self._sim_duration:.0f} s, device={dev_name}")
@@ -421,29 +463,75 @@ class CalibrationOptimizer:
         print()
 
         self._eval_count = 0
-        history = []
+        self._eval_times: List[float] = []
+        self._run_start = time.perf_counter()
+        # For ETA: DE ~ maxiter * popsize, Nelder-Mead/L-BFGS-B ~ maxfev/maxiter
+        if method == "de":
+            self._max_evals_estimate = maxiter * 15
+        else:
+            self._max_evals_estimate = max(100, maxiter * 2) if method == "nelder-mead" else maxiter * 10
+        if method != "de":
+            print(f"  Estimated max evals: {self._max_evals_estimate} (ETA after first evals)")
+        history: List[Dict] = []
 
-        def _callback(xk, convergence):
+        if method == "de":
+            def _callback(xk, convergence):
+                history.append({
+                    "coupling": float(xk[0]),
+                    "k_evap": float(xk[1]),
+                    "gap_rate": float(xk[2]),
+                    "convergence": float(convergence),
+                })
+
+            result_de = differential_evolution(
+                self._objective,
+                bounds=bounds,
+                maxiter=maxiter,
+                seed=seed,
+                tol=0.005,
+                callback=_callback,
+                disp=True,
+                polish=True,
+                popsize=15,
+            )
+            best = result_de.x
+            result_fun = float(result_de.fun)
+            result_success = bool(result_de.success)
+            result_nit = int(result_de.nit)
+        else:
+            # Local optimization from current baseline
+            x0 = self._x0_baseline()
+            if method == "nelder-mead":
+                print(f"  Method: Nelder-Mead from baseline (coupling={x0[0]:.4f}, "
+                      f"k_evap={x0[1]:.2e}, gap_rate={x0[2]:.4f})")
+                opt = minimize(
+                    self._objective_bounded,
+                    x0,
+                    method="Nelder-Mead",
+                    options=dict(maxfev=max(100, maxiter * 2), xatol=1e-4, fatol=1e-4),
+                )
+            elif method == "lbfgsb":
+                print(f"  Method: L-BFGS-B from baseline")
+                opt = minimize(
+                    self._objective,
+                    x0,
+                    method="L-BFGS-B",
+                    bounds=bounds,
+                    options=dict(maxiter=maxiter, ftol=1e-6),
+                )
+            else:
+                raise ValueError(f"Unknown method: {method!r}. Use 'de', 'nelder-mead', or 'lbfgsb'.")
+            best = opt.x
+            result_fun = float(opt.fun)
+            result_success = opt.success
+            result_nit = getattr(opt, "nit", 0) or getattr(opt, "nfev", 0) // max(len(x0), 1)
             history.append({
-                "coupling": float(xk[0]),
-                "k_evap": float(xk[1]),
-                "gap_rate": float(xk[2]),
-                "convergence": float(convergence),
+                "coupling": float(best[0]),
+                "k_evap": float(best[1]),
+                "gap_rate": float(best[2]),
+                "convergence": 0.0,
             })
 
-        result = differential_evolution(
-            self._objective,
-            bounds=bounds,
-            maxiter=maxiter,
-            seed=seed,
-            tol=0.005,
-            callback=_callback,
-            disp=True,
-            polish=True,      # local Nelder-Mead refinement at the end
-            popsize=15,       # robust population (default = 15*n_params)
-        )
-
-        best = result.x
         # Final evaluation reuses the warm simulator (reset via _get_or_create_sim)
         T_best, Ia_best, gap_best = self._simulate(best[0], best[1], best[2])
         total, L_T, L_Ia, L_gap = self._compute_loss(T_best, Ia_best, gap_best)
@@ -451,17 +539,23 @@ class CalibrationOptimizer:
         # ── Sensitivity analysis (finite differences at optimum) ──
         sensitivity = self._compute_sensitivity(best, total)
 
+        total_wall = time.perf_counter() - self._run_start
+        if self._eval_times:
+            avg_ev = sum(self._eval_times) / len(self._eval_times)
+            print(f"\n  Calibration wall time: {total_wall:.0f} s ({total_wall / 60:.1f} min), "
+                  f"{self._eval_count} evals, ~{avg_ev:.1f} s/eval")
+
         return CalibrationResult(
             oscillator_coupling_factor=float(best[0]),
             k_evap=float(best[1]),
             gap_adjust_rate_mm_s=float(best[2]),
-            loss_total=float(result.fun),
+            loss_total=float(result_fun),
             loss_temperature=L_T,
             loss_anode_current=L_Ia,
             loss_gap=L_gap,
             n_evaluations=self._eval_count,
-            n_iterations=result.nit,
-            converged=result.success,
+            n_iterations=result_nit,
+            converged=result_success,
             sensitivity=sensitivity,
             history=history,
         )

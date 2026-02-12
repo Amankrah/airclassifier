@@ -181,21 +181,50 @@ class GP15Controller:
             self.status.rf_enabled = recipe.rf_power_enabled
 
         # ── 2. MRH / MRL GAP CONTROL ─────────────────────────────────
+        # Gap control follows the GP-15 manual (Section 8.1):
+        #   - MRH active (Ia > MRH): increase gap to reduce power
+        #   - MRL active (Ia < MRL): stop drive (hold position) - prevents
+        #     closing gap when no material is present
+        #   - Normal (MRL < Ia < MRH): return gap toward recipe setpoint
+        #
+        # The return-to-setpoint logic matches observed PLC behavior in
+        # Run#2: gap peaked at 94.1mm during MRH trip, then returned to
+        # 75.2mm (setpoint) after material cleared.
         self.status.mrh_active = anode_current_a > recipe.mrh_amps
         self.status.mrl_active = anode_current_a < recipe.mrl_amps
+
+        gap_setpoint_mm = recipe.electrode_gap_mm
+        gap_max_mm = self._machine.electrode_gap_max_m * 1000.0
+        gap_min_mm = self._machine.electrode_gap_min_m * 1000.0
 
         if self.status.mrh_active:
             # Overcurrent: increase gap to reduce power density
             self.status.electrode_gap_mm += self.gap_adjust_rate_mm_s * dt
-            gap_max_mm = self._machine.electrode_gap_max_m * 1000.0
             self.status.electrode_gap_mm = min(
                 self.status.electrode_gap_mm, gap_max_mm,
             )
             self.status.state = ControllerState.MRH_TRIP
         elif self.status.mrl_active:
             # Undercurrent: stop electrode drive (hold position)
+            # Don't close gap when there's no material - prevents
+            # gap from closing to setpoint during belt clearing
             self.status.state = ControllerState.MRL_STOP
         else:
+            # Normal operation: return gap toward setpoint
+            if self.status.electrode_gap_mm > gap_setpoint_mm + 0.5:
+                # Gap is above setpoint - decrease toward setpoint
+                # Use same rate as MRH drive for symmetric behavior
+                self.status.electrode_gap_mm -= self.gap_adjust_rate_mm_s * dt
+                self.status.electrode_gap_mm = max(
+                    self.status.electrode_gap_mm, gap_setpoint_mm,
+                )
+            elif self.status.electrode_gap_mm < gap_setpoint_mm - 0.5:
+                # Gap is below setpoint - increase toward setpoint
+                self.status.electrode_gap_mm += self.gap_adjust_rate_mm_s * dt
+                self.status.electrode_gap_mm = min(
+                    self.status.electrode_gap_mm, gap_setpoint_mm,
+                )
+
             if self.status.state in (
                 ControllerState.MRH_TRIP,
                 ControllerState.MRL_STOP,

@@ -515,7 +515,21 @@ class MaterialParticleSystem:
                 )
                 self.vel[landed] = 0.0
                 self.state[landed] = self._STATE_COLLECTED
-                self._total_collected_kg += n_land * self.mass_per_particle
+
+                # Mass accounting: adjust for moisture loss during drying.
+                # Each particle was dispatched with mass_per_particle based on
+                # initial moisture M_i.  After drying, the particle has moisture
+                # M_f (interpolated from Eulerian grid).  The dry mass is conserved,
+                # so the wet mass after drying is:
+                #   m_out = m_in * (1 - M_i) / (1 - M_f)
+                # This ensures mass collected < mass dispatched when M_f < M_i.
+                M_initial = cfg.M_inlet_wb
+                M_landed = self.moisture[landed]
+                # Guard against division by zero (M_f approaching 1)
+                M_landed_safe = np.clip(M_landed, 0.0, 0.99)
+                mass_ratio = (1.0 - M_initial) / (1.0 - M_landed_safe)
+                mass_per_particle_adjusted = self.mass_per_particle * mass_ratio
+                self._total_collected_kg += float(np.sum(mass_per_particle_adjusted))
 
             # Fell outside the bin entirely → recycle
             missed = falling & ~in_bin_xz & (self.pos[:, 1] < cfg.bin_bottom_y)

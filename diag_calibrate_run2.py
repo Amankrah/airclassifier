@@ -61,7 +61,7 @@ print(f"  Gap at t=0: {plc.electrode_act_mm[0]:.1f} mm")
 # Show PLC trajectory for reference
 print(f"\nPLC trajectory (from material arrival):")
 print(f"  {'t(s)':>6}  {'Ia(A)':>6}  {'Gap(mm)':>8}  {'T(C)':>6}")
-for offset_s in [0, 30, 60, 90, 120, 180, 300, 450, 600, 900, 1200]:
+for offset_s in [0, 30, 60, 90, 120, 180, 300, 450, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700]:
     idx = offset_s // 5
     if idx >= plc.n_samples:
         break
@@ -77,8 +77,9 @@ material = MaterialProperties(
 config = MachineConfig()
 
 # ── Run calibration ──────────────────────────────────────────────────
-# Use 900s window to capture initial transient + approach to steady-state
-cal_duration = 900.0
+# Shorter duration = faster (each eval runs sim for this many seconds).
+# 900–1200 s often enough to fit dynamics; 2820 s for full run.
+cal_duration = 1200.0  # or 2820.0 for full run (~3x slower)
 print(f"\n{'='*60}")
 print(f"Calibrating against {cal_duration:.0f}s of Run#2 PLC data")
 print(f"  FDM solver: enabled (corrected)")
@@ -90,19 +91,22 @@ print(f"{'='*60}")
 
 t_start = time.time()
 
+# None = auto-detect CUDA (same as simulate_and_visualize.py); use device="cpu" to force CPU
 cal = CalibrationOptimizer(
     plc, config=config, material=material,
     sim_duration_s=cal_duration,
-    device="cpu",
+    device=None,
     w_temperature=0.5,   # lower weight: IR sensor is biased vs bulk temp
     w_anode_current=1.5, # higher weight: most reliable PLC signal
     w_gap=1.0,           # reliable signal
     n_compare_points=60,
 )
 
-# Baseline evaluation
+# Baseline evaluation (also warms simulator; time used for ETA)
 print("\nBaseline (current calibration):")
+t_baseline = time.perf_counter()
 baseline = cal.evaluate_current()
+baseline_sec = time.perf_counter() - t_baseline
 print(f"  coupling={baseline['coupling']:.4f}, k_evap={baseline['k_evap']:.2e}, "
       f"gap_rate={baseline['gap_rate']:.4f}")
 print(f"  T_sim={baseline['T_sim_final']:.1f}°C vs T_plc={baseline['T_plc_final']:.0f}°C")
@@ -110,10 +114,15 @@ print(f"  Ia_sim={baseline['Ia_sim_final']:.3f}A vs Ia_plc={baseline['Ia_plc_fin
 print(f"  gap_sim={baseline['gap_sim_final']:.1f}mm vs gap_plc={baseline['gap_plc_final']:.1f}mm")
 print(f"  loss={baseline['loss_total']:.3f} (T={baseline['loss_T']:.3f}, "
       f"Ia={baseline['loss_Ia']:.3f}, gap={baseline['loss_gap']:.3f})")
+# Nelder-Mead maxfev = max(100, maxiter*2) = 300 with maxiter=150
+est_100 = baseline_sec * 100 / 60
+est_300 = baseline_sec * 300 / 60
+print(f"  Baseline eval: {baseline_sec:.1f} s  →  est. ~{est_100:.0f} min (100 evals) to ~{est_300:.0f} min (300 evals)")
 
-# Run optimizer
-print(f"\nRunning differential evolution (maxiter=20, popsize=15)...")
-cal_result = cal.run(maxiter=20, seed=42)
+# Run optimizer: "nelder-mead" from baseline is ~5x faster than "de" (fewer evals).
+# Use method="de" if baseline is poor or you want global search.
+print(f"\nRunning calibration (method=nelder-mead, maxiter=150)...")
+cal_result = cal.run(method="nelder-mead", maxiter=150, seed=42)
 
 elapsed = time.time() - t_start
 print(f"\n{'='*60}")

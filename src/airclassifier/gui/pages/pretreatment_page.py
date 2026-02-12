@@ -716,7 +716,7 @@ class PretreatmentPage(QWidget):
         grid.setSpacing(8)
 
         self._rc_moisture = _StatCard("Outfeed Moisture", COLORS.INFO)
-        self._rc_temp = _StatCard("Outfeed Temperature", COLORS.DANGER)
+        self._rc_temp = _StatCard("Outfeed Temp (Sensor)", COLORS.DANGER)
         self._rc_max_temp = _StatCard("Max Temperature", COLORS.WARNING)
         self._rc_cv = _StatCard("Moisture Uniformity (CV)", COLORS.ACCENT)
         self._rc_energy = _StatCard("RF Energy Consumed", COLORS.SUCCESS)
@@ -875,7 +875,7 @@ class PretreatmentPage(QWidget):
         energy_kwh = result_obj.energy_consumed_kwh if result_obj else 0.0
 
         dr = score_desirability(
-            outfeed_temperature_c=outlet.avg_temperature_c,
+            outfeed_temperature_c=outlet.sensor_temperature_c,  # Use sensor-comparable temp
             max_temperature_c=outlet.max_temperature_c,
             outfeed_moisture_wb=outlet.avg_moisture_wb,
             initial_moisture_wb=initial_m,
@@ -1516,6 +1516,7 @@ class PretreatmentPage(QWidget):
                     "T_mean_c": [h.T_mean_c for h in history],
                     "T_max_c": [h.T_max_c for h in history],
                     "T_outfeed_c": [h.T_outfeed_c for h in history],
+                    "T_outfeed_sensor_c": [h.T_outfeed_sensor_c for h in history],
                     "M_mean_wb": [h.M_mean_wb for h in history],
                     "M_outfeed_wb": [h.M_outfeed_wb for h in history],
                     "rf_power_kw": [h.rf_power_kw for h in history],
@@ -1575,7 +1576,7 @@ class PretreatmentPage(QWidget):
             self._view_results_btn.setEnabled(True)
             self._results_status_label.setText(
                 f"Complete | M={outlet.avg_moisture_wb:.1%} | "
-                f"T={outlet.avg_temperature_c:.1f} \u00b0C | "
+                f"T={outlet.sensor_temperature_c:.1f} \u00b0C | "
                 f"E={outlet.total_energy_kwh:.3f} kWh | "
                 f"wall={elapsed:.1f} s"
             )
@@ -1595,7 +1596,7 @@ class PretreatmentPage(QWidget):
 
             self._log(
                 f"Complete | M_out={outlet.avg_moisture_wb:.1%} "
-                f"| T_out={outlet.avg_temperature_c:.1f} \u00b0C "
+                f"| T_sensor={outlet.sensor_temperature_c:.1f} \u00b0C "
                 f"| CV={outlet.moisture_uniformity:.3f} "
                 f"| E={outlet.total_energy_kwh:.3f} kWh "
                 f"| wall={elapsed:.1f} s"
@@ -1691,10 +1692,11 @@ class PretreatmentPage(QWidget):
                 t_min, ts["T_mean_c"], ts["T_max_c"],
                 alpha=0.15, color="red", label="T range",
             )
+        if "T_outfeed_sensor_c" in ts:
+            # Sensor-comparable temperature (75th percentile) - matches PLC/strips
+            ax.plot(t_min, ts["T_outfeed_sensor_c"], "r-", lw=2, label="T sensor (P75)")
         if "T_outfeed_c" in ts:
-            ax.plot(t_min, ts["T_outfeed_c"], "r-", lw=2, label="T outfeed")
-        if "T_mean_c" in ts:
-            ax.plot(t_min, ts["T_mean_c"], "r-", lw=0.8, alpha=0.5, label="T mean")
+            ax.plot(t_min, ts["T_outfeed_c"], "r--", lw=1.2, alpha=0.6, label="T outfeed (mean)")
         ax.axhline(70, color="orange", ls=":", alpha=0.6, label="Denaturation 70\u00b0C")
         ax.set_xlabel("Time [min]")
         ax.set_ylabel("Temperature [\u00b0C]")
@@ -1876,7 +1878,7 @@ class PretreatmentPage(QWidget):
             ax.set_xlabel("Z \u2014 belt width [mm]")
             ax.set_ylabel("Y \u2014 gap [mm]")
             ax.set_title(
-                f"Outfeed T  (avg {outlet.avg_temperature_c:.1f}\u00b0C, "
+                f"Outfeed T  (sensor {outlet.sensor_temperature_c:.1f}\u00b0C, "
                 f"max {outlet.max_temperature_c:.1f}\u00b0C)",
             )
             fig.colorbar(im, ax=ax, label="\u00b0C", shrink=0.8)
@@ -1922,7 +1924,7 @@ class PretreatmentPage(QWidget):
             ax.set_xlabel("Z \u2014 belt width [mm]")
             ax.set_ylabel("Y \u2014 gap [mm]")
             ax.set_title(
-                f"Temperature  (avg {outlet.avg_temperature_c:.1f}\u00b0C, "
+                f"Temperature  (sensor {outlet.sensor_temperature_c:.1f}\u00b0C, "
                 f"max {outlet.max_temperature_c:.1f}\u00b0C)",
             )
             fig.colorbar(im_t, ax=ax, label="\u00b0C")
@@ -1957,7 +1959,8 @@ class PretreatmentPage(QWidget):
             return
 
         self._rc_moisture.set_value(f"{outlet.avg_moisture_wb:.2%}")
-        self._rc_temp.set_value(f"{outlet.avg_temperature_c:.1f} \u00b0C")
+        # Use sensor-comparable temperature (75th percentile) - matches PLC/strips
+        self._rc_temp.set_value(f"{outlet.sensor_temperature_c:.1f} \u00b0C")
         self._rc_max_temp.set_value(f"{outlet.max_temperature_c:.1f} \u00b0C")
         self._rc_cv.set_value(f"{outlet.moisture_uniformity:.4f}")
 

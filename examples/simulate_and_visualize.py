@@ -77,7 +77,7 @@ Examples:
     python examples/simulate_and_visualize.py --gap 80 --bed-depth 50 --mass 100
 
     # Run#2 defaults (90 kg)
-    python examples/simulate_and_visualize.py --mass 90 --gap 75 --bed-depth 35 --speed 0.2 --temp 17.0 --duration 2820
+    python examples/simulate_and_visualize.py --mass 90 --gap 75 --bed-depth 35 --speed 0.2 --temp 17.0 --duration 2820 --moisture 0.118067
 
     # Run#3 defaults (60.5 kg)
     python examples/simulate_and_visualize.py --mass 60.5 --gap 75 --bed-depth 25--speed 0.2 --temp 17.0 --duration 2820
@@ -303,8 +303,10 @@ Examples:
     ax = axes[0, 0]
     ax.fill_between(t_min, ts["T_mean_c"], ts["T_max_c"],
                     alpha=0.15, color="red", label="T range")
-    ax.plot(t_min, ts["T_outfeed_c"], "r-", linewidth=2, label="T outfeed")
-    ax.plot(t_min, ts["T_mean_c"], "r-", linewidth=0.8, alpha=0.5, label="T mean")
+    # Sensor-comparable temperature (75th percentile) - matches PLC/strip sensors
+    if "T_outfeed_sensor_c" in ts:
+        ax.plot(t_min, ts["T_outfeed_sensor_c"], "r-", linewidth=2, label="T sensor (P75)")
+    ax.plot(t_min, ts["T_outfeed_c"], "r--", linewidth=1.2, alpha=0.6, label="T outfeed (mean)")
     ax.axhline(70, color="orange", linestyle=":", alpha=0.6, label="Denaturation 70\u00b0C")
     ax.set_xlabel("Time [min]")
     ax.set_ylabel("Temperature [\u00b0C]")
@@ -425,7 +427,7 @@ Examples:
         axes[2, 2].set_xlabel("Z -- belt width [mm]")
         axes[2, 2].set_ylabel("Y -- gap [mm]")
         axes[2, 2].set_title(
-            f"Outfeed T  (avg {outlet.avg_temperature_c:.1f}\u00b0C, "
+            f"Outfeed T  (sensor {outlet.sensor_temperature_c:.1f}\u00b0C, "
             f"max {outlet.max_temperature_c:.1f}\u00b0C)")
         plt.colorbar(im, ax=axes[2, 2], label="\u00b0C", shrink=0.8)
     else:
@@ -451,7 +453,7 @@ Examples:
         axes2[0].set_xlabel("Z -- belt width [mm]")
         axes2[0].set_ylabel("Y -- gap [mm]")
         axes2[0].set_title(
-            f"Temperature  (avg {outlet.avg_temperature_c:.1f}\u00b0C, "
+            f"Temperature  (sensor {outlet.sensor_temperature_c:.1f}\u00b0C, "
             f"max {outlet.max_temperature_c:.1f}\u00b0C)")
         plt.colorbar(im_t, ax=axes2[0], label="\u00b0C")
 
@@ -484,7 +486,7 @@ def _print_results(sim, result, elapsed):
     print("  RESULTS")
     print("-" * 60)
     print(f"  Outfeed moisture:          {outlet.avg_moisture_wb:.2%}")
-    print(f"  Outfeed temperature:       {outlet.avg_temperature_c:.1f} C")
+    print(f"  Outfeed temperature:       {outlet.sensor_temperature_c:.1f} C")
     print(f"  Max temperature:           {outlet.max_temperature_c:.1f} C")
     print(f"  Moisture uniformity (CV):  {outlet.moisture_uniformity:.4f}")
     print()
@@ -779,7 +781,7 @@ def _run_live_3d(sim, recipe, args, info, material):
                 hopper_n = particle_sys.hopper_count
                 riding_n = particle_sys.riding_count
                 title = (f"GP-15 Live  |  t={sim.sim_time:.0f}/{t_end:.0f} s  |  "
-                         f"T_out={last.T_outfeed_c:.1f} C  |  "
+                         f"T_sensor={last.T_outfeed_sensor_c:.1f} C  |  "
                          f"M_out={last.M_outfeed_wb:.1%}  |  "
                          f"P={last.rf_power_kw:.1f} kW  |  "
                          f"Hopper:{hopper_n}  Belt:{riding_n}")

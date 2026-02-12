@@ -211,9 +211,13 @@ if _HAS_PYSIDE6:
                     "time_series": {
                         "time_s": [s.time_s for s in sim._sim._history],
                         "T_mean_c": [s.T_mean_c for s in sim._sim._history],
+                        "T_outfeed_c": [s.T_outfeed_c for s in sim._sim._history],
+                        "T_outfeed_sensor_c": [s.T_outfeed_sensor_c for s in sim._sim._history],
                         "M_mean_wb": [s.M_mean_wb for s in sim._sim._history],
+                        "M_outfeed_wb": [s.M_outfeed_wb for s in sim._sim._history],
                         "rf_power_kw": [s.rf_power_kw for s in sim._sim._history],
                         "anode_current_a": [s.anode_current_a for s in sim._sim._history],
+                        "electrode_gap_mm": [s.electrode_gap_mm for s in sim._sim._history],
                     },
                 })
 
