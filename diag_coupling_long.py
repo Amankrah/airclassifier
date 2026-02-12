@@ -1,6 +1,6 @@
 """Run longer simulations at promising coupling factors to find steady-state.
 
-Target PLC steady-state (t=900-1200s from material arrival):
+Target PLC steady-state (t=1200s from material arrival):
   - Ia ≈ 1.50-1.55A
   - Gap ≈ 93-94mm
   - T_out ≈ 77-82°C (temp strips)
@@ -13,7 +13,7 @@ import numpy as np
 from airclassifier.pretreatment.simulator import GP15Simulator
 from airclassifier.pretreatment.config import Recipe, MaterialProperties
 
-def run_sim(coupling_factor, duration_s=900):
+def run_sim(coupling_factor, duration_s=1200):
     """Run simulation with given coupling factor."""
     mat = MaterialProperties(
         bed_depth_m=0.035,
@@ -53,7 +53,7 @@ def run_sim(coupling_factor, duration_s=900):
 
 for cf in [0.150, 0.148, 0.145, 0.142]:
     t_start = time.time()
-    states = run_sim(cf, duration_s=900)
+    states = run_sim(cf, duration_s=1200)
     elapsed = time.time() - t_start
 
     peak_ia = max(s.anode_current_a for s in states)

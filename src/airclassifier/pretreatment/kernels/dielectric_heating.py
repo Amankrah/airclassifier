@@ -79,8 +79,8 @@ try:
         temp = T[i, j, k]
         moist = M[i, j, k]
 
-        eps_loss_out[i, j, k] = a1 * moist * moist + a2 * moist + a3 * moist * temp + a4 * temp + a5
-        eps_real_out[i, j, k] = b1 * moist + b2 * temp + b3
+        eps_loss_out[i, j, k] = wp.max(a1 * moist * moist + a2 * moist + a3 * moist * temp + a4 * temp + a5, 0.01)
+        eps_real_out[i, j, k] = wp.max(b1 * moist + b2 * temp + b3, 1.5)
 
         cp = c_p_dry * (1.0 - moist) + c_p_water * moist
         M_db = moist / wp.max(1.0 - moist, 1.0e-6)
@@ -186,7 +186,9 @@ def update_material_properties_np(
     Mm = M[mat]
 
     eps_loss_out[mat] = a1 * Mm * Mm + a2 * Mm + a3 * Mm * Tm + a4 * Tm + a5
+    np.clip(eps_loss_out[mat], 0.01, None, out=eps_loss_out[mat])
     eps_real_out[mat] = b1 * Mm + b2 * Tm + b3
+    np.clip(eps_real_out[mat], 1.5, None, out=eps_real_out[mat])
 
     cp = c_p_dry * (1.0 - Mm) + c_p_water * Mm
     M_db = Mm / np.maximum(1.0 - Mm, 1.0e-6)

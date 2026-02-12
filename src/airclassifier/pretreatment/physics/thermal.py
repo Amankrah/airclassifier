@@ -62,6 +62,7 @@ class ThermalSolver:
     def initialize(self, T_initial_c: float):
         """Set uniform initial temperature."""
         self.T[:] = T_initial_c
+        self._T_new[:] = T_initial_c  # match double-buffer to avoid first-step artifact
 
     # ------------------------------------------------------------------
     # Phase 1  —  explicit FDM step (NumPy vectorised)
