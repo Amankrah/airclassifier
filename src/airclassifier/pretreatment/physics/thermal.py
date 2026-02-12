@@ -170,12 +170,16 @@ class ThermalSolver:
         Tn[:, :, 0] = Tn[:, :, 1]
         Tn[:, :, -1] = Tn[:, :, -2]
 
-        # Bottom (j=0): Robin BC for material cells — models heat
-        # transfer through the PTFE belt stack to the lower
-        # electrode / aluminum trays.
+        # Bottom (j=0): Full energy balance for boundary cell.
         #
-        # Robin BC:  q = h_contact * (T - T_electrode)
-        # where h_contact = k_belt / d_belt ≈ 71 W/(m²·K)
+        # The interior update [1:-1, 1:-1, 1:-1] excludes j=0, so
+        # these cells must be updated separately with:
+        #   1. RF source (P_v)
+        #   2. Conduction from j=1 (one-sided difference)
+        #   3. Robin BC: heat loss through PTFE belt to electrode
+        #        q = h_contact * (T - T_electrode)
+        #        h_contact = k_belt / d_belt ≈ 71 W/(m²·K)
+        #   4. Latent heat sink (evaporation)
         #
         # T_electrode tracks the lumped tray temperature (updated
         # in coupling.py).  Falls back to T_inlet_c if not provided.
@@ -183,12 +187,21 @@ class ThermalSolver:
         mat_j0 = (cell_is_material[:, 0, :] == 1)
         if np.any(mat_j0):
             h_contact = self._K_BELT / max(self._D_BELT, 1e-6)
-            q_contact = h_contact * (Tn[:, 0, :] - T_elec)
             rc_0 = np.maximum(rho_cp[:, 0, :], 1.0)
-            correction = dt * q_contact / (rc_0 * dy * 0.5)
-            Tn[:, 0, :] = np.where(mat_j0,
-                                    Tn[:, 0, :] - correction,
-                                    T_elec)
+            # Conduction from j=1 (one-sided, interior neighbor)
+            k_y_half = 0.5 * (k_eff[:, 0, :] + k_eff[:, 1, :])
+            cond_j1 = k_y_half * (T[:, 1, :] - T[:, 0, :]) / (dy * dy)
+            # Robin BC flux (belt contact to electrode)
+            robin = h_contact * (T[:, 0, :] - T_elec) / (dy * 0.5)
+            # RF source and latent sink at j=0
+            src_j0 = P_v[:, 0, :]
+            snk_j0 = L_v * evap_rate[:, 0, :]
+            # Forward Euler update
+            Tn[:, 0, :] = np.where(
+                mat_j0,
+                T[:, 0, :] + dt / rc_0 * (cond_j1 - robin + src_j0 - snk_j0),
+                T_elec,
+            )
         else:
             Tn[:, 0, :] = T_elec
 

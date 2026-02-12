@@ -386,17 +386,21 @@ class CoupledSimulator:
         T[:, :, 0] = T[:, :, 1]
         T[:, :, -1] = T[:, :, -2]
 
-        # Bottom (j=0): Robin BC through PTFE belt to lower electrode / trays
+        # Bottom (j=0): Robin BC correction through PTFE belt to electrode.
+        # The GPU thermal kernel already updated j=0 with RF heating and
+        # conduction; here we subtract the belt contact flux which the
+        # GPU kernel does not include (no ghost cell below j=0).
         T_elec = self._T_electrode_c
         mat_j0 = (self.cell_is_material[:, 0, :] == 1)
         if np.any(mat_j0):
             K_BELT = self.thermal._K_BELT
             D_BELT = self.thermal._D_BELT
             h_contact = K_BELT / max(D_BELT, 1e-6)
-            q_contact = h_contact * (T[:, 0, :] - T_elec)
+            robin = h_contact * (T[:, 0, :] - T_elec) / (dy * 0.5)
             rc_0 = np.maximum(self.rho_cp[:, 0, :], 1.0)
-            correction = dt * q_contact / (rc_0 * dy * 0.5)
-            T[:, 0, :] = np.where(mat_j0, T[:, 0, :] - correction, T_elec)
+            T[:, 0, :] = np.where(mat_j0,
+                                   T[:, 0, :] - dt * robin / rc_0,
+                                   T_elec)
         else:
             T[:, 0, :] = T_elec
 
