@@ -386,21 +386,34 @@ class CoupledSimulator:
         T[:, :, 0] = T[:, :, 1]
         T[:, :, -1] = T[:, :, -2]
 
-        # Bottom (j=0): Robin BC correction through PTFE belt to electrode.
-        # The GPU thermal kernel already updated j=0 with RF heating and
-        # conduction; here we subtract the belt contact flux which the
-        # GPU kernel does not include (no ghost cell below j=0).
+        # Bottom (j=0): Full energy balance for boundary cell.
+        # The GPU kernel skips boundary cells (T_new = T at j<=0),
+        # so j=0 needs the complete update here:
+        #   1. Conduction from j=1 (one-sided difference)
+        #   2. Robin BC: heat loss through PTFE belt to electrode
+        #   3. RF source (P_v)
+        #   4. Latent heat sink (evaporation)
         T_elec = self._T_electrode_c
         mat_j0 = (self.cell_is_material[:, 0, :] == 1)
         if np.any(mat_j0):
             K_BELT = self.thermal._K_BELT
             D_BELT = self.thermal._D_BELT
             h_contact = K_BELT / max(D_BELT, 1e-6)
-            robin = h_contact * (T[:, 0, :] - T_elec) / (dy * 0.5)
             rc_0 = np.maximum(self.rho_cp[:, 0, :], 1.0)
-            T[:, 0, :] = np.where(mat_j0,
-                                   T[:, 0, :] - dt * robin / rc_0,
-                                   T_elec)
+            # Conduction from j=1 (one-sided, interior neighbor)
+            k_y_half = 0.5 * (self.k_eff[:, 0, :] + self.k_eff[:, 1, :])
+            cond_j1 = k_y_half * (T[:, 1, :] - T[:, 0, :]) / (dy * dy)
+            # Robin BC flux (belt contact to electrode)
+            robin = h_contact * (T[:, 0, :] - T_elec) / (dy * 0.5)
+            # RF source and latent sink at j=0
+            src_j0 = self.P_v[:, 0, :]
+            snk_j0 = 2.26e6 * self.moisture.evap_rate[:, 0, :]
+            # Forward Euler update
+            T[:, 0, :] = np.where(
+                mat_j0,
+                T[:, 0, :] + dt / rc_0 * (cond_j1 - robin + src_j0 - snk_j0),
+                T_elec,
+            )
         else:
             T[:, 0, :] = T_elec
 
