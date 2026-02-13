@@ -135,12 +135,25 @@ class MaterialParticleSystem:
         moisture[i]    -- trilinearly interpolated from grid M [wb]
         state[i]       -- IN_HOPPER / RIDING / FALLING / COLLECTED / DEAD
 
-    Lifecycle::
+    Operating Modes
+    ---------------
+    **Finite Mass Mode** (``run_mass_kg > 0``):
+        All particles start in the hopper, representing fresh material.
+        Lifecycle is one-way::
 
-        IN_HOPPER → RIDING → FALLING → COLLECTED → (recycle to IN_HOPPER)
+            IN_HOPPER → RIDING → FALLING → COLLECTED (no recycling)
 
-    When ``run_mass_kg > 0``, dispatching stops once the cumulative
-    mass reaches the limit.  The belt clears naturally.
+        - Particles drain from hopper at the spawn rate
+        - Once dispatched, particles ride the belt through the oven
+        - T and M are interpolated from the Eulerian fields (drying)
+        - Particles fall into the collection bin with final T/M values
+        - Collected particles stay collected (treated material is NOT recycled)
+        - Run completes when hopper is empty and belt has cleared
+
+    **Continuous Mode** (``run_mass_kg == 0``):
+        Particles recycle for continuous visualization::
+
+            IN_HOPPER → RIDING → FALLING → COLLECTED → (recycle to DEAD → RIDING)
 
     Material properties are sourced from the pretreatment system:
         - Inlet T, M          from PretreatmentMaterial (config.py)
@@ -175,6 +188,8 @@ class MaterialParticleSystem:
             self.mass_per_particle = 0.0
         self._total_collected_kg = 0.0
         self._dispatched_mass_kg = 0.0
+        self._initial_belt_mass_kg = 0.0  # pre-placed belt particles (for mass balance)
+        self._batch_exhausted = False  # set True when hopper empties (stops M interpolation)
 
         self._alive_count = 0
         self._spawn_accumulator = 0.0
@@ -185,14 +200,18 @@ class MaterialParticleSystem:
     # ------------------------------------------------------------------
 
     def _init_particles(self):
-        """Distribute particles between hopper and belt.
+        """Initialize particle positions based on operating mode.
 
         When ``run_mass_kg > 0`` (finite mass run):
-            - A small pool (~500) starts inside the hopper for visual
-            - The rest start distributed along the belt (already flowing)
+            - ALL particles start inside the hopper (fresh material)
+            - No particles on the belt initially
+            - Particles will drain from hopper through the system
+            - No recycling: once collected, particles stay collected
 
         When ``run_mass_kg == 0`` (continuous / infinite):
-            - All particles start on the belt (original behaviour)
+            - All particles start distributed along the belt
+            - Provides immediate visual feedback
+            - Particles recycle through DEAD→RIDING states
         """
         cfg = self.cfg
         n = cfg.max_particles
@@ -203,34 +222,53 @@ class MaterialParticleSystem:
             return
 
         if cfg.run_mass_kg > 0 and cfg.hopper_front_x > cfg.hopper_back_x:
-            # ── Finite mass: small hopper visual pool + belt ──────
-            # Keep the hopper pool small so it doesn't look like a
-            # dense block.  The rest of the particles recycle through
-            # DEAD→RIDING→FALLING→COLLECTED→DEAD while mass remains.
-            n_hopper = min(500, int(n * 0.08))
-            n_belt = n - n_hopper
+            # ── Finite mass: ALL particles start in hopper ────────
+            # For a finite mass run, all material starts in the hopper
+            # and gradually moves through the system:
+            #   HOPPER → RIDING (belt) → FALLING → COLLECTED (bin)
+            #
+            # No recycling: once collected, particles stay collected.
+            # The simulation runs until run_mass_kg has been dispatched
+            # and all dispatched particles have been collected.
+            #
+            # This matches the real machine: operator loads a known mass
+            # into the hopper, material flows through, and the run ends
+            # when the hopper is empty and the belt has cleared.
 
-            # Place particles inside hopper — only in the lower
-            # portion near the sizing gate (where material sits)
-            hopper_fill_h = min(cfg.hopper_height_m * 0.35, cfg.bed_depth_m * 4)
-            for i in range(n_hopper):
-                self.pos[i, 0] = rng.uniform(cfg.hopper_back_x + 0.05,
-                                             cfg.hopper_front_x - 0.01)
-                self.pos[i, 1] = cfg.belt_y + rng.uniform(0.0, hopper_fill_h)
-                self.pos[i, 2] = rng.uniform(cfg.hopper_z0, cfg.hopper_z1)
+            # Fill the hopper with particles in a pre-settled distribution.
+            # Real granular material loaded into a hopper has already
+            # settled under gravity before the machine starts.  The fill
+            # is densest at the bottom with a fairly flat top surface.
+            #
+            # Using a steep power distribution (exponent 2.0) concentrates
+            # ~70% of particles in the lower quarter, matching a settled
+            # granular bed.  This avoids the visual artefact of particles
+            # "dropping to the floor" on the first rendered frame — they
+            # start where they would be after natural settling.
+            hopper_fill_h = cfg.hopper_height_m * 0.75  # fill 75% of hopper height
+            hopper_len = cfg.hopper_front_x - cfg.hopper_back_x
+            hopper_wid = cfg.hopper_z1 - cfg.hopper_z0
+
+            for i in range(n):
+                # Steep power distribution: most particles near the bottom
+                y_frac = rng.random() ** 2.0  # exponent > 1 = dense at bottom
+                self.pos[i, 1] = cfg.belt_y + 0.005 + y_frac * hopper_fill_h
+
+                # X distribution: uniform with slight bias toward front
+                x_frac = rng.random() ** 0.9
+                self.pos[i, 0] = cfg.hopper_back_x + 0.02 + x_frac * (hopper_len - 0.04)
+
+                # Z distribution: uniform across hopper width
+                self.pos[i, 2] = cfg.hopper_z0 + 0.01 + rng.random() * (hopper_wid - 0.02)
+
                 self.state[i] = self._STATE_IN_HOPPER
                 self.temperature[i] = cfg.T_inlet_c
                 self.moisture[i] = cfg.M_inlet_wb
 
-            # Place remaining particles on belt
-            for i in range(n_hopper, n):
-                frac = (i - n_hopper) / max(n_belt - 1, 1)
-                self.pos[i, 0] = cfg.spawn_x + frac * belt_len
-                self.pos[i, 1] = cfg.belt_y + rng.uniform(0, cfg.bed_depth_m)
-                self.pos[i, 2] = rng.uniform(cfg.spawn_z0, cfg.spawn_z1)
-                self.state[i] = self._STATE_RIDING
-                self.temperature[i] = cfg.T_inlet_c
-                self.moisture[i] = cfg.M_inlet_wb
+            # Mass accounting: fresh run starts at zero dispatched
+            # No particles are pre-placed on the belt
+            self._initial_belt_mass_kg = 0.0
+            self._dispatched_mass_kg = 0.0
 
             self._alive_count = n
         else:
@@ -269,18 +307,43 @@ class MaterialParticleSystem:
         Called by ``GP15Simulator.load_recipe()`` after the recipe
         (with ``run_mass_kg``) is loaded.
 
+        For finite mass mode, the spawn_rate is calculated to match the
+        actual physics:
+            - run_time = run_mass_kg / throughput [s]
+            - spawn_rate = max_particles / run_time [particles/s]
+
+        This ensures particles drain from the hopper at exactly the rate
+        that matches the Eulerian advection model.
+
         Args:
             run_mass_kg: Total mass to feed from the hopper [kg].
                          0 = continuous (infinite) mode.
             throughput_kg_per_s: Actual throughput at recipe belt speed.
-                                If > 0, recalculates mass_per_particle.
+                                Required for finite mass mode.
         """
         self.cfg.run_mass_kg = run_mass_kg
-        if throughput_kg_per_s > 0 and self.cfg.spawn_rate > 0:
+        if throughput_kg_per_s > 0:
             self.cfg.throughput_kg_per_s = throughput_kg_per_s
-            self.mass_per_particle = throughput_kg_per_s / self.cfg.spawn_rate
+
+            if run_mass_kg > 0:
+                # ── Finite mass mode: physics-based spawn rate ──────────
+                # Calculate how long the run takes at this throughput
+                run_time_s = run_mass_kg / throughput_kg_per_s
+
+                # Spawn rate = all particles over the run time
+                # This ensures hopper empties exactly when run completes
+                self.cfg.spawn_rate = self.cfg.max_particles / run_time_s
+
+                # Each particle represents a fraction of the total mass
+                self.mass_per_particle = run_mass_kg / self.cfg.max_particles
+            else:
+                # ── Continuous mode: use throughput-based spawn rate ────
+                # Keep original spawn_rate, calculate mass per particle
+                self.mass_per_particle = throughput_kg_per_s / self.cfg.spawn_rate
         self._dispatched_mass_kg = 0.0
         self._total_collected_kg = 0.0
+        self._initial_belt_mass_kg = 0.0
+        self._batch_exhausted = False
         # Re-initialize particle distribution
         self.state[:] = self._STATE_DEAD
         self.pos[:] = 0.0
@@ -422,19 +485,86 @@ class MaterialParticleSystem:
         if cfg.run_mass_kg > 0 and self._dispatched_mass_kg >= cfg.run_mass_kg:
             can_dispatch = False
 
-        # ── Hopper settling (visual gravity) ─────────────────────────
+        # ── Hopper settling (realistic granular flow) ─────────────────
+        # The hopper drains through the sizing gate at the front (discharge).
+        # Material flows in two zones:
+        #   1. DISCHARGE ZONE: Near the sizing gate, material flows rapidly
+        #      toward the exit. Flow velocity matches belt throughput.
+        #   2. SETTLING ZONE: Above the discharge, material settles under
+        #      gravity to fill voids left by material that has flowed out.
+        #
+        # Settling rates are scaled to the throughput velocity so that the
+        # hopper drains at the same rate material exits the gate.  This
+        # avoids the visual artefact of particles teleporting to the
+        # hopper floor on the first rendered frame (the old hard-coded
+        # rates of 0.08–0.15 m/s were ~30–70× the belt speed, causing
+        # ~5 cm drops per timestep).
         hopper = (self.state == self._STATE_IN_HOPPER)
         if hopper.any():
-            # Settle downward toward belt level
-            self.pos[hopper, 1] -= 0.12 * dt_sim
-            np.clip(self.pos[hopper, 1], cfg.belt_y,
-                    cfg.belt_y + cfg.hopper_height_m,
-                    out=self.pos[hopper, 1])
-            # Drift toward discharge (front wall)
-            self.pos[hopper, 0] += 0.05 * dt_sim
-            np.clip(self.pos[hopper, 0],
-                    cfg.hopper_back_x + 0.01, cfg.hopper_front_x - 0.01,
-                    out=self.pos[hopper, 0])
+            hopper_idx = np.where(hopper)[0]
+            pos_h = self.pos[hopper_idx]
+
+            # Hopper geometry
+            gate_x = cfg.hopper_front_x  # discharge (sizing gate)
+            back_x = cfg.hopper_back_x
+            hopper_len = gate_x - back_x
+            gate_height = cfg.bed_depth_m  # sizing gate opening = bed depth
+            belt_y = cfg.belt_y
+
+            # Distance from discharge gate (0 at gate, 1 at back wall)
+            dist_from_gate = (gate_x - pos_h[:, 0]) / max(hopper_len, 0.01)
+            dist_from_gate = np.clip(dist_from_gate, 0.0, 1.0)
+
+            # Height above belt level
+            height_above_belt = pos_h[:, 1] - belt_y
+
+            # ── DISCHARGE ZONE: particles near gate and low enough ────
+            # Particles within 30% of hopper length from gate AND below
+            # 2.5× the gate opening flow toward the discharge.
+            in_discharge_zone = (
+                (dist_from_gate < 0.3) &
+                (height_above_belt < gate_height * 2.5)
+            )
+
+            # Discharge flow velocity — scaled to belt throughput so the
+            # hopper drains at a physically consistent rate.
+            v_discharge = belt_speed_m_per_s * 2.0  # converges toward gate
+            # Settling in discharge zone: proportional to discharge velocity
+            # so particles reach gate level over ~10 s, not one timestep.
+            v_settle_discharge = max(belt_speed_m_per_s * 5.0, 0.005)
+            if in_discharge_zone.any():
+                self.pos[hopper_idx[in_discharge_zone], 0] += v_discharge * dt_sim
+                self.pos[hopper_idx[in_discharge_zone], 1] -= v_settle_discharge * dt_sim
+
+            # ── SETTLING ZONE: particles above discharge zone ─────────
+            # Settle to fill voids left by discharged material.  Rate
+            # scales with proximity to gate (more void space near front).
+            not_discharge = ~in_discharge_zone
+
+            settle_base = max(belt_speed_m_per_s * 3.0, 0.003)
+            settle_factor = 1.0 + 2.0 * (1.0 - dist_from_gate[not_discharge])
+            settle_rate = settle_base * settle_factor
+
+            if not_discharge.any():
+                self.pos[hopper_idx[not_discharge], 1] -= settle_rate * dt_sim
+                drift_rate = belt_speed_m_per_s * (1.0 - dist_from_gate[not_discharge])
+                self.pos[hopper_idx[not_discharge], 0] += drift_rate * dt_sim
+
+            # ── Clamp positions to hopper bounds ──────────────────────
+            # NOTE: self.pos[hopper_idx, ...] is fancy-indexed (integer
+            # array), so it returns a COPY, not a view.  Using out= with
+            # np.clip would write to the discarded copy.  We must assign
+            # the clipped result back explicitly.
+            self.pos[hopper_idx, 1] = np.clip(
+                self.pos[hopper_idx, 1],
+                belt_y + 0.001,
+                belt_y + cfg.hopper_height_m,
+            )
+            self.pos[hopper_idx, 0] = np.clip(
+                self.pos[hopper_idx, 0],
+                back_x + 0.01,
+                gate_x - 0.005,
+            )
 
         # ── Dispatch: hopper/dead → riding (at spawn rate) ───────────
         self._spawn_accumulator += cfg.spawn_rate * dt_sim
@@ -443,13 +573,21 @@ class MaterialParticleSystem:
 
         if can_dispatch:
             for _ in range(n_spawn):
-                # First try hopper particles (they drain naturally)
+                # ── Find a particle to dispatch ─────────────────────────
+                # Priority: hopper particles first (they drain naturally)
                 idx = self._find_hopper_slot()
                 if idx < 0:
-                    # No hopper particles left — use dead slots
-                    idx = self._find_dead_slot()
-                    if idx < 0:
+                    # No hopper particles left
+                    if cfg.run_mass_kg > 0:
+                        # FINITE MASS mode: hopper empty = batch complete
+                        # Don't use dead slots - that would recycle treated
+                        # material as fresh, which is physically wrong.
                         break
+                    else:
+                        # CONTINUOUS mode: use dead slots to maintain flow
+                        idx = self._find_dead_slot()
+                        if idx < 0:
+                            break
 
                 # Place on belt at the hopper discharge point
                 self.pos[idx, 0] = cfg.spawn_x
@@ -531,16 +669,23 @@ class MaterialParticleSystem:
                 mass_per_particle_adjusted = self.mass_per_particle * mass_ratio
                 self._total_collected_kg += float(np.sum(mass_per_particle_adjusted))
 
-            # Fell outside the bin entirely → recycle
+            # Fell outside the bin entirely → mark as lost
+            # In continuous mode: DEAD particles get recycled
+            # In finite mass mode: DEAD particles are lost (not re-dispatched)
             missed = falling & ~in_bin_xz & (self.pos[:, 1] < cfg.bin_bottom_y)
             self.state[missed] = self._STATE_DEAD
 
-        # ── Recycle collected → dead (keep dead pool for spawning) ────
-        # Maintain a steady dead-slot pool sized to cover ~0.5 s of
-        # spawning.  This prevents feast-famine gaps on the belt.
-        # BUT always preserve a visual pool in the bin so it fills up.
-        # Stop recycling once mass is exhausted so the belt clears.
-        if can_dispatch:
+        # ── Recycle collected → dead (continuous mode only) ────────────
+        # For CONTINUOUS mode (run_mass_kg == 0): recycle collected
+        # particles to maintain a steady flow for visualization.
+        #
+        # For FINITE MASS mode (run_mass_kg > 0): NO RECYCLING.
+        # Once collected, particles stay collected. This correctly
+        # models the real process where treated material is not
+        # re-fed into the machine. The bin gradually fills as
+        # material is processed.
+        if cfg.run_mass_kg == 0 and can_dispatch:
+            # Continuous mode: maintain a dead-slot pool for spawning
             target_dead = int(cfg.spawn_rate * 0.5) + 20  # ~120 slots
             n_dead = int(np.sum(self.state == self._STATE_DEAD))
             n_hopper = int(np.sum(self.state == self._STATE_IN_HOPPER))
@@ -548,14 +693,8 @@ class MaterialParticleSystem:
             if deficit > 0:
                 collected_idx = np.where(self.state == self._STATE_COLLECTED)[0]
                 n_collected = len(collected_idx)
-                # Always keep a growing visual pool in the bin.
-                # The pool grows proportionally to mass dispatched.
-                if cfg.run_mass_kg > 0:
-                    frac_done = min(self._dispatched_mass_kg / cfg.run_mass_kg, 1.0)
-                else:
-                    frac_done = 0.0
-                # Reserve: 5% of particles at start → 40% at end of run
-                min_bin_visual = int(cfg.max_particles * (0.05 + 0.35 * frac_done))
+                # Keep a visual pool in the bin
+                min_bin_visual = int(cfg.max_particles * 0.05)
                 available = max(0, n_collected - min_bin_visual)
                 if available > 0:
                     n_recycle = min(deficit, available)
@@ -643,7 +782,18 @@ class MaterialParticleSystem:
             )
             if mask is not None:
                 M_interp = np.where(in_material, M_interp, self.moisture[riding])
-            self.moisture[riding] = M_interp.astype(np.float32)
+            # After batch exhausts, M=0 advects into the grid behind the material.
+            # Skip ALL moisture interpolation after batch exhausts - particles
+            # retain their last valid moisture until they land in the bin.
+            # This prevents particles from picking up the M=0 "empty belt" values.
+            if not self._batch_exhausted:
+                # Normal operation: update moisture from grid
+                # But still guard against empty cells (M < threshold)
+                M_threshold = self.cfg.M_inlet_wb * 0.1  # 10% of initial = clearly material
+                has_actual_material = M_interp > M_threshold
+                M_interp = np.where(has_actual_material, M_interp, self.moisture[riding])
+                self.moisture[riding] = M_interp.astype(np.float32)
+            # else: batch exhausted - particles keep their current moisture
 
     # ------------------------------------------------------------------
     #  Helpers
@@ -654,13 +804,34 @@ class MaterialParticleSystem:
         return int(dead[0]) if len(dead) > 0 else -1
 
     def _find_hopper_slot(self) -> int:
-        """Find a hopper particle to dispatch (closest to discharge)."""
+        """Find a hopper particle to dispatch through the sizing gate.
+
+        Selects the particle that is:
+        1. Closest to the discharge gate (highest X position)
+        2. Near the bottom (within the sizing gate opening)
+
+        This creates a realistic flow pattern where material exits
+        through the sizing gate at the bottom-front of the hopper.
+        """
+        cfg = self.cfg
         hopper = np.where(self.state == self._STATE_IN_HOPPER)[0]
         if len(hopper) == 0:
             return -1
-        # Pick the one closest to the discharge (highest X position)
-        best = hopper[np.argmax(self.pos[hopper, 0])]
-        return int(best)
+
+        # Particle positions
+        pos_x = self.pos[hopper, 0]
+        pos_y = self.pos[hopper, 1]
+
+        # Normalize to [0, 1] range for scoring
+        x_norm = (pos_x - cfg.hopper_back_x) / max(cfg.hopper_front_x - cfg.hopper_back_x, 0.01)
+        y_norm = (pos_y - cfg.belt_y) / max(cfg.hopper_height_m, 0.01)
+
+        # Score: prefer high X (near gate) and low Y (near bottom)
+        # Weight X more heavily since gate is at front
+        score = 2.0 * x_norm - y_norm
+
+        best_idx = hopper[np.argmax(score)]
+        return int(best_idx)
 
     def get_positions(self) -> np.ndarray:
         alive = (self.state != self._STATE_DEAD)
@@ -673,6 +844,15 @@ class MaterialParticleSystem:
     def get_moistures(self) -> np.ndarray:
         alive = (self.state != self._STATE_DEAD)
         return self.moisture[alive].copy()
+
+    def set_batch_exhausted(self, exhausted: bool = True):
+        """Signal that the batch has exhausted (hopper empty).
+
+        When batch exhausts, the Eulerian grid starts receiving M=0
+        at the inlet. Particles should stop interpolating moisture
+        from the grid and retain their last valid values.
+        """
+        self._batch_exhausted = exhausted
 
     @property
     def alive_count(self) -> int:
@@ -687,6 +867,45 @@ class MaterialParticleSystem:
     def hopper_count(self) -> int:
         """Number of particles currently in the hopper."""
         return int(np.sum(self.state == self._STATE_IN_HOPPER))
+
+    @property
+    def hopper_empty(self) -> bool:
+        """True if all particles have left the hopper."""
+        return self.hopper_count == 0
+
+    @property
+    def hopper_fill_fraction(self) -> float:
+        """Fraction of particles remaining in hopper [0.0 to 1.0].
+
+        For finite mass mode: starts at 1.0, decreases as material drains.
+        Useful for visualizing hopper level during a run.
+        """
+        return self.hopper_count / max(self.cfg.max_particles, 1)
+
+    @property
+    def hopper_drain_rate(self) -> float:
+        """Current spawn rate [particles/s].
+
+        For finite mass mode, this is calculated to match the throughput
+        so the hopper empties exactly when the run completes.
+        """
+        return self.cfg.spawn_rate
+
+    @property
+    def estimated_time_remaining_s(self) -> float:
+        """Estimated time until hopper is empty [s].
+
+        Based on current hopper count and spawn rate.
+        Returns 0.0 if hopper is empty or spawn rate is zero.
+        """
+        if self.cfg.spawn_rate <= 0 or self.hopper_empty:
+            return 0.0
+        return self.hopper_count / self.cfg.spawn_rate
+
+    @property
+    def falling_count(self) -> int:
+        """Number of particles currently falling into the bin."""
+        return int(np.sum(self.state == self._STATE_FALLING))
 
     @property
     def riding_count(self) -> int:
@@ -705,5 +924,68 @@ class MaterialParticleSystem:
 
     @property
     def dispatched_mass_kg(self) -> float:
-        """Cumulative mass dispatched from hopper to belt [kg]."""
+        """Cumulative mass dispatched from hopper to belt [kg].
+
+        For finite mass mode (run_mass_kg > 0):
+        - Starts at 0 (all particles begin in hopper)
+        - Equals run_mass_kg when hopper is fully emptied
+
+        For continuous mode (run_mass_kg == 0):
+        - Tracks total mass dispatched, unlimited
+        """
         return self._dispatched_mass_kg
+
+    @property
+    def hopper_dispatched_mass_kg(self) -> float:
+        """Mass dispatched from hopper during the run [kg].
+
+        Same as dispatched_mass_kg for finite mass mode (no pre-placed
+        belt particles).
+        """
+        return self._dispatched_mass_kg - self._initial_belt_mass_kg
+
+    @property
+    def initial_belt_mass_kg(self) -> float:
+        """Mass of particles pre-placed on belt at simulation start [kg].
+
+        For finite mass mode: always 0 (all particles start in hopper).
+        For continuous mode: may be non-zero for visual purposes.
+        """
+        return self._initial_belt_mass_kg
+
+    @property
+    def run_complete(self) -> bool:
+        """Check if a finite mass run has completed.
+
+        A run is complete when:
+        1. All mass has been dispatched (dispatched_mass_kg >= run_mass_kg)
+        2. All dispatched particles have been collected (no RIDING or FALLING)
+
+        For continuous mode (run_mass_kg == 0), always returns False.
+        """
+        cfg = self.cfg
+        if cfg.run_mass_kg <= 0:
+            return False  # Continuous mode never completes
+
+        # Check if all mass has been dispatched
+        if self._dispatched_mass_kg < cfg.run_mass_kg:
+            return False
+
+        # Check if belt has cleared (no particles riding or falling)
+        n_in_transit = int(np.sum(
+            (self.state == self._STATE_RIDING) |
+            (self.state == self._STATE_FALLING)
+        ))
+        return n_in_transit == 0
+
+    @property
+    def run_progress(self) -> float:
+        """Progress of a finite mass run [0.0 to 1.0].
+
+        Based on collected mass vs run_mass_kg.
+        For continuous mode, returns 0.0.
+        """
+        cfg = self.cfg
+        if cfg.run_mass_kg <= 0:
+            return 0.0
+        return min(self._total_collected_kg / cfg.run_mass_kg, 1.0)

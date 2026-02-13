@@ -213,10 +213,12 @@ Examples:
     sim.load_recipe(recipe)
 
     # Compute run duration from mass (or use explicit override)
-    if args.duration is not None:
+    timing = sim.compute_run_timing(recipe)
+    user_specified_duration = args.duration is not None
+    if user_specified_duration:
         run_duration = args.duration
     else:
-        run_duration = sim.compute_run_duration(recipe)
+        run_duration = timing["total_duration_s"]
     args.duration = run_duration
 
     # ── 4. Print assembly info ───────────────────────────────────────
@@ -248,7 +250,20 @@ Examples:
     print(f"  Initial temp:      {args.temp:.1f} C")
     print(f"  Run mass:          {args.mass:.1f} kg")
     print(f"  Throughput:        {throughput_kg_h:.0f} kg/h")
-    print(f"  Run duration:      {run_duration:.0f} s ({run_duration/60:.1f} min)")
+    # Show timing breakdown
+    feed_s = timing["feed_time_s"]
+    runout_s = timing["runout_s"]
+    belt_m = timing["belt_length_m"]
+    if not user_specified_duration:
+        # Auto-calculated duration with breakdown
+        print(f"  Run duration:      {run_duration:.0f} s ({run_duration/60:.1f} min)")
+        print(f"    Feed time:       {feed_s:.0f} s  (hopper → belt)")
+        print(f"    Run-out:         {runout_s:.0f} s  ({belt_m:.2f} m belt travel)")
+    else:
+        # User override - show both actual and calculated
+        calc_dur = timing["total_duration_s"]
+        print(f"  Run duration:      {run_duration:.0f} s ({run_duration/60:.1f} min)  [user override]")
+        print(f"    (Calculated:     {calc_dur:.0f} s = {feed_s:.0f}s feed + {runout_s:.0f}s run-out)")
     print()
 
     # ── 5. Run simulation or launch live 3D ─────────────────────────
@@ -405,13 +420,19 @@ Examples:
     # [2,1] Collected mass in bin
     ax = axes[2, 1]
     if hasattr(sim.particles, 'collected_mass_kg'):
+        dispatched_kg = sim.particles.dispatched_mass_kg
         collected_kg = sim.particles.collected_mass_kg
         n_collected = sim.particles.collected_count
-        ax.bar(["Infeed\n(run mass)", "Collected\n(bin)"],
-               [args.mass, collected_kg],
+        ax.bar(["Input", "Collected"],
+               [dispatched_kg, collected_kg],
                color=["#4169E1", "#DAA520"], alpha=0.8)
         ax.set_ylabel("Mass [kg]")
-        ax.set_title(f"Material Accounting ({n_collected} particles)")
+        # Show mass balance percentage
+        if dispatched_kg > 0:
+            balance_pct = (collected_kg - dispatched_kg) / dispatched_kg * 100
+            ax.set_title(f"Mass Balance ({n_collected} particles, {balance_pct:+.1f}%)")
+        else:
+            ax.set_title(f"Mass Balance ({n_collected} particles)")
     else:
         ax.text(0.5, 0.5, "No particle data", ha="center", va="center",
                 transform=ax.transAxes)
@@ -497,15 +518,108 @@ def _print_results(sim, result, elapsed):
     if ts.get("electrode_gap_mm"):
         final_gap = ts["electrode_gap_mm"][-1]
         print(f"  Final electrode gap:       {final_gap:.1f} mm")
-    # Particle mass collected
+    # Particle mass accounting
     if hasattr(sim.particles, 'collected_mass_kg'):
-        print(f"  Mass collected (bin):      {sim.particles.collected_mass_kg:.2f} kg")
+        dispatched = sim.particles.dispatched_mass_kg
+        collected = sim.particles.collected_mass_kg
+        print(f"  Mass input:                {dispatched:.2f} kg")
+        print(f"  Mass collected:            {collected:.2f} kg")
+        if dispatched > 0:
+            mass_balance = (collected - dispatched) / dispatched * 100
+            print(f"  Mass balance:              {mass_balance:+.1f}%")
     print()
     print(f"  Simulation wall-clock:     {elapsed:.2f} s")
     n_steps = len(ts.get("time_s", []))
     if n_steps > 0:
         print(f"  Timesteps completed:       {n_steps}")
         print(f"  Speed:                     {n_steps / max(elapsed, 0.001):.0f} steps/s")
+    print("-" * 60)
+
+    # ── Debug: Gap control timeline ──────────────────────────────────
+    print()
+    print("-" * 60)
+    print("  GAP CONTROL DEBUG")
+    print("-" * 60)
+    if ts.get("electrode_gap_mm") and ts.get("anode_current_a"):
+        gap_arr = np.array(ts["electrode_gap_mm"])
+        ia_arr = np.array(ts["anode_current_a"])
+        t_arr = np.array(ts["time_s"])
+
+        # Find key events
+        gap_max_idx = np.argmax(gap_arr)
+        gap_max = gap_arr[gap_max_idx]
+        gap_max_t = t_arr[gap_max_idx]
+
+        # Find when gap started returning (first decrease after peak)
+        gap_return_start_idx = None
+        for i in range(gap_max_idx + 1, len(gap_arr)):
+            if gap_arr[i] < gap_arr[i-1] - 0.1:
+                gap_return_start_idx = i
+                break
+
+        # Find when Ia dropped below MRL
+        mrl = 1.5  # default MRL
+        ia_below_mrl_idx = None
+        for i in range(len(ia_arr)):
+            if ia_arr[i] < mrl:
+                ia_below_mrl_idx = i
+                break
+
+        print(f"  Gap peak:         {gap_max:.1f} mm at t={gap_max_t:.0f}s ({gap_max_t/60:.1f} min)")
+        print(f"  Gap final:        {gap_arr[-1]:.1f} mm")
+        if gap_return_start_idx:
+            print(f"  Gap return start: t={t_arr[gap_return_start_idx]:.0f}s ({t_arr[gap_return_start_idx]/60:.1f} min)")
+            print(f"    Ia at return:   {ia_arr[gap_return_start_idx]:.3f} A")
+        if ia_below_mrl_idx:
+            print(f"  Ia < MRL first:   t={t_arr[ia_below_mrl_idx]:.0f}s ({t_arr[ia_below_mrl_idx]/60:.1f} min)")
+            print(f"    Ia value:       {ia_arr[ia_below_mrl_idx]:.3f} A")
+            print(f"    Gap at that t:  {gap_arr[ia_below_mrl_idx]:.1f} mm")
+
+        # Batch exhaustion timing
+        if hasattr(sim, '_sim') and hasattr(sim._sim, '_batch_exhausted'):
+            print(f"  Batch exhausted:  {sim._sim._batch_exhausted}")
+        if hasattr(sim, '_sim') and hasattr(sim._sim, 'controller'):
+            print(f"  Controller batch: {sim._sim.controller._batch_exhausted}")
+
+        # Show Ia trajectory at key points
+        print()
+        print("  Ia trajectory:")
+        print(f"    {'t(s)':>8}  {'t(min)':>8}  {'Ia(A)':>8}  {'Gap(mm)':>10}  {'State':>12}")
+        # Sample at regular intervals + key events
+        sample_times = [0, 60, 120, 300, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700]
+        if gap_max_t not in sample_times:
+            sample_times.append(gap_max_t)
+        if gap_return_start_idx and t_arr[gap_return_start_idx] not in sample_times:
+            sample_times.append(t_arr[gap_return_start_idx])
+        sample_times = sorted(set(sample_times))
+
+        ctrl_states = ts.get("controller_state", [])
+        for t in sample_times:
+            if t > t_arr[-1]:
+                break
+            idx = np.searchsorted(t_arr, t)
+            idx = min(idx, len(t_arr) - 1)
+            state = ctrl_states[idx] if idx < len(ctrl_states) else ""
+            marker = " <-- peak" if abs(t - gap_max_t) < 1 else ""
+            print(f"    {t_arr[idx]:8.0f}  {t_arr[idx]/60:8.1f}  {ia_arr[idx]:8.3f}  {gap_arr[idx]:10.1f}  {state:>12}{marker}")
+
+    # ── Debug: Particle system state ─────────────────────────────────
+    print()
+    print("-" * 60)
+    print("  PARTICLE SYSTEM DEBUG")
+    print("-" * 60)
+    if hasattr(sim, 'particles'):
+        ps = sim.particles
+        print(f"  Total particles:   {ps.cfg.max_particles}")
+        print(f"  Hopper count:      {ps.hopper_count}")
+        print(f"  Riding count:      {ps.riding_count}")
+        print(f"  Collected count:   {ps.collected_count}")
+        print(f"  Dispatched mass:   {ps.dispatched_mass_kg:.2f} kg")
+        print(f"  Collected mass:    {ps.collected_mass_kg:.2f} kg")
+        print(f"  Run mass target:   {ps.cfg.run_mass_kg:.2f} kg")
+        if ps.cfg.run_mass_kg > 0:
+            dispatch_pct = ps.dispatched_mass_kg / ps.cfg.run_mass_kg * 100
+            print(f"  Dispatch progress: {dispatch_pct:.1f}%")
     print("-" * 60)
     print()
 
@@ -717,6 +831,15 @@ def _run_live_3d(sim, recipe, args, info, material):
     t0_wall = time.time()
     conv_ctrl = sim.conveyor  # public accessor
 
+    # Debug tracking
+    _last_debug_t = 0.0
+    _debug_interval = 60.0  # Print debug every 60 sim seconds
+    _batch_exhausted_reported = False
+    _gap_return_reported = False
+    _gap_peak = 0.0
+    _gap_peak_t = 0.0
+    hist = None  # Initialize to avoid UnboundLocalError
+
     plotter.show(interactive_update=True, auto_close=False)
 
     # ── Render loop (visualization only — sim logic in simulator) ─
@@ -744,6 +867,59 @@ def _run_live_3d(sim, recipe, args, info, material):
                 dt = sim.compute_stable_dt()
                 dt = min(dt, t_end - sim.sim_time)
                 sim.step(dt)
+
+                # ── Periodic debug output ────────────────────────────────
+                t_sim = sim.sim_time
+                if t_sim - _last_debug_t >= _debug_interval:
+                    _last_debug_t = t_sim
+                    hist = sim.history
+                    if hist:
+                        last = hist[-1]
+                        ps = particle_sys
+                        batch_exh = sim._sim._batch_exhausted if hasattr(sim._sim, '_batch_exhausted') else False
+                        ctrl_batch = sim._sim.controller._batch_exhausted if hasattr(sim._sim.controller, '_batch_exhausted') else False
+                        # Particle position diagnostics
+                        alive = (ps.state != ps._STATE_DEAD)
+                        y_vals = ps.pos[alive, 1] if alive.any() else np.array([0.0])
+                        n_below = int(np.sum(y_vals < 0))
+                        states = np.bincount(ps.state[alive].astype(int), minlength=5)
+                        state_str = (f"H={states[4]} R={states[0]} F={states[1]} "
+                                     f"C={states[2]} D={states[3]}")
+                        print(f"[DEBUG t={t_sim:6.0f}s] Ia={last.anode_current_a:.3f}A  "
+                              f"Gap={last.electrode_gap_mm:.1f}mm  "
+                              f"Hopper={ps.hopper_count}  Belt={ps.riding_count}  "
+                              f"Disp={ps.dispatched_mass_kg:.1f}kg  "
+                              f"batch_exh={batch_exh}  ctrl_batch={ctrl_batch}")
+                        print(f"         Y: min={y_vals.min():.4f} max={y_vals.max():.4f} "
+                              f"below_belt={n_below}  states=[{state_str}]")
+
+                # Track gap peak (get fresh history)
+                hist = sim.history
+                if hist:
+                    current_gap = hist[-1].electrode_gap_mm
+                    if current_gap > _gap_peak:
+                        _gap_peak = current_gap
+                        _gap_peak_t = t_sim
+
+                # Report batch exhaustion once
+                if not _batch_exhausted_reported:
+                    if hasattr(sim._sim, '_batch_exhausted') and sim._sim._batch_exhausted:
+                        _batch_exhausted_reported = True
+                        ps = particle_sys
+                        print(f"\n[EVENT t={t_sim:.0f}s] BATCH EXHAUSTED - "
+                              f"Dispatched={ps.dispatched_mass_kg:.2f}kg  "
+                              f"Hopper={ps.hopper_count}  Belt={ps.riding_count}\n")
+
+                # Report gap return start once
+                if not _gap_return_reported and _gap_peak > recipe.electrode_gap_mm + 1:
+                    if hist:
+                        current_gap = hist[-1].electrode_gap_mm
+                        if current_gap < _gap_peak - 1:
+                            _gap_return_reported = True
+                            last = hist[-1]
+                            print(f"\n[EVENT t={t_sim:.0f}s] GAP RETURN STARTED - "
+                                  f"Peak={_gap_peak:.1f}mm at t={_gap_peak_t:.0f}s  "
+                                  f"Current={current_gap:.1f}mm  Ia={last.anode_current_a:.3f}A\n")
 
             # ── Visual updates (read-only from simulator state) ───
 
@@ -790,16 +966,13 @@ def _run_live_3d(sim, recipe, args, info, material):
 
             if finished:
                 elapsed_w = time.time() - t0_wall
-                riding_n = particle_sys.riding_count
-                hopper_n = particle_sys.hopper_count
-                if riding_n > 0 or hopper_n > 0:
-                    title = (f"GP-15 Wind-down  |  Belt clearing: "
-                             f"{riding_n} on belt, {hopper_n} in hopper  |  "
+                if hist:
+                    title = (f"GP-15 DONE  |  {sim.sim_time:.0f} s  |  "
+                             f"M_out={hist[-1].M_outfeed_wb:.1%}  |  "
                              f"wall={elapsed_w:.1f} s")
                 else:
                     title = (f"GP-15 DONE  |  {sim.sim_time:.0f} s  |  "
-                             f"M_out={hist[-1].M_outfeed_wb:.1%}  |  "
-                             f"wall={elapsed_w:.1f} s  |  Belt clear")
+                             f"wall={elapsed_w:.1f} s")
 
             plotter.add_title(title, font_size=10)
 
@@ -812,32 +985,42 @@ def _run_live_3d(sim, recipe, args, info, material):
             time.sleep(max(0.0, frame_dt - elapsed_frame))
 
             if finished:
+                # ── Run-out wind-down (Manual p.54) ───────────────────
+                # Physics simulation is done.  Step particles only (belt
+                # transport + free-fall) until all material has exited
+                # the GP-15 and landed in the collection bin.
                 riding_n = particle_sys.riding_count
                 falling_n = int(np.sum(particle_sys.state == particle_sys._STATE_FALLING))
-                hopper_n = particle_sys.hopper_count
-                belt_active = riding_n + falling_n + hopper_n
+                belt_active = riding_n + falling_n
 
                 if belt_active > 0:
-                    # ── Wind-down: step particles in large time chunks
-                    # No physics needed — just belt transport + free-fall.
-                    # Use large dt (Courant limit for advection only) and
-                    # many sub-steps per frame to clear the belt quickly.
                     v_belt = conv_ctrl.state.belt_speed_m_per_s
                     if v_belt > 0:
-                        dt_wind = 0.8 * dx / v_belt  # Courant-safe for advection
+                        dt_wind = 0.8 * dx / v_belt
                     else:
                         dt_wind = 1.0
-                    for _ in range(200):  # many sub-steps per render frame
+                    for _ in range(200):
                         particle_sys.step(
                             dt_sim=dt_wind,
                             belt_speed_m_per_s=v_belt,
                         )
-                        if particle_sys.riding_count == 0 and particle_sys.hopper_count == 0:
+                        if particle_sys.riding_count == 0:
                             break
                     conv_ctrl.step(dt_wind * 200)
+
+                    # Update visual
+                    updated_pos = particle_sys.pos.copy()
+                    dead = (particle_sys.state == particle_sys._STATE_DEAD)
+                    updated_pos[dead] = [0.0, -100.0, 0.0]
+                    particle_cloud.points = updated_pos
+                    elapsed_w = time.time() - t0_wall
+                    remaining = particle_sys.riding_count
+                    plotter.add_title(
+                        f"GP-15 Run-out  |  {remaining} on belt  |  "
+                        f"wall={elapsed_w:.1f} s", font_size=10)
                     finished = False  # keep looping until belt clear
                 else:
-                    # Belt is fully clear — show final state and stop
+                    # Belt fully clear — show final state and stop
                     plotter.show()
                     break
 

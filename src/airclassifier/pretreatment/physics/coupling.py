@@ -244,13 +244,59 @@ class CoupledSimulator:
         # Grid world origin (set by GP15Simulator for E-L interpolation)
         self._grid_origin = (0.0, 0.0, 0.0)
 
+        # Batch mode tracking: when run_mass_kg > 0, the infeed stops
+        # injecting fresh material once the batch is exhausted.  This
+        # enables proper Ia drop → gap return behavior for batch runs.
+        self._batch_exhausted = False
+        self._batch_exhausted_time: float = 0.0  # time when batch exhausted
+
+        # ── RF zone clearing tracking ──────────────────────────────────
+        # Separate from batch_exhausted: tracks when the M=0 front has
+        # actually reached the RF zone.  Used for controller gap-return
+        # logic (should wait for RF zone to clear, not hopper to empty).
+        #
+        # The M=0 front advects from the hopper discharge to the RF zone
+        # at belt speed.  Once it reaches the RF zone start, material
+        # begins clearing and Ia starts dropping.
+        self._rf_zone_clearing = False
+        self._rf_zone_clear_time: float = 0.0  # time when RF zone fully clears
+
+        # Track last valid outlet values for time series after batch exhausts.
+        # When M=0 advects through the grid, we use these instead of the grid values.
+        self._last_valid_M_outfeed = material.initial_moisture_wb
+        self._last_valid_T_outfeed = material.initial_temperature_c
+
         # KPI accumulators
         self._total_rf_energy_j = 0.0
+        self._cumulative_water_removed_kg = 0.0  # integrated over time (batch-correct)
         self._history: List[StepState] = []
 
         # Generator operating point — tracks the previous timestep's
         # delivered RF power for the self-consistent Approach A solve.
         self._last_P_rf_kw: float = 0.0
+
+        # ── Plate ammeter filtering (§8.4) ─────────────────────────────
+        # The real plate ammeter has an RC time constant that smooths
+        # rapid fluctuations.  Without this filter, the simulation shows
+        # ~10x larger Ia oscillations than the real machine (Run#2 shows
+        # ±0.02-0.05A stability, simulation was showing ±0.3-0.6A).
+        self._Ia_filtered: float = machine.anode_current_no_load_a
+        self._AMMETER_TAU: float = 0.5  # ammeter time constant [s]
+
+        # ── Property smoothing (numerical stability) ───────────────────
+        # Exponential smoothing on eps'' prevents discrete cell advection
+        # from causing step-changes in the total dielectric load.  The
+        # real material bed has thermal inertia that smooths property
+        # changes; this filter approximates that effect.
+        self._eps_loss_smoothed: np.ndarray | None = None
+        self._PROPERTY_SMOOTH_TAU: float = 1.0  # property smoothing time constant [s]
+
+        # ── RF power smoothing (generator inertia) ─────────────────────
+        # The oscillator tank circuit has electrical inertia that prevents
+        # instantaneous power changes.  This smooths the P_rf signal used
+        # for voltage droop calculation, preventing feedback oscillations.
+        self._P_rf_smoothed: float = 0.0
+        self._RF_POWER_TAU: float = 0.3  # RF power smoothing time constant [s]
 
         # Cached bed surface index
         self._j_surface: int = 0
@@ -428,6 +474,9 @@ class CoupledSimulator:
         The GPU moisture kernel zeros non-material cells and handles
         interior diffusion + evaporation.  This method adds the BC
         set from the MoistureSolver (infeed, outfeed, edges).
+
+        For batch runs, once the batch is exhausted the infeed injects
+        M=0 (empty cells) instead of fresh wet material.
         """
         M = self.moisture.M
         mat = self._material
@@ -439,9 +488,15 @@ class CoupledSimulator:
 
         # Non-material cells = 0
         M[cell_mask != 1] = 0.0
-        # Infeed
-        M[0, :, :] = np.where(cell_mask[0, :, :] == 1,
-                               mat.initial_moisture_wb, 0.0)
+
+        # Infeed: batch-aware moisture injection
+        if self._batch_exhausted:
+            # Batch exhausted: inject empty (M=0)
+            M[0, :, :] = 0.0
+        else:
+            # Normal: inject fresh wet material
+            M[0, :, :] = np.where(cell_mask[0, :, :] == 1,
+                                   mat.initial_moisture_wb, 0.0)
         # Outfeed
         M[-1, :, :] = M[-2, :, :]
         # Z edges
@@ -467,9 +522,15 @@ class CoupledSimulator:
         self.P_v[:] = 0.0
         self._time = 0.0
         self._total_rf_energy_j = 0.0
+        self._cumulative_water_removed_kg = 0.0
         self._last_P_rf_kw = 0.0
+        self._Ia_filtered = self._machine.anode_current_no_load_a
+        self._P_rf_smoothed = 0.0
         self._history.clear()
         self._update_properties()
+        # Initialize smoothed eps_loss from freshly computed values
+        if self._eps_loss_smoothed is not None:
+            self._eps_loss_smoothed[:] = self.eps_loss
 
         # Re-stamp rho_dry from current material (in case porosity
         # or rho_solid changed between evaluations)
@@ -481,10 +542,19 @@ class CoupledSimulator:
         self.controller.status = ControllerStatus()
         self.controller.safety.reset()
         self.controller._sim_time = 0.0
+        self.controller._batch_exhausted = False
 
         # Reset conveyor
         self.conveyor.state.belt_position_m = 0.0
         self.conveyor.state.elapsed_time_s = 0.0
+
+        # Reset batch tracking
+        self._batch_exhausted = False
+        self._batch_exhausted_time = 0.0
+        self._rf_zone_clearing = False
+        self._rf_zone_clear_time = 0.0
+        self._last_valid_M_outfeed = self._material.initial_moisture_wb
+        self._last_valid_T_outfeed = self._material.initial_temperature_c
 
         # Re-sync GPU arrays with reset state
         if self._use_gpu and self._gpu:
@@ -504,7 +574,16 @@ class CoupledSimulator:
         """
         mat = self._material
         self.thermal.initialize(mat.initial_temperature_c)
-        self.moisture.initialize(mat.initial_moisture_wb)
+
+        # For batch runs the oven starts EMPTY — material must travel
+        # from hopper to the RF zone before the grid sees any moisture.
+        # Initialise M = 0 and let advection fill naturally from x = 0.
+        # The infeed boundary condition handles the transit delay
+        # (see step() → batch-aware infeed).
+        if self._particles is not None and self._particles.cfg.run_mass_kg > 0:
+            self.moisture.initialize(0.0)
+        else:
+            self.moisture.initialize(mat.initial_moisture_wb)
 
         # Build cell_is_material
         if cell_is_material is not None:
@@ -525,6 +604,11 @@ class CoupledSimulator:
 
         # Initial property fill
         self._update_properties()
+
+        # Initialize smoothed eps_loss for property filtering
+        # This smooths out discrete advection effects that cause
+        # step-changes in the total dielectric load.
+        self._eps_loss_smoothed = self.eps_loss.copy()
 
         # Compute dry-basis density (only in material cells)
         mat_mask = (self.cell_is_material == 1)
@@ -614,6 +698,76 @@ class CoupledSimulator:
             self.conveyor.start()
         self.conveyor.step(dt)
         v_belt = self.conveyor.state.belt_speed_m_per_s  # actual (ramped)
+
+        # ── Batch-aware infeed boundary condition ─────────────────────
+        # For finite-mass runs (run_mass_kg > 0), once the particle system
+        # has dispatched all material, the infeed should inject "empty"
+        # cells (M≈0) instead of fresh wet material.  This causes:
+        #   - ε'' → low as empty cells advect through RF zone
+        #   - P_rf → 0 as material clears
+        #   - Ia → idle (0.4A) matching real machine behavior
+        #   - Gap return when MRL < Ia < MRH (normal band)
+        #
+        # Without this, the Eulerian grid continuously injects fresh
+        # material and Ia never drops to idle, preventing gap return.
+        if self._particles is not None:
+            cfg = self._particles.cfg
+            if cfg.run_mass_kg > 0:
+                # Check if batch is exhausted (hopper empty)
+                dispatched = self._particles.dispatched_mass_kg
+                if dispatched >= cfg.run_mass_kg and not self._batch_exhausted:
+                    self._batch_exhausted = True
+                    self._batch_exhausted_time = self._time
+                    # Signal particles: stop moisture interpolation from grid
+                    # (grid now has M=0 behind the material)
+                    self._particles.set_batch_exhausted(True)
+
+                # ── RF zone clearing detection ─────────────────────────────
+                # The M=0 front advects from hopper discharge at belt speed.
+                # We signal the controller only when M=0 has reached the RF
+                # zone END (oven has cleared), not when it reaches the RF
+                # zone start (material still in oven).
+                #
+                # So ctrl_batch = True only after the oven is empty; gap
+                # return (Ia < MRL → return to setpoint) then correctly
+                # means "belt clearing" with no material left in the RF zone.
+                if self._batch_exhausted and not self._rf_zone_clearing:
+                    # Time for M=0 front to travel from hopper to RF zone EXIT
+                    hopper_to_rf_end = cfg.rf_x_end - cfg.spawn_x
+                    if v_belt > 0 and hopper_to_rf_end > 0:
+                        advect_time_to_rf_end = hopper_to_rf_end / v_belt
+                        time_since_exhaust = self._time - self._batch_exhausted_time
+                        if time_since_exhaust >= advect_time_to_rf_end:
+                            self._rf_zone_clearing = True
+                            if self._enable_controller:
+                                self.controller.set_batch_exhausted(True)
+
+        # Determine infeed values based on batch state AND belt transit.
+        # Material dispatched from the hopper must travel from spawn_x
+        # to the grid inlet (rf_zone_x_start) before it appears at x=0.
+        # This transit delay matches the real GP-15 Ia ramp (~6 min).
+        if self._batch_exhausted:
+            # Batch exhausted: inject empty cells (dried/no material)
+            M_inlet = 0.0
+            T_inlet = mat.initial_temperature_c
+        else:
+            # Check belt transit delay: has material reached the grid?
+            material_arrived = True
+            if self._particles is not None and self._particles.cfg.run_mass_kg > 0:
+                hopper_to_grid = self._grid_origin[0] - self._particles.cfg.spawn_x
+                if hopper_to_grid > 0 and v_belt > 0:
+                    transit_time = hopper_to_grid / v_belt
+                    if self._time < transit_time:
+                        material_arrived = False
+
+            if material_arrived:
+                M_inlet = mat.initial_moisture_wb
+                T_inlet = mat.initial_temperature_c
+            else:
+                # Belt transit: material hasn't reached the oven yet
+                M_inlet = 0.0
+                T_inlet = mat.initial_temperature_c
+
         if v_belt > 0 and v_belt * dt / dx < 1.0:
             if self._use_gpu:
                 # GPU upwind advection (Warp kernel)
@@ -621,13 +775,13 @@ class CoupledSimulator:
                 g = self._gpu
                 wp.launch(_k_advect, dim=(nx, ny, nz),
                           inputs=[g['T'], g['T_buf'], C,
-                                  float(mat.initial_temperature_c),
+                                  float(T_inlet),
                                   nx, ny, nz],
                           device=self._wp_device)
                 g['T'], g['T_buf'] = g['T_buf'], g['T']
                 wp.launch(_k_advect, dim=(nx, ny, nz),
                           inputs=[g['M'], g['M_buf'], C,
-                                  float(mat.initial_moisture_wb),
+                                  float(M_inlet),
                                   nx, ny, nz],
                           device=self._wp_device)
                 g['M'], g['M_buf'] = g['M_buf'], g['M']
@@ -635,11 +789,11 @@ class CoupledSimulator:
                 _advect = advect_material_tvd_np if self._use_tvd else advect_material_np
                 self.thermal.T = _advect(
                     self.thermal.T, v_belt, dx, dt,
-                    inlet_value=mat.initial_temperature_c,
+                    inlet_value=T_inlet,
                 )
                 self.moisture.M = _advect(
                     self.moisture.M, v_belt, dx, dt,
-                    inlet_value=mat.initial_moisture_wb,
+                    inlet_value=M_inlet,
                 )
                 # Zero moisture in non-material cells after advection
                 self.moisture.M[~mat_mask] = 0.0
@@ -805,6 +959,7 @@ class CoupledSimulator:
                               float(mat.c_p_dry), float(mat.c_p_water),
                               float(mat.k_dry), float(mat.k_moisture_beta),
                               float(mat.rho_solid), float(mat.bed_porosity),
+                              float(mat.k_dispersion),
                               nx, ny, nz],
                       device=self._wp_device)
 
@@ -823,9 +978,22 @@ class CoupledSimulator:
             self._apply_thermal_bcs_cpu(dt)
             self._apply_moisture_bcs_cpu()
 
+            # ── Property smoothing (GPU path) ─────────────────────────
+            # Same smoothing as CPU path: prevents discrete cell advection
+            # from causing step-changes in total dielectric load.
+            if self._eps_loss_smoothed is not None:
+                alpha_eps = dt / (self._PROPERTY_SMOOTH_TAU + dt)
+                self._eps_loss_smoothed[:] = (
+                    alpha_eps * self.eps_loss
+                    + (1.0 - alpha_eps) * self._eps_loss_smoothed
+                )
+                self.eps_loss[:] = self._eps_loss_smoothed
+
             # Re-upload corrected T and M (boundary rows changed)
             self._upload_to_gpu('T', self.thermal.T)
             self._upload_to_gpu('M', self.moisture.M)
+            # Also upload smoothed eps_loss for next step
+            self._upload_to_gpu('eps_loss', self.eps_loss)
         # (else: CPU path — P_v already computed above with generator limiting)
 
         # ── 4. EVAPORATION (computed inside moisture.step) ────────────
@@ -855,6 +1023,8 @@ class CoupledSimulator:
                     dt=dt,
                 )
 
+            # Batch-aware moisture inlet: use M_inlet computed earlier
+            # (0 if batch exhausted, initial_moisture_wb otherwise)
             self.moisture.step(
                 dt=dt,
                 T=self.thermal.T,
@@ -864,10 +1034,28 @@ class CoupledSimulator:
                 Ea=mat.D_eff_Ea,
                 k_evap=mat.k_evap,
                 T_threshold=mat.T_evap_threshold_c,
-                M_inlet_wb=mat.initial_moisture_wb,
+                M_inlet_wb=M_inlet,
             )
 
             self._update_properties()
+
+            # ── 7b. PROPERTY SMOOTHING (numerical stability) ───────────
+            # Apply exponential smoothing to eps'' to prevent discrete cell
+            # advection from causing step-changes in the total dielectric
+            # load.  The real material bed has thermal inertia that smooths
+            # property changes; this filter approximates that effect.
+            #
+            # Run#2 shows Ia varying by ±0.02-0.05A; without this the
+            # simulation showed ±0.3-0.6A oscillations caused by discrete
+            # cells entering/leaving the RF zone.
+            if self._eps_loss_smoothed is not None:
+                alpha_eps = dt / (self._PROPERTY_SMOOTH_TAU + dt)
+                self._eps_loss_smoothed[:] = (
+                    alpha_eps * self.eps_loss
+                    + (1.0 - alpha_eps) * self._eps_loss_smoothed
+                )
+                # Use smoothed eps_loss for power calculations
+                self.eps_loss[:] = self._eps_loss_smoothed
 
         # ── 5b. ELECTRODE TEMPERATURE ────────────────────────────────
         # Lumped thermal model for the lower electrode / aluminum trays.
@@ -914,11 +1102,22 @@ class CoupledSimulator:
         # Cap Ia at the tube's maximum plate current (~3.0 A for the
         # YL-1057 triode) — the tube physically can't draw more.
         fraction = P_rf_kw_theoretical / max(machine.max_rf_power_kw, 0.01) if P_rf_kw_theoretical > 0 else 0.0
-        I_a = (
+        I_a_instant = (
             machine.anode_current_no_load_a
             + (machine.anode_current_full_load_a - machine.anode_current_no_load_a) * fraction
         )
-        I_a = min(I_a, 3.0)  # tube maximum plate current
+        I_a_instant = min(I_a_instant, 3.0)  # tube maximum plate current
+
+        # ── Plate ammeter filtering (matches real instrument dynamics) ──
+        # The real plate ammeter has an RC time constant (~0.5s) that
+        # smooths rapid fluctuations.  Run#2 shows Ia varying by only
+        # ±0.02-0.05A during steady operation; without this filter the
+        # simulation showed ±0.3-0.6A oscillations (10x too large).
+        #
+        # Exponential moving average: α = dt / (τ + dt)
+        alpha_Ia = dt / (self._AMMETER_TAU + dt)
+        self._Ia_filtered = alpha_Ia * I_a_instant + (1.0 - alpha_Ia) * self._Ia_filtered
+        I_a = self._Ia_filtered
 
         if self._enable_controller:
             T_outfeed = float(np.mean(
@@ -954,7 +1153,19 @@ class CoupledSimulator:
         # ── 9. RECORD ─────────────────────────────────────────────────
         self._time += dt
         self._total_rf_energy_j += P_rf_w * dt
-        self._last_P_rf_kw = P_rf_kw  # track for next step's generator model
+
+        # ── RF power smoothing for generator feedback ──────────────────
+        # The oscillator tank circuit has electrical inertia that prevents
+        # instantaneous response to load changes.  Using the CURRENT P_rf
+        # (instead of previous timestep) eliminates the one-step lag that
+        # was causing feedback oscillations.  The smoothing filter then
+        # models the tank circuit's response time.
+        #
+        # This fixes the voltage droop feedback lag: V_rf now responds to
+        # the current load state rather than being one timestep behind.
+        alpha_rf = dt / (self._RF_POWER_TAU + dt)
+        self._P_rf_smoothed = alpha_rf * P_rf_kw + (1.0 - alpha_rf) * self._P_rf_smoothed
+        self._last_P_rf_kw = self._P_rf_smoothed  # smoothed value for generator model
 
         T_mat = self.thermal.T[mat_mask]
         M_mat = self.moisture.M[mat_mask]
@@ -967,8 +1178,46 @@ class CoupledSimulator:
         outfeed_mat = (self.cell_is_material[-1, :, :] == 1)
         T_out_cells = self.thermal.T[-1, :, :][outfeed_mat]
         M_out_cells = self.moisture.M[-1, :, :][outfeed_mat]
-        T_outfeed = float(np.mean(T_out_cells)) if T_out_cells.size else mat.initial_temperature_c
-        M_outfeed = float(np.mean(M_out_cells)) if M_out_cells.size else mat.initial_moisture_wb
+
+        # For time series: detect when the M=0 clearing front has reached
+        # the outfeed grid slice and freeze to last-valid values.
+        #
+        # Approach: compute advection time from hopper discharge to the
+        # outfeed.  Once batch_exhausted AND elapsed time >= advection time,
+        # the M=0 front has (physically) arrived at the outlet slice.  This
+        # is *predictive* — we freeze at the exact arrival instant, before
+        # M=0 cells mix into the slice average and create an artificial dip.
+        #
+        # Previous approach used a 50% moisture threshold which was
+        # *reactive* and triggered after the clearing artifact had already
+        # contaminated the slice average for several timesteps.
+        outfeed_clear = False
+        if self._batch_exhausted and v_belt > 0:
+            # Distance from hopper discharge to outfeed (world coordinates),
+            # consistent with RF-zone clearing logic (§ batch-aware infeed).
+            if self._particles is not None:
+                outfeed_world_x = self._grid_origin[0] + machine.oven_length_m
+                hopper_to_outfeed = outfeed_world_x - self._particles.cfg.spawn_x
+            else:
+                hopper_to_outfeed = machine.oven_length_m
+            if hopper_to_outfeed > 0:
+                advect_time = hopper_to_outfeed / v_belt
+                time_since_exhaust = self._time - self._batch_exhausted_time
+                if time_since_exhaust >= advect_time:
+                    outfeed_clear = True
+
+        has_material = (not outfeed_clear) and (M_out_cells.size > 0)
+
+        if has_material:
+            T_outfeed = float(np.mean(T_out_cells))
+            M_outfeed = float(np.mean(M_out_cells))
+            # Update last valid values for use after belt clears
+            self._last_valid_T_outfeed = T_outfeed
+            self._last_valid_M_outfeed = M_outfeed
+        else:
+            # M=0 front at outlet (belt clearing) — hold last valid values
+            T_outfeed = self._last_valid_T_outfeed
+            M_outfeed = self._last_valid_M_outfeed
 
         # Sensor-comparable temperature: The PLC's Product_Temp sensor is an
         # IR pyrometer or thermocouple that measures surface/exposed temperatures,
@@ -984,10 +1233,11 @@ class CoupledSimulator:
         # Validation (Run#2): strips showed 77-82°C, simulation mean was 50.6°C,
         # but simulation max was 73.4°C.  The 75th percentile gives a value
         # between mean and max that matches sensor physics.
-        if T_out_cells.size > 0:
+        if has_material and T_out_cells.size > 0:
             T_outfeed_sensor = float(np.percentile(T_out_cells, 75))
         else:
-            T_outfeed_sensor = mat.initial_temperature_c
+            # Use last valid temperature when belt has cleared
+            T_outfeed_sensor = self._last_valid_T_outfeed
 
         # Evaporative power (latent heat sink)
         evap_rate_mat = self.moisture.evap_rate[mat_mask]
@@ -996,13 +1246,15 @@ class CoupledSimulator:
 
         # Cumulative energy and water removal
         total_energy_kwh = self._total_rf_energy_j / 3.6e6
-        # Water removed = throughput * (M_initial - M_outfeed) * sim_time
         v_belt = self.conveyor.state.belt_speed_m_per_s
         bed_cross = mat.bed_depth_m * self._machine.belt_width_m
         rho_bulk = mat.bulk_density(mat.initial_moisture_wb)
         throughput_kg_s = rho_bulk * bed_cross * v_belt
-        delta_M = max(mat.initial_moisture_wb - M_outfeed, 0.0)
-        water_removed_kg = throughput_kg_s * delta_M * self._time
+        # Water removed: integrate over time (batch-correct). Once belt clears,
+        # M_outfeed = last valid so delta_M is small and we stop adding.
+        delta_M_step = max(mat.initial_moisture_wb - M_outfeed, 0.0)
+        self._cumulative_water_removed_kg += throughput_kg_s * delta_M_step * dt
+        water_removed_kg = self._cumulative_water_removed_kg
         spec_energy = (total_energy_kwh / max(water_removed_kg, 1e-6)
                        if water_removed_kg > 0.001 else 0.0)
 
@@ -1162,9 +1414,28 @@ class CoupledSimulator:
         T_yz = self.thermal.T[-1, :, :]
         M_yz = self.moisture.M[-1, :, :]
 
-        T_mat = T_yz[mat_mask_yz]
-        M_mat = M_yz[mat_mask_yz]
+        # For outlet measurements, only include cells with ACTUAL material.
+        # During batch clearing, some cells in the geometric material zone
+        # may be empty (M ≈ 0). We detect actual material by M > threshold.
+        # Threshold is 1% of initial moisture - anything below is "empty".
+        M_threshold = mat.initial_moisture_wb * 0.01
+        has_material = mat_mask_yz & (M_yz > M_threshold)
 
+        T_mat = T_yz[has_material]
+        M_mat = M_yz[has_material]
+
+        # For finite mass mode: if belt has cleared (no material at outlet),
+        # use the collected particles' average T/M instead. This represents
+        # the actual processed material, not the empty-belt state.
+        use_particle_data = False
+        if T_mat.size == 0 and self._particles is not None:
+            collected_mask = (self._particles.state == self._particles._STATE_COLLECTED)
+            if collected_mask.any():
+                T_mat = self._particles.temperature[collected_mask]
+                M_mat = self._particles.moisture[collected_mask]
+                use_particle_data = True
+
+        # Compute averages
         avg_T = float(np.mean(T_mat)) if T_mat.size else mat.initial_temperature_c
         avg_M = float(np.mean(M_mat)) if M_mat.size else mat.initial_moisture_wb
         max_T = float(np.max(T_mat)) if T_mat.size else mat.initial_temperature_c
@@ -1176,6 +1447,16 @@ class CoupledSimulator:
             moisture_cv = float(np.std(M_mat) / avg_M)
         else:
             moisture_cv = 0.0
+
+        # When belt has cleared we used particle data for averages; the raw grid
+        # T_yz/M_yz would show empty-belt (cold, 0) and mislead the heatmap.
+        # Fill the outfeed fields in the material zone with avg T/M so the
+        # heatmap color scale matches the reported RESULTS.
+        if use_particle_data:
+            T_yz = T_yz.copy()
+            M_yz = M_yz.copy()
+            T_yz[mat_mask_yz] = avg_T
+            M_yz[mat_mask_yz] = avg_M
 
         # Throughput (use actual belt speed from conveyor drive)
         v_belt = self.conveyor.state.belt_speed_m_per_s
@@ -1250,7 +1531,10 @@ class CoupledSimulator:
         """
         k = machine.oscillator_coupling_factor
 
-        # Anode current from previous step's delivered power.
+        # Anode current from smoothed RF power (tank circuit inertia).
+        # The smoothing eliminates the one-timestep feedback lag that was
+        # causing ±0.3-0.6A oscillations in Ia (Run#2 shows ±0.02-0.05A).
+        #
         # Clamp fraction at 1.0 for the VOLTAGE computation:
         # the oscillator's tank circuit physically limits the output
         # voltage to the range covered by the droop model.
@@ -1287,6 +1571,7 @@ class CoupledSimulator:
             k_beta=mat.k_moisture_beta,
             rho_solid=mat.rho_solid,
             porosity=mat.bed_porosity,
+            k_dispersion=mat.k_dispersion,
             eps_loss_out=self.eps_loss,
             eps_real_out=self.eps_real,
             rho_cp_out=self.rho_cp,

@@ -52,6 +52,7 @@ try:
         c_p_dry: float, c_p_water: float,
         k_dry: float, k_beta: float,
         rho_solid: float, porosity: float,
+        k_dispersion: float,
         nx: int, ny: int, nz: int,
     ):
         """Update all material properties from current T and M."""
@@ -79,8 +80,15 @@ try:
         temp = T[i, j, k]
         moist = M[i, j, k]
 
-        eps_loss_out[i, j, k] = wp.max(a1 * moist * moist + a2 * moist + a3 * moist * temp + a4 * temp + a5, 0.01)
-        eps_real_out[i, j, k] = wp.max(b1 * moist + b2 * temp + b3, 1.5)
+        # For batch runs, M≈0 means "empty cell" (belt cleared), not "very dry material".
+        # Cells with negligible moisture should not absorb RF power.
+        # This enables proper Ia drop to idle after batch clears.
+        if moist < 0.005:  # Below 0.5% moisture = effectively empty
+            eps_loss_out[i, j, k] = 0.0
+            eps_real_out[i, j, k] = 1.0  # Air
+        else:
+            eps_loss_out[i, j, k] = wp.max(a1 * moist * moist + a2 * moist + a3 * moist * temp + a4 * temp + a5, 0.01)
+            eps_real_out[i, j, k] = wp.max(b1 * moist + b2 * temp + b3, 1.5)
 
         cp = c_p_dry * (1.0 - moist) + c_p_water * moist
         M_db = moist / wp.max(1.0 - moist, 1.0e-6)
@@ -88,7 +96,7 @@ try:
         rho_cp_out[i, j, k] = rho * cp
 
         k_solid = k_dry * (1.0 + k_beta * moist)
-        k_eff_out[i, j, k] = k_solid * (1.0 - porosity) + k_air * porosity
+        k_eff_out[i, j, k] = k_solid * (1.0 - porosity) + k_air * porosity + k_dispersion
 
     def compute_power_density_wp(
         e_field_sq: wp.array3d,
@@ -109,6 +117,7 @@ try:
         T, M, cell_mask, eps_loss_out, eps_real_out, rho_cp_out, k_eff_out,
         a1, a2, a3, a4, a5, b1, b2, b3,
         c_p_dry, c_p_water, k_dry, k_beta, rho_solid, porosity,
+        k_dispersion=0.0,
         device="cuda",
     ):
         """Launch the Warp property update kernel."""
@@ -120,6 +129,7 @@ try:
                 T, M, cell_mask, eps_loss_out, eps_real_out, rho_cp_out, k_eff_out,
                 a1, a2, a3, a4, a5, b1, b2, b3,
                 c_p_dry, c_p_water, k_dry, k_beta, rho_solid, porosity,
+                k_dispersion,
                 nx, ny, nz,
             ],
             device=device,
@@ -156,6 +166,7 @@ def update_material_properties_np(
     c_p_dry: float, c_p_water: float,
     k_dry: float, k_beta: float,
     rho_solid: float, porosity: float,
+    k_dispersion: float = 0.0,
     eps_loss_out: np.ndarray,
     eps_real_out: np.ndarray,
     rho_cp_out: np.ndarray,
@@ -185,15 +196,38 @@ def update_material_properties_np(
     Tm = T[mat]
     Mm = M[mat]
 
-    eps_loss_out[mat] = a1 * Mm * Mm + a2 * Mm + a3 * Mm * Tm + a4 * Tm + a5
-    np.clip(eps_loss_out[mat], 0.01, None, out=eps_loss_out[mat])
-    eps_real_out[mat] = b1 * Mm + b2 * Tm + b3
-    np.clip(eps_real_out[mat], 1.5, None, out=eps_real_out[mat])
+    # For batch runs, M≈0 means "empty cell" (belt cleared), not "very dry material".
+    # Cells with negligible moisture should not absorb RF power.
+    # This enables proper Ia drop to idle after batch clears.
+    empty_threshold = 0.005  # Below 0.5% moisture = effectively empty
 
+    # Compute normal dielectric properties
+    eps_loss_vals = a1 * Mm * Mm + a2 * Mm + a3 * Mm * Tm + a4 * Tm + a5
+    np.clip(eps_loss_vals, 0.01, None, out=eps_loss_vals)
+    eps_real_vals = b1 * Mm + b2 * Tm + b3
+    np.clip(eps_real_vals, 1.5, None, out=eps_real_vals)
+
+    # Override empty cells (M < threshold) with air properties
+    # This treats "empty belt" correctly rather than as "very dry material"
+    is_empty = (Mm < empty_threshold)
+    eps_loss_vals[is_empty] = 0.0
+    eps_real_vals[is_empty] = 1.0
+
+    eps_loss_out[mat] = eps_loss_vals
+    eps_real_out[mat] = eps_real_vals
+
+    # Thermal properties
     cp = c_p_dry * (1.0 - Mm) + c_p_water * Mm
     M_db = Mm / np.maximum(1.0 - Mm, 1.0e-6)
     rho = rho_solid * (1.0 - porosity) * (1.0 + M_db)
-    rho_cp_out[mat] = rho * cp
+    rho_cp_vals = rho * cp
 
     k_solid = k_dry * (1.0 + k_beta * Mm)
-    k_eff_out[mat] = k_solid * (1.0 - porosity) + k_air * porosity
+    k_eff_vals = k_solid * (1.0 - porosity) + k_air * porosity + k_dispersion
+
+    # Empty cells also get air thermal properties
+    rho_cp_vals[is_empty] = rho_air_cp_air
+    k_eff_vals[is_empty] = k_air
+
+    rho_cp_out[mat] = rho_cp_vals
+    k_eff_out[mat] = k_eff_vals

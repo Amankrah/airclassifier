@@ -265,14 +265,22 @@ class GP15Simulator:
     def compute_run_duration(self, recipe: Recipe | None = None) -> float:
         """Compute the production run duration from mass and throughput.
 
-        Uses the formula from the GP-15 manual (Chapter 5)::
+        The total run duration consists of two phases:
 
-            duration = run_mass_kg / (rho_bulk * bed_depth * belt_width * belt_speed)
+        1. **Feed time**: Time to dispatch all material from hopper onto belt
+           ``t_feed = run_mass_kg / throughput``
 
-        This is how the real machine operates: the operator loads a
-        known mass of material, sets the belt speed and sizing gate
-        (bed depth), and the machine runs until all material has
-        passed through.
+        2. **Run-out**: Time for the last material to travel from hopper
+           discharge through the GP-15 into the collection bin.
+           ``t_runout = belt_length / v_belt``
+
+        From the GP-15 manual (p. 54): *"At the end of the production run
+        allow product to 'run-out' to ensure there is no product in the
+        GP-15, then press the GP-15 OFF button to stop processing."*
+
+        Uses the throughput formula from the GP-15 manual (Chapter 5)::
+
+            throughput = rho_bulk * bed_depth * belt_width * belt_speed
 
         Returns 0.0 if ``run_mass_kg`` is not set on the recipe.
 
@@ -295,7 +303,84 @@ class GP15Simulator:
         if throughput_kg_per_s <= 0:
             return 0.0
 
-        return recipe.run_mass_kg / throughput_kg_per_s
+        # ── Feed time: hopper → belt dispatch ──────────────────────────
+        feed_time_s = recipe.run_mass_kg / throughput_kg_per_s
+
+        # ── Run-out: last material → collection bin (Manual p.54) ──────
+        if self._particles is not None:
+            pcfg = self._particles.cfg
+            belt_length_m = pcfg.head_roller_x - pcfg.spawn_x
+        else:
+            cp = self._assembly.conveyor.params
+            op = self._assembly.oven.params
+            spawn_x = op.oven_x_start_m - 0.35
+            head_x = cp.frame_length_m - cp.nose_length_m
+            belt_length_m = head_x - spawn_x
+
+        runout_s = belt_length_m / v_belt
+
+        return feed_time_s + runout_s
+
+    def compute_run_timing(self, recipe: Recipe | None = None) -> dict:
+        """Compute detailed timing breakdown for a production run.
+
+        Returns a dictionary with:
+            - feed_time_s: Time to dispatch all mass from hopper [s]
+            - runout_s: Time for last material to reach collection bin [s]
+            - total_duration_s: Total run duration [s]
+            - belt_length_m: Distance from hopper discharge to bin [m]
+            - throughput_kg_per_s: Mass flow rate [kg/s]
+
+        This is useful for displaying timing information in the UI
+        and for understanding why the simulation takes a certain time.
+        """
+        recipe = recipe or self._recipe or Recipe()
+        result = {
+            "feed_time_s": 0.0,
+            "runout_s": 0.0,
+            "total_duration_s": 0.0,
+            "belt_length_m": 0.0,
+            "throughput_kg_per_s": 0.0,
+        }
+
+        if recipe.run_mass_kg <= 0:
+            return result
+
+        mat = self.material
+        v_belt = recipe.belt_speed_m_per_min / 60.0  # m/s
+        if v_belt <= 0:
+            return result
+
+        rho_bulk = mat.bulk_density(mat.initial_moisture_wb)
+        bed_cross = mat.bed_depth_m * self.config.belt_width_m
+        throughput_kg_per_s = rho_bulk * bed_cross * v_belt
+
+        if throughput_kg_per_s <= 0:
+            return result
+
+        # Feed time
+        feed_time_s = recipe.run_mass_kg / throughput_kg_per_s
+
+        # Run-out: hopper discharge → collection bin (Manual p.54)
+        if self._particles is not None:
+            pcfg = self._particles.cfg
+            belt_length_m = pcfg.head_roller_x - pcfg.spawn_x
+        else:
+            cp = self._assembly.conveyor.params
+            op = self._assembly.oven.params
+            spawn_x = op.oven_x_start_m - 0.35
+            head_x = cp.frame_length_m - cp.nose_length_m
+            belt_length_m = head_x - spawn_x
+
+        runout_s = belt_length_m / v_belt
+
+        result["feed_time_s"] = feed_time_s
+        result["runout_s"] = runout_s
+        result["total_duration_s"] = feed_time_s + runout_s
+        result["belt_length_m"] = belt_length_m
+        result["throughput_kg_per_s"] = throughput_kg_per_s
+
+        return result
 
     # ------------------------------------------------------------------
     # Public API  (§7.1)

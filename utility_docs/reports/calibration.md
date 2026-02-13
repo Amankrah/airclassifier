@@ -548,3 +548,205 @@ Saved to utility_docs\calibration_latest.json
   k_evap          = 1.85e-05
   gap_rate         = 0.144400 mm/s
 (venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier> 
+
+
+
+
+
+
+
+
+
+
+
+
+(venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier> Remove-Item -Recurse -Force "$env:LOCALAPPDATA\NVIDIA\warp\Cache\1.11.0"
+(venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier> python diag_calibrate_run2.py
+Full PLC: 564 samples, 2815 s
+  Ia range: 0.21-1.72 A
+  Temp range: 27-103 C
+
+Material arrival at index 78, t=390s into recording
+Trimmed PLC: 486 samples, 2425 s
+  Ia at t=0: 0.53 A
+  Gap at t=0: 75.1 mm
+
+PLC trajectory (from material arrival):
+    t(s)   Ia(A)   Gap(mm)    T(C)
+       0    0.53      75.1      38
+      30    0.93      75.1      39
+      60    1.48      75.1      39
+      90    1.70      76.3      40
+     120    1.68      77.8      40
+     180    1.70      79.2      41
+     300    1.70      86.0      42
+     450    1.66      94.1      43
+     600    1.59      94.1      46
+     900    1.58      93.9      77
+    1200    1.51      93.2      72
+    1500    1.54      87.7      68
+    1800    1.24      75.2      70
+    2100    0.31      75.2      98
+    2400    0.31      75.2      45
+
+============================================================
+Calibrating against 1200s of Run#2 PLC data
+  FDM solver: enabled (corrected)
+  Material: bed=35mm, M=11.8%, T0=17°C
+  Recipe from PLC: gap=75mm, speed=0.2 m/min, MRH=1.7A, MRL=1.5A
+============================================================
+
+Baseline (current calibration):
+Warp 1.11.0 initialized:
+   CUDA Toolkit 12.9, Driver 12.0
+   Devices:
+     "cpu"      : "AMD64 Family 25 Model 24 Stepping 1, AuthenticAMD"
+     "cuda:0"   : "NVIDIA RTX 6000 Ada Generation" (48 GiB, sm_89, mempool enabled)
+   Kernel cache:
+     \\?\C:\Users\Windows\AppData\Local\NVIDIA\warp\Cache\1.11.0
+  Physics: GPU (Warp)
+Module airclassifier.pretreatment.kernels.transport 21f9392 load on device 'cuda:0' took 249.77 ms  (compiled)
+Module airclassifier.pretreatment.kernels.field_solve e938513 load on device 'cuda:0' took 81.12 ms  (compiled)
+Module airclassifier.pretreatment.kernels.heat_transfer fd9ea03 load on device 'cuda:0' took 71.22 ms  (compiled)
+Module airclassifier.pretreatment.kernels.drying b18a1ab load on device 'cuda:0' took 62.88 ms  (compiled)
+Module airclassifier.pretreatment.kernels.dielectric_heating 513d4b9 load on device 'cuda:0' took 63.99 ms  (compiled)
+  coupling=0.1621, k_evap=1.85e-05, gap_rate=0.1444
+  T_sim=68.2°C vs T_plc=72°C
+  Ia_sim=1.647A vs Ia_plc=1.51A
+  gap_sim=85.0mm vs gap_plc=93.2mm
+  loss=6.824 (T=0.966, Ia=3.435, gap=1.188)
+  Baseline eval: 30.7 s  →  est. ~51 min (100 evals) to ~153 min (300 evals)
+Module airclassifier.pretreatment.kernels.dielectric_heating 513d4b9 load on device 'cuda:0' took 63.99 ms  (compiled)
+  coupling=0.1621, k_evap=1.85e-05, gap_rate=0.1444
+  T_sim=68.2°C vs T_plc=72°C
+  Ia_sim=1.647A vs Ia_plc=1.51A
+  gap_sim=85.0mm vs gap_plc=93.2mm
+  loss=6.824 (T=0.966, Ia=3.435, gap=1.188)
+  Baseline eval: 30.7 s  →  est. ~51 min (100 evals) to ~153 min (300 evals)
+  coupling=0.1621, k_evap=1.85e-05, gap_rate=0.1444
+  T_sim=68.2°C vs T_plc=72°C
+  Ia_sim=1.647A vs Ia_plc=1.51A
+  gap_sim=85.0mm vs gap_plc=93.2mm
+  loss=6.824 (T=0.966, Ia=3.435, gap=1.188)
+  Baseline eval: 30.7 s  →  est. ~51 min (100 evals) to ~153 min (300 evals)
+  T_sim=68.2°C vs T_plc=72°C
+  Ia_sim=1.647A vs Ia_plc=1.51A
+  gap_sim=85.0mm vs gap_plc=93.2mm
+  loss=6.824 (T=0.966, Ia=3.435, gap=1.188)
+  Baseline eval: 30.7 s  →  est. ~51 min (100 evals) to ~153 min (300 evals)
+  Ia_sim=1.647A vs Ia_plc=1.51A
+  gap_sim=85.0mm vs gap_plc=93.2mm
+  loss=6.824 (T=0.966, Ia=3.435, gap=1.188)
+  Baseline eval: 30.7 s  →  est. ~51 min (100 evals) to ~153 min (300 evals)
+  gap_sim=85.0mm vs gap_plc=93.2mm
+  loss=6.824 (T=0.966, Ia=3.435, gap=1.188)
+  Baseline eval: 30.7 s  →  est. ~51 min (100 evals) to ~153 min (300 evals)
+  loss=6.824 (T=0.966, Ia=3.435, gap=1.188)
+  Baseline eval: 30.7 s  →  est. ~51 min (100 evals) to ~153 min (300 evals)
+
+Running calibration (method=nelder-mead, maxiter=150)...
+
+Running calibration (method=nelder-mead, maxiter=150)...
+Calibration: 486 PLC samples, 1200 s, device=auto-detect
+  Normalization: var_T=322.6, var_Ia=0.0375, var_gap=45.9
+Running calibration (method=nelder-mead, maxiter=150)...
+Calibration: 486 PLC samples, 1200 s, device=auto-detect
+  Normalization: var_T=322.6, var_Ia=0.0375, var_gap=45.9
+  Weights: w_T=0.5, w_Ia=1.5, w_gap=1.0
+Calibration: 486 PLC samples, 1200 s, device=auto-detect
+  Normalization: var_T=322.6, var_Ia=0.0375, var_gap=45.9
+  Weights: w_T=0.5, w_Ia=1.5, w_gap=1.0
+  Normalization: var_T=322.6, var_Ia=0.0375, var_gap=45.9
+  Weights: w_T=0.5, w_Ia=1.5, w_gap=1.0
+
+  Weights: w_T=0.5, w_Ia=1.5, w_gap=1.0
+
+
+  Estimated max evals: 300 (ETA after first evals)
+  Method: Nelder-Mead from baseline (coupling=0.1621, k_evap=1.85e-05, gap_rate=0.1444)
+  eval  10: k=0.1832 k_evap=1.93e-05 gap_rate=0.1310  L_T=1.112 L_Ia=2.567 L_gap=0.397 total=4.804  (33.5s  ETA ~140.1 min)
+  Estimated max evals: 300 (ETA after first evals)
+  Method: Nelder-Mead from baseline (coupling=0.1621, k_evap=1.85e-05, gap_rate=0.1444)
+  eval  10: k=0.1832 k_evap=1.93e-05 gap_rate=0.1310  L_T=1.112 L_Ia=2.567 L_gap=0.397 total=4.804  (33.5s  ETA ~140.1 min)
+  Method: Nelder-Mead from baseline (coupling=0.1621, k_evap=1.85e-05, gap_rate=0.1444)
+  eval  10: k=0.1832 k_evap=1.93e-05 gap_rate=0.1310  L_T=1.112 L_Ia=2.567 L_gap=0.397 total=4.804  (33.5s  ETA ~140.1 min)
+  eval  20: k=0.1780 k_evap=1.93e-05 gap_rate=0.1380  L_T=1.579 L_Ia=1.688 L_gap=0.285 total=3.606  (33.7s  ETA ~136.0 min)
+  eval  30: k=0.1809 k_evap=1.93e-05 gap_rate=0.1342  L_T=1.298 L_Ia=1.720 L_gap=0.363 total=3.591  (32.4s  ETA ~136.7 min)
+  eval  10: k=0.1832 k_evap=1.93e-05 gap_rate=0.1310  L_T=1.112 L_Ia=2.567 L_gap=0.397 total=4.804  (33.5s  ETA ~140.1 min)
+  eval  20: k=0.1780 k_evap=1.93e-05 gap_rate=0.1380  L_T=1.579 L_Ia=1.688 L_gap=0.285 total=3.606  (33.7s  ETA ~136.0 min)
+  eval  30: k=0.1809 k_evap=1.93e-05 gap_rate=0.1342  L_T=1.298 L_Ia=1.720 L_gap=0.363 total=3.591  (32.4s  ETA ~136.7 min)
+  eval  40: k=0.1807 k_evap=1.92e-05 gap_rate=0.1368  L_T=1.381 L_Ia=1.738 L_gap=0.354 total=3.650  (38.5s  ETA ~134.2 min)
+  eval  20: k=0.1780 k_evap=1.93e-05 gap_rate=0.1380  L_T=1.579 L_Ia=1.688 L_gap=0.285 total=3.606  (33.7s  ETA ~136.0 min)
+  eval  30: k=0.1809 k_evap=1.93e-05 gap_rate=0.1342  L_T=1.298 L_Ia=1.720 L_gap=0.363 total=3.591  (32.4s  ETA ~136.7 min)
+  eval  40: k=0.1807 k_evap=1.92e-05 gap_rate=0.1368  L_T=1.381 L_Ia=1.738 L_gap=0.354 total=3.650  (38.5s  ETA ~134.2 min)
+  eval  30: k=0.1809 k_evap=1.93e-05 gap_rate=0.1342  L_T=1.298 L_Ia=1.720 L_gap=0.363 total=3.591  (32.4s  ETA ~136.7 min)
+  eval  40: k=0.1807 k_evap=1.92e-05 gap_rate=0.1368  L_T=1.381 L_Ia=1.738 L_gap=0.354 total=3.650  (38.5s  ETA ~134.2 min)
+  eval  50: k=0.1811 k_evap=1.92e-05 gap_rate=0.1365  L_T=1.233 L_Ia=1.637 L_gap=0.370 total=3.443  (32.0s  ETA ~132.9 min)
+  eval  40: k=0.1807 k_evap=1.92e-05 gap_rate=0.1368  L_T=1.381 L_Ia=1.738 L_gap=0.354 total=3.650  (38.5s  ETA ~134.2 min)
+  eval  50: k=0.1811 k_evap=1.92e-05 gap_rate=0.1365  L_T=1.233 L_Ia=1.637 L_gap=0.370 total=3.443  (32.0s  ETA ~132.9 min)
+  eval  50: k=0.1811 k_evap=1.92e-05 gap_rate=0.1365  L_T=1.233 L_Ia=1.637 L_gap=0.370 total=3.443  (32.0s  ETA ~132.9 min)
+  eval  60: k=0.1811 k_evap=1.92e-05 gap_rate=0.1365  L_T=1.248 L_Ia=1.800 L_gap=0.367 total=3.692  (32.4s  ETA ~127.8 min)
+  eval  70: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.262 L_Ia=1.619 L_gap=0.365 total=3.424  (30.2s  ETA ~123.6 min)
+  eval  60: k=0.1811 k_evap=1.92e-05 gap_rate=0.1365  L_T=1.248 L_Ia=1.800 L_gap=0.367 total=3.692  (32.4s  ETA ~127.8 min)
+  eval  70: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.262 L_Ia=1.619 L_gap=0.365 total=3.424  (30.2s  ETA ~123.6 min)
+  eval  80: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.654 L_gap=0.366 total=3.478  (30.9s  ETA ~117.6 min)
+  eval  70: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.262 L_Ia=1.619 L_gap=0.365 total=3.424  (30.2s  ETA ~123.6 min)
+  eval  80: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.654 L_gap=0.366 total=3.478  (30.9s  ETA ~117.6 min)
+  eval  90: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.614 L_gap=0.366 total=3.419  (39.7s  ETA ~112.6 min)
+  eval 100: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.614 L_gap=0.365 total=3.419  (41.2s  ETA ~109.8 min)
+  eval  80: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.654 L_gap=0.366 total=3.478  (30.9s  ETA ~117.6 min)
+  eval  90: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.614 L_gap=0.366 total=3.419  (39.7s  ETA ~112.6 min)
+  eval 100: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.614 L_gap=0.365 total=3.419  (41.2s  ETA ~109.8 min)
+
+  eval  90: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.614 L_gap=0.366 total=3.419  (39.7s  ETA ~112.6 min)
+  eval 100: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.614 L_gap=0.365 total=3.419  (41.2s  ETA ~109.8 min)
+
+  eval 100: k=0.1811 k_evap=1.92e-05 gap_rate=0.1364  L_T=1.264 L_Ia=1.614 L_gap=0.365 total=3.419  (41.2s  ETA ~109.8 min)
+
+  Calibration wall time: 3687 s (61.4 min), 109 evals, ~33.4 s/eval
+
+
+  Calibration wall time: 3687 s (61.4 min), 109 evals, ~33.4 s/eval
+
+============================================================
+  Calibration wall time: 3687 s (61.4 min), 109 evals, ~33.4 s/eval
+
+============================================================
+
+============================================================
+Calibration complete in 3718s (62.0 min)
+============================================================
+Calibration complete in 3718s (62.0 min)
+Calibration complete in 3718s (62.0 min)
+============================================================
+CalibrationResult:
+============================================================
+CalibrationResult:
+  coupling_factor = 0.1811
+CalibrationResult:
+  coupling_factor = 0.1811
+  coupling_factor = 0.1811
+  k_evap          = 1.92e-05
+  gap_rate         = 0.1364 mm/s
+  k_evap          = 1.92e-05
+  gap_rate         = 0.1364 mm/s
+  loss_total       = 3.4188
+  gap_rate         = 0.1364 mm/s
+  loss_total       = 3.4188
+  loss_total       = 3.4188
+    L_temperature  = 1.2651
+    L_anode_current = 1.6776
+    L_gap          = 0.3654
+  evaluations      = 109
+  iterations       = 43
+  converged        = True
+  sensitivity (dL/dp):
+    coupling_factor                = +606.7023
+    k_evap                         = -315191.6649
+    gap_rate_mm_s                  = -13.0989
+
+Saved to utility_docs\calibration_latest.json
+  coupling_factor = 0.181097
+  k_evap          = 1.92e-05
+  gap_rate         = 0.136421 mm/s
+(venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier>

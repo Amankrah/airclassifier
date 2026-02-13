@@ -103,6 +103,10 @@ class GP15Controller:
         self._temp_gap_correction_applied = False
         self._sim_time = 0.0
 
+        # Batch mode state: when True, MRL condition means empty belt
+        # (return gap to setpoint) rather than low load (hold position)
+        self._batch_exhausted = False
+
     def load_recipe(self, recipe: Recipe):
         """Load a recipe and configure setpoints."""
         self._recipe = recipe
@@ -123,6 +127,24 @@ class GP15Controller:
         """Transition from READY to RUNNING."""
         if self.status.state == ControllerState.READY:
             self.status.state = ControllerState.RUNNING
+
+    def set_batch_exhausted(self, exhausted: bool):
+        """Signal that the RF zone is clearing (M=0 front has reached RF zone).
+
+        This is called when the M=0 front (injected after hopper empties)
+        has advected to the RF zone START, NOT when the hopper empties.
+        The delay accounts for the belt travel time from hopper to RF zone.
+
+        When batch_exhausted=True and Ia < MRL, the controller interprets
+        this as a belt-clearing condition and returns the gap to setpoint,
+        rather than holding position (which is appropriate for continuous
+        operation with momentary low load).
+
+        This matches the real GP-15 PLC behavior observed in Run#2 where
+        the gap returned from 94.1mm to 75.2mm after the material actually
+        cleared the RF zone (not when the hopper emptied).
+        """
+        self._batch_exhausted = exhausted
 
     def step(
         self,
@@ -205,10 +227,28 @@ class GP15Controller:
             )
             self.status.state = ControllerState.MRH_TRIP
         elif self.status.mrl_active:
-            # Undercurrent: stop electrode drive (hold position)
-            # Don't close gap when there's no material - prevents
-            # gap from closing to setpoint during belt clearing
-            self.status.state = ControllerState.MRL_STOP
+            # Undercurrent behavior depends on batch mode:
+            # - Batch exhausted (empty belt): return gap to setpoint
+            # - Continuous operation: hold position (MRL_STOP)
+            #
+            # This matches real GP-15 PLC behavior in Run#2 where gap
+            # returned from 94.1mm to 75.2mm after the batch cleared.
+            if self._batch_exhausted:
+                # Empty belt after batch: return gap to setpoint
+                if self.status.electrode_gap_mm > gap_setpoint_mm + 0.5:
+                    self.status.electrode_gap_mm -= self.gap_adjust_rate_mm_s * dt
+                    self.status.electrode_gap_mm = max(
+                        self.status.electrode_gap_mm, gap_setpoint_mm,
+                    )
+                if self.status.state in (
+                    ControllerState.MRH_TRIP,
+                    ControllerState.MRL_STOP,
+                ):
+                    self.status.state = ControllerState.RUNNING
+            else:
+                # Continuous operation: stop electrode drive (hold position)
+                # Prevents gap from closing when momentary low load
+                self.status.state = ControllerState.MRL_STOP
         else:
             # Normal operation: return gap toward setpoint
             if self.status.electrode_gap_mm > gap_setpoint_mm + 0.5:
