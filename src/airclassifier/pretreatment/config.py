@@ -192,11 +192,10 @@ class MaterialProperties:
     # For 8mm peas with moderate airflow (~0.3 m/s):
     #   k_disp ≈ 1.2 * 1000 * 0.3 * 0.008 ≈ 2.9 W/(m·K)
     #
-    # Calibrated against Run#2 temperature strip measurements (77-82°C).
-    # With k_disp = 2.0, the thermal diffusion time across the 35mm bed
-    # drops to ~4.5 min (vs 7.5 min residence), giving a moderate 15-20°C
-    # gradient rather than the 60°C gradient at k_disp = 0.50.
-    k_dispersion: float = 2.0                    # W/(m·K) inter-bed thermal dispersion
+    # Calibrated against Run#1 PLC data, validated against Run#2
+    # temperature strip measurements (77-82°C).
+    # Default from utility_docs/calibration_latest.json (single source of truth).
+    k_dispersion: float = field(default_factory=lambda: get_calibration_defaults()[3])
 
     def eps_loss(self, T_c: float, M_wb: float) -> float:
         """Dielectric loss factor eps''(T, M)."""

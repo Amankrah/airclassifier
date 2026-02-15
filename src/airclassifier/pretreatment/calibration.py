@@ -139,6 +139,9 @@ class CalibrationResult:
     gap_adjust_rate_mm_s: float = field(
         default_factory=lambda: get_calibration_defaults()[2]
     )
+    k_dispersion: float = field(
+        default_factory=lambda: get_calibration_defaults()[3]
+    )
 
     loss_total: float = 0.0
     loss_temperature: float = 0.0
@@ -157,12 +160,14 @@ class CalibrationResult:
         """Apply calibrated parameters in-place."""
         config.oscillator_coupling_factor = self.oscillator_coupling_factor
         material.k_evap = self.k_evap
+        material.k_dispersion = self.k_dispersion
 
     def __str__(self) -> str:
         lines = [
             "CalibrationResult:",
             f"  coupling_factor = {self.oscillator_coupling_factor:.4f}",
             f"  k_evap          = {self.k_evap:.2e}",
+            f"  k_dispersion    = {self.k_dispersion:.3f} W/(m·K)",
             f"  gap_rate         = {self.gap_adjust_rate_mm_s:.4f} mm/s",
             f"  loss_total       = {self.loss_total:.4f}",
             f"    L_temperature  = {self.loss_temperature:.4f}",
@@ -232,7 +237,7 @@ class CalibrationOptimizer:
         self._n_pts = n_compare_points
         self._sim_duration = sim_duration_s or plc_data.duration_s
 
-        # Recipe from PLC data
+        # Recipe from PLC data + overrides (including run_mass_kg)
         gap_set = float(np.median(plc_data.electrode_set_mm))
         speed = float(np.median(plc_data.conv_speed_m_per_min))
         overrides = recipe_overrides or {}
@@ -240,6 +245,7 @@ class CalibrationOptimizer:
             name="calibration", recipe_number=0,
             electrode_gap_mm=overrides.get("electrode_gap_mm", gap_set),
             belt_speed_m_per_min=overrides.get("belt_speed_m_per_min", speed),
+            run_mass_kg=overrides.get("run_mass_kg", 0.0),
             mrh_amps=overrides.get("mrh_amps", plc_data.ia_limit_2),
             mrl_amps=overrides.get("mrl_amps", plc_data.ia_limit_1),
         )
@@ -270,6 +276,7 @@ class CalibrationOptimizer:
         coupling: float,
         k_evap: float,
         gap_rate: float,
+        k_dispersion: float = 2.0,
     ) -> GP15Simulator:
         """Get a simulator, creating once and resetting on reuse.
 
@@ -284,7 +291,7 @@ class CalibrationOptimizer:
             # First call: full construction (geometry + arrays)
             config = MachineConfig()
             config.oscillator_coupling_factor = coupling
-            mat = self._make_material(k_evap)
+            mat = self._make_material(k_evap, k_dispersion)
 
             self._sim = GP15Simulator(
                 config=config, material=mat,
@@ -305,6 +312,7 @@ class CalibrationOptimizer:
                 k_evap=k_evap,
                 gap_adjust_rate=gap_rate,
             )
+            self._sim._sim._material.k_dispersion = k_dispersion
             self._sim._sim.controller.load_recipe(self._recipe)
             self._sim._sim.controller.start()
             self._sim._sim.conveyor.start(
@@ -314,7 +322,7 @@ class CalibrationOptimizer:
 
         return self._sim
 
-    def _make_material(self, k_evap: float) -> MaterialProperties:
+    def _make_material(self, k_evap: float, k_dispersion: float = 2.0) -> MaterialProperties:
         m = self._material
         return MaterialProperties(
             name=m.name,
@@ -322,6 +330,7 @@ class CalibrationOptimizer:
             initial_temperature_c=m.initial_temperature_c,
             bed_depth_m=m.bed_depth_m,
             k_evap=k_evap,
+            k_dispersion=k_dispersion,
             T_evap_threshold_c=m.T_evap_threshold_c,
             dielectric_loss_coeffs=m.dielectric_loss_coeffs,
             dielectric_const_coeffs=m.dielectric_const_coeffs,
@@ -331,9 +340,10 @@ class CalibrationOptimizer:
 
     def _simulate(
         self, coupling: float, k_evap: float, gap_rate: float,
+        k_dispersion: float = 2.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Run one simulation. Returns (T_sim, Ia_sim, gap_sim)."""
-        sim = self._get_or_create_sim(coupling, k_evap, gap_rate)
+        sim = self._get_or_create_sim(coupling, k_evap, gap_rate, k_dispersion)
 
         try:
             result = sim._sim.run(
@@ -382,11 +392,16 @@ class CalibrationOptimizer:
 
     def _objective(self, params: np.ndarray) -> float:
         """Objective function for scipy optimizer."""
-        coupling, k_evap, gap_rate = float(params[0]), float(params[1]), float(params[2])
+        coupling = float(params[0])
+        k_evap = float(params[1])
+        gap_rate = float(params[2])
+        k_dispersion = float(params[3])
         t0 = time.perf_counter()
         self._eval_count += 1
 
-        T_sim, Ia_sim, gap_sim = self._simulate(coupling, k_evap, gap_rate)
+        T_sim, Ia_sim, gap_sim = self._simulate(
+            coupling, k_evap, gap_rate, k_dispersion,
+        )
         total, L_T, L_Ia, L_gap = self._compute_loss(T_sim, Ia_sim, gap_sim)
 
         elapsed = time.perf_counter() - t0
@@ -400,7 +415,7 @@ class CalibrationOptimizer:
             eta_str = f"  ETA ~{eta_sec / 60:.1f} min" if eta_sec > 0 else ""
             print(f"  eval {self._eval_count:3d}: "
                   f"k={coupling:.4f} k_evap={k_evap:.2e} "
-                  f"gap_rate={gap_rate:.4f}  "
+                  f"k_disp={k_dispersion:.2f} gap_rate={gap_rate:.4f}  "
                   f"L_T={L_T:.3f} L_Ia={L_Ia:.3f} L_gap={L_gap:.3f} "
                   f"total={total:.3f}  ({elapsed:.1f}s{eta_str})")
 
@@ -411,15 +426,17 @@ class CalibrationOptimizer:
             (0.10, 0.40),     # oscillator_coupling_factor
             (1e-6, 5e-4),     # k_evap
             (0.005, 1.0),     # gap_adjust_rate_mm_s
+            (0.1, 10.0),      # k_dispersion [W/(m·K)]
         ]
 
     def _x0_baseline(self) -> np.ndarray:
         """Baseline from calibration_latest.json (single source of truth)."""
-        coupling, k_evap, gap_rate = get_calibration_defaults()
+        coupling, k_evap, gap_rate, k_disp = get_calibration_defaults()
         return np.array([
             float(coupling),
             float(k_evap),
             float(gap_rate),
+            float(k_disp),
         ])
 
     def _objective_bounded(self, params: np.ndarray) -> float:
@@ -480,6 +497,7 @@ class CalibrationOptimizer:
                     "coupling": float(xk[0]),
                     "k_evap": float(xk[1]),
                     "gap_rate": float(xk[2]),
+                    "k_dispersion": float(xk[3]),
                     "convergence": float(convergence),
                 })
 
@@ -503,7 +521,8 @@ class CalibrationOptimizer:
             x0 = self._x0_baseline()
             if method == "nelder-mead":
                 print(f"  Method: Nelder-Mead from baseline (coupling={x0[0]:.4f}, "
-                      f"k_evap={x0[1]:.2e}, gap_rate={x0[2]:.4f})")
+                      f"k_evap={x0[1]:.2e}, gap_rate={x0[2]:.4f}, "
+                      f"k_disp={x0[3]:.2f})")
                 opt = minimize(
                     self._objective_bounded,
                     x0,
@@ -529,11 +548,14 @@ class CalibrationOptimizer:
                 "coupling": float(best[0]),
                 "k_evap": float(best[1]),
                 "gap_rate": float(best[2]),
+                "k_dispersion": float(best[3]),
                 "convergence": 0.0,
             })
 
         # Final evaluation reuses the warm simulator (reset via _get_or_create_sim)
-        T_best, Ia_best, gap_best = self._simulate(best[0], best[1], best[2])
+        T_best, Ia_best, gap_best = self._simulate(
+            best[0], best[1], best[2], best[3],
+        )
         total, L_T, L_Ia, L_gap = self._compute_loss(T_best, Ia_best, gap_best)
 
         # ── Sensitivity analysis (finite differences at optimum) ──
@@ -549,6 +571,7 @@ class CalibrationOptimizer:
             oscillator_coupling_factor=float(best[0]),
             k_evap=float(best[1]),
             gap_adjust_rate_mm_s=float(best[2]),
+            k_dispersion=float(best[3]),
             loss_total=float(result_fun),
             loss_temperature=L_T,
             loss_anode_current=L_Ia,
@@ -572,9 +595,9 @@ class CalibrationOptimizer:
         Perturbations are clamped to the optimization bounds to
         avoid biased gradient estimates near bound edges.
         """
-        names = ["coupling_factor", "k_evap", "gap_rate_mm_s"]
-        eps = [0.005, 1e-5, 0.005]
-        bounds = [(0.10, 0.40), (1e-6, 5e-4), (0.005, 1.0)]
+        names = ["coupling_factor", "k_evap", "gap_rate_mm_s", "k_dispersion"]
+        eps = [0.005, 1e-5, 0.005, 0.1]
+        bounds = [(0.10, 0.40), (1e-6, 5e-4), (0.005, 1.0), (0.1, 10.0)]
         sensitivity = {}
 
         for i, (name, h, (lo, hi)) in enumerate(zip(names, eps, bounds)):
@@ -599,12 +622,16 @@ class CalibrationOptimizer:
         coupling = self._config.oscillator_coupling_factor
         k_evap = self._material.k_evap
         gap_rate = get_calibration_defaults()[2]
+        k_dispersion = self._material.k_dispersion
 
-        T_sim, Ia_sim, gap_sim = self._simulate(coupling, k_evap, gap_rate)
+        T_sim, Ia_sim, gap_sim = self._simulate(
+            coupling, k_evap, gap_rate, k_dispersion,
+        )
         total, L_T, L_Ia, L_gap = self._compute_loss(T_sim, Ia_sim, gap_sim)
 
         return {
             "coupling": coupling, "k_evap": k_evap, "gap_rate": gap_rate,
+            "k_dispersion": k_dispersion,
             "loss_T": L_T, "loss_Ia": L_Ia, "loss_gap": L_gap,
             "loss_total": total,
             "T_sim_final": float(T_sim[-1]),

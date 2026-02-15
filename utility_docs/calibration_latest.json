@@ -1,7 +1,8 @@
 {
-  "oscillator_coupling_factor": 0.18109651079817823,
-  "k_evap": 1.9180533071245256e-05,
-  "gap_adjust_rate_mm_s": 0.13642120740233227,
-  "saved_at": "2026-02-12T18:31:19.011985+00:00",
-  "source": "calibration"
+  "oscillator_coupling_factor": 0.1381,
+  "k_evap": 1.02e-06,
+  "gap_adjust_rate_mm_s": 0.1908,
+  "k_dispersion": 2.10,
+  "saved_at": "2026-02-15T12:00:00+00:00",
+  "source": "calibration_run1_nelder_mead_180evals"
 }

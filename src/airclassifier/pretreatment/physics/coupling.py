@@ -732,41 +732,48 @@ class CoupledSimulator:
                 # return (Ia < MRL → return to setpoint) then correctly
                 # means "belt clearing" with no material left in the RF zone.
                 if self._batch_exhausted and not self._rf_zone_clearing:
-                    # Time for M=0 front to travel from hopper to RF zone EXIT
-                    hopper_to_rf_end = cfg.rf_x_end - cfg.spawn_x
-                    if v_belt > 0 and hopper_to_rf_end > 0:
-                        advect_time_to_rf_end = hopper_to_rf_end / v_belt
+                    # Time for M=0 front to travel from hopper to OVEN EXIT.
+                    # Material is "in the GP-15" until it exits the outfeed
+                    # attenuation duct (Manual p.54), not just the anode plate.
+                    hopper_to_oven_end = cfg.oven_x_end - cfg.spawn_x
+                    if v_belt > 0 and hopper_to_oven_end > 0:
+                        advect_time_to_oven_end = hopper_to_oven_end / v_belt
                         time_since_exhaust = self._time - self._batch_exhausted_time
-                        if time_since_exhaust >= advect_time_to_rf_end:
+                        if time_since_exhaust >= advect_time_to_oven_end:
                             self._rf_zone_clearing = True
                             if self._enable_controller:
                                 self.controller.set_batch_exhausted(True)
 
         # Determine infeed values based on batch state AND belt transit.
-        # Material dispatched from the hopper must travel from spawn_x
-        # to the grid inlet (rf_zone_x_start) before it appears at x=0.
-        # This transit delay matches the real GP-15 Ia ramp (~6 min).
-        if self._batch_exhausted:
-            # Batch exhausted: inject empty cells (dried/no material)
-            M_inlet = 0.0
-            T_inlet = mat.initial_temperature_c
-        else:
-            # Check belt transit delay: has material reached the grid?
-            material_arrived = True
-            if self._particles is not None and self._particles.cfg.run_mass_kg > 0:
-                hopper_to_grid = self._grid_origin[0] - self._particles.cfg.spawn_x
-                if hopper_to_grid > 0 and v_belt > 0:
-                    transit_time = hopper_to_grid / v_belt
-                    if self._time < transit_time:
-                        material_arrived = False
+        #
+        # The belt transit from hopper (spawn_x) to grid inlet
+        # (rf_zone_x_start) applies SYMMETRICALLY to both:
+        #   - Initial fill: material hasn't reached the grid yet
+        #   - Batch exhaust: M=0 front hasn't reached the grid yet
+        #
+        # When the hopper empties, material between hopper and grid
+        # inlet is still wet.  The M=0 front reaches grid x=0 only
+        # after transit_time = (grid_origin_x - spawn_x) / v_belt.
+        T_inlet = mat.initial_temperature_c
+        if self._particles is not None and self._particles.cfg.run_mass_kg > 0:
+            hopper_to_grid = self._grid_origin[0] - self._particles.cfg.spawn_x
+            transit_time = hopper_to_grid / v_belt if (hopper_to_grid > 0 and v_belt > 0) else 0.0
 
-            if material_arrived:
-                M_inlet = mat.initial_moisture_wb
-                T_inlet = mat.initial_temperature_c
+            if self._batch_exhausted:
+                # M=0 front left the hopper at _batch_exhausted_time.
+                # It reaches grid x=0 after transit_time.
+                time_since_exhaust = self._time - self._batch_exhausted_time
+                if time_since_exhaust >= transit_time:
+                    M_inlet = 0.0  # M=0 front has reached the grid
+                else:
+                    M_inlet = mat.initial_moisture_wb  # still wet belt
+            elif self._time < transit_time:
+                M_inlet = 0.0  # initial fill: material not here yet
             else:
-                # Belt transit: material hasn't reached the oven yet
-                M_inlet = 0.0
-                T_inlet = mat.initial_temperature_c
+                M_inlet = mat.initial_moisture_wb  # normal operation
+        else:
+            # Continuous mode or no particles — inject fresh material
+            M_inlet = mat.initial_moisture_wb
 
         if v_belt > 0 and v_belt * dt / dx < 1.0:
             if self._use_gpu:

@@ -42,15 +42,17 @@ if TYPE_CHECKING:
 KEY_COUPLING = "oscillator_coupling_factor"
 KEY_K_EVAP = "k_evap"
 KEY_GAP_RATE = "gap_adjust_rate_mm_s"
+KEY_K_DISPERSION = "k_dispersion"
 KEY_SAVED_AT = "saved_at"
 KEY_SOURCE = "source"
 
-# Fallbacks when JSON is missing (full 2794 s calibration values)
+# Fallbacks when JSON is missing
 _FALLBACK_COUPLING = 0.181
 _FALLBACK_K_EVAP = 1.01e-6
 _FALLBACK_GAP_RATE = 0.649
+_FALLBACK_K_DISPERSION = 2.0
 
-_cached_defaults: Optional[Tuple[float, float, float]] = None
+_cached_defaults: Optional[Tuple[float, float, float, float]] = None
 
 
 def get_default_calibration_path() -> Path:
@@ -65,8 +67,8 @@ def get_default_calibration_path() -> Path:
     return Path.cwd() / "utility_docs" / "calibration_latest.json"
 
 
-def get_calibration_defaults() -> Tuple[float, float, float]:
-    """Return (coupling_factor, k_evap, gap_rate_mm_s) from JSON or fallbacks.
+def get_calibration_defaults() -> Tuple[float, float, float, float]:
+    """Return (coupling, k_evap, gap_rate, k_dispersion) from JSON or fallbacks.
 
     Single source of truth: config, controller, and CalibrationResult
     all use this. Cached after first load; cache is cleared on save_calibration().
@@ -80,9 +82,13 @@ def get_calibration_defaults() -> Tuple[float, float, float]:
             data[KEY_COUPLING],
             data[KEY_K_EVAP],
             data[KEY_GAP_RATE],
+            data.get(KEY_K_DISPERSION, _FALLBACK_K_DISPERSION),
         )
     else:
-        _cached_defaults = (_FALLBACK_COUPLING, _FALLBACK_K_EVAP, _FALLBACK_GAP_RATE)
+        _cached_defaults = (
+            _FALLBACK_COUPLING, _FALLBACK_K_EVAP,
+            _FALLBACK_GAP_RATE, _FALLBACK_K_DISPERSION,
+        )
     return _cached_defaults
 
 
@@ -102,6 +108,7 @@ def save_calibration(result: "CalibrationResult", path: Path) -> None:
         KEY_COUPLING: result.oscillator_coupling_factor,
         KEY_K_EVAP: result.k_evap,
         KEY_GAP_RATE: result.gap_adjust_rate_mm_s,
+        KEY_K_DISPERSION: result.k_dispersion,
         KEY_SAVED_AT: datetime.now(tz=timezone.utc).isoformat(),
         KEY_SOURCE: "calibration",
     }
@@ -141,6 +148,7 @@ def load_calibration(path: Path) -> Optional[dict[str, Any]]:
         KEY_COUPLING: float(data[KEY_COUPLING]),
         KEY_K_EVAP: float(data[KEY_K_EVAP]),
         KEY_GAP_RATE: float(data[KEY_GAP_RATE]),
+        KEY_K_DISPERSION: float(data.get(KEY_K_DISPERSION, _FALLBACK_K_DISPERSION)),
         KEY_SAVED_AT: data.get(KEY_SAVED_AT),
         KEY_SOURCE: data.get(KEY_SOURCE),
     }

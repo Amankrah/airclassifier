@@ -124,6 +124,11 @@ class ParticleSystemConfig:
     rf_x_start: float = 0.0
     rf_x_end: float = 1.5
 
+    # Oven chamber exit (for clearing detection — Manual p.54)
+    # Material is "in the GP-15" until it exits the outfeed attenuation
+    # duct, not when it passes the last electrode.
+    oven_x_end: float = 3.6
+
 
 class MaterialParticleSystem:
     """Lagrangian tracer particles coupled to the Eulerian physics grid.
@@ -450,6 +455,7 @@ class MaterialParticleSystem:
             throughput_kg_per_s=throughput,
             rf_x_start=op.rf_zone_x_start,
             rf_x_end=op.rf_zone_x_end,
+            oven_x_end=op.oven_x_end_m,
         )
         return cls(cfg)
 
