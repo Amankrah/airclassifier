@@ -1432,15 +1432,20 @@ class CoupledSimulator:
         M_mat = M_yz[has_material]
 
         # For finite mass mode: if belt has cleared (no material at outlet),
-        # use the collected particles' average T/M instead. This represents
-        # the actual processed material, not the empty-belt state.
+        # use the FROZEN outfeed values from the time-series (captured at
+        # the moment before the M=0 clearing front arrived).  These reflect
+        # the actual processing conditions at the oven exit.
+        #
+        # Do NOT use collected-particle data here — particles have been
+        # cooled by the post-grid cooling model during belt transport and
+        # would report bin temperature (~25°C), not outfeed temperature
+        # (~65-80°C).
         use_particle_data = False
-        if T_mat.size == 0 and self._particles is not None:
-            collected_mask = (self._particles.state == self._particles._STATE_COLLECTED)
-            if collected_mask.any():
-                T_mat = self._particles.temperature[collected_mask]
-                M_mat = self._particles.moisture[collected_mask]
-                use_particle_data = True
+        if T_mat.size == 0:
+            # Use frozen outfeed values from the advection-time freeze
+            T_mat = np.array([self._last_valid_T_outfeed])
+            M_mat = np.array([self._last_valid_M_outfeed])
+            use_particle_data = True
 
         # Compute averages
         avg_T = float(np.mean(T_mat)) if T_mat.size else mat.initial_temperature_c

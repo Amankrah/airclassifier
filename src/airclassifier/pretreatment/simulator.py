@@ -306,20 +306,26 @@ class GP15Simulator:
         # ── Feed time: hopper → belt dispatch ──────────────────────────
         feed_time_s = recipe.run_mass_kg / throughput_kg_per_s
 
-        # ── Run-out: last material → collection bin (Manual p.54) ──────
+        # ── Oven clearing: last material exits the oven chamber ──────
+        # Physics simulation runs until all material has exited the
+        # oven (oven_x_end).  After that, belt transport to the
+        # collection bin is handled by the particle wind-down (no
+        # physics needed — the oven is empty).
+        #
+        # Manual p.54: "allow product to 'run-out' to ensure there
+        # is no product in the GP-15."  RF power stays on throughout
+        # but Ia drops to idle as material clears the RF zone.
         if self._particles is not None:
             pcfg = self._particles.cfg
-            belt_length_m = pcfg.head_roller_x - pcfg.spawn_x
+            hopper_to_oven_exit = pcfg.oven_x_end - pcfg.spawn_x
         else:
-            cp = self._assembly.conveyor.params
             op = self._assembly.oven.params
             spawn_x = op.oven_x_start_m - 0.35
-            head_x = cp.frame_length_m - cp.nose_length_m
-            belt_length_m = head_x - spawn_x
+            hopper_to_oven_exit = op.oven_x_end_m - spawn_x
 
-        runout_s = belt_length_m / v_belt
+        oven_clearing_s = hopper_to_oven_exit / v_belt
 
-        return feed_time_s + runout_s
+        return feed_time_s + oven_clearing_s
 
     def compute_run_timing(self, recipe: Recipe | None = None) -> dict:
         """Compute detailed timing breakdown for a production run.
@@ -361,22 +367,25 @@ class GP15Simulator:
         # Feed time
         feed_time_s = recipe.run_mass_kg / throughput_kg_per_s
 
-        # Run-out: hopper discharge → collection bin (Manual p.54)
+        # Oven clearing: last material exits oven chamber (Manual p.54)
         if self._particles is not None:
             pcfg = self._particles.cfg
+            oven_clearing_m = pcfg.oven_x_end - pcfg.spawn_x
             belt_length_m = pcfg.head_roller_x - pcfg.spawn_x
         else:
             cp = self._assembly.conveyor.params
             op = self._assembly.oven.params
             spawn_x = op.oven_x_start_m - 0.35
             head_x = cp.frame_length_m - cp.nose_length_m
+            oven_clearing_m = op.oven_x_end_m - spawn_x
             belt_length_m = head_x - spawn_x
 
-        runout_s = belt_length_m / v_belt
+        oven_clearing_s = oven_clearing_m / v_belt
 
         result["feed_time_s"] = feed_time_s
-        result["runout_s"] = runout_s
-        result["total_duration_s"] = feed_time_s + runout_s
+        result["oven_clearing_s"] = oven_clearing_s
+        result["total_duration_s"] = feed_time_s + oven_clearing_s
+        result["oven_clearing_m"] = oven_clearing_m
         result["belt_length_m"] = belt_length_m
         result["throughput_kg_per_s"] = throughput_kg_per_s
 

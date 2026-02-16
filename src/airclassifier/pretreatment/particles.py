@@ -713,6 +713,56 @@ class MaterialParticleSystem:
                 grid_origin, cell_sizes,
             )
 
+        # ── Post-grid cooling (Newton's law) ─────────────────────────
+        # The Eulerian grid only covers the RF zone.  Once material
+        # exits the grid, it must cool — inside the oven chamber
+        # (insulated, heated air) or on the open belt (ambient air).
+        #
+        # Without this, particles freeze at their last grid temperature
+        # and appear hot in the collection bin (visually wrong and
+        # physically wrong for downstream pipeline input).
+        #
+        # Cooling model:  dT/dt = -(T - T_env) / tau
+        # where tau = m * cp / (h * A_s) is the Biot time constant.
+        #
+        # For an 8 mm whole pea (rho=1450, cp=1700):
+        #   m = 3.9e-4 kg,  A_s = 2.0e-4 m^2
+        #   tau_oven  ≈ 330 s  (h ≈ 2 W/m^2K inside oven, T_env ≈ 40 °C)
+        #   tau_belt  ≈  66 s  (h ≈ 10 W/m^2K open belt, T_env ≈ 22 °C)
+        if grid_origin is not None and cell_sizes is not None:
+            grid_x_end = grid_origin[0] + cell_sizes[0] * T_field.shape[0] if T_field is not None else cfg.rf_x_end
+            T_ambient = cfg.T_inlet_c
+
+            # Particles past the grid but still inside the oven chamber
+            in_oven_post_grid = (
+                riding
+                & (self.pos[:, 0] > grid_x_end)
+                & (self.pos[:, 0] <= cfg.oven_x_end)
+            )
+            if in_oven_post_grid.any():
+                # Oven interior: heated air (~40°C), low convection (insulated)
+                T_oven_air = T_ambient + 20.0  # oven air is warmer than ambient
+                tau_oven = 330.0  # slow cooling inside oven [s]
+                dT = (self.temperature[in_oven_post_grid] - T_oven_air) * dt_sim / tau_oven
+                self.temperature[in_oven_post_grid] -= dT
+
+            # Particles past the oven exit: open belt, ambient air
+            on_open_belt = (
+                riding
+                & (self.pos[:, 0] > cfg.oven_x_end)
+            )
+            if on_open_belt.any():
+                tau_belt = 66.0  # faster cooling on open belt [s]
+                dT = (self.temperature[on_open_belt] - T_ambient) * dt_sim / tau_belt
+                self.temperature[on_open_belt] -= dT
+
+            # Collected particles in the bin: continue cooling to ambient
+            collected = (self.state == self._STATE_COLLECTED)
+            if collected.any():
+                tau_bin = 120.0  # bin is a pile, slower than single pea on belt [s]
+                dT = (self.temperature[collected] - T_ambient) * dt_sim / tau_bin
+                self.temperature[collected] -= dT
+
         alive = (self.state != self._STATE_DEAD)
         self.age[alive] += dt_sim
         self._alive_count = int(np.sum(alive))

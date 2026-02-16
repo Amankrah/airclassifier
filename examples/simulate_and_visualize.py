@@ -252,18 +252,20 @@ Examples:
     print(f"  Throughput:        {throughput_kg_h:.0f} kg/h")
     # Show timing breakdown
     feed_s = timing["feed_time_s"]
-    runout_s = timing["runout_s"]
+    oven_s = timing["oven_clearing_s"]
+    oven_m = timing["oven_clearing_m"]
     belt_m = timing["belt_length_m"]
     if not user_specified_duration:
         # Auto-calculated duration with breakdown
         print(f"  Run duration:      {run_duration:.0f} s ({run_duration/60:.1f} min)")
         print(f"    Feed time:       {feed_s:.0f} s  (hopper → belt)")
-        print(f"    Run-out:         {runout_s:.0f} s  ({belt_m:.2f} m belt travel)")
+        print(f"    Oven clearing:   {oven_s:.0f} s  ({oven_m:.2f} m to oven exit)")
+        print(f"    Belt wind-down:  after physics  ({belt_m:.2f} m to bin)")
     else:
         # User override - show both actual and calculated
         calc_dur = timing["total_duration_s"]
         print(f"  Run duration:      {run_duration:.0f} s ({run_duration/60:.1f} min)  [user override]")
-        print(f"    (Calculated:     {calc_dur:.0f} s = {feed_s:.0f}s feed + {runout_s:.0f}s run-out)")
+        print(f"    (Calculated:     {calc_dur:.0f} s = {feed_s:.0f}s feed + {oven_s:.0f}s oven clearing)")
     print()
 
     # ── 5. Run simulation or launch live 3D ─────────────────────────
