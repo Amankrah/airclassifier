@@ -238,6 +238,16 @@ class MaterialParticleSystem:
         self.vicilin_native = np.ones(n, dtype=np.float32)   # 7S
         self.legumin_native = np.ones(n, dtype=np.float32)   # 11S
 
+        # ── Treatment temperature capture ────────────────────────
+        # T_at_collection captures the particle temperature at the moment
+        # it enters the collection bin.  This preserves the "treatment
+        # temperature" for visualization even after particles cool in the
+        # bin.  Without this, all collected particles would show ambient
+        # temp after the long bin cooling phase.
+        self.T_at_collection = np.full(n, config.T_inlet_c, dtype=np.float32)
+        self.T_core_at_collection = np.full(n, config.T_inlet_c, dtype=np.float32)
+        self.M_at_collection = np.full(n, config.M_inlet_wb, dtype=np.float32)
+
         # Mass accounting (manual Chapter 5).
         # Each particle represents mass_per_particle kg of material.
         # throughput [kg/s] / spawn_rate [particles/s] = kg/particle.
@@ -408,6 +418,9 @@ class MaterialParticleSystem:
         self.pos[:] = 0.0
         self.vel[:] = 0.0
         self.age[:] = 0.0
+        self.T_at_collection[:] = self.cfg.T_inlet_c
+        self.T_core_at_collection[:] = self.cfg.T_inlet_c
+        self.M_at_collection[:] = self.cfg.M_inlet_wb
         self._spawn_accumulator = 0.0
         self._alive_count = 0
         self._init_particles()
@@ -717,6 +730,12 @@ class MaterialParticleSystem:
                 self.vel[landed] = 0.0
                 self.state[landed] = self._STATE_COLLECTED
 
+                # Capture treatment temperature/moisture at collection time
+                # (before bin cooling reduces them to ambient)
+                self.T_at_collection[landed] = self.temperature[landed]
+                self.T_core_at_collection[landed] = self.T_core[landed]
+                self.M_at_collection[landed] = self.moisture[landed]
+
                 # Mass accounting: adjust for moisture loss during drying.
                 # Each particle was dispatched with mass_per_particle based on
                 # initial moisture M_i.  After drying, the particle has moisture
@@ -940,21 +959,53 @@ class MaterialParticleSystem:
     def _interpolate_fields(self, T_field, M_field, mask, origin, cell_sizes):
         """Trilinear interpolation of Eulerian fields at particle positions.
 
-        Only updates riding particles.  Falling particles retain their
-        last in-oven values (physically correct -- they've left the
-        field domain).
+        Only updates riding particles that are within the oven chamber where
+        the Eulerian grid is valid.  Uses the moisture field as the primary
+        indicator of where material actually exists in the grid.
+
+        Spatial tracking logic:
+        1. Particles within grid bounds AND in cells with M > threshold:
+           → Interpolate both T and M from the Eulerian grid
+        2. Particles within grid bounds BUT in cells with M ≈ 0:
+           → Material has advected away; particle keeps its current T and M
+        3. Particles outside grid bounds (past oven):
+           → Post-grid cooling handled in step() method
+
+        This approach is spatially aware (per-particle) rather than relying
+        on the global batch_exhausted flag, correctly handling the case
+        where material advects past a particle's grid location.
         """
         riding = (self.state == self._STATE_RIDING)
         if not riding.any():
             return
 
+        cfg = self.cfg
         x0, y0, z0 = origin
         dx, dy, dz = cell_sizes
         nx, ny, nz = T_field.shape
 
-        gx = (self.pos[riding, 0] - x0) / dx - 0.5
-        gy = (self.pos[riding, 1] - y0) / dy - 0.5
-        gz = (self.pos[riding, 2] - z0) / dz - 0.5
+        # Grid extent in world coordinates
+        grid_x_end = x0 + nx * dx
+
+        # Particle positions
+        pos_x = self.pos[riding, 0]
+
+        # ── Spatial filter: only interpolate for particles within grid bounds ──
+        # Particles past the grid will be handled by post-grid cooling in step()
+        in_grid_x = (pos_x >= x0) & (pos_x < grid_x_end)
+        if not in_grid_x.any():
+            return
+
+        # Get indices of riding particles that are within grid bounds
+        riding_indices = np.where(riding)[0]
+        in_grid_indices = riding_indices[in_grid_x]
+
+        # Positions of particles within grid
+        pos_in_grid = self.pos[in_grid_indices]
+
+        gx = (pos_in_grid[:, 0] - x0) / dx - 0.5
+        gy = (pos_in_grid[:, 1] - y0) / dy - 0.5
+        gz = (pos_in_grid[:, 2] - z0) / dz - 0.5
 
         ix0 = np.clip(np.floor(gx).astype(int), 0, nx - 2)
         iy0 = np.clip(np.floor(gy).astype(int), 0, ny - 2)
@@ -976,25 +1027,10 @@ class MaterialParticleSystem:
 
         ix1, iy1, iz1 = ix0 + 1, iy0 + 1, iz0 + 1
 
-        # Temperature
-        T_interp = (
-            w000 * T_field[ix0, iy0, iz0] + w100 * T_field[ix1, iy0, iz0] +
-            w010 * T_field[ix0, iy1, iz0] + w110 * T_field[ix1, iy1, iz0] +
-            w001 * T_field[ix0, iy0, iz1] + w101 * T_field[ix1, iy0, iz1] +
-            w011 * T_field[ix0, iy1, iz1] + w111 * T_field[ix1, iy1, iz1]
-        )
+        # ── Interpolate moisture first (used as material presence indicator) ──
+        M_interp = None
+        has_material_in_grid = np.ones(len(in_grid_indices), dtype=bool)
 
-        # Material mask: only accept interpolated values in material cells
-        if mask is not None:
-            nearest_ix = np.clip(np.round(gx + 0.5).astype(int), 0, nx - 1)
-            nearest_iy = np.clip(np.round(gy + 0.5).astype(int), 0, ny - 1)
-            nearest_iz = np.clip(np.round(gz + 0.5).astype(int), 0, nz - 1)
-            in_material = (mask[nearest_ix, nearest_iy, nearest_iz] == 1)
-            T_interp = np.where(in_material, T_interp, self.temperature[riding])
-
-        self.temperature[riding] = T_interp.astype(np.float32)
-
-        # Moisture
         if M_field is not None:
             M_interp = (
                 w000 * M_field[ix0, iy0, iz0] + w100 * M_field[ix1, iy0, iz0] +
@@ -1002,20 +1038,42 @@ class MaterialParticleSystem:
                 w001 * M_field[ix0, iy0, iz1] + w101 * M_field[ix1, iy0, iz1] +
                 w011 * M_field[ix0, iy1, iz1] + w111 * M_field[ix1, iy1, iz1]
             )
-            if mask is not None:
-                M_interp = np.where(in_material, M_interp, self.moisture[riding])
-            # After batch exhausts, M=0 advects into the grid behind the material.
-            # Skip ALL moisture interpolation after batch exhausts - particles
-            # retain their last valid moisture until they land in the bin.
-            # This prevents particles from picking up the M=0 "empty belt" values.
-            if not self._batch_exhausted:
-                # Normal operation: update moisture from grid
-                # But still guard against empty cells (M < threshold)
-                M_threshold = self.cfg.M_inlet_wb * 0.1  # 10% of initial = clearly material
-                has_actual_material = M_interp > M_threshold
-                M_interp = np.where(has_actual_material, M_interp, self.moisture[riding])
-                self.moisture[riding] = M_interp.astype(np.float32)
-            # else: batch exhausted - particles keep their current moisture
+            # Use moisture as the PRIMARY indicator of material presence.
+            # If M ≈ 0, the Eulerian cell has emptied (material advected away).
+            # This is more reliable than the static mask or batch_exhausted flag.
+            M_threshold = cfg.M_inlet_wb * 0.1  # 10% of initial = clearly material
+            has_material_in_grid = M_interp > M_threshold
+
+        # ── Material mask: secondary check for geometric bounds ──
+        in_material_mask = np.ones(len(in_grid_indices), dtype=bool)
+        if mask is not None:
+            nearest_ix = np.clip(np.round(gx + 0.5).astype(int), 0, nx - 1)
+            nearest_iy = np.clip(np.round(gy + 0.5).astype(int), 0, ny - 1)
+            nearest_iz = np.clip(np.round(gz + 0.5).astype(int), 0, nz - 1)
+            in_material_mask = (mask[nearest_ix, nearest_iy, nearest_iz] == 1)
+
+        # Combined check: material must exist in BOTH moisture field AND mask
+        should_interpolate = has_material_in_grid & in_material_mask
+
+        # ── Temperature interpolation ──────────────────────────────────────
+        T_interp = (
+            w000 * T_field[ix0, iy0, iz0] + w100 * T_field[ix1, iy0, iz0] +
+            w010 * T_field[ix0, iy1, iz0] + w110 * T_field[ix1, iy1, iz0] +
+            w001 * T_field[ix0, iy0, iz1] + w101 * T_field[ix1, iy0, iz1] +
+            w011 * T_field[ix0, iy1, iz1] + w111 * T_field[ix1, iy1, iz1]
+        )
+
+        # Only update temperature where material actually exists in grid
+        current_T = self.temperature[in_grid_indices]
+        T_final = np.where(should_interpolate, T_interp, current_T)
+        self.temperature[in_grid_indices] = T_final.astype(np.float32)
+
+        # ── Moisture interpolation ─────────────────────────────────────────
+        if M_interp is not None:
+            # Only update moisture where material actually exists in grid
+            current_M = self.moisture[in_grid_indices]
+            M_final = np.where(should_interpolate, M_interp, current_M)
+            self.moisture[in_grid_indices] = M_final.astype(np.float32)
 
     # ------------------------------------------------------------------
     #  Helpers

@@ -17,6 +17,10 @@ in the engineering guide:
     5. Visualize machine + field overlays (§9.3)
     6. Display outfeed cross-section (pipeline output to milling, §9.1)
 
+Dry fractionation protocol (yellow pea):
+    Temper to 13.5–15% before RF for uniform heat penetration and LOX deactivation.
+    Post-RF moisture is typically <10%; re-temper to ~12% for de-hulling and milling.
+
 Architecture::
 
     GP15Simulator
@@ -79,6 +83,9 @@ Examples:
     # Run#2 defaults (90 kg)
     python examples/simulate_and_visualize.py --mass 90 --gap 75 --bed-depth 35 --speed 0.2 --temp 17.0 --duration 2820 --moisture 0.118067
 
+    # Dry fractionation (13.5–15% pre-RF; default --moisture 0.14)
+    python examples/simulate_and_visualize.py --mass 90 --gap 75 --bed-depth 35 --speed 0.2 --moisture 0.14
+
     # Run#3 defaults (60.5 kg)
     python examples/simulate_and_visualize.py --mass 60.5 --gap 75 --bed-depth 25--speed 0.2 --temp 17.0 --duration 2820
 
@@ -96,8 +103,9 @@ Examples:
                         help="Material bed depth / feeder gap in mm (default 25, from Run#1)")
     parser.add_argument("--speed", type=float, default=0.2,
                         help="Belt speed in m/min (default 0.2, from Run#1)")
-    parser.add_argument("--moisture", type=float, default=0.10,
-                        help="Initial moisture wet basis fraction (default 0.10)")
+    parser.add_argument("--moisture", type=float, default=0.14,
+                        help="Initial moisture wet basis fraction (default 0.14; "
+                             "dry fractionation: 13.5-15% before RF)")
     parser.add_argument("--temp", type=float, default=17.6,
                         help="Initial temperature in C (default 17.6, from Run#1)")
     parser.add_argument("--plots-only", action="store_true",
@@ -253,19 +261,22 @@ Examples:
     # Show timing breakdown
     feed_s = timing["feed_time_s"]
     oven_s = timing["oven_clearing_s"]
+    runout_s = timing["belt_runout_s"]
+    fall_s = timing["fall_buffer_s"]
     oven_m = timing["oven_clearing_m"]
     belt_m = timing["belt_length_m"]
     if not user_specified_duration:
         # Auto-calculated duration with breakdown
         print(f"  Run duration:      {run_duration:.0f} s ({run_duration/60:.1f} min)")
-        print(f"    Feed time:       {feed_s:.0f} s  (hopper → belt)")
-        print(f"    Oven clearing:   {oven_s:.0f} s  ({oven_m:.2f} m to oven exit)")
-        print(f"    Belt wind-down:  after physics  ({belt_m:.2f} m to bin)")
+        print(f"    Feed time:       {feed_s:.0f} s  (hopper → belt dispatch)")
+        print(f"    Belt runout:     {runout_s:.0f} s  ({belt_m:.2f} m to head roller)")
+        print(f"    Fall buffer:     {fall_s:.0f} s  (drop into collection bin)")
+        print(f"    (Oven exit at:   {oven_s:.0f} s / {oven_m:.2f} m)")
     else:
         # User override - show both actual and calculated
         calc_dur = timing["total_duration_s"]
         print(f"  Run duration:      {run_duration:.0f} s ({run_duration/60:.1f} min)  [user override]")
-        print(f"    (Calculated:     {calc_dur:.0f} s = {feed_s:.0f}s feed + {oven_s:.0f}s oven clearing)")
+        print(f"    (Calculated:     {calc_dur:.0f} s = {feed_s:.0f}s feed + {runout_s:.0f}s runout + {fall_s:.0f}s fall)")
     print()
 
     # ── 5. Run simulation or launch live 3D ─────────────────────────
@@ -306,7 +317,8 @@ Examples:
     t_arr = np.array(ts["time_s"])
     t_min = t_arr / 60.0  # time in minutes for readability
 
-    fig, axes = plt.subplots(3, 3, figsize=(16, 11))
+    # ── Main dashboard: 4x3 grid (expanded from 3x3) ──────────────────
+    fig, axes = plt.subplots(4, 3, figsize=(16, 14))
     fig.suptitle(
         f"GP-15 Digital Twin -- {args.mass:.0f} kg Whole Yellow Pea  |  "
         f"Gap {args.gap:.0f} mm  |  Bed {args.bed_depth:.0f} mm  |  "
@@ -348,20 +360,34 @@ Examples:
     else:
         ax.legend(fontsize=6, loc="upper left")
 
-    # [0,1] Moisture
+    # [0,1] Moisture — Dry Fractionation Pipeline
+    # Research: 13.5-15% pre-RF → ~9.5-10% post-RF → re-temper to 12% for milling
     ax = axes[0, 1]
     ax.plot(t_min, np.array(ts["M_outfeed_wb"]) * 100, "b-", linewidth=2,
             label="M outfeed")
     ax.plot(t_min, np.array(ts["M_mean_wb"]) * 100, "b-", linewidth=0.8,
             alpha=0.4, label="M mean (all)")
+
+    # Initial moisture (pre-tempered for RF)
+    initial_pct = material.initial_moisture_wb * 100
+    ax.axhline(initial_pct, color="gray", linestyle=":", alpha=0.5,
+               linewidth=1, label=f"Initial {initial_pct:.0f}%")
+
+    # Post-RF target (~9.5-10%)
     target_pct = material.target_moisture_wb * 100
     ax.axhline(target_pct, color="green",
                linestyle="--", alpha=0.7, linewidth=1.5,
-               label=f"Target {target_pct:.0f}%")
+               label=f"Post-RF target {target_pct:.0f}%")
+
+    # Re-tempering reference (12% for milling)
+    RETEMPER_PCT = 12.0
+    ax.axhline(RETEMPER_PCT, color="orange", linestyle=":",
+               alpha=0.5, linewidth=1, label=f"Re-temper {RETEMPER_PCT:.0f}% (milling)")
+
     ax.set_xlabel("Time [min]")
     ax.set_ylabel("Moisture [% wb]")
-    ax.set_title("Moisture Content")
-    ax.legend(fontsize=7, loc="upper right")
+    ax.set_title("Moisture Content\n(Dry Fractionation: 14%→10%→12%)")
+    ax.legend(fontsize=6, loc="upper right")
     ax.grid(True, alpha=0.3)
 
     # [0,2] Electrode gap (MRH controller)
@@ -480,6 +506,119 @@ Examples:
         axes[2, 2].text(0.5, 0.5, "No field data", ha="center", va="center",
                         transform=axes[2, 2].transAxes)
 
+    # ── Row 4: Particle System Analysis ─────────────────────────────────
+
+    # [3,0] Particle state distribution (final)
+    ax = axes[3, 0]
+    if hasattr(sim, 'particles'):
+        ps = sim.particles
+        states = {
+            'Hopper': ps.hopper_count,
+            'Riding': ps.riding_count,
+            'Falling': ps.falling_count,
+            'Collected': ps.collected_count,
+        }
+        # Filter out zero states for cleaner pie chart
+        states_nonzero = {k: v for k, v in states.items() if v > 0}
+        if states_nonzero:
+            colors = ['#FFA500', '#4169E1', '#DC143C', '#228B22']
+            color_map = {'Hopper': colors[0], 'Riding': colors[1],
+                         'Falling': colors[2], 'Collected': colors[3]}
+            ax.pie(states_nonzero.values(),
+                   labels=[f"{k}\n({v})" for k, v in states_nonzero.items()],
+                   colors=[color_map[k] for k in states_nonzero.keys()],
+                   autopct='%1.1f%%', startangle=90)
+            ax.set_title(f"Particle States (n={ps.cfg.max_particles})")
+        else:
+            ax.text(0.5, 0.5, "No particles", ha="center", va="center",
+                    transform=ax.transAxes)
+    else:
+        ax.text(0.5, 0.5, "No particle data", ha="center", va="center",
+                transform=ax.transAxes)
+
+    # [3,1] Particle temperature histogram (collected particles)
+    # Use T_at_collection to show treatment temperature (not cooled bin temp)
+    ax = axes[3, 1]
+    if hasattr(sim, 'particles'):
+        ps = sim.particles
+        collected_mask = (ps.state == ps._STATE_COLLECTED)
+        riding_mask = (ps.state == ps._STATE_RIDING)
+
+        if collected_mask.any():
+            # Use T_at_collection to show treatment temperature, not cooled bin temp
+            if hasattr(ps, 'T_at_collection'):
+                T_collected = ps.T_at_collection[collected_mask]
+                label_suffix = " (at collection)"
+            else:
+                T_collected = ps.temperature[collected_mask]
+                label_suffix = " (current)"
+            ax.hist(T_collected, bins=30, alpha=0.7, color='#228B22',
+                    label=f'Collected{label_suffix} (n={len(T_collected)})', edgecolor='black')
+            ax.axvline(np.mean(T_collected), color='green', linestyle='--',
+                       linewidth=2, label=f'Mean: {np.mean(T_collected):.1f}°C')
+            ax.axvline(np.percentile(T_collected, 75), color='orange', linestyle=':',
+                       linewidth=2, label=f'P75: {np.percentile(T_collected, 75):.1f}°C')
+
+        if riding_mask.any():
+            T_riding = ps.temperature[riding_mask]
+            ax.hist(T_riding, bins=30, alpha=0.5, color='#4169E1',
+                    label=f'On belt (n={len(T_riding)})', edgecolor='black')
+
+        ax.set_xlabel("Temperature [°C]")
+        ax.set_ylabel("Count")
+        ax.set_title("Particle Treatment Temperature\n(captured at collection)")
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, "No particle data", ha="center", va="center",
+                transform=ax.transAxes)
+
+    # [3,2] Protein denaturation breakdown (Vicilin vs Legumin)
+    ax = axes[3, 2]
+    if hasattr(sim, 'particles') and hasattr(sim.particles, 'vicilin_native'):
+        ps = sim.particles
+        collected_mask = (ps.state == ps._STATE_COLLECTED)
+        riding_mask = (ps.state == ps._STATE_RIDING)
+        active_mask = collected_mask if collected_mask.any() else riding_mask
+
+        if active_mask.any():
+            vic_native = ps.vicilin_native[active_mask]
+            leg_native = ps.legumin_native[active_mask]
+
+            # Bar chart showing native vs denatured for each protein
+            vic_denat_pct = (1.0 - np.mean(vic_native)) * 100
+            leg_denat_pct = (1.0 - np.mean(leg_native)) * 100
+            vic_native_pct = np.mean(vic_native) * 100
+            leg_native_pct = np.mean(leg_native) * 100
+
+            x = np.arange(2)
+            width = 0.35
+            ax.bar(x - width/2, [vic_native_pct, leg_native_pct], width,
+                   label='Native (preserved)', color='#228B22', alpha=0.8)
+            ax.bar(x + width/2, [vic_denat_pct, leg_denat_pct], width,
+                   label='Denatured (lost)', color='#DC143C', alpha=0.8)
+
+            ax.set_ylabel('Percentage [%]')
+            ax.set_title('Protein Fraction Status')
+            ax.set_xticks(x)
+            ax.set_xticklabels([f'Vicilin (7S)\nonset 62°C',
+                                f'Legumin (11S)\nonset 76°C'])
+            ax.legend(fontsize=7)
+            ax.set_ylim(0, 105)
+            ax.grid(True, alpha=0.3, axis='y')
+
+            # Add percentage labels on bars
+            for i, (nat, den) in enumerate([(vic_native_pct, vic_denat_pct),
+                                             (leg_native_pct, leg_denat_pct)]):
+                ax.text(i - width/2, nat + 2, f'{nat:.0f}%', ha='center', fontsize=8)
+                ax.text(i + width/2, den + 2, f'{den:.0f}%', ha='center', fontsize=8)
+        else:
+            ax.text(0.5, 0.5, "No active particles", ha="center", va="center",
+                    transform=ax.transAxes)
+    else:
+        ax.text(0.5, 0.5, "No denaturation data", ha="center", va="center",
+                transform=ax.transAxes)
+
     plt.tight_layout()
 
     # ── 7. Outfeed cross-section (\u00a79.1) ──────────────────────────────
@@ -518,6 +657,191 @@ Examples:
             f"CV {outlet.moisture_uniformity:.3f})  |  "
             f"Spec. energy {outlet.specific_energy_kwh_per_kg:.2f} kWh/kg water")
         plt.colorbar(im_m, ax=axes2[1], label="% wb")
+        plt.tight_layout()
+
+    # ── 8. Particle Spatial Analysis (Figure 3) ─────────────────────────
+    # Shows particle temperature and moisture by position along the belt
+    if hasattr(sim, 'particles'):
+        ps = sim.particles
+        fig3, axes3 = plt.subplots(2, 2, figsize=(14, 10))
+        fig3.suptitle(
+            f"Particle Spatial Analysis  --  Lagrangian View of Material Flow\n"
+            f"Hopper: {ps.hopper_count}  |  Belt: {ps.riding_count}  |  "
+            f"Collected: {ps.collected_count}  |  Total: {ps.cfg.max_particles}",
+            fontsize=11, fontweight="bold",
+        )
+
+        # Get machine geometry for zone markers
+        rf_x_start = info.get('rf_zone_x_start_m', 0.5)
+        rf_x_end = info.get('rf_zone_x_end_m', 2.0)
+        oven_x_end = ps.cfg.oven_x_end
+        head_roller_x = ps.cfg.head_roller_x
+
+        # [0,0] Particle Temperature vs X Position (scatter)
+        # Use T_at_collection for collected particles to show treatment temperature
+        ax = axes3[0, 0]
+        alive_mask = (ps.state != ps._STATE_DEAD)
+        if alive_mask.any():
+            pos_x = ps.pos[alive_mask, 0]
+            states = ps.state[alive_mask]
+
+            # Build temperature array: use T_at_collection for collected, current for others
+            temps = ps.temperature[alive_mask].copy()
+            if hasattr(ps, 'T_at_collection'):
+                collected_in_alive = (states == ps._STATE_COLLECTED)
+                temps[collected_in_alive] = ps.T_at_collection[alive_mask][collected_in_alive]
+
+            # Color by state
+            colors = []
+            for s in states:
+                if s == ps._STATE_IN_HOPPER:
+                    colors.append('#FFA500')  # orange
+                elif s == ps._STATE_RIDING:
+                    colors.append('#4169E1')  # blue
+                elif s == ps._STATE_FALLING:
+                    colors.append('#DC143C')  # red
+                else:  # COLLECTED
+                    colors.append('#228B22')  # green
+
+            scatter = ax.scatter(pos_x, temps, c=colors, alpha=0.5, s=3)
+
+            # Add zone markers
+            ax.axvline(rf_x_start, color='red', linestyle='--', alpha=0.5, label='RF zone start')
+            ax.axvline(rf_x_end, color='red', linestyle='--', alpha=0.5, label='RF zone end')
+            ax.axvline(oven_x_end, color='orange', linestyle=':', alpha=0.5, label='Oven exit')
+            ax.axvline(head_roller_x, color='gray', linestyle=':', alpha=0.5, label='Head roller')
+
+            # Add legend for particle states
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor='#FFA500', label='Hopper'),
+                Patch(facecolor='#4169E1', label='Belt'),
+                Patch(facecolor='#DC143C', label='Falling'),
+                Patch(facecolor='#228B22', label='Collected'),
+            ]
+            ax.legend(handles=legend_elements, loc='upper left', fontsize=7)
+
+        ax.set_xlabel("X Position [m]")
+        ax.set_ylabel("Temperature [°C]")
+        ax.set_title("Particle Temperature by Position")
+        ax.grid(True, alpha=0.3)
+
+        # [0,1] Particle Moisture vs X Position
+        # Use M_at_collection for collected particles to show treatment moisture
+        ax = axes3[0, 1]
+        if alive_mask.any():
+            moistures = ps.moisture[alive_mask].copy()
+            if hasattr(ps, 'M_at_collection'):
+                collected_in_alive = (states == ps._STATE_COLLECTED)
+                moistures[collected_in_alive] = ps.M_at_collection[alive_mask][collected_in_alive]
+            moistures = moistures * 100  # convert to %
+            ax.scatter(pos_x, moistures, c=colors, alpha=0.5, s=3)
+
+            # Add zone markers
+            ax.axvline(rf_x_start, color='red', linestyle='--', alpha=0.5)
+            ax.axvline(rf_x_end, color='red', linestyle='--', alpha=0.5)
+            ax.axvline(oven_x_end, color='orange', linestyle=':', alpha=0.5)
+            ax.axvline(head_roller_x, color='gray', linestyle=':', alpha=0.5)
+
+            ax.axhline(material.target_moisture_wb * 100, color='green',
+                       linestyle='--', alpha=0.7, label=f'Target {material.target_moisture_wb:.0%}')
+            ax.legend(fontsize=7)
+
+        ax.set_xlabel("X Position [m]")
+        ax.set_ylabel("Moisture [% wb]")
+        ax.set_title("Particle Moisture by Position")
+        ax.grid(True, alpha=0.3)
+
+        # [1,0] Temperature Profile Along Belt (binned average)
+        ax = axes3[1, 0]
+        riding_mask = (ps.state == ps._STATE_RIDING)
+        if riding_mask.any():
+            pos_x_riding = ps.pos[riding_mask, 0]
+            temps_riding = ps.temperature[riding_mask]
+
+            # Bin particles by X position
+            n_bins = 50
+            x_bins = np.linspace(pos_x_riding.min(), pos_x_riding.max(), n_bins + 1)
+            bin_centers = (x_bins[:-1] + x_bins[1:]) / 2
+            bin_indices = np.digitize(pos_x_riding, x_bins) - 1
+            bin_indices = np.clip(bin_indices, 0, n_bins - 1)
+
+            # Calculate mean, min, max per bin
+            T_mean = np.zeros(n_bins)
+            T_min = np.zeros(n_bins)
+            T_max = np.zeros(n_bins)
+            for i in range(n_bins):
+                mask = (bin_indices == i)
+                if mask.any():
+                    T_mean[i] = np.mean(temps_riding[mask])
+                    T_min[i] = np.min(temps_riding[mask])
+                    T_max[i] = np.max(temps_riding[mask])
+
+            valid = T_mean > 0
+            if valid.any():
+                ax.fill_between(bin_centers[valid], T_min[valid], T_max[valid],
+                                alpha=0.3, color='red', label='T range')
+                ax.plot(bin_centers[valid], T_mean[valid], 'r-', linewidth=2,
+                        label='T mean')
+
+            # Add zone markers
+            ax.axvline(rf_x_start, color='red', linestyle='--', alpha=0.5, label='RF zone')
+            ax.axvline(rf_x_end, color='red', linestyle='--', alpha=0.5)
+            ax.axvspan(rf_x_start, rf_x_end, alpha=0.1, color='red')
+            ax.axvline(oven_x_end, color='orange', linestyle=':', alpha=0.5, label='Oven exit')
+
+            ax.legend(fontsize=7)
+
+        ax.set_xlabel("X Position [m]")
+        ax.set_ylabel("Temperature [°C]")
+        ax.set_title("Temperature Profile Along Belt (particles on belt)")
+        ax.grid(True, alpha=0.3)
+
+        # [1,1] Core vs Surface Temperature (Biot model)
+        # Shows intra-seed temperature gradient: surface heats first, core lags
+        ax = axes3[1, 1]
+        if hasattr(ps, 'T_core'):
+            riding_mask = (ps.state == ps._STATE_RIDING)
+            collected_mask = (ps.state == ps._STATE_COLLECTED)
+            n_riding = int(riding_mask.sum())
+            n_collected = int(collected_mask.sum())
+
+            # Prefer riding (active heating) for Biot comparison
+            use_riding = n_riding > 0
+            active_mask = riding_mask if use_riding else collected_mask
+
+            if active_mask.any():
+                # For collected particles, use T_at_collection to show treatment temps
+                if not use_riding and hasattr(ps, 'T_at_collection') and hasattr(ps, 'T_core_at_collection'):
+                    T_surface = ps.T_at_collection[active_mask]
+                    T_core = ps.T_core_at_collection[active_mask]
+                    source = "at collection"
+                else:
+                    T_surface = ps.temperature[active_mask]
+                    T_core = ps.T_core[active_mask]
+                    source = "on belt" if use_riding else "current"
+
+                ax.scatter(T_surface, T_core, alpha=0.3, s=5, c='blue')
+                ax.plot([T_surface.min(), T_surface.max()],
+                        [T_surface.min(), T_surface.max()],
+                        'k--', alpha=0.5, label='T_core = T_surface')
+
+                # Calculate average lag (surface - core; positive = heating)
+                lag = np.mean(T_surface - T_core)
+                ax.set_title(f"Core vs Surface Temperature ({source})\n"
+                             f"(Biot model, avg lag: {lag:.1f}°C)")
+
+                ax.set_xlabel("Surface Temperature [°C]")
+                ax.set_ylabel("Core Temperature [°C]")
+                ax.legend(fontsize=7)
+                ax.grid(True, alpha=0.3)
+            else:
+                ax.text(0.5, 0.5, "No active particles", ha="center", va="center",
+                        transform=ax.transAxes)
+        else:
+            ax.text(0.5, 0.5, "No Biot model data", ha="center", va="center",
+                    transform=ax.transAxes)
+
         plt.tight_layout()
 
     plt.show()
@@ -834,9 +1158,10 @@ def _run_live_3d(sim, recipe, args, info, material):
     particle_cloud["Temperature"] = particle_sys.temperature.copy()
 
     T_ambient = material.initial_temperature_c
+    T_max_expected = 100.0  # RF pretreatment reaches 80-90°C; use 100 for headroom
     plotter.add_mesh(
         particle_cloud, scalars="Temperature",
-        cmap="hot", clim=[T_ambient, T_ambient + 15],
+        cmap="hot", clim=[T_ambient, T_max_expected],
         point_size=5.0, render_points_as_spheres=True,
         opacity=0.90, show_scalar_bar=False,
         name="particles", label="Material Particles",
@@ -860,13 +1185,14 @@ def _run_live_3d(sim, recipe, args, info, material):
     mat_grid = field_grid.threshold(value=1, scalars="zone")
     plotter.add_mesh(
         mat_grid, scalars="Temperature",
-        cmap="hot", clim=[T_ambient, T_ambient + 15],
+        cmap="hot", clim=[T_ambient, T_max_expected],
         opacity=0.90, show_scalar_bar=True,
         scalar_bar_args={
-            "title": "Temperature [\u00b0C]",
+            "title": "Temperature [°C]",
             "position_x": 0.82, "width": 0.12,
         },
         label="Temperature Field",
+        name="temperature_field",  # Named for dynamic colorbar updates
     )
 
     # ── Legend, axes, title, camera ────────────────────────────────
@@ -902,6 +1228,11 @@ def _run_live_3d(sim, recipe, args, info, material):
     _gap_peak = 0.0
     _gap_peak_t = 0.0
     hist = None  # Initialize to avoid UnboundLocalError
+
+    # Colorbar range tracking (prevents flickering by only updating on significant change)
+    _cbar_T_min = T_ambient
+    _cbar_T_max = T_ambient + 10.0  # Initial range
+    _cbar_update_threshold = 3.0  # Only update if T_max changes by more than this [°C]
 
     plotter.show(interactive_update=True, auto_close=False)
 
@@ -1012,6 +1343,29 @@ def _run_live_3d(sim, recipe, args, info, material):
             # Temperature field
             T_flat = sim.temperature_field.flatten(order="F")
             mat_grid.cell_data["Temperature"] = T_flat[mat_indices]
+
+            # ── Dynamic colorbar: update only on significant change ────────
+            # This prevents flickering by avoiding per-frame colorbar redraws
+            T_material = T_flat[mat_indices]
+            alive = (particle_sys.state != particle_sys._STATE_DEAD)
+            T_particles = particle_sys.temperature[alive] if alive.any() else np.array([T_ambient])
+
+            T_all = np.concatenate([T_material, T_particles])
+            T_max_actual = float(np.max(T_all))
+
+            # Only update colorbar if T_max changed significantly (reduces flicker)
+            # Colorbar only expands (never shrinks) to avoid jarring changes
+            T_max_target = max(T_max_actual * 1.1, T_ambient + 10.0)  # 10% headroom
+            if T_max_target > _cbar_T_max + _cbar_update_threshold:
+                _cbar_T_max = T_max_target
+                try:
+                    for actor_name in ["particles", "temperature_field"]:
+                        if actor_name in plotter.actors:
+                            mapper = plotter.actors[actor_name].GetMapper()
+                            if mapper:
+                                mapper.SetScalarRange(_cbar_T_min, _cbar_T_max)
+                except Exception:
+                    pass
 
             # Title
             hist = sim.history

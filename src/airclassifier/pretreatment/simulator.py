@@ -315,35 +315,43 @@ class GP15Simulator:
         # ── Feed time: hopper → belt dispatch ──────────────────────────
         feed_time_s = recipe.run_mass_kg / throughput_kg_per_s
 
-        # ── Oven clearing: last material exits the oven chamber ──────
-        # Physics simulation runs until all material has exited the
-        # oven (oven_x_end).  After that, belt transport to the
-        # collection bin is handled by the particle wind-down (no
-        # physics needed — the oven is empty).
+        # ── Run-out: last material reaches the collection bin ─────────
+        # Particles must travel from hopper spawn to head roller (where
+        # they fall off the belt), then fall into the collection bin.
         #
         # Manual p.54: "allow product to 'run-out' to ensure there
-        # is no product in the GP-15."  RF power stays on throughout
-        # but Ia drops to idle as material clears the RF zone.
+        # is no product in the GP-15, then press the GP-15 OFF button."
+        #
+        # The simulation must run until ALL particles have been collected,
+        # not just until they exit the oven RF zone.
         if self._particles is not None:
             pcfg = self._particles.cfg
-            hopper_to_oven_exit = pcfg.oven_x_end - pcfg.spawn_x
+            hopper_to_head_roller = pcfg.head_roller_x - pcfg.spawn_x
         else:
+            cp = self._assembly.conveyor.params
             op = self._assembly.oven.params
             spawn_x = op.oven_x_start_m - 0.35
-            hopper_to_oven_exit = op.oven_x_end_m - spawn_x
+            head_x = cp.frame_length_m - cp.nose_length_m
+            hopper_to_head_roller = head_x - spawn_x
 
-        oven_clearing_s = hopper_to_oven_exit / v_belt
+        belt_runout_s = hopper_to_head_roller / v_belt
 
-        return feed_time_s + oven_clearing_s
+        # Add buffer for falling phase (~1-2 seconds for gravity drop)
+        fall_buffer_s = 2.0
+
+        return feed_time_s + belt_runout_s + fall_buffer_s
 
     def compute_run_timing(self, recipe: Recipe | None = None) -> dict:
         """Compute detailed timing breakdown for a production run.
 
         Returns a dictionary with:
             - feed_time_s: Time to dispatch all mass from hopper [s]
-            - runout_s: Time for last material to reach collection bin [s]
-            - total_duration_s: Total run duration [s]
-            - belt_length_m: Distance from hopper discharge to bin [m]
+            - oven_clearing_s: Time for material to exit oven RF zone [s]
+            - belt_runout_s: Time for material to reach head roller [s]
+            - fall_buffer_s: Buffer for falling into collection bin [s]
+            - total_duration_s: Total run duration (feed + runout + fall) [s]
+            - oven_clearing_m: Distance from spawn to oven exit [m]
+            - belt_length_m: Distance from hopper discharge to head roller [m]
             - throughput_kg_per_s: Mass flow rate [kg/s]
 
         This is useful for displaying timing information in the UI
@@ -352,8 +360,11 @@ class GP15Simulator:
         recipe = recipe or self._recipe or Recipe()
         result = {
             "feed_time_s": 0.0,
-            "runout_s": 0.0,
+            "oven_clearing_s": 0.0,
+            "belt_runout_s": 0.0,
+            "fall_buffer_s": 0.0,
             "total_duration_s": 0.0,
+            "oven_clearing_m": 0.0,
             "belt_length_m": 0.0,
             "throughput_kg_per_s": 0.0,
         }
@@ -376,7 +387,7 @@ class GP15Simulator:
         # Feed time
         feed_time_s = recipe.run_mass_kg / throughput_kg_per_s
 
-        # Oven clearing: last material exits oven chamber (Manual p.54)
+        # Belt distances and timing
         if self._particles is not None:
             pcfg = self._particles.cfg
             oven_clearing_m = pcfg.oven_x_end - pcfg.spawn_x
@@ -390,10 +401,17 @@ class GP15Simulator:
             belt_length_m = head_x - spawn_x
 
         oven_clearing_s = oven_clearing_m / v_belt
+        belt_runout_s = belt_length_m / v_belt
+
+        # Buffer for falling phase (~1-2s for gravity drop into bin)
+        fall_buffer_s = 2.0
 
         result["feed_time_s"] = feed_time_s
         result["oven_clearing_s"] = oven_clearing_s
-        result["total_duration_s"] = feed_time_s + oven_clearing_s
+        result["belt_runout_s"] = belt_runout_s
+        result["fall_buffer_s"] = fall_buffer_s
+        # Total: feed + belt travel to head roller + fall into bin
+        result["total_duration_s"] = feed_time_s + belt_runout_s + fall_buffer_s
         result["oven_clearing_m"] = oven_clearing_m
         result["belt_length_m"] = belt_length_m
         result["throughput_kg_per_s"] = throughput_kg_per_s

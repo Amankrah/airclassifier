@@ -137,9 +137,21 @@ class MaterialProperties:
     name: str = "yellow_pea"
 
     # --- Initial conditions ---
-    initial_moisture_wb: float = 0.10            # 10% wet basis
-    target_moisture_wb: float = 0.03             # 3% target
+    # Dry fractionation protocol: temper to 13.5–15% before RF for uniform heat
+    # penetration, LOX deactivation, and improved protein separation (air classification).
+    initial_moisture_wb: float = 0.14            # 14% wet basis (13.5–15% ideal for pretreatment)
     initial_temperature_c: float = 22.0          # Ambient
+
+    # --- Target conditions (context-dependent) ---
+    # PRETREATMENT / DRY FRACTIONATION:
+    #   - Pre-RF: 13.5–15% moisture (tempering ensures uniform RF heating).
+    #   - Post-RF: typically <10% (e.g. 9–10% in studies); seeds then re-tempered to
+    #     ~12% for consistent de-hulling and milling before air classification.
+    #   - LOX inactivation: >65°C for sufficient time; studies report outfeed ~84°C.
+    #   - Minimize protein denaturation (target <15% globulin native loss).
+    # This target is the typical post-RF moisture; downstream milling often re-tempers to ~12%.
+    target_moisture_wb: float = 0.10             # 10% typical post-RF (re-temper to ~12% for milling)
+    # For aggressive drying (storage), set to 0.03-0.05
 
     # --- Dielectric properties at 27.12 MHz ---
     # eps''(T,M) = a1*M^2 + a2*M + a3*M*T + a4*T + a5
