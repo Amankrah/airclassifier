@@ -272,6 +272,17 @@ class CoupledSimulator:
         self._last_valid_M_outfeed = material.initial_moisture_wb
         self._last_valid_T_outfeed = material.initial_temperature_c
         self._last_valid_T_outfeed_sensor = material.initial_temperature_c  # 75th percentile
+
+        # Snapshot of moisture at batch exhaustion time - represents steady-state
+        # processing value BEFORE the M=0 front starts affecting outfeed readings.
+        # This is the value we report as "outfeed moisture" for the run.
+        self._moisture_at_batch_exhausted: float = material.initial_moisture_wb
+
+        # Track last valid grid-wide temperatures for time series after belt clears.
+        # During clearing, material remaining on belt cools in post-RF zone, but we
+        # want to show representative PROCESSING temperatures, not clearing artifacts.
+        self._last_valid_T_mean: float = material.initial_temperature_c
+        self._last_valid_T_max: float = material.initial_temperature_c
         # Peak outfeed snapshot during processing (for cross-section when belt has cleared).
         # Run#1 strip: 82–93°C at oven exit; PLC Product_Temp peaks then cools after batch.
         # We store the T/M field snapshot when sensor T is highest so the heatmap matches.
@@ -569,6 +580,9 @@ class CoupledSimulator:
         self._last_valid_M_outfeed = self._material.initial_moisture_wb
         self._last_valid_T_outfeed = self._material.initial_temperature_c
         self._last_valid_T_outfeed_sensor = self._material.initial_temperature_c
+        self._moisture_at_batch_exhausted = self._material.initial_moisture_wb
+        self._last_valid_T_mean = self._material.initial_temperature_c
+        self._last_valid_T_max = self._material.initial_temperature_c
         self._peak_outfeed_sensor_T = self._material.initial_temperature_c
         self._peak_outfeed_T_yz = None
         self._peak_outfeed_M_yz = None
@@ -757,6 +771,9 @@ class CoupledSimulator:
                 if dispatched >= cfg.run_mass_kg and not self._batch_exhausted:
                     self._batch_exhausted = True
                     self._batch_exhausted_time = self._time
+                    # Snapshot current outfeed moisture - this is the steady-state
+                    # value BEFORE the M=0 front starts affecting outfeed.
+                    self._moisture_at_batch_exhausted = self._last_valid_M_outfeed
                     # Signal particles: stop moisture interpolation from grid
                     # (grid now has M=0 behind the material)
                     self._particles.set_batch_exhausted(True)
@@ -1271,18 +1288,32 @@ class CoupledSimulator:
                 if time_since_exhaust >= advect_time:
                     outfeed_clear = True
 
-        has_material = (not outfeed_clear) and (M_out_cells.size > 0)
+        # Check if outfeed has meaningful moisture content.
+        # The timing-based outfeed_clear can be off due to geometry approximations.
+        # Add a reactive threshold: if mean moisture < 50% of initial, the M=0 front
+        # has arrived regardless of the timing calculation.
+        M_outfeed_mean = float(np.mean(M_out_cells)) if M_out_cells.size > 0 else 0.0
+        M_clearing_threshold = mat.initial_moisture_wb * 0.5
+        outfeed_moisture_low = (M_outfeed_mean < M_clearing_threshold)
+
+        has_material = (not outfeed_clear) and (M_out_cells.size > 0) and (not outfeed_moisture_low)
 
         if has_material:
             T_outfeed = float(np.mean(T_out_cells))
-            M_outfeed = float(np.mean(M_out_cells))
+            M_outfeed = M_outfeed_mean
             # Update last valid values for use after belt clears
             self._last_valid_T_outfeed = T_outfeed
             self._last_valid_M_outfeed = M_outfeed
+            # Also update grid-wide T values (for time series range plot)
+            self._last_valid_T_mean = T_mean
+            self._last_valid_T_max = T_max
         else:
             # M=0 front at outlet (belt clearing) — hold last valid values
             T_outfeed = self._last_valid_T_outfeed
             M_outfeed = self._last_valid_M_outfeed
+            # Use held values for grid temperatures (prevents range dropping during clearing)
+            T_mean = self._last_valid_T_mean
+            T_max = self._last_valid_T_max
 
         # Sensor-comparable temperature: The PLC's Product_Temp sensor is an
         # IR pyrometer or thermocouple that measures surface/exposed temperatures,
@@ -1321,9 +1352,14 @@ class CoupledSimulator:
         bed_cross = mat.bed_depth_m * self._machine.belt_width_m
         rho_bulk = mat.bulk_density(mat.initial_moisture_wb)
         throughput_kg_s = rho_bulk * bed_cross * v_belt
-        # Water removed: integrate over time (batch-correct). Once belt clears,
-        # M_outfeed = last valid so delta_M is small and we stop adding.
-        delta_M_step = max(mat.initial_moisture_wb - M_outfeed, 0.0)
+        # Water removed: integrate over time (batch-correct).
+        # Once batch exhausts, use the steady-state moisture snapshot to prevent
+        # the M=0 front from artificially inflating water removal calculation.
+        # The M=0 front mixing at outfeed would drop M_outfeed, creating a false
+        # spike in delta_M and cumulative water removed.
+        M_for_delta = (self._moisture_at_batch_exhausted if self._batch_exhausted
+                       else M_outfeed)
+        delta_M_step = max(mat.initial_moisture_wb - M_for_delta, 0.0)
         self._cumulative_water_removed_kg += throughput_kg_s * delta_M_step * dt
         water_removed_kg = self._cumulative_water_removed_kg
         spec_energy = (total_energy_kwh / max(water_removed_kg, 1e-6)
@@ -1518,18 +1554,18 @@ class CoupledSimulator:
                 sensor_T = (float(np.percentile(T_peak, 75)) if T_peak.size
                             else self._peak_outfeed_sensor_T)
 
-                # Moisture: use LAST VALID value (not peak-T snapshot which is the driest moment).
-                # Peak temperature = peak evaporation = minimum moisture. Using peak snapshot
-                # moisture underestimates the representative steady-state value by ~1.5 points
-                # compared to machine NIR measurements.
-                avg_M = self._last_valid_M_outfeed
+                # Moisture: use BATCH EXHAUSTED snapshot (not peak-T snapshot which is driest,
+                # nor last_valid which gets dragged down by M=0 front mixing at outfeed).
+                # The batch-exhausted snapshot captures steady-state processing moisture
+                # BEFORE the M=0 front affects outfeed readings.
+                avg_M = self._moisture_at_batch_exhausted
                 M_yz = self._peak_outfeed_M_yz.copy()
                 M_yz[mat_mask_yz] = avg_M  # Fill heatmap with representative value
                 moisture_cv = 0.0  # CV not meaningful for single value
                 use_peak_snapshot = True
             else:
                 T_mat = np.array([self._last_valid_T_outfeed])
-                M_mat = np.array([self._last_valid_M_outfeed])
+                M_mat = np.array([self._moisture_at_batch_exhausted])
                 use_last_valid_sensor = True
 
         if not use_peak_snapshot:
