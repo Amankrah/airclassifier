@@ -1261,19 +1261,30 @@ class CoupledSimulator:
         T_out_cells = self.thermal.T[-1, :, :][outfeed_mat]
         M_out_cells = self.moisture.M[-1, :, :][outfeed_mat]
 
-        # For time series: detect when the M=0 clearing front has reached
-        # the outfeed grid slice and freeze to last-valid values.
+        # For time series: detect when material has actually arrived at the
+        # outfeed (start of run) and when the M=0 clearing front arrives (end).
         #
-        # Approach: compute advection time from hopper discharge to the
-        # outfeed.  Once batch_exhausted AND elapsed time >= advection time,
-        # the M=0 front has (physically) arrived at the outlet slice.  This
-        # is *predictive* — we freeze at the exact arrival instant, before
-        # M=0 cells mix into the slice average and create an artificial dip.
+        # The Eulerian grid is pre-filled with initial moisture, but that
+        # doesn't represent actual material flow in a batch run.  We track
+        # advection time from hopper to outfeed to know when REAL material
+        # arrives and when it clears.
         #
-        # Previous approach used a 50% moisture threshold which was
-        # *reactive* and triggered after the clearing artifact had already
-        # contaminated the slice average for several timesteps.
+        # material_arrived_at_outfeed: False until first material reaches outfeed
+        # outfeed_clear: True after batch exhausts AND M=0 front reaches outfeed
+        material_arrived_at_outfeed = True  # default for continuous mode
         outfeed_clear = False
+
+        if self._particles is not None and v_belt > 0:
+            # Distance from hopper spawn to outfeed (world coordinates)
+            outfeed_world_x = self._grid_origin[0] + machine.oven_length_m
+            hopper_to_outfeed = outfeed_world_x - self._particles.cfg.spawn_x
+
+            if hopper_to_outfeed > 0:
+                arrival_time = hopper_to_outfeed / v_belt
+                # Material hasn't arrived yet if we're before arrival time
+                if self._time < arrival_time:
+                    material_arrived_at_outfeed = False
+
         if self._batch_exhausted and v_belt > 0:
             # Distance from hopper discharge to outfeed (world coordinates),
             # consistent with RF-zone clearing logic (§ batch-aware infeed).
@@ -1296,7 +1307,13 @@ class CoupledSimulator:
         M_clearing_threshold = mat.initial_moisture_wb * 0.5
         outfeed_moisture_low = (M_outfeed_mean < M_clearing_threshold)
 
-        has_material = (not outfeed_clear) and (M_out_cells.size > 0) and (not outfeed_moisture_low)
+        # has_material: True only if material has arrived AND hasn't cleared yet
+        # Before arrival: grid is pre-filled but doesn't represent actual flow
+        # After clearing: M=0 front has passed through
+        has_material = (material_arrived_at_outfeed and
+                        not outfeed_clear and
+                        M_out_cells.size > 0 and
+                        not outfeed_moisture_low)
 
         if has_material:
             T_outfeed = float(np.mean(T_out_cells))
@@ -1307,6 +1324,11 @@ class CoupledSimulator:
             # Also update grid-wide T values (for time series range plot)
             self._last_valid_T_mean = T_mean
             self._last_valid_T_max = T_max
+        elif not material_arrived_at_outfeed:
+            # Material hasn't reached outfeed yet - show zeros to indicate no output
+            # The pre-filled grid values don't represent actual processed material
+            T_outfeed = mat.initial_temperature_c  # ambient, no heating yet
+            M_outfeed = 0.0  # no processed material at outfeed yet
         else:
             # M=0 front at outlet (belt clearing) — hold last valid values
             T_outfeed = self._last_valid_T_outfeed
@@ -1402,6 +1424,21 @@ class CoupledSimulator:
         # T and M from the Eulerian grid via trilinear interpolation.
         # One-way coupling (E→L): particles don't affect the grid.
         if self._particles is not None:
+            # For batch runs, compute whether we're in the initial fill period.
+            # During initial fill, the Eulerian M field is still filling with
+            # material (M=0 at initialization, fills from inlet). Particles
+            # should still interpolate T from the grid even if M hasn't arrived.
+            initial_fill_active = False
+            pcfg = self._particles.cfg
+            if pcfg.run_mass_kg > 0 and v_belt > 0:
+                # Time for material to completely fill the grid:
+                # transit_time (hopper to grid) + grid_length / v_belt
+                hopper_to_grid = self._grid_origin[0] - pcfg.spawn_x
+                transit_time = hopper_to_grid / v_belt if hopper_to_grid > 0 else 0.0
+                grid_length = nx * dx
+                grid_fill_end_time = transit_time + grid_length / v_belt
+                initial_fill_active = (self._time < grid_fill_end_time)
+
             self._particles.step(
                 dt_sim=dt,
                 belt_speed_m_per_s=self.conveyor.state.belt_speed_m_per_s,
@@ -1410,6 +1447,7 @@ class CoupledSimulator:
                 cell_is_material=self.cell_is_material,
                 grid_origin=self._grid_origin,
                 cell_sizes=self._cell_sizes,
+                initial_fill_active=initial_fill_active,
             )
 
         return state

@@ -680,18 +680,30 @@ Examples:
         plt.tight_layout()
 
     # ════════════════════════════════════════════════════════════════
-    # FIGURE 5: Particle Spatial Analysis (2x2 = 4 plots)
+    # FIGURE 5: Particle Analysis (2x2 = 4 plots)
     # ════════════════════════════════════════════════════════════════
-    # Shows particle temperature and moisture by position along the belt
+    # For completed runs (all collected): show histograms of treatment conditions
+    # For mid-simulation: show scatter by X position along belt
     if hasattr(sim, 'particles'):
         ps = sim.particles
         fig5, ax5 = plt.subplots(2, 2, figsize=(14, 10))
-        fig5.suptitle(
-            f"Particle Spatial Analysis  --  Lagrangian View of Material Flow\n"
-            f"Hopper: {ps.hopper_count}  |  Belt: {ps.riding_count}  |  "
-            f"Collected: {ps.collected_count}  |  Total: {ps.cfg.max_particles}",
-            fontsize=11, fontweight="bold",
-        )
+
+        # Determine if run is complete (all particles collected)
+        run_complete = (ps.riding_count == 0 and ps.collected_count > 0)
+
+        if run_complete:
+            fig5.suptitle(
+                f"Particle Treatment Analysis  --  Batch Complete\n"
+                f"Collected: {ps.collected_count}  |  Total: {ps.cfg.max_particles}",
+                fontsize=11, fontweight="bold",
+            )
+        else:
+            fig5.suptitle(
+                f"Particle Spatial Analysis  --  Lagrangian View of Material Flow\n"
+                f"Hopper: {ps.hopper_count}  |  Belt: {ps.riding_count}  |  "
+                f"Collected: {ps.collected_count}  |  Total: {ps.cfg.max_particles}",
+                fontsize=11, fontweight="bold",
+            )
 
         # Get machine geometry for zone markers
         rf_x_start = info.get('rf_zone_x_start_m', 0.5)
@@ -699,96 +711,98 @@ Examples:
         oven_x_end = ps.cfg.oven_x_end
         head_roller_x = ps.cfg.head_roller_x
 
-        # [0,0] Particle Temperature vs X Position (scatter)
-        # Use T_at_collection for collected particles to show treatment temperature
+        # Build data arrays for collected particles
+        collected_mask = (ps.state == ps._STATE_COLLECTED)
+        if collected_mask.any() and hasattr(ps, 'T_at_oven_exit'):
+            T_collected = ps.T_at_oven_exit[collected_mask]
+            M_collected = ps.M_at_oven_exit[collected_mask] * 100 if hasattr(ps, 'M_at_oven_exit') else None
+        else:
+            T_collected = None
+            M_collected = None
+
+        # [0,0] Temperature Distribution / Scatter
         ax = ax5[0, 0]
-        alive_mask = (ps.state != ps._STATE_DEAD)
-        if alive_mask.any():
-            pos_x = ps.pos[alive_mask, 0]
-            states = ps.state[alive_mask]
-
-            # Build temperature array: use T_at_oven_exit for collected, current for others
-            temps = ps.temperature[alive_mask].copy()
-            if hasattr(ps, 'T_at_oven_exit'):
-                collected_in_alive = (states == ps._STATE_COLLECTED)
-                temps[collected_in_alive] = ps.T_at_oven_exit[alive_mask][collected_in_alive]
-
-            # Color by state
-            colors = []
-            for s in states:
-                if s == ps._STATE_IN_HOPPER:
-                    colors.append('#FFA500')  # orange
-                elif s == ps._STATE_RIDING:
-                    colors.append('#4169E1')  # blue
-                elif s == ps._STATE_FALLING:
-                    colors.append('#DC143C')  # red
-                else:  # COLLECTED
-                    colors.append('#228B22')  # green
-
-            scatter = ax.scatter(pos_x, temps, c=colors, alpha=0.5, s=3)
-
-            # Add zone markers
-            ax.axvline(rf_x_start, color='red', linestyle='--', alpha=0.5, label='RF zone start')
-            ax.axvline(rf_x_end, color='red', linestyle='--', alpha=0.5, label='RF zone end')
-            ax.axvline(oven_x_end, color='orange', linestyle=':', alpha=0.5, label='Oven exit')
-            ax.axvline(head_roller_x, color='gray', linestyle=':', alpha=0.5, label='Head roller')
-
-            # Add legend for particle states
-            from matplotlib.patches import Patch
-            legend_elements = [
-                Patch(facecolor='#FFA500', label='Hopper'),
-                Patch(facecolor='#4169E1', label='Belt'),
-                Patch(facecolor='#DC143C', label='Falling'),
-                Patch(facecolor='#228B22', label='Collected'),
-            ]
-            ax.legend(handles=legend_elements, loc='upper left', fontsize=7)
-
-        ax.set_xlabel("X Position [m]")
-        ax.set_ylabel("Temperature [°C]")
-        ax.set_title("Particle Temperature by Position")
-        ax.grid(True, alpha=0.3)
-
-        # [0,1] Particle Moisture vs X Position
-        # Use M_at_oven_exit for collected particles to show treatment moisture
-        ax = ax5[0, 1]
-        if alive_mask.any():
-            moistures = ps.moisture[alive_mask].copy()
-            if hasattr(ps, 'M_at_oven_exit'):
-                collected_in_alive = (states == ps._STATE_COLLECTED)
-                moistures[collected_in_alive] = ps.M_at_oven_exit[alive_mask][collected_in_alive]
-            moistures = moistures * 100  # convert to %
-            ax.scatter(pos_x, moistures, c=colors, alpha=0.5, s=3)
-
-            # Add zone markers
-            ax.axvline(rf_x_start, color='red', linestyle='--', alpha=0.5)
-            ax.axvline(rf_x_end, color='red', linestyle='--', alpha=0.5)
-            ax.axvline(oven_x_end, color='orange', linestyle=':', alpha=0.5)
-            ax.axvline(head_roller_x, color='gray', linestyle=':', alpha=0.5)
-
-            ax.axhline(material.target_moisture_wb * 100, color='green',
-                       linestyle='--', alpha=0.7, label=f'Target {material.target_moisture_wb:.0%}')
+        if run_complete and T_collected is not None:
+            # Histogram for completed run
+            ax.hist(T_collected, bins=30, color='#228B22', alpha=0.7, edgecolor='black')
+            ax.axvline(np.mean(T_collected), color='red', linestyle='--', linewidth=2,
+                       label=f'Mean: {np.mean(T_collected):.1f}°C')
+            ax.axvline(np.percentile(T_collected, 75), color='orange', linestyle=':',
+                       linewidth=1.5, label=f'P75: {np.percentile(T_collected, 75):.1f}°C')
+            ax.set_xlabel("Treatment Temperature [°C]")
+            ax.set_ylabel("Particle Count")
+            ax.set_title("Treatment Temperature Distribution\n(at oven exit)")
             ax.legend(fontsize=7)
+        else:
+            # Scatter for mid-simulation
+            alive_mask = (ps.state != ps._STATE_DEAD)
+            if alive_mask.any():
+                pos_x = ps.pos[alive_mask, 0]
+                states = ps.state[alive_mask]
+                temps = ps.temperature[alive_mask].copy()
+                if hasattr(ps, 'T_at_oven_exit'):
+                    collected_in_alive = (states == ps._STATE_COLLECTED)
+                    temps[collected_in_alive] = ps.T_at_oven_exit[alive_mask][collected_in_alive]
 
-        ax.set_xlabel("X Position [m]")
-        ax.set_ylabel("Moisture [% wb]")
-        ax.set_title("Particle Moisture by Position")
+                colors = ['#FFA500' if s == ps._STATE_IN_HOPPER else
+                          '#4169E1' if s == ps._STATE_RIDING else
+                          '#DC143C' if s == ps._STATE_FALLING else '#228B22'
+                          for s in states]
+                ax.scatter(pos_x, temps, c=colors, alpha=0.5, s=3)
+                ax.axvline(rf_x_start, color='red', linestyle='--', alpha=0.5)
+                ax.axvline(rf_x_end, color='red', linestyle='--', alpha=0.5)
+                ax.axvline(oven_x_end, color='orange', linestyle=':', alpha=0.5)
+                ax.set_xlabel("X Position [m]")
+                ax.set_ylabel("Temperature [°C]")
+                ax.set_title("Particle Temperature by Position")
         ax.grid(True, alpha=0.3)
 
-        # [1,0] Temperature Profile Along Belt (binned average)
+        # [0,1] Moisture Distribution / Scatter
+        ax = ax5[0, 1]
+        if run_complete and M_collected is not None:
+            # Histogram for completed run
+            ax.hist(M_collected, bins=30, color='#4169E1', alpha=0.7, edgecolor='black')
+            ax.axvline(np.mean(M_collected), color='blue', linestyle='--', linewidth=2,
+                       label=f'Mean: {np.mean(M_collected):.1f}%')
+            ax.axvline(material.target_moisture_wb * 100, color='green', linestyle='--',
+                       linewidth=1.5, label=f'Target: {material.target_moisture_wb:.0%}')
+            ax.set_xlabel("Treatment Moisture [% wb]")
+            ax.set_ylabel("Particle Count")
+            ax.set_title("Treatment Moisture Distribution\n(at oven exit)")
+            ax.legend(fontsize=7)
+        else:
+            # Scatter for mid-simulation
+            if alive_mask.any():
+                moistures = ps.moisture[alive_mask].copy()
+                if hasattr(ps, 'M_at_oven_exit'):
+                    collected_in_alive = (states == ps._STATE_COLLECTED)
+                    moistures[collected_in_alive] = ps.M_at_oven_exit[alive_mask][collected_in_alive]
+                moistures = moistures * 100
+                ax.scatter(pos_x, moistures, c=colors, alpha=0.5, s=3)
+                ax.axvline(rf_x_start, color='red', linestyle='--', alpha=0.5)
+                ax.axvline(rf_x_end, color='red', linestyle='--', alpha=0.5)
+                ax.axhline(material.target_moisture_wb * 100, color='green',
+                           linestyle='--', alpha=0.7, label=f'Target {material.target_moisture_wb:.0%}')
+                ax.legend(fontsize=7)
+                ax.set_xlabel("X Position [m]")
+                ax.set_ylabel("Moisture [% wb]")
+                ax.set_title("Particle Moisture by Position")
+        ax.grid(True, alpha=0.3)
+
+        # [1,0] Temperature Profile Along Belt / T vs M scatter
         ax = ax5[1, 0]
         riding_mask = (ps.state == ps._STATE_RIDING)
         if riding_mask.any():
+            # Mid-simulation: binned temperature profile
             pos_x_riding = ps.pos[riding_mask, 0]
             temps_riding = ps.temperature[riding_mask]
 
-            # Bin particles by X position
             n_bins = 50
             x_bins = np.linspace(pos_x_riding.min(), pos_x_riding.max(), n_bins + 1)
             bin_centers = (x_bins[:-1] + x_bins[1:]) / 2
             bin_indices = np.digitize(pos_x_riding, x_bins) - 1
             bin_indices = np.clip(bin_indices, 0, n_bins - 1)
 
-            # Calculate mean, min, max per bin
             T_mean = np.zeros(n_bins)
             T_min = np.zeros(n_bins)
             T_max = np.zeros(n_bins)
@@ -803,20 +817,28 @@ Examples:
             if valid.any():
                 ax.fill_between(bin_centers[valid], T_min[valid], T_max[valid],
                                 alpha=0.3, color='red', label='T range')
-                ax.plot(bin_centers[valid], T_mean[valid], 'r-', linewidth=2,
-                        label='T mean')
-
-            # Add zone markers
+                ax.plot(bin_centers[valid], T_mean[valid], 'r-', linewidth=2, label='T mean')
             ax.axvline(rf_x_start, color='red', linestyle='--', alpha=0.5, label='RF zone')
             ax.axvline(rf_x_end, color='red', linestyle='--', alpha=0.5)
             ax.axvspan(rf_x_start, rf_x_end, alpha=0.1, color='red')
             ax.axvline(oven_x_end, color='orange', linestyle=':', alpha=0.5, label='Oven exit')
-
+            ax.set_xlabel("X Position [m]")
+            ax.set_ylabel("Temperature [°C]")
+            ax.set_title("Temperature Profile Along Belt (particles on belt)")
             ax.legend(fontsize=7)
-
-        ax.set_xlabel("X Position [m]")
-        ax.set_ylabel("Temperature [°C]")
-        ax.set_title("Temperature Profile Along Belt (particles on belt)")
+        elif run_complete and T_collected is not None and M_collected is not None:
+            # Completed run: T vs M scatter to show processing correlation
+            ax.scatter(M_collected, T_collected, c='#228B22', alpha=0.3, s=5)
+            ax.axvline(material.target_moisture_wb * 100, color='green', linestyle='--',
+                       alpha=0.7, label=f'Target M: {material.target_moisture_wb:.0%}')
+            ax.axhline(76, color='orange', linestyle=':', alpha=0.6, label='Legumin onset 76°C')
+            ax.set_xlabel("Moisture [% wb]")
+            ax.set_ylabel("Temperature [°C]")
+            ax.set_title("Temperature vs Moisture\n(treatment correlation)")
+            ax.legend(fontsize=7)
+        else:
+            ax.text(0.5, 0.5, "No particle data on belt", ha="center", va="center",
+                    transform=ax.transAxes)
         ax.grid(True, alpha=0.3)
 
         # [1,1] Core vs Surface Temperature (Biot model)

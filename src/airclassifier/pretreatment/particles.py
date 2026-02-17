@@ -543,6 +543,7 @@ class MaterialParticleSystem:
         cell_is_material: Optional[np.ndarray] = None,
         grid_origin: Optional[Tuple[float, float, float]] = None,
         cell_sizes: Optional[Tuple[float, float, float]] = None,
+        initial_fill_active: bool = False,
     ):
         """Advance all particles by one simulation timestep.
 
@@ -788,6 +789,7 @@ class MaterialParticleSystem:
             self._interpolate_fields(
                 T_field, M_field, cell_is_material,
                 grid_origin, cell_sizes,
+                initial_fill_active=initial_fill_active,
             )
 
         # ── Capture treatment temperature at oven exit ────────────────
@@ -971,7 +973,8 @@ class MaterialParticleSystem:
     #  Trilinear interpolation (standard E-L coupling)
     # ------------------------------------------------------------------
 
-    def _interpolate_fields(self, T_field, M_field, mask, origin, cell_sizes):
+    def _interpolate_fields(self, T_field, M_field, mask, origin, cell_sizes,
+                            initial_fill_active: bool = False):
         """Trilinear interpolation of Eulerian fields at particle positions.
 
         Only updates riding particles that are within the oven chamber where
@@ -985,6 +988,11 @@ class MaterialParticleSystem:
            → Material has advected away; particle keeps its current T and M
         3. Particles outside grid bounds (past oven):
            → Post-grid cooling handled in step() method
+
+        During initial fill (batch runs), the Eulerian M field starts at 0
+        and fills gradually. When ``initial_fill_active=True``, temperature
+        interpolation uses only the material mask (geometry), not the moisture
+        check. This ensures particles get grid T even before M has filled.
 
         This approach is spatially aware (per-particle) rather than relying
         on the global batch_exhausted flag, correctly handling the case
@@ -1068,7 +1076,14 @@ class MaterialParticleSystem:
             in_material_mask = (mask[nearest_ix, nearest_iy, nearest_iz] == 1)
 
         # Combined check: material must exist in BOTH moisture field AND mask
-        should_interpolate = has_material_in_grid & in_material_mask
+        should_interpolate_M = has_material_in_grid & in_material_mask
+
+        # For temperature: during initial fill, the grid T is valid even if M
+        # hasn't filled yet. Use material mask only (ignore moisture check).
+        if initial_fill_active:
+            should_interpolate_T = in_material_mask
+        else:
+            should_interpolate_T = should_interpolate_M
 
         # ── Temperature interpolation ──────────────────────────────────────
         T_interp = (
@@ -1080,14 +1095,15 @@ class MaterialParticleSystem:
 
         # Only update temperature where material actually exists in grid
         current_T = self.temperature[in_grid_indices]
-        T_final = np.where(should_interpolate, T_interp, current_T)
+        T_final = np.where(should_interpolate_T, T_interp, current_T)
         self.temperature[in_grid_indices] = T_final.astype(np.float32)
 
         # ── Moisture interpolation ─────────────────────────────────────────
         if M_interp is not None:
-            # Only update moisture where material actually exists in grid
+            # Only update moisture where moisture actually exists in grid
+            # (during initial fill, M hasn't arrived yet, so keep inlet M)
             current_M = self.moisture[in_grid_indices]
-            M_final = np.where(should_interpolate, M_interp, current_M)
+            M_final = np.where(should_interpolate_M, M_interp, current_M)
             self.moisture[in_grid_indices] = M_final.astype(np.float32)
 
     # ------------------------------------------------------------------
