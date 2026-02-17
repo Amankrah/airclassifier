@@ -271,6 +271,7 @@ class CoupledSimulator:
         # When M=0 advects through the grid, we use these instead of the grid values.
         self._last_valid_M_outfeed = material.initial_moisture_wb
         self._last_valid_T_outfeed = material.initial_temperature_c
+        self._last_valid_T_outfeed_sensor = material.initial_temperature_c  # 75th percentile
         # Peak outfeed snapshot during processing (for cross-section when belt has cleared).
         # Run#1 strip: 82–93°C at oven exit; PLC Product_Temp peaks then cools after batch.
         # We store the T/M field snapshot when sensor T is highest so the heatmap matches.
@@ -567,6 +568,7 @@ class CoupledSimulator:
         self._rf_zone_clear_time = 0.0
         self._last_valid_M_outfeed = self._material.initial_moisture_wb
         self._last_valid_T_outfeed = self._material.initial_temperature_c
+        self._last_valid_T_outfeed_sensor = self._material.initial_temperature_c
         self._peak_outfeed_sensor_T = self._material.initial_temperature_c
         self._peak_outfeed_T_yz = None
         self._peak_outfeed_M_yz = None
@@ -1236,7 +1238,8 @@ class CoupledSimulator:
         M_mean = float(np.mean(M_mat)) if M_mat.size else mat.initial_moisture_wb
         M_min = float(np.min(M_mat)) if M_mat.size else 0.0
 
-        # Outfeed cross-section (last X-slice, material cells only)
+        # Outfeed cross-section: last X-slice (index -1). Neumann BC sets T[-1]=T[-2],
+        # so this slice is the temperature at the oven exit (no gradient at outlet).
         outfeed_mat = (self.cell_is_material[-1, :, :] == 1)
         T_out_cells = self.thermal.T[-1, :, :][outfeed_mat]
         M_out_cells = self.moisture.M[-1, :, :][outfeed_mat]
@@ -1297,14 +1300,15 @@ class CoupledSimulator:
         # between mean and max that matches sensor physics.
         if has_material and T_out_cells.size > 0:
             T_outfeed_sensor = float(np.percentile(T_out_cells, 75))
+            self._last_valid_T_outfeed_sensor = T_outfeed_sensor
             # Snapshot at peak sensor T for cross-section when belt later clears (Run#1: 82–93°C at oven exit)
             if T_outfeed_sensor > self._peak_outfeed_sensor_T:
                 self._peak_outfeed_sensor_T = T_outfeed_sensor
                 self._peak_outfeed_T_yz = self.thermal.T[-1, :, :].copy()
                 self._peak_outfeed_M_yz = self.moisture.M[-1, :, :].copy()
         else:
-            # Use last valid temperature when belt has cleared
-            T_outfeed_sensor = self._last_valid_T_outfeed
+            # Use last valid sensor (75th percentile) when belt has cleared, not mean
+            T_outfeed_sensor = self._last_valid_T_outfeed_sensor
 
         # Evaporative power (latent heat sink)
         evap_rate_mat = self.moisture.evap_rate[mat_mask]
@@ -1501,34 +1505,41 @@ class CoupledSimulator:
         # time-series and Run#1 strip data (82–93°C at oven exit). Do NOT use
         # the current grid (cold/empty) or particle data (cooled in bin).
         use_peak_snapshot = False
+        use_last_valid_sensor = False  # belt cleared, no peak: use 75th percentile fallback
         if T_mat.size == 0:
             if (self._peak_outfeed_T_yz is not None and
                     self._peak_outfeed_M_yz is not None):
-                # Snapshot from when sensor T was highest (at oven exit during processing)
+                # Temperature: use peak snapshot (matches strip sensor readings 82-93°C)
                 T_yz = self._peak_outfeed_T_yz.copy()
-                M_yz = self._peak_outfeed_M_yz.copy()
-                peak_has = mat_mask_yz & (M_yz > M_threshold)
+                peak_has = mat_mask_yz & (self._peak_outfeed_M_yz > M_threshold)
                 T_peak = T_yz[peak_has]
-                M_peak = M_yz[peak_has]
                 avg_T = float(np.mean(T_peak)) if T_peak.size else self._last_valid_T_outfeed
-                avg_M = float(np.mean(M_peak)) if M_peak.size else self._last_valid_M_outfeed
                 max_T = float(np.max(T_peak)) if T_peak.size else self._peak_outfeed_sensor_T
                 sensor_T = (float(np.percentile(T_peak, 75)) if T_peak.size
                             else self._peak_outfeed_sensor_T)
-                moisture_cv = (float(np.std(M_peak) / avg_M) if M_peak.size and avg_M > 1e-8
-                               else 0.0)
+
+                # Moisture: use LAST VALID value (not peak-T snapshot which is the driest moment).
+                # Peak temperature = peak evaporation = minimum moisture. Using peak snapshot
+                # moisture underestimates the representative steady-state value by ~1.5 points
+                # compared to machine NIR measurements.
+                avg_M = self._last_valid_M_outfeed
+                M_yz = self._peak_outfeed_M_yz.copy()
+                M_yz[mat_mask_yz] = avg_M  # Fill heatmap with representative value
+                moisture_cv = 0.0  # CV not meaningful for single value
                 use_peak_snapshot = True
             else:
                 T_mat = np.array([self._last_valid_T_outfeed])
                 M_mat = np.array([self._last_valid_M_outfeed])
+                use_last_valid_sensor = True
 
         if not use_peak_snapshot:
             # Compute averages from current slice or fallback T_mat/M_mat
             avg_T = float(np.mean(T_mat)) if T_mat.size else mat.initial_temperature_c
             avg_M = float(np.mean(M_mat)) if M_mat.size else mat.initial_moisture_wb
             max_T = float(np.max(T_mat)) if T_mat.size else mat.initial_temperature_c
-            sensor_T = (float(np.percentile(T_mat, 75)) if T_mat.size
-                        else mat.initial_temperature_c)
+            sensor_T = (self._last_valid_T_outfeed_sensor if use_last_valid_sensor
+                        else (float(np.percentile(T_mat, 75)) if T_mat.size
+                              else mat.initial_temperature_c))
             if M_mat.size and avg_M > 1e-8:
                 moisture_cv = float(np.std(M_mat) / avg_M)
             else:

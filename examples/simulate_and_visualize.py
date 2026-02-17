@@ -317,21 +317,19 @@ Examples:
     t_arr = np.array(ts["time_s"])
     t_min = t_arr / 60.0  # time in minutes for readability
 
-    # ── Main dashboard: 4x3 grid (expanded from 3x3) ──────────────────
-    fig, axes = plt.subplots(4, 3, figsize=(16, 14))
-    fig.suptitle(
-        f"GP-15 Digital Twin -- {args.mass:.0f} kg Whole Yellow Pea  |  "
+    # ════════════════════════════════════════════════════════════════
+    # FIGURE 1: Process KPIs (2x2 = 4 plots)
+    # ════════════════════════════════════════════════════════════════
+    fig1, ax1 = plt.subplots(2, 2, figsize=(12, 9))
+    fig1.suptitle(
+        f"GP-15 Process KPIs -- {args.mass:.0f} kg Yellow Pea  |  "
         f"Gap {args.gap:.0f} mm  |  Bed {args.bed_depth:.0f} mm  |  "
-        f"Belt {args.speed} m/min  |  {args.duration:.0f} s",
-        fontsize=12, fontweight="bold",
+        f"Belt {args.speed} m/min",
+        fontsize=11, fontweight="bold",
     )
 
-    # ── Row 1: Temperature, Moisture, Electrode Gap ──────────────
-
-    # [0,0] Temperature & protein quality (pretreatment) — not drying.
-    # Secondary axis: weighted globulin native loss (7S+11S). For pretreatment we
-    # want to keep this LOW (target typically <15%); high % = over-processing.
-    ax = axes[0, 0]
+    # [0,0] Temperature & Protein Denaturation
+    ax = ax1[0, 0]
     ax.fill_between(t_min, ts["T_mean_c"], ts["T_max_c"],
                     alpha=0.15, color="red", label="Trange")
     if "T_outfeed_sensor_c" in ts:
@@ -362,7 +360,7 @@ Examples:
 
     # [0,1] Moisture — Dry Fractionation Pipeline
     # Research: 13.5-15% pre-RF → ~9.5-10% post-RF → re-temper to 12% for milling
-    ax = axes[0, 1]
+    ax = ax1[0, 1]
     ax.plot(t_min, np.array(ts["M_outfeed_wb"]) * 100, "b-", linewidth=2,
             label="M outfeed")
     ax.plot(t_min, np.array(ts["M_mean_wb"]) * 100, "b-", linewidth=0.8,
@@ -390,21 +388,8 @@ Examples:
     ax.legend(fontsize=6, loc="upper right")
     ax.grid(True, alpha=0.3)
 
-    # [0,2] Electrode gap (MRH controller)
-    ax = axes[0, 2]
-    ax.plot(t_min, ts["electrode_gap_mm"], "g-", linewidth=2, label="Actual gap")
-    ax.axhline(args.gap, color="gray", linestyle="--", alpha=0.5,
-               label=f"Setpoint {args.gap:.0f} mm")
-    ax.set_xlabel("Time [min]")
-    ax.set_ylabel("Electrode Gap [mm]")
-    ax.set_title("MRH Gap Control")
-    ax.legend(fontsize=7)
-    ax.grid(True, alpha=0.3)
-
-    # ── Row 2: RF Power, Anode Current, Energy Balance ───────────
-
     # [1,0] RF Power + Evaporative power
-    ax = axes[1, 0]
+    ax = ax1[1, 0]
     ax.plot(t_min, ts["rf_power_kw"], "m-", linewidth=2, label="RF power (in)")
     ax.plot(t_min, ts["evap_power_kw"], "c-", linewidth=1.5,
             alpha=0.8, label="Evap. cooling")
@@ -417,7 +402,7 @@ Examples:
     ax.grid(True, alpha=0.3)
 
     # [1,1] Anode current
-    ax = axes[1, 1]
+    ax = ax1[1, 1]
     ax.plot(t_min, ts["anode_current_a"], "k-", linewidth=2, label="Ia")
     ax.axhline(recipe.mrh_amps, color="red", linestyle="--", alpha=0.6,
                linewidth=1.5, label=f"MRH = {recipe.mrh_amps} A")
@@ -429,25 +414,46 @@ Examples:
     ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
 
-    # [1,2] Cumulative energy consumed
-    ax = axes[1, 2]
+    plt.tight_layout()
+
+    # ════════════════════════════════════════════════════════════════
+    # FIGURE 2: Energy & Mass Analysis (2x2 = 4 plots)
+    # ════════════════════════════════════════════════════════════════
+    fig2, ax2 = plt.subplots(2, 2, figsize=(12, 9))
+    fig2.suptitle(
+        f"GP-15 Energy & Mass Analysis  --  {args.mass:.0f} kg Yellow Pea  |  "
+        f"Gap {args.gap:.0f} mm  |  Belt {args.speed} m/min",
+        fontsize=11, fontweight="bold",
+    )
+
+    # [0,0] Electrode gap (MRH controller)
+    ax = ax2[0, 0]
+    ax.plot(t_min, ts["electrode_gap_mm"], "g-", linewidth=2, label="Actual gap")
+    ax.axhline(args.gap, color="gray", linestyle="--", alpha=0.5,
+               label=f"Setpoint {args.gap:.0f} mm")
+    ax.set_xlabel("Time [min]")
+    ax.set_ylabel("Electrode Gap [mm]")
+    ax.set_title("MRH Gap Control")
+    ax.legend(fontsize=7)
+    ax.grid(True, alpha=0.3)
+
+    # [0,1] Cumulative energy consumed
+    ax = ax2[0, 1]
     ax.plot(t_min, ts["total_energy_kwh"], "m-", linewidth=2, label="RF energy")
-    ax2 = ax.twinx()
-    ax2.plot(t_min, np.array(ts["water_removed_kg"]) * 1000, "c-",
-             linewidth=1.5, label="Water removed")
+    ax_twin = ax.twinx()
+    ax_twin.plot(t_min, np.array(ts["water_removed_kg"]) * 1000, "c-",
+                 linewidth=1.5, label="Water removed")
     ax.set_xlabel("Time [min]")
     ax.set_ylabel("Energy [kWh]", color="m")
-    ax2.set_ylabel("Water Removed [g]", color="c")
+    ax_twin.set_ylabel("Water Removed [g]", color="c")
     ax.set_title("Cumulative Totals")
     lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax_twin.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, fontsize=7, loc="upper left")
     ax.grid(True, alpha=0.3)
 
-    # ── Row 3: Specific energy, Mass in bin, Outfeed cross-section ─
-
-    # [2,0] Specific energy
-    ax = axes[2, 0]
+    # [1,0] Specific energy
+    ax = ax2[1, 0]
     se = np.array(ts["specific_energy_kwh_per_kg"])
     valid = se > 0
     if valid.any():
@@ -463,8 +469,8 @@ Examples:
     ax.grid(True, alpha=0.3)
     ax.set_ylim(bottom=0)
 
-    # [2,1] Collected mass in bin
-    ax = axes[2, 1]
+    # [1,1] Collected mass in bin
+    ax = ax2[1, 1]
     if hasattr(sim.particles, 'collected_mass_kg'):
         dispatched_kg = sim.particles.dispatched_mass_kg
         collected_kg = sim.particles.collected_mass_kg
@@ -484,32 +490,43 @@ Examples:
                 transform=ax.transAxes)
     ax.grid(True, alpha=0.3, axis="y")
 
-    # [2,2] Outfeed temperature cross-section (at oven exit; matches time-series peak)
+    plt.tight_layout()
+
+    # ════════════════════════════════════════════════════════════════
+    # FIGURE 3: Particle System Analysis (2x2 = 4 plots)
+    # ════════════════════════════════════════════════════════════════
+    fig3, ax3 = plt.subplots(2, 2, figsize=(12, 9))
+    fig3.suptitle(
+        f"GP-15 Particle System Analysis  --  {args.mass:.0f} kg Yellow Pea  |  "
+        f"Lagrangian Tracking  |  n={sim.particles.cfg.max_particles if hasattr(sim, 'particles') else 0} particles",
+        fontsize=11, fontweight="bold",
+    )
+
+    # [0,0] Outfeed temperature cross-section (at oven exit)
+    ax = ax3[0, 0]
     if outlet.temperature_field is not None:
-        im = axes[2, 2].imshow(
+        im = ax.imshow(
             outlet.temperature_field,
             aspect="auto", origin="lower", cmap="hot",
             extent=[0, info["belt_width_m"] * 1000, 0, args.gap],
         )
-        axes[2, 2].set_xlabel("Z -- belt width [mm]")
-        axes[2, 2].set_ylabel("Y -- gap [mm]")
+        ax.set_xlabel("Z -- belt width [mm]")
+        ax.set_ylabel("Y -- gap [mm]")
         if getattr(outlet, "at_peak_processing_snapshot", False):
-            axes[2, 2].set_title(
-                f"Outfeed T at oven exit (peak)  "
-                f"sensor {outlet.sensor_temperature_c:.1f}\u00b0C, max {outlet.max_temperature_c:.1f}\u00b0C")
+            ax.set_title(
+                f"Outfeed T at oven exit (peak)\n"
+                f"sensor {outlet.sensor_temperature_c:.1f}°C, max {outlet.max_temperature_c:.1f}°C")
         else:
-            axes[2, 2].set_title(
-                f"Outfeed T  (sensor {outlet.sensor_temperature_c:.1f}\u00b0C, "
-                f"max {outlet.max_temperature_c:.1f}\u00b0C)")
-        plt.colorbar(im, ax=axes[2, 2], label="\u00b0C", shrink=0.8)
+            ax.set_title(
+                f"Outfeed T  (sensor {outlet.sensor_temperature_c:.1f}°C, "
+                f"max {outlet.max_temperature_c:.1f}°C)")
+        plt.colorbar(im, ax=ax, label="°C", shrink=0.8)
     else:
-        axes[2, 2].text(0.5, 0.5, "No field data", ha="center", va="center",
-                        transform=axes[2, 2].transAxes)
+        ax.text(0.5, 0.5, "No field data", ha="center", va="center",
+                transform=ax.transAxes)
 
-    # ── Row 4: Particle System Analysis ─────────────────────────────────
-
-    # [3,0] Particle state distribution (final)
-    ax = axes[3, 0]
+    # [0,1] Particle state distribution (final)
+    ax = ax3[0, 1]
     if hasattr(sim, 'particles'):
         ps = sim.particles
         states = {
@@ -536,28 +553,29 @@ Examples:
         ax.text(0.5, 0.5, "No particle data", ha="center", va="center",
                 transform=ax.transAxes)
 
-    # [3,1] Particle temperature histogram (collected particles)
-    # Use T_at_collection to show treatment temperature (not cooled bin temp)
-    ax = axes[3, 1]
+    # [1,0] Particle temperature histogram (collected particles)
+    # Use T_at_oven_exit to show treatment temperature (not cooled bin temp)
+    ax = ax3[1, 0]
     if hasattr(sim, 'particles'):
         ps = sim.particles
         collected_mask = (ps.state == ps._STATE_COLLECTED)
         riding_mask = (ps.state == ps._STATE_RIDING)
 
         if collected_mask.any():
-            # Use T_at_collection to show treatment temperature, not cooled bin temp
-            if hasattr(ps, 'T_at_collection'):
-                T_collected = ps.T_at_collection[collected_mask]
-                label_suffix = " (at collection)"
+            # Use T_at_oven_exit to show actual RF treatment temperature
+            # (captured when particles exit oven, before post-oven cooling)
+            if hasattr(ps, 'T_at_oven_exit'):
+                T_treatment = ps.T_at_oven_exit[collected_mask]
+                label_suffix = " (at oven exit)"
             else:
-                T_collected = ps.temperature[collected_mask]
+                T_treatment = ps.temperature[collected_mask]
                 label_suffix = " (current)"
-            ax.hist(T_collected, bins=30, alpha=0.7, color='#228B22',
-                    label=f'Collected{label_suffix} (n={len(T_collected)})', edgecolor='black')
-            ax.axvline(np.mean(T_collected), color='green', linestyle='--',
-                       linewidth=2, label=f'Mean: {np.mean(T_collected):.1f}°C')
-            ax.axvline(np.percentile(T_collected, 75), color='orange', linestyle=':',
-                       linewidth=2, label=f'P75: {np.percentile(T_collected, 75):.1f}°C')
+            ax.hist(T_treatment, bins=30, alpha=0.7, color='#228B22',
+                    label=f'Collected{label_suffix} (n={len(T_treatment)})', edgecolor='black')
+            ax.axvline(np.mean(T_treatment), color='green', linestyle='--',
+                       linewidth=2, label=f'Mean: {np.mean(T_treatment):.1f}°C')
+            ax.axvline(np.percentile(T_treatment, 75), color='orange', linestyle=':',
+                       linewidth=2, label=f'P75: {np.percentile(T_treatment, 75):.1f}°C')
 
         if riding_mask.any():
             T_riding = ps.temperature[riding_mask]
@@ -566,15 +584,15 @@ Examples:
 
         ax.set_xlabel("Temperature [°C]")
         ax.set_ylabel("Count")
-        ax.set_title("Particle Treatment Temperature\n(captured at collection)")
-        ax.legend(fontsize=7)
+        ax.set_title("Particle Treatment Temperature\n(captured at oven exit)")
+        ax.legend(fontsize=6)
         ax.grid(True, alpha=0.3)
     else:
         ax.text(0.5, 0.5, "No particle data", ha="center", va="center",
                 transform=ax.transAxes)
 
-    # [3,2] Protein denaturation breakdown (Vicilin vs Legumin)
-    ax = axes[3, 2]
+    # [1,1] Protein denaturation breakdown (Vicilin vs Legumin)
+    ax = ax3[1, 1]
     if hasattr(sim, 'particles') and hasattr(sim.particles, 'vicilin_native'):
         ps = sim.particles
         collected_mask = (ps.state == ps._STATE_COLLECTED)
@@ -621,50 +639,54 @@ Examples:
 
     plt.tight_layout()
 
-    # ── 7. Outfeed cross-section (\u00a79.1) ──────────────────────────────
+    # ════════════════════════════════════════════════════════════════
+    # FIGURE 4: Outfeed Cross-Section (1x2)
+    # ════════════════════════════════════════════════════════════════
     # When run has finished, cross-section shows at-oven-exit (peak) snapshot so it
-    # matches the time-series and Run#1 strip data (82–93°C); not cooled bin state.
+    # matches the time-series and Run#1 strip data (82-93°C); not cooled bin state.
     if outlet.temperature_field is not None and outlet.moisture_field is not None:
-        fig2, axes2 = plt.subplots(1, 2, figsize=(12, 4.5))
+        fig4, ax4 = plt.subplots(1, 2, figsize=(12, 4.5))
         peak_note = " at oven exit (peak)" if getattr(outlet, "at_peak_processing_snapshot", False) else ""
-        fig2.suptitle(
+        fig4.suptitle(
             f"Outfeed Cross-Section{peak_note}  --  Pipeline Output to Milling  |  "
             f"Residence {outlet.residence_time_s:.0f} s  |  "
             f"Throughput {outlet.throughput_kg_per_hr:.0f} kg/h",
             fontsize=11, fontweight="bold",
         )
-        im_t = axes2[0].imshow(
+        im_t = ax4[0].imshow(
             outlet.temperature_field, aspect="auto", origin="lower",
             cmap="hot",
             extent=[0, info["belt_width_m"] * 1000, 0, args.gap],
         )
-        axes2[0].set_xlabel("Z -- belt width [mm]")
-        axes2[0].set_ylabel("Y -- gap [mm]")
-        axes2[0].set_title(
-            f"Temperature  (sensor {outlet.sensor_temperature_c:.1f}\u00b0C, "
-            f"max {outlet.max_temperature_c:.1f}\u00b0C)")
-        plt.colorbar(im_t, ax=axes2[0], label="\u00b0C")
+        ax4[0].set_xlabel("Z -- belt width [mm]")
+        ax4[0].set_ylabel("Y -- gap [mm]")
+        ax4[0].set_title(
+            f"Temperature  (sensor {outlet.sensor_temperature_c:.1f}°C, "
+            f"max {outlet.max_temperature_c:.1f}°C)")
+        plt.colorbar(im_t, ax=ax4[0], label="°C")
 
-        im_m = axes2[1].imshow(
+        im_m = ax4[1].imshow(
             outlet.moisture_field * 100, aspect="auto", origin="lower",
             cmap="Blues",
             extent=[0, info["belt_width_m"] * 1000, 0, args.gap],
         )
-        axes2[1].set_xlabel("Z -- belt width [mm]")
-        axes2[1].set_ylabel("Y -- gap [mm]")
-        axes2[1].set_title(
+        ax4[1].set_xlabel("Z -- belt width [mm]")
+        ax4[1].set_ylabel("Y -- gap [mm]")
+        ax4[1].set_title(
             f"Moisture  (avg {outlet.avg_moisture_wb:.1%}, "
             f"CV {outlet.moisture_uniformity:.3f})  |  "
             f"Spec. energy {outlet.specific_energy_kwh_per_kg:.2f} kWh/kg water")
-        plt.colorbar(im_m, ax=axes2[1], label="% wb")
+        plt.colorbar(im_m, ax=ax4[1], label="% wb")
         plt.tight_layout()
 
-    # ── 8. Particle Spatial Analysis (Figure 3) ─────────────────────────
+    # ════════════════════════════════════════════════════════════════
+    # FIGURE 5: Particle Spatial Analysis (2x2 = 4 plots)
+    # ════════════════════════════════════════════════════════════════
     # Shows particle temperature and moisture by position along the belt
     if hasattr(sim, 'particles'):
         ps = sim.particles
-        fig3, axes3 = plt.subplots(2, 2, figsize=(14, 10))
-        fig3.suptitle(
+        fig5, ax5 = plt.subplots(2, 2, figsize=(14, 10))
+        fig5.suptitle(
             f"Particle Spatial Analysis  --  Lagrangian View of Material Flow\n"
             f"Hopper: {ps.hopper_count}  |  Belt: {ps.riding_count}  |  "
             f"Collected: {ps.collected_count}  |  Total: {ps.cfg.max_particles}",
@@ -679,17 +701,17 @@ Examples:
 
         # [0,0] Particle Temperature vs X Position (scatter)
         # Use T_at_collection for collected particles to show treatment temperature
-        ax = axes3[0, 0]
+        ax = ax5[0, 0]
         alive_mask = (ps.state != ps._STATE_DEAD)
         if alive_mask.any():
             pos_x = ps.pos[alive_mask, 0]
             states = ps.state[alive_mask]
 
-            # Build temperature array: use T_at_collection for collected, current for others
+            # Build temperature array: use T_at_oven_exit for collected, current for others
             temps = ps.temperature[alive_mask].copy()
-            if hasattr(ps, 'T_at_collection'):
+            if hasattr(ps, 'T_at_oven_exit'):
                 collected_in_alive = (states == ps._STATE_COLLECTED)
-                temps[collected_in_alive] = ps.T_at_collection[alive_mask][collected_in_alive]
+                temps[collected_in_alive] = ps.T_at_oven_exit[alive_mask][collected_in_alive]
 
             # Color by state
             colors = []
@@ -727,13 +749,13 @@ Examples:
         ax.grid(True, alpha=0.3)
 
         # [0,1] Particle Moisture vs X Position
-        # Use M_at_collection for collected particles to show treatment moisture
-        ax = axes3[0, 1]
+        # Use M_at_oven_exit for collected particles to show treatment moisture
+        ax = ax5[0, 1]
         if alive_mask.any():
             moistures = ps.moisture[alive_mask].copy()
-            if hasattr(ps, 'M_at_collection'):
+            if hasattr(ps, 'M_at_oven_exit'):
                 collected_in_alive = (states == ps._STATE_COLLECTED)
-                moistures[collected_in_alive] = ps.M_at_collection[alive_mask][collected_in_alive]
+                moistures[collected_in_alive] = ps.M_at_oven_exit[alive_mask][collected_in_alive]
             moistures = moistures * 100  # convert to %
             ax.scatter(pos_x, moistures, c=colors, alpha=0.5, s=3)
 
@@ -753,7 +775,7 @@ Examples:
         ax.grid(True, alpha=0.3)
 
         # [1,0] Temperature Profile Along Belt (binned average)
-        ax = axes3[1, 0]
+        ax = ax5[1, 0]
         riding_mask = (ps.state == ps._STATE_RIDING)
         if riding_mask.any():
             pos_x_riding = ps.pos[riding_mask, 0]
@@ -799,7 +821,7 @@ Examples:
 
         # [1,1] Core vs Surface Temperature (Biot model)
         # Shows intra-seed temperature gradient: surface heats first, core lags
-        ax = axes3[1, 1]
+        ax = ax5[1, 1]
         if hasattr(ps, 'T_core'):
             riding_mask = (ps.state == ps._STATE_RIDING)
             collected_mask = (ps.state == ps._STATE_COLLECTED)
@@ -811,11 +833,11 @@ Examples:
             active_mask = riding_mask if use_riding else collected_mask
 
             if active_mask.any():
-                # For collected particles, use T_at_collection to show treatment temps
-                if not use_riding and hasattr(ps, 'T_at_collection') and hasattr(ps, 'T_core_at_collection'):
-                    T_surface = ps.T_at_collection[active_mask]
-                    T_core = ps.T_core_at_collection[active_mask]
-                    source = "at collection"
+                # For collected particles, use T_at_oven_exit to show treatment temps
+                if not use_riding and hasattr(ps, 'T_at_oven_exit') and hasattr(ps, 'T_core_at_oven_exit'):
+                    T_surface = ps.T_at_oven_exit[active_mask]
+                    T_core = ps.T_core_at_oven_exit[active_mask]
+                    source = "at oven exit"
                 else:
                     T_surface = ps.temperature[active_mask]
                     T_core = ps.T_core[active_mask]

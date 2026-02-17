@@ -239,14 +239,17 @@ class MaterialParticleSystem:
         self.legumin_native = np.ones(n, dtype=np.float32)   # 11S
 
         # ── Treatment temperature capture ────────────────────────
-        # T_at_collection captures the particle temperature at the moment
-        # it enters the collection bin.  This preserves the "treatment
-        # temperature" for visualization even after particles cool in the
-        # bin.  Without this, all collected particles would show ambient
-        # temp after the long bin cooling phase.
-        self.T_at_collection = np.full(n, config.T_inlet_c, dtype=np.float32)
-        self.T_core_at_collection = np.full(n, config.T_inlet_c, dtype=np.float32)
-        self.M_at_collection = np.full(n, config.M_inlet_wb, dtype=np.float32)
+        # Capture the "treatment temperature" when particles EXIT the oven
+        # (cross oven_x_end), NOT when they land in the bin.  This is the
+        # actual RF treatment temperature before post-oven cooling.
+        #
+        # Without this, particles cool ~98% to ambient on the open belt
+        # (270s at τ=66s) before reaching the bin, making T_at_collection
+        # show ambient instead of treatment temperatures.
+        self.T_at_oven_exit = np.full(n, config.T_inlet_c, dtype=np.float32)
+        self.T_core_at_oven_exit = np.full(n, config.T_inlet_c, dtype=np.float32)
+        self.M_at_oven_exit = np.full(n, config.M_inlet_wb, dtype=np.float32)
+        self._crossed_oven_exit = np.zeros(n, dtype=bool)  # track which particles have exited
 
         # Mass accounting (manual Chapter 5).
         # Each particle represents mass_per_particle kg of material.
@@ -418,9 +421,10 @@ class MaterialParticleSystem:
         self.pos[:] = 0.0
         self.vel[:] = 0.0
         self.age[:] = 0.0
-        self.T_at_collection[:] = self.cfg.T_inlet_c
-        self.T_core_at_collection[:] = self.cfg.T_inlet_c
-        self.M_at_collection[:] = self.cfg.M_inlet_wb
+        self.T_at_oven_exit[:] = self.cfg.T_inlet_c
+        self.T_core_at_oven_exit[:] = self.cfg.T_inlet_c
+        self.M_at_oven_exit[:] = self.cfg.M_inlet_wb
+        self._crossed_oven_exit[:] = False
         self._spawn_accumulator = 0.0
         self._alive_count = 0
         self._init_particles()
@@ -730,11 +734,8 @@ class MaterialParticleSystem:
                 self.vel[landed] = 0.0
                 self.state[landed] = self._STATE_COLLECTED
 
-                # Capture treatment temperature/moisture at collection time
-                # (before bin cooling reduces them to ambient)
-                self.T_at_collection[landed] = self.temperature[landed]
-                self.T_core_at_collection[landed] = self.T_core[landed]
-                self.M_at_collection[landed] = self.moisture[landed]
+                # Note: Treatment temperature is captured at oven exit (T_at_oven_exit),
+                # not here. By landing time, particles have cooled ~98% on the open belt.
 
                 # Mass accounting: adjust for moisture loss during drying.
                 # Each particle was dispatched with mass_per_particle based on
@@ -788,6 +789,20 @@ class MaterialParticleSystem:
                 T_field, M_field, cell_is_material,
                 grid_origin, cell_sizes,
             )
+
+        # ── Capture treatment temperature at oven exit ────────────────
+        # This happens AFTER interpolation but BEFORE post-grid cooling,
+        # so we capture the actual RF treatment temperature.
+        just_exited_oven = (
+            riding
+            & (self.pos[:, 0] > cfg.oven_x_end)
+            & ~self._crossed_oven_exit
+        )
+        if just_exited_oven.any():
+            self.T_at_oven_exit[just_exited_oven] = self.temperature[just_exited_oven]
+            self.T_core_at_oven_exit[just_exited_oven] = self.T_core[just_exited_oven]
+            self.M_at_oven_exit[just_exited_oven] = self.moisture[just_exited_oven]
+            self._crossed_oven_exit[just_exited_oven] = True
 
         # ── Post-grid cooling (Newton's law) ─────────────────────────
         # The Eulerian grid only covers the RF zone.  Once material
