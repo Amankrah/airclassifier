@@ -53,26 +53,6 @@ def _compute_weighted_avg(
     return num, den
 
 
-def jacobi_iteration_np(
-    phi: np.ndarray,
-    phi_new: np.ndarray,
-    eps: np.ndarray,
-    dx: float,
-    dy: float,
-    dz: float,
-) -> None:
-    """One weighted-Jacobi iteration for div(eps * grad(phi)) = 0.
-
-    Updates ``phi_new`` in-place for interior cells only.
-    Boundary rows must be set by the caller.
-    """
-    inv_dx2 = 1.0 / (dx * dx)
-    inv_dy2 = 1.0 / (dy * dy)
-    inv_dz2 = 1.0 / (dz * dz)
-    num, den = _compute_weighted_avg(phi, eps, inv_dx2, inv_dy2, inv_dz2)
-    phi_new[1:-1, 1:-1, 1:-1] = num / np.maximum(den, 1e-30)
-
-
 def _redblack_gs_sor_sweep(
     phi: np.ndarray,
     eps: np.ndarray,

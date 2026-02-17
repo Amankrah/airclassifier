@@ -316,20 +316,37 @@ Examples:
 
     # ── Row 1: Temperature, Moisture, Electrode Gap ──────────────
 
-    # [0,0] Temperature
+    # [0,0] Temperature & protein quality (pretreatment) — not drying.
+    # Secondary axis: weighted globulin native loss (7S+11S). For pretreatment we
+    # want to keep this LOW (target typically <15%); high % = over-processing.
     ax = axes[0, 0]
     ax.fill_between(t_min, ts["T_mean_c"], ts["T_max_c"],
-                    alpha=0.15, color="red", label="T range")
-    # Sensor-comparable temperature (75th percentile) - matches PLC/strip sensors
+                    alpha=0.15, color="red", label="Trange")
     if "T_outfeed_sensor_c" in ts:
-        ax.plot(t_min, ts["T_outfeed_sensor_c"], "r-", linewidth=2, label="T sensor (P75)")
-    ax.plot(t_min, ts["T_outfeed_c"], "r--", linewidth=1.2, alpha=0.6, label="T outfeed (mean)")
-    ax.axhline(70, color="orange", linestyle=":", alpha=0.6, label="Denaturation 70\u00b0C")
+        ax.plot(t_min, ts["T_outfeed_sensor_c"], "r-", linewidth=2, label="Tsensor (P75)")
+    ax.plot(t_min, ts["T_outfeed_c"], "r--", linewidth=1.2, alpha=0.6, label="Toutfeed (mean)")
+    ax.axhline(76, color="orange", linestyle=":", alpha=0.6, label="Legumin onset ~76\u00b0C")
     ax.set_xlabel("Time [min]")
     ax.set_ylabel("Temperature [\u00b0C]")
-    ax.set_title("Material Temperature")
-    ax.legend(fontsize=7, loc="upper left")
+    ax.set_title("Temperature & protein quality (pretreatment)")
     ax.grid(True, alpha=0.3)
+    # Secondary Y-axis: globulin native loss (7S+11S weighted). Lower = better preservation.
+    PRETREATMENT_MAX_DENAT_PCT = 15.0  # typical target: keep denatured fraction below this
+    if "protein_denaturation" in ts:
+        ax_d = ax.twinx()
+        denat_pct = np.array(ts["protein_denaturation"]) * 100
+        ax_d.plot(t_min, denat_pct, "k-", linewidth=1.5, alpha=0.7,
+                  label="Globulin native loss [%]")
+        ax_d.axhline(PRETREATMENT_MAX_DENAT_PCT, color="green", linestyle="--",
+                     alpha=0.6, linewidth=1, label=f"Target max {PRETREATMENT_MAX_DENAT_PCT:.0f}%")
+        ax_d.set_ylabel("Globulin native loss [%]\n(7S+11S; lower = better)", color="k", fontsize=8)
+        ax_d.set_ylim(bottom=0)
+        ax_d.tick_params(axis="y", labelsize=7)
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax_d.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, fontsize=6, loc="upper left")
+    else:
+        ax.legend(fontsize=6, loc="upper left")
 
     # [0,1] Moisture
     ax = axes[0, 1]
@@ -337,9 +354,10 @@ Examples:
             label="M outfeed")
     ax.plot(t_min, np.array(ts["M_mean_wb"]) * 100, "b-", linewidth=0.8,
             alpha=0.4, label="M mean (all)")
-    ax.axhline(material.target_moisture_wb * 100, color="green",
+    target_pct = material.target_moisture_wb * 100
+    ax.axhline(target_pct, color="green",
                linestyle="--", alpha=0.7, linewidth=1.5,
-               label=f"Target {material.target_moisture_wb:.0%}")
+               label=f"Target {target_pct:.0f}%")
     ax.set_xlabel("Time [min]")
     ax.set_ylabel("Moisture [% wb]")
     ax.set_title("Moisture Content")
@@ -440,7 +458,7 @@ Examples:
                 transform=ax.transAxes)
     ax.grid(True, alpha=0.3, axis="y")
 
-    # [2,2] Outfeed temperature cross-section
+    # [2,2] Outfeed temperature cross-section (at oven exit; matches time-series peak)
     if outlet.temperature_field is not None:
         im = axes[2, 2].imshow(
             outlet.temperature_field,
@@ -449,9 +467,14 @@ Examples:
         )
         axes[2, 2].set_xlabel("Z -- belt width [mm]")
         axes[2, 2].set_ylabel("Y -- gap [mm]")
-        axes[2, 2].set_title(
-            f"Outfeed T  (sensor {outlet.sensor_temperature_c:.1f}\u00b0C, "
-            f"max {outlet.max_temperature_c:.1f}\u00b0C)")
+        if getattr(outlet, "at_peak_processing_snapshot", False):
+            axes[2, 2].set_title(
+                f"Outfeed T at oven exit (peak)  "
+                f"sensor {outlet.sensor_temperature_c:.1f}\u00b0C, max {outlet.max_temperature_c:.1f}\u00b0C")
+        else:
+            axes[2, 2].set_title(
+                f"Outfeed T  (sensor {outlet.sensor_temperature_c:.1f}\u00b0C, "
+                f"max {outlet.max_temperature_c:.1f}\u00b0C)")
         plt.colorbar(im, ax=axes[2, 2], label="\u00b0C", shrink=0.8)
     else:
         axes[2, 2].text(0.5, 0.5, "No field data", ha="center", va="center",
@@ -460,10 +483,13 @@ Examples:
     plt.tight_layout()
 
     # ── 7. Outfeed cross-section (\u00a79.1) ──────────────────────────────
+    # When run has finished, cross-section shows at-oven-exit (peak) snapshot so it
+    # matches the time-series and Run#1 strip data (82–93°C); not cooled bin state.
     if outlet.temperature_field is not None and outlet.moisture_field is not None:
         fig2, axes2 = plt.subplots(1, 2, figsize=(12, 4.5))
+        peak_note = " at oven exit (peak)" if getattr(outlet, "at_peak_processing_snapshot", False) else ""
         fig2.suptitle(
-            f"Outfeed Cross-Section  --  Pipeline Output to Milling  |  "
+            f"Outfeed Cross-Section{peak_note}  --  Pipeline Output to Milling  |  "
             f"Residence {outlet.residence_time_s:.0f} s  |  "
             f"Throughput {outlet.throughput_kg_per_hr:.0f} kg/h",
             fontsize=11, fontweight="bold",
@@ -513,6 +539,19 @@ def _print_results(sim, result, elapsed):
     print(f"  Max temperature:           {outlet.max_temperature_c:.1f} C")
     print(f"  Moisture uniformity (CV):  {outlet.moisture_uniformity:.4f}")
     print()
+    # Phase 4: protein quality (weighted 7S+11S native loss). Pretreatment target: keep low (<15%).
+    denat = outlet.protein_denaturation_fraction
+    print(f"  Protein quality (globulin native loss): {denat:.1%}  (pretreatment target typically <15%)")
+    if hasattr(sim.particles, 'vicilin_native'):
+        collected = sim.particles.state == 2  # STATE_COLLECTED
+        riding = sim.particles.state == 0     # STATE_RIDING
+        active = collected if collected.any() else riding
+        if active.any():
+            vic = 1.0 - float(np.mean(sim.particles.vicilin_native[active]))
+            leg = 1.0 - float(np.mean(sim.particles.legumin_native[active]))
+            print(f"    Vicilin (7S):            {vic:.1%}  (onset 62 C)")
+            print(f"    Legumin (11S):           {leg:.1%}  (onset 76 C)")
+    print()
     print(f"  RF energy consumed:        {result.energy_consumed_kwh:.4f} kWh")
     print(f"  Specific energy:           {outlet.specific_energy_kwh_per_kg:.3f} kWh/kg water")
     print(f"  Throughput:                {result.throughput_kg_per_h:.0f} kg/h")
@@ -523,12 +562,34 @@ def _print_results(sim, result, elapsed):
     # Particle mass accounting
     if hasattr(sim.particles, 'collected_mass_kg'):
         dispatched = sim.particles.dispatched_mass_kg
-        collected = sim.particles.collected_mass_kg
+        collected_kg = sim.particles.collected_mass_kg
         print(f"  Mass input:                {dispatched:.2f} kg")
-        print(f"  Mass collected:            {collected:.2f} kg")
+        print(f"  Mass collected:            {collected_kg:.2f} kg")
         if dispatched > 0:
-            mass_balance = (collected - dispatched) / dispatched * 100
+            mass_balance = (collected_kg - dispatched) / dispatched * 100
             print(f"  Mass balance:              {mass_balance:+.1f}%")
+    print()
+    # Desirability score (Derringer-Suich composite, 0-10 with 5 dimensions)
+    try:
+        from airclassifier.pretreatment.desirability import score_desirability
+        recipe = sim._recipe
+        run_mass = recipe.run_mass_kg if recipe else 0.0
+        ds = score_desirability(
+            outfeed_temperature_c=outlet.avg_temperature_c,
+            max_temperature_c=outlet.max_temperature_c,
+            outfeed_moisture_wb=outlet.avg_moisture_wb,
+            initial_moisture_wb=sim.material.initial_moisture_wb,
+            energy_kwh=result.energy_consumed_kwh,
+            run_mass_kg=max(run_mass, 0.001),
+        )
+        print(f"  Desirability score:        {ds.overall_10:.1f} / 10")
+        print(f"    Thermal treatment:       {ds.d_thermal:.2f}")
+        print(f"    Flavour (LOX kill):      {ds.d_flavour:.2f}")
+        print(f"    Protein preservation:    {ds.d_protein:.2f}")
+        print(f"    Moisture retention:      {ds.d_moisture:.2f}")
+        print(f"    Energy efficiency:       {ds.d_energy:.2f}")
+    except Exception as e:
+        print(f"  Desirability score:        (unavailable: {e})")
     print()
     print(f"  Simulation wall-clock:     {elapsed:.2f} s")
     n_steps = len(ts.get("time_s", []))

@@ -173,6 +173,51 @@ class MaterialParticleSystem:
     _STATE_DEAD = 3        # recycled (off-screen, awaiting respawn)
     _STATE_IN_HOPPER = 4   # inside the hopper bin, awaiting dispatch
 
+    # ── Protein denaturation kinetics (Phase 4) ────────────────────
+    # Two-fraction Arrhenius model for yellow pea globulins.
+    # Each protein species denatures as:  dN/dt = -k(T) * N
+    # where  k(T) = A * exp(-Ea / (R * T_K))
+    #
+    # Vicilin (7S): onset 62-65 C, peak 71 C, A=1.5e30 s^-1, Ea=200 kJ/mol
+    # Legumin (11S): onset 76-78 C, peak 84 C, A=2.0e35 s^-1, Ea=240 kJ/mol
+    #
+    # References:
+    #   Mession et al. (2013) JAFC 61, 1196-1204 (DSC of pea globulins)
+    #   Shand et al. (2007) Food Res. Int. 40, 623-631
+    #   Sun & Arntfield (2010) J. Food Eng. 96, 515-523
+    #
+    # The fraction remaining (0→1) is tracked per particle.
+    # denaturation_fraction = 1 - (w7S * N_7S + w11S * N_11S)
+    # where w7S ≈ 0.35, w11S ≈ 0.65 for yellow pea (Mession et al.).
+    _VICILIN_A = 1.5e30     # pre-exponential factor [1/s]
+    _VICILIN_EA = 200_000.0  # activation energy [J/mol]
+    _LEGUMIN_A = 2.0e35
+    _LEGUMIN_EA = 240_000.0
+    _W_VICILIN = 0.35       # mass fraction of total globulin
+    _W_LEGUMIN = 0.65
+    _R_GAS = 8.314          # universal gas constant [J/(mol·K)]
+
+    # ── Biot model constants (Phase 4) ────────────────────────────
+    # Lumped-parameter model for intra-seed temperature gradient.
+    # Biot number: Bi = h * L_c / k_seed
+    #   L_c = d_seed / 6 (sphere characteristic length)
+    #   k_seed ≈ 0.18 W/(m·K) (whole yellow pea)
+    #   h varies: ~50 W/m^2K (in RF zone, forced air) to ~10 (open belt)
+    #
+    # For d=8mm, L_c=1.33mm: Bi = 50*0.00133/0.18 = 0.37
+    # Bi < 0.1 would allow lumped model; Bi ≈ 0.37 requires a
+    # surface/core split to capture the ~15% temperature lag.
+    #
+    # The core temperature lags the surface by:
+    #   T_core ≈ T_surface - (Bi/3) * (T_surface - T_ambient)
+    # This is the first-order Biot correction.
+    _SEED_DIAMETER_M = 0.008          # 8 mm whole yellow pea
+    _SEED_K_THERMAL = 0.18            # W/(m·K) thermal conductivity
+    _SEED_RHO = 1450.0                # kg/m^3 solid density
+    _SEED_CP = 1700.0                 # J/(kg·K) specific heat
+    _H_RF_ZONE = 50.0                 # W/(m^2·K) convective HTC in RF zone
+    _H_OPEN_BELT = 10.0               # W/(m^2·K) HTC on open belt
+
     def __init__(self, config: ParticleSystemConfig):
         self.cfg = config
         n = config.max_particles
@@ -183,6 +228,15 @@ class MaterialParticleSystem:
         self.moisture = np.full(n, config.M_inlet_wb, dtype=np.float32)
         self.state = np.full(n, self._STATE_DEAD, dtype=np.int32)
         self.age = np.zeros(n, dtype=np.float32)
+
+        # ── Phase 4: intra-seed Biot model + denaturation ─────────
+        # T_core lags T_surface (which is self.temperature from grid
+        # interpolation).  Protein denaturation uses T_core because
+        # proteins are distributed throughout the seed interior.
+        self.T_core = np.full(n, config.T_inlet_c, dtype=np.float32)
+        # Fraction of native (undenatured) protein remaining [0-1]
+        self.vicilin_native = np.ones(n, dtype=np.float32)   # 7S
+        self.legumin_native = np.ones(n, dtype=np.float32)   # 11S
 
         # Mass accounting (manual Chapter 5).
         # Each particle represents mass_per_particle kg of material.
@@ -604,6 +658,9 @@ class MaterialParticleSystem:
                 self.age[idx] = 0.0
                 self.temperature[idx] = cfg.T_inlet_c
                 self.moisture[idx] = cfg.M_inlet_wb
+                self.T_core[idx] = cfg.T_inlet_c
+                self.vicilin_native[idx] = 1.0
+                self.legumin_native[idx] = 1.0
                 self._dispatched_mass_kg += self.mass_per_particle
 
                 # Re-check mass limit after each dispatch
@@ -763,9 +820,118 @@ class MaterialParticleSystem:
                 dT = (self.temperature[collected] - T_ambient) * dt_sim / tau_bin
                 self.temperature[collected] -= dT
 
+        # ── Phase 4: Biot core temperature + protein denaturation ────
+        self._step_biot_denaturation(dt_sim)
+
         alive = (self.state != self._STATE_DEAD)
         self.age[alive] += dt_sim
         self._alive_count = int(np.sum(alive))
+
+    # ------------------------------------------------------------------
+    #  Phase 4: Intra-seed Biot model + denaturation kinetics
+    # ------------------------------------------------------------------
+
+    def _step_biot_denaturation(self, dt: float):
+        """Advance the core temperature and protein denaturation.
+
+        **Biot model** (lumped-parameter with surface/core split):
+
+        The Eulerian grid gives the *surface* temperature of each seed
+        (``self.temperature``), which is what thermocouples and IR sensors
+        measure.  The *core* temperature lags the surface due to the
+        seed's finite thermal diffusivity:
+
+            dT_core/dt = (T_surface - T_core) / tau_seed
+
+        where ``tau_seed = rho * cp * L_c^2 / k`` is the thermal time
+        constant of the seed interior.  For an 8 mm yellow pea:
+
+            L_c = d/6 = 1.33 mm  (sphere characteristic length)
+            tau_seed = 1450 * 1700 * (0.00133)^2 / 0.18 ≈ 24.3 s
+
+        This means the core reaches 63% of a surface step-change in ~24 s.
+        During the 450 s RF zone transit, the core catches up almost
+        completely — but the ~24 s lag means the core peak temperature
+        is lower than the surface peak.
+
+        **Denaturation kinetics** (first-order Arrhenius):
+
+            dN/dt = -A * exp(-Ea / (R * T_K)) * N
+
+        where N is the fraction of native (undenatured) protein.  This
+        uses T_core (not T_surface) because proteins are distributed
+        throughout the seed interior, not just at the surface.
+
+        Two protein species are tracked independently:
+          - Vicilin (7S): lower thermal stability (onset 62 C)
+          - Legumin (11S): higher thermal stability (onset 76 C)
+
+        The overall denaturation fraction is the weighted loss:
+          denat = 1 - (w_7S * N_7S + w_11S * N_11S)
+        """
+        active = (
+            (self.state == self._STATE_RIDING)
+            | (self.state == self._STATE_FALLING)
+            | (self.state == self._STATE_COLLECTED)
+        )
+        if not active.any():
+            return
+
+        T_surface = self.temperature[active]
+        T_core = self.T_core[active]
+
+        # ── Biot core temperature update ─────────────────────────
+        # tau_seed = rho * cp * L_c^2 / k_seed
+        L_c = self._SEED_DIAMETER_M / 6.0
+        tau_seed = (
+            self._SEED_RHO * self._SEED_CP * L_c * L_c
+            / self._SEED_K_THERMAL
+        )
+        # Exponential approach: T_core → T_surface with time constant tau_seed
+        alpha = dt / (tau_seed + dt)  # implicit Euler for stability
+        T_core_new = T_core + alpha * (T_surface - T_core)
+        self.T_core[active] = T_core_new
+
+        # ── Arrhenius denaturation kinetics ──────────────────────
+        T_K = T_core_new + 273.15
+        R = self._R_GAS
+
+        # Vicilin (7S) — lower stability, denatures first
+        k_vic = self._VICILIN_A * np.exp(-self._VICILIN_EA / (R * T_K))
+        decay_vic = np.exp(-k_vic * dt)
+        self.vicilin_native[active] *= decay_vic
+
+        # Legumin (11S) — higher stability
+        k_leg = self._LEGUMIN_A * np.exp(-self._LEGUMIN_EA / (R * T_K))
+        decay_leg = np.exp(-k_leg * dt)
+        self.legumin_native[active] *= decay_leg
+
+    @property
+    def denaturation_fraction(self) -> np.ndarray:
+        """Per-particle protein denaturation fraction [0-1].
+
+        Weighted combination of vicilin (7S) and legumin (11S) loss:
+            denat = 1 - (w_7S * N_7S + w_11S * N_11S)
+
+        0.0 = fully native (no denaturation)
+        1.0 = fully denatured
+        """
+        native = (
+            self._W_VICILIN * self.vicilin_native
+            + self._W_LEGUMIN * self.legumin_native
+        )
+        return 1.0 - native
+
+    @property
+    def mean_denaturation(self) -> float:
+        """Average denaturation fraction across collected particles."""
+        collected = (self.state == self._STATE_COLLECTED)
+        if not collected.any():
+            riding = (self.state == self._STATE_RIDING)
+            if not riding.any():
+                return 0.0
+            return float(np.mean(self.denaturation_fraction[riding]))
+        return float(np.mean(self.denaturation_fraction[collected]))
 
     # ------------------------------------------------------------------
     #  Trilinear interpolation (standard E-L coupling)

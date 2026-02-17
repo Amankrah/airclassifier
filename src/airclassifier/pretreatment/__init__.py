@@ -41,10 +41,20 @@ Modules:
     optimizer   Recipe optimization and sensitivity sweeps
 """
 
+from .calibration import CalibrationOptimizer, CalibrationResult, load_plc_data
 from .config import MachineConfig, MaterialProperties, Recipe
+from .control import GP15Controller, RecipeStore
+from .desirability import DesirabilityProfile, DesirabilityResult, score_desirability
 from .kernels.transport import (
     ConveyorDriveController,
     ConveyorDriveState,
+)
+from .materials import get_material_preset
+from .optimizer import (
+    DifferentiableOptimizer,
+    OptimizationResult,
+    optimize_recipe,
+    sensitivity_sweep,
 )
 from .physics.coupling import (
     CoupledSimulator,
@@ -55,19 +65,37 @@ from .physics.coupling import (
 from .simulator import GP15Simulator
 
 __all__ = [
-    # Public API
+    # ── Public API ─────────────────────────────────────────────────
     "GP15Simulator",
-    # Config
+    # ── Config ─────────────────────────────────────────────────────
     "MachineConfig",
     "MaterialProperties",
     "Recipe",
-    # Results
+    # ── Results ────────────────────────────────────────────────────
     "PretreatmentResult",
     "StepState",
     "OutletState",
-    # Conveyor drive
+    # ── Materials ──────────────────────────────────────────────────
+    "get_material_preset",
+    # ── Control ────────────────────────────────────────────────────
+    "GP15Controller",
+    "RecipeStore",
+    # ── Conveyor drive ─────────────────────────────────────────────
     "ConveyorDriveController",
     "ConveyorDriveState",
-    # Internal (advanced)
+    # ── Calibration ────────────────────────────────────────────────
+    "CalibrationOptimizer",
+    "CalibrationResult",
+    "load_plc_data",
+    # ── Optimizer (§11) ────────────────────────────────────────────
+    "OptimizationResult",
+    "optimize_recipe",
+    "sensitivity_sweep",
+    "DifferentiableOptimizer",
+    # ── Desirability scoring ───────────────────────────────────────
+    "DesirabilityProfile",
+    "DesirabilityResult",
+    "score_desirability",
+    # ── Internal (advanced) ────────────────────────────────────────
     "CoupledSimulator",
 ]

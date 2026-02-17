@@ -98,43 +98,6 @@ try:
         k_solid = k_dry * (1.0 + k_beta * moist)
         k_eff_out[i, j, k] = k_solid * (1.0 - porosity) + k_air * porosity + k_dispersion
 
-    def compute_power_density_wp(
-        e_field_sq: wp.array3d,
-        eps_loss: wp.array3d,
-        power_density: wp.array3d,
-        device: str = "cuda",
-    ):
-        """Launch the Warp P_v kernel."""
-        nx, ny, nz = e_field_sq.shape
-        wp.launch(
-            kernel=_compute_power_density_kernel,
-            dim=(nx, ny, nz),
-            inputs=[e_field_sq, eps_loss, power_density, TWO_PI_F_EPS0, nx, ny, nz],
-            device=device,
-        )
-
-    def update_material_properties_wp(
-        T, M, cell_mask, eps_loss_out, eps_real_out, rho_cp_out, k_eff_out,
-        a1, a2, a3, a4, a5, b1, b2, b3,
-        c_p_dry, c_p_water, k_dry, k_beta, rho_solid, porosity,
-        k_dispersion=0.0,
-        device="cuda",
-    ):
-        """Launch the Warp property update kernel."""
-        nx, ny, nz = T.shape
-        wp.launch(
-            kernel=_update_properties_kernel,
-            dim=(nx, ny, nz),
-            inputs=[
-                T, M, cell_mask, eps_loss_out, eps_real_out, rho_cp_out, k_eff_out,
-                a1, a2, a3, a4, a5, b1, b2, b3,
-                c_p_dry, c_p_water, k_dry, k_beta, rho_solid, porosity,
-                k_dispersion,
-                nx, ny, nz,
-            ],
-            device=device,
-        )
-
     _HAS_WARP = True
 
 except ImportError:

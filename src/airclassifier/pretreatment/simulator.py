@@ -46,6 +46,7 @@ from typing import Optional, Dict, Any, Tuple
 import numpy as np
 
 from .config import MachineConfig, MaterialProperties, Recipe
+from .control.recipe import RecipeStore
 from .geometry.machine import (
     GP15MachineAssembly,
     COMPONENT_COLORS,
@@ -184,7 +185,15 @@ class GP15Simulator:
 
         self._initialized = False
 
+        # ── Recipe store (mirrors HMI 30-recipe system) ───────────
+        self._recipe_store = RecipeStore(capacity=self.config.recipe_capacity)
+
     # ── Component accessors ─────────────────────────────────────────
+
+    @property
+    def recipe_store(self) -> RecipeStore:
+        """The 30-slot recipe store (mirrors GP-15 HMI system)."""
+        return self._recipe_store
 
     @property
     def assembly(self) -> GP15MachineAssembly:
@@ -406,8 +415,15 @@ class GP15Simulator:
         When ``run_mass_kg > 0``, configures the particle system for
         finite-mass feed: particles start in the hopper, dispatch onto
         the belt, and the belt clears at the end of the run.
+
+        The recipe is also stored in the :attr:`recipe_store` (30-slot
+        capacity, mirrors the GP-15 HMI) so it can be recalled later
+        via ``recipe_store.load(recipe_number)``.
         """
         self._recipe = recipe
+        # Persist in the 30-slot recipe store (HMI mirror)
+        if recipe.recipe_number >= 0:
+            self._recipe_store.store(recipe)
         # Sync assembly geometry with recipe setpoints
         self._assembly.set_electrode_gap(recipe.electrode_gap_mm / 1000.0)
         self._assembly.set_bed_depth(self.material.bed_depth_m)
@@ -552,16 +568,37 @@ class GP15Simulator:
         )
 
     def export_csv(self, filepath: str) -> None:
-        """Export time-series KPIs as CSV."""
+        """Export time-series KPIs as CSV.
+
+        Exports all 16 time-series fields from :class:`StepState` for
+        calibration comparison and gap control analysis:
+
+        time_s, T_mean_c, T_max_c, T_outfeed_c, T_outfeed_sensor_c,
+        M_mean_wb, M_outfeed_wb, rf_power_kw, evap_power_kw, anode_current_a,
+        electrode_gap_mm, total_energy_kwh, water_removed_kg,
+        specific_energy_kwh_per_kg, electrode_temperature_c,
+        protein_denaturation (Phase 4).
+        """
         if not self._sim._history:
             raise RuntimeError("No time-series data — run the simulation first.")
+        h = self._sim._history
         ts = {
-            "time_s": [s.time_s for s in self._sim._history],
-            "T_mean_c": [s.T_mean_c for s in self._sim._history],
-            "T_max_c": [s.T_max_c for s in self._sim._history],
-            "M_mean_wb": [s.M_mean_wb for s in self._sim._history],
-            "rf_power_kw": [s.rf_power_kw for s in self._sim._history],
-            "anode_current_a": [s.anode_current_a for s in self._sim._history],
+            "time_s": [s.time_s for s in h],
+            "T_mean_c": [s.T_mean_c for s in h],
+            "T_max_c": [s.T_max_c for s in h],
+            "T_outfeed_c": [s.T_outfeed_c for s in h],
+            "T_outfeed_sensor_c": [s.T_outfeed_sensor_c for s in h],
+            "M_mean_wb": [s.M_mean_wb for s in h],
+            "M_outfeed_wb": [s.M_outfeed_wb for s in h],
+            "rf_power_kw": [s.rf_power_kw for s in h],
+            "evap_power_kw": [s.evap_power_kw for s in h],
+            "anode_current_a": [s.anode_current_a for s in h],
+            "electrode_gap_mm": [s.electrode_gap_mm for s in h],
+            "total_energy_kwh": [s.total_energy_kwh for s in h],
+            "water_removed_kg": [s.water_removed_kg for s in h],
+            "specific_energy_kwh_per_kg": [s.specific_energy_kwh_per_kg for s in h],
+            "electrode_temperature_c": [s.electrode_temperature_c for s in h],
+            "protein_denaturation": [s.protein_denaturation for s in h],
         }
         export_csv_timeseries(filepath, ts)
 

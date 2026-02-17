@@ -266,7 +266,23 @@ class RFFieldSolver:
             )
 
         # Compute |E|^2 = |grad(phi)|^2
-        self.e_field_sq = compute_gradient_sq_np(self.potential, dx, dy, dz)
+        # Use GPU gradient kernel when available — avoids CPU stencil
+        # computation on the full 3D grid.
+        if self._device == "cuda" and _compute_grad_sq_gpu is not None:
+            import warp as wp
+            phi_gpu = wp.array(self.potential, dtype=wp.float32, device="cuda:0")
+            E2_gpu = wp.zeros_like(phi_gpu)
+            _nx, _ny, _nz = self.potential.shape
+            wp.launch(
+                _compute_grad_sq_gpu,
+                dim=(_nx, _ny, _nz),
+                inputs=[phi_gpu, E2_gpu, dx, dy, dz, _nx, _ny, _nz],
+                device="cuda:0",
+            )
+            wp.synchronize()
+            self.e_field_sq = E2_gpu.numpy().astype(np.float32)
+        else:
+            self.e_field_sq = compute_gradient_sq_np(self.potential, dx, dy, dz)
 
         # Zero E² above the upper electrode (inside the conductor)
         self.e_field_sq[:, j_upper:, :] = 0.0

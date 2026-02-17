@@ -9,3 +9,23 @@ Multi-physics solvers for the GP-15 RF heating simulation:
 - Airflow (EMU extraction + heater model)
 - Coupling orchestrator (timestep sequencing)
 """
+
+from .airflow import AirflowState, EMUAirflowModel
+from .coupling import CoupledSimulator, OutletState, PretreatmentResult, StepState
+from .moisture import MoistureSolver
+from .rf_field import RFFieldSolver
+from .thermal import ThermalSolver
+
+__all__ = [
+    # Coupling orchestrator
+    "CoupledSimulator",
+    "PretreatmentResult",
+    "StepState",
+    "OutletState",
+    # Individual solvers
+    "RFFieldSolver",
+    "ThermalSolver",
+    "MoistureSolver",
+    "EMUAirflowModel",
+    "AirflowState",
+]

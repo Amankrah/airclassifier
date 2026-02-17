@@ -27,6 +27,12 @@ def oven_sdf(
     Negative inside the material bed, positive outside.
     The distance is measured to the nearest bed boundary surface.
 
+    Uses the actual grid cell size ``cell_sizes[1]`` (``dy``) for
+    Y-coordinate computation, consistent with the physics solvers
+    and ``OvenChamberGeometry.build_material_mask()``.  The grid
+    spans ``electrode_gap_max`` (not the operating gap), so ``dy``
+    is fixed regardless of the current electrode position.
+
     Layout (Y-axis, bottom to top)::
 
         y = 0           lower electrode
@@ -54,9 +60,12 @@ def oven_sdf(
     y_bed_top = belt_stack_m + bed_depth_m
 
     for j in range(ny):
-        y = (j + 0.5) * (electrode_gap_m / ny)
+        y = (j + 0.5) * dy
 
-        if y < y_bed_bottom:
+        if y >= electrode_gap_m:
+            # Above upper electrode — no field region
+            d = y - electrode_gap_m
+        elif y < y_bed_bottom:
             # Below bed — in belt layer, positive distance
             d = y_bed_bottom - y
         elif y > y_bed_top:

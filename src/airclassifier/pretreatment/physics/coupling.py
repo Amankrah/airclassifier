@@ -105,6 +105,8 @@ class StepState:
     specific_energy_kwh_per_kg: float = 0.0
     # Electrode
     electrode_temperature_c: float = 0.0
+    # Protein quality (Phase 4)
+    protein_denaturation: float = 0.0   # fraction denatured [0-1]
 
 
 @dataclass
@@ -146,6 +148,10 @@ class OutletState:
     # Quality indicators
     max_temperature_c: float = 0.0
     protein_denaturation_fraction: float = 0.0
+
+    # When True, temperature_field is the peak-processing snapshot (at oven exit),
+    # not the end-of-run state (Run#1 strip 82–93°C; avoids confusion with cooled bin).
+    at_peak_processing_snapshot: bool = False
 
 
 class CoupledSimulator:
@@ -265,6 +271,12 @@ class CoupledSimulator:
         # When M=0 advects through the grid, we use these instead of the grid values.
         self._last_valid_M_outfeed = material.initial_moisture_wb
         self._last_valid_T_outfeed = material.initial_temperature_c
+        # Peak outfeed snapshot during processing (for cross-section when belt has cleared).
+        # Run#1 strip: 82–93°C at oven exit; PLC Product_Temp peaks then cools after batch.
+        # We store the T/M field snapshot when sensor T is highest so the heatmap matches.
+        self._peak_outfeed_sensor_T: float = material.initial_temperature_c
+        self._peak_outfeed_T_yz: Optional[np.ndarray] = None
+        self._peak_outfeed_M_yz: Optional[np.ndarray] = None
 
         # KPI accumulators
         self._total_rf_energy_j = 0.0
@@ -555,6 +567,31 @@ class CoupledSimulator:
         self._rf_zone_clear_time = 0.0
         self._last_valid_M_outfeed = self._material.initial_moisture_wb
         self._last_valid_T_outfeed = self._material.initial_temperature_c
+        self._peak_outfeed_sensor_T = self._material.initial_temperature_c
+        self._peak_outfeed_T_yz = None
+        self._peak_outfeed_M_yz = None
+
+        # Reset particle system mass tracking.
+        # Without this, dispatched_mass_kg retains the previous run's
+        # value, causing batch_exhausted to trigger immediately at t=0
+        # on subsequent evaluations (e.g. during calibration).
+        if self._particles is not None:
+            self._particles._dispatched_mass_kg = 0.0
+            self._particles._total_collected_kg = 0.0
+            self._particles._initial_belt_mass_kg = 0.0
+            self._particles._batch_exhausted = False
+            self._particles._spawn_accumulator = 0.0
+            self._particles._alive_count = 0
+            self._particles.state[:] = self._particles._STATE_DEAD
+            self._particles.pos[:] = 0.0
+            self._particles.vel[:] = 0.0
+            self._particles.age[:] = 0.0
+            # Phase 4: reset Biot + denaturation state
+            self._particles.T_core[:] = self._material.initial_temperature_c
+            self._particles.vicilin_native[:] = 1.0
+            self._particles.legumin_native[:] = 1.0
+            # Re-initialize particle distribution (hopper fill / belt prefill)
+            self._particles._init_particles()
 
         # Re-sync GPU arrays with reset state
         if self._use_gpu and self._gpu:
@@ -896,28 +933,54 @@ class CoupledSimulator:
         # the plate ammeter reflects the oscillator stress, which is what
         # the MRH relay sees.  But Ia is capped at the tube's physical
         # limit (~3.0 A for the YL-1057 triode).
-        compute_power_density_np(e_field, self.eps_loss, out=self.P_v)
-        P_rf_w_theoretical = float(np.sum(self.P_v[mat_mask]) * self._cell_vol)
-        P_rf_kw_theoretical = P_rf_w_theoretical / 1000.0
-
-        # Scale P_v and e_field if generator-limited
         P_rf_max_kw = machine.max_rf_power_kw
-        if P_rf_kw_theoretical > P_rf_max_kw and P_rf_kw_theoretical > 0:
-            scale = P_rf_max_kw / P_rf_kw_theoretical
-            self.P_v *= scale
-            e_field = e_field * scale  # for GPU upload below
-            P_rf_w = P_rf_max_kw * 1000.0
-            P_rf_kw = P_rf_max_kw
-        else:
-            P_rf_w = P_rf_w_theoretical
-            P_rf_kw = P_rf_kw_theoretical
 
         if self._use_gpu:
             g = self._gpu
+            # Upload the (possibly corrected) e_field to GPU
             self._upload_to_gpu('e_field_sq', e_field.astype(np.float32))
-            # P_v was computed on CPU with generator limiting already applied;
-            # upload the clamped P_v for the GPU thermal kernel.
-            self._upload_to_gpu('P_v', self.P_v)
+
+            # Compute P_v on GPU — uses the GPU's eps_loss which is
+            # up-to-date from the previous step's property update kernel.
+            # The CPU's self.eps_loss is stale on the GPU path.
+            wp.launch(_k_power_density, dim=(nx, ny, nz),
+                      inputs=[g['e_field_sq'], g['eps_loss'], g['P_v'],
+                              TWO_PI_F_EPS0, nx, ny, nz],
+                      device=self._wp_device)
+
+            # Download P_v for power limiting sum (CPU reduction)
+            wp.synchronize()
+            self.P_v[:] = g['P_v'].numpy()
+            P_rf_w_theoretical = float(np.sum(self.P_v[mat_mask]) * self._cell_vol)
+            P_rf_kw_theoretical = P_rf_w_theoretical / 1000.0
+
+            if P_rf_kw_theoretical > P_rf_max_kw and P_rf_kw_theoretical > 0:
+                scale = P_rf_max_kw / P_rf_kw_theoretical
+                self.P_v *= scale
+                # Re-upload the scaled P_v for the thermal kernel
+                self._upload_to_gpu('P_v', self.P_v)
+                P_rf_w = P_rf_max_kw * 1000.0
+                P_rf_kw = P_rf_max_kw
+            else:
+                P_rf_w = P_rf_w_theoretical
+                P_rf_kw = P_rf_kw_theoretical
+        else:
+            # CPU path: compute P_v from NumPy arrays
+            compute_power_density_np(e_field, self.eps_loss, out=self.P_v)
+            P_rf_w_theoretical = float(np.sum(self.P_v[mat_mask]) * self._cell_vol)
+            P_rf_kw_theoretical = P_rf_w_theoretical / 1000.0
+
+            if P_rf_kw_theoretical > P_rf_max_kw and P_rf_kw_theoretical > 0:
+                scale = P_rf_max_kw / P_rf_kw_theoretical
+                self.P_v *= scale
+                P_rf_w = P_rf_max_kw * 1000.0
+                P_rf_kw = P_rf_max_kw
+            else:
+                P_rf_w = P_rf_w_theoretical
+                P_rf_kw = P_rf_kw_theoretical
+
+        if self._use_gpu:
+            g = self._gpu
 
             # ── GPU BATCH: thermal + convection + moisture + properties
             # Launch all kernels without sync — Warp serialises them on
@@ -971,15 +1034,7 @@ class CoupledSimulator:
                       device=self._wp_device)
 
             # ── SINGLE SYNC: download all results at once ────────────
-            wp.synchronize()
-            self.P_v[:]                = g['P_v'].numpy()
-            self.thermal.T[:]          = g['T'].numpy()
-            self.moisture.M[:]         = g['M'].numpy()
-            self.moisture.evap_rate[:] = g['evap_rate'].numpy()
-            self.eps_loss[:]           = g['eps_loss'].numpy()
-            self.eps_real[:]           = g['eps_real'].numpy()
-            self.rho_cp[:]             = g['rho_cp'].numpy()
-            self.k_eff[:]              = g['k_eff'].numpy()
+            self._sync_physics_from_gpu()
 
             # Apply BCs on CPU (boundary rows only — cheap)
             self._apply_thermal_bcs_cpu(dt)
@@ -1242,6 +1297,11 @@ class CoupledSimulator:
         # between mean and max that matches sensor physics.
         if has_material and T_out_cells.size > 0:
             T_outfeed_sensor = float(np.percentile(T_out_cells, 75))
+            # Snapshot at peak sensor T for cross-section when belt later clears (Run#1: 82–93°C at oven exit)
+            if T_outfeed_sensor > self._peak_outfeed_sensor_T:
+                self._peak_outfeed_sensor_T = T_outfeed_sensor
+                self._peak_outfeed_T_yz = self.thermal.T[-1, :, :].copy()
+                self._peak_outfeed_M_yz = self.moisture.M[-1, :, :].copy()
         else:
             # Use last valid temperature when belt has cleared
             T_outfeed_sensor = self._last_valid_T_outfeed
@@ -1290,6 +1350,10 @@ class CoupledSimulator:
             water_removed_kg=water_removed_kg,
             specific_energy_kwh_per_kg=spec_energy,
             electrode_temperature_c=self._T_electrode_c,
+            protein_denaturation=(
+                self._particles.mean_denaturation
+                if self._particles is not None else 0.0
+            ),
         )
         self._history.append(state)
 
@@ -1395,6 +1459,7 @@ class CoupledSimulator:
                 "water_removed_kg": [s.water_removed_kg for s in self._history],
                 "specific_energy_kwh_per_kg": [s.specific_energy_kwh_per_kg for s in self._history],
                 "electrode_temperature_c": [s.electrode_temperature_c for s in self._history],
+                "protein_denaturation": [s.protein_denaturation for s in self._history],
             },
             T_final=self.thermal.T.copy(),
             M_final=self.moisture.M.copy(),
@@ -1432,43 +1497,48 @@ class CoupledSimulator:
         M_mat = M_yz[has_material]
 
         # For finite mass mode: if belt has cleared (no material at outlet),
-        # use the FROZEN outfeed values from the time-series (captured at
-        # the moment before the M=0 clearing front arrived).  These reflect
-        # the actual processing conditions at the oven exit.
-        #
-        # Do NOT use collected-particle data here — particles have been
-        # cooled by the post-grid cooling model during belt transport and
-        # would report bin temperature (~25°C), not outfeed temperature
-        # (~65-80°C).
-        use_particle_data = False
+        # show the PEAK PROCESSING snapshot so the cross-section matches the
+        # time-series and Run#1 strip data (82–93°C at oven exit). Do NOT use
+        # the current grid (cold/empty) or particle data (cooled in bin).
+        use_peak_snapshot = False
         if T_mat.size == 0:
-            # Use frozen outfeed values from the advection-time freeze
-            T_mat = np.array([self._last_valid_T_outfeed])
-            M_mat = np.array([self._last_valid_M_outfeed])
-            use_particle_data = True
+            if (self._peak_outfeed_T_yz is not None and
+                    self._peak_outfeed_M_yz is not None):
+                # Snapshot from when sensor T was highest (at oven exit during processing)
+                T_yz = self._peak_outfeed_T_yz.copy()
+                M_yz = self._peak_outfeed_M_yz.copy()
+                peak_has = mat_mask_yz & (M_yz > M_threshold)
+                T_peak = T_yz[peak_has]
+                M_peak = M_yz[peak_has]
+                avg_T = float(np.mean(T_peak)) if T_peak.size else self._last_valid_T_outfeed
+                avg_M = float(np.mean(M_peak)) if M_peak.size else self._last_valid_M_outfeed
+                max_T = float(np.max(T_peak)) if T_peak.size else self._peak_outfeed_sensor_T
+                sensor_T = (float(np.percentile(T_peak, 75)) if T_peak.size
+                            else self._peak_outfeed_sensor_T)
+                moisture_cv = (float(np.std(M_peak) / avg_M) if M_peak.size and avg_M > 1e-8
+                               else 0.0)
+                use_peak_snapshot = True
+            else:
+                T_mat = np.array([self._last_valid_T_outfeed])
+                M_mat = np.array([self._last_valid_M_outfeed])
 
-        # Compute averages
-        avg_T = float(np.mean(T_mat)) if T_mat.size else mat.initial_temperature_c
-        avg_M = float(np.mean(M_mat)) if M_mat.size else mat.initial_moisture_wb
-        max_T = float(np.max(T_mat)) if T_mat.size else mat.initial_temperature_c
-        # Sensor-comparable temperature: 75th percentile matches PLC/strip sensors
-        sensor_T = float(np.percentile(T_mat, 75)) if T_mat.size else mat.initial_temperature_c
-
-        # Moisture CV (coefficient of variation)
-        if M_mat.size and avg_M > 1e-8:
-            moisture_cv = float(np.std(M_mat) / avg_M)
-        else:
-            moisture_cv = 0.0
-
-        # When belt has cleared we used particle data for averages; the raw grid
-        # T_yz/M_yz would show empty-belt (cold, 0) and mislead the heatmap.
-        # Fill the outfeed fields in the material zone with avg T/M so the
-        # heatmap color scale matches the reported RESULTS.
-        if use_particle_data:
-            T_yz = T_yz.copy()
-            M_yz = M_yz.copy()
-            T_yz[mat_mask_yz] = avg_T
-            M_yz[mat_mask_yz] = avg_M
+        if not use_peak_snapshot:
+            # Compute averages from current slice or fallback T_mat/M_mat
+            avg_T = float(np.mean(T_mat)) if T_mat.size else mat.initial_temperature_c
+            avg_M = float(np.mean(M_mat)) if M_mat.size else mat.initial_moisture_wb
+            max_T = float(np.max(T_mat)) if T_mat.size else mat.initial_temperature_c
+            sensor_T = (float(np.percentile(T_mat, 75)) if T_mat.size
+                        else mat.initial_temperature_c)
+            if M_mat.size and avg_M > 1e-8:
+                moisture_cv = float(np.std(M_mat) / avg_M)
+            else:
+                moisture_cv = 0.0
+            # When belt cleared (no peak snapshot): fill material zone for heatmap
+            if T_mat.size == 0:
+                T_yz = T_yz.copy()
+                M_yz = M_yz.copy()
+                T_yz[mat_mask_yz] = avg_T
+                M_yz[mat_mask_yz] = avg_M
 
         # Throughput (use actual belt speed from conveyor drive)
         v_belt = self.conveyor.state.belt_speed_m_per_s
@@ -1494,9 +1564,14 @@ class CoupledSimulator:
         else:
             specific_energy = float("inf") if total_kwh > 0 else 0.0
 
-        # Protein denaturation estimate (simplified: fraction of time T > 70 C)
-        # For now, report 0 — detailed model in Phase 4
-        denaturation = 0.0
+        # Protein denaturation (Phase 4: Arrhenius kinetics on Lagrangian particles).
+        # Uses the Biot core temperature model — denaturation happens inside
+        # the seed, not at the surface.  Two-fraction model: vicilin (7S, onset
+        # 62 C) + legumin (11S, onset 76 C) weighted by pea globulin composition.
+        if self._particles is not None:
+            denaturation = self._particles.mean_denaturation
+        else:
+            denaturation = 0.0
 
         return OutletState(
             temperature_field=T_yz.copy(),
@@ -1511,6 +1586,7 @@ class CoupledSimulator:
             residence_time_s=residence_s,
             max_temperature_c=max_T,
             protein_denaturation_fraction=denaturation,
+            at_peak_processing_snapshot=use_peak_snapshot,
         )
 
     # ------------------------------------------------------------------

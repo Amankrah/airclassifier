@@ -64,16 +64,47 @@ class GP15Controller:
        If a fault occurs, RF is inhibited and a recycle sequence
        starts (up to 4 attempts, then lockout).
 
-    2. **Electrode gap** — Tracks recipe setpoint.  During an MRH
-       event the gap increases (reduces power density).  The drive
-       stops when anode current drops below MRL.  A 0.5 s debounce
-       prevents spurious adjustments.
+    2. **Electrode gap** — Asymmetric open/close with proportional
+       MRH response.  During overcurrent the gap opens proportionally
+       to how far Ia exceeds MRH (fast response).  In the normal band
+       (MRL < Ia < MRH) the gap drifts very slowly toward setpoint
+       (matching Run#1 PLC: gap held at 87 mm for ~1200 s).  Under
+       MRL with batch clearing, the gap returns to setpoint at a
+       moderate close rate (~15% of open rate, matching Run#1 PLC
+       close phase of ~0.03 mm/s).
 
     3. **Temperature control** (optional) — When
        ``recipe.temp_control_enabled`` is True, a closed-loop
        controller adjusts the electrode gap and belt speed to hold
        the outfeed temperature at the recipe setpoint.
+
+    Gap rate ratios derived from Run#1 PLC data analysis::
+
+        Phase            PLC rate   Model
+        ─────────────    ─────────  ──────────────────────────────
+        MRH opening      0.19 mm/s  gap_rate × (1 + overshoot/MRH)
+        Normal band hold  0.001 mm/s  gap_rate × _GAP_DRIFT_RATIO
+        MRL closing       0.03 mm/s  gap_rate × _GAP_CLOSE_RATIO
     """
+
+    # ── Asymmetric gap drive ratios ──────────────────────────────────
+    # Derived from Run#1 PLC data (61 kg whole yellow pea, gap=75 mm).
+    #
+    # The PLC shows the electrode gap opens quickly during MRH events
+    # but returns to setpoint very slowly:
+    #   - Open:   75→87 mm in ~60 s   (0.19 mm/s)
+    #   - Hold:   87→86.7 mm in 600 s (0.001 mm/s, normal band drift)
+    #   - Close:  84→75 mm in 300 s   (0.03 mm/s, MRL/batch clearing)
+    #
+    # _GAP_CLOSE_RATIO: fraction of gap_adjust_rate for MRL closing.
+    #   0.15 × 0.19 ≈ 0.029 mm/s (matches PLC close phase)
+    #
+    # _GAP_DRIFT_RATIO: fraction of gap_adjust_rate for normal-band
+    #   drift toward setpoint.  Very slow — models the PLC's tendency
+    #   to hold the elevated gap during steady-state processing.
+    #   0.005 × 0.19 ≈ 0.001 mm/s (matches PLC hold phase)
+    _GAP_CLOSE_RATIO = 0.15
+    _GAP_DRIFT_RATIO = 0.005
 
     # Gap adjustment step for temperature control [mm]
     _TEMP_GAP_STEP_MM = 2.0
@@ -129,20 +160,28 @@ class GP15Controller:
             self.status.state = ControllerState.RUNNING
 
     def set_batch_exhausted(self, exhausted: bool):
-        """Signal that the RF zone is clearing (M=0 front has reached RF zone).
+        """Signal that the oven chamber has cleared (run-out complete).
 
-        This is called when the M=0 front (injected after hopper empties)
-        has advected to the RF zone START, NOT when the hopper empties.
-        The delay accounts for the belt travel time from hopper to RF zone.
+        Called when the M=0 front (injected after hopper empties) has
+        advected from the hopper through the entire oven chamber to
+        the outfeed attenuation duct exit (``oven_x_end``).
 
-        When batch_exhausted=True and Ia < MRL, the controller interprets
-        this as a belt-clearing condition and returns the gap to setpoint,
-        rather than holding position (which is appropriate for continuous
-        operation with momentary low load).
+        Manual p.54: *"At the end of the production run allow product
+        to 'run-out' to ensure there is no product in the GP-15, then
+        press the GP-15 OFF button to stop processing."*
 
-        This matches the real GP-15 PLC behavior observed in Run#2 where
-        the gap returned from 94.1mm to 75.2mm after the material actually
-        cleared the RF zone (not when the hopper emptied).
+        The delay from hopper-empty to this signal accounts for belt
+        travel time from hopper discharge to oven exit — material is
+        "in the GP-15" until it passes the outfeed attenuation duct,
+        not just the electrodes (Engineering Guide §2.2.3).
+
+        When batch_exhausted=True and Ia < MRL, the controller returns
+        the gap to setpoint (oven clearing, load won't recover).
+        Without this flag, Ia < MRL would hold the gap (momentary
+        low load during continuous operation, expect recovery).
+
+        Matches Run#2 PLC: gap returned 94.1→75.2 mm after material
+        cleared the oven, not when the hopper emptied.
         """
         self._batch_exhausted = exhausted
 
@@ -203,15 +242,24 @@ class GP15Controller:
             self.status.rf_enabled = recipe.rf_power_enabled
 
         # ── 2. MRH / MRL GAP CONTROL ─────────────────────────────────
-        # Gap control follows the GP-15 manual (Section 8.1):
-        #   - MRH active (Ia > MRH): increase gap to reduce power
-        #   - MRL active (Ia < MRL): stop drive (hold position) - prevents
-        #     closing gap when no material is present
-        #   - Normal (MRL < Ia < MRH): return gap toward recipe setpoint
+        # Asymmetric gap control with proportional MRH response.
         #
-        # The return-to-setpoint logic matches observed PLC behavior in
-        # Run#2: gap peaked at 94.1mm during MRH trip, then returned to
-        # 75.2mm (setpoint) after material cleared.
+        # Three regimes derived from Run#1 PLC analysis:
+        #
+        #   MRH (Ia > MRH):  Open gap proportionally to overcurrent.
+        #     The further Ia exceeds MRH, the faster the gap opens.
+        #     gain = 1 + (Ia - MRH) / MRH  →  e.g. at Ia=2.0, MRH=1.7:
+        #     gain = 1.18, rate = 0.19 × 1.18 = 0.22 mm/s.
+        #
+        #   Normal band (MRL < Ia < MRH):  Very slow drift toward
+        #     setpoint.  The PLC holds the elevated gap for ~1200 s
+        #     during steady-state processing (87 → 86.7 mm in 600 s).
+        #     drift_rate = gap_rate × _GAP_DRIFT_RATIO (0.5%).
+        #
+        #   MRL (Ia < MRL):  Depends on batch state:
+        #     - Batch exhausted: close toward setpoint at moderate rate
+        #       (gap_rate × _GAP_CLOSE_RATIO = 15% of open rate).
+        #     - Continuous: hold position (existing MRL_STOP).
         self.status.mrh_active = anode_current_a > recipe.mrh_amps
         self.status.mrl_active = anode_current_a < recipe.mrl_amps
 
@@ -220,8 +268,13 @@ class GP15Controller:
         gap_min_mm = self._machine.electrode_gap_min_m * 1000.0
 
         if self.status.mrh_active:
-            # Overcurrent: increase gap to reduce power density
-            self.status.electrode_gap_mm += self.gap_adjust_rate_mm_s * dt
+            # Overcurrent: proportional gap opening.
+            # Rate scales with how far Ia exceeds MRH, giving faster
+            # response to larger overcurrents while maintaining the
+            # base rate at the MRH threshold.
+            overshoot = max(0.0, anode_current_a - recipe.mrh_amps)
+            gain = 1.0 + overshoot / max(recipe.mrh_amps, 0.1)
+            self.status.electrode_gap_mm += self.gap_adjust_rate_mm_s * gain * dt
             self.status.electrode_gap_mm = min(
                 self.status.electrode_gap_mm, gap_max_mm,
             )
@@ -229,14 +282,12 @@ class GP15Controller:
         elif self.status.mrl_active:
             # Undercurrent behavior depends on batch mode:
             # - Batch exhausted (empty belt): return gap to setpoint
-            # - Continuous operation: hold position (MRL_STOP)
-            #
-            # This matches real GP-15 PLC behavior in Run#2 where gap
-            # returned from 94.1mm to 75.2mm after the batch cleared.
+            #   at the moderate close rate (15% of open rate).
+            # - Continuous operation: hold position (MRL_STOP).
             if self._batch_exhausted:
-                # Empty belt after batch: return gap to setpoint
+                close_rate = self.gap_adjust_rate_mm_s * self._GAP_CLOSE_RATIO
                 if self.status.electrode_gap_mm > gap_setpoint_mm + 0.5:
-                    self.status.electrode_gap_mm -= self.gap_adjust_rate_mm_s * dt
+                    self.status.electrode_gap_mm -= close_rate * dt
                     self.status.electrode_gap_mm = max(
                         self.status.electrode_gap_mm, gap_setpoint_mm,
                     )
@@ -246,21 +297,19 @@ class GP15Controller:
                 ):
                     self.status.state = ControllerState.RUNNING
             else:
-                # Continuous operation: stop electrode drive (hold position)
-                # Prevents gap from closing when momentary low load
                 self.status.state = ControllerState.MRL_STOP
         else:
-            # Normal operation: return gap toward setpoint
+            # Normal band: very slow drift toward setpoint.
+            # The PLC holds the elevated gap during steady-state
+            # processing — gap barely moves while material is present.
+            drift_rate = self.gap_adjust_rate_mm_s * self._GAP_DRIFT_RATIO
             if self.status.electrode_gap_mm > gap_setpoint_mm + 0.5:
-                # Gap is above setpoint - decrease toward setpoint
-                # Use same rate as MRH drive for symmetric behavior
-                self.status.electrode_gap_mm -= self.gap_adjust_rate_mm_s * dt
+                self.status.electrode_gap_mm -= drift_rate * dt
                 self.status.electrode_gap_mm = max(
                     self.status.electrode_gap_mm, gap_setpoint_mm,
                 )
             elif self.status.electrode_gap_mm < gap_setpoint_mm - 0.5:
-                # Gap is below setpoint - increase toward setpoint
-                self.status.electrode_gap_mm += self.gap_adjust_rate_mm_s * dt
+                self.status.electrode_gap_mm += drift_rate * dt
                 self.status.electrode_gap_mm = min(
                     self.status.electrode_gap_mm, gap_setpoint_mm,
                 )

@@ -59,14 +59,20 @@ def _evaluate_recipe(
     config: MachineConfig,
     material: MaterialProperties,
     duration_s: float,
+    run_mass_kg: float = 0.0,
 ) -> Dict[str, float]:
-    """Run a single simulation and return KPIs."""
+    """Run a single simulation and return KPIs.
+
+    Phase 4: includes protein denaturation fraction from the Lagrangian
+    Biot + Arrhenius model (vicilin 7S + legumin 11S).
+    """
     recipe = Recipe(
         name="opt_trial",
         recipe_number=0,
         electrode_gap_mm=float(gap_mm),
         belt_speed_m_per_min=float(speed_m_per_min),
         extraction_fan_hz=30.0,
+        run_mass_kg=run_mass_kg,
     )
 
     sim = GP15Simulator(
@@ -89,6 +95,8 @@ def _evaluate_recipe(
             "moisture_cv": 1.0,
             "energy_kwh_per_kg": 999.0,
             "T_max_c": 0.0,
+            "T_outfeed_c": 0.0,
+            "denaturation": 0.0,
             "feasible": False,
         }
 
@@ -99,6 +107,8 @@ def _evaluate_recipe(
         "moisture_cv": outlet.moisture_uniformity,
         "energy_kwh_per_kg": outlet.specific_energy_kwh_per_kg,
         "T_max_c": outlet.max_temperature_c,
+        "T_outfeed_c": outlet.avg_temperature_c,
+        "denaturation": outlet.protein_denaturation_fraction,
         "feasible": True,
     }
 
@@ -108,35 +118,53 @@ def optimize_recipe(
     material: MaterialProperties | None = None,
     target_moisture_wb: float = 0.03,
     max_temperature_c: float = 70.0,
+    max_denaturation: float = 0.15,
     max_energy_kwh_per_kg: float = 1.5,
     duration_s: float = 60.0,
+    run_mass_kg: float = 0.0,
     gap_range_mm: tuple = (40.0, 200.0),
     speed_range: tuple = (0.2, 1.5),
     n_gap: int = 5,
     n_speed: int = 5,
+    use_desirability: bool = False,
 ) -> OptimizationResult:
-    """Find the optimal recipe via grid search over gap × belt speed.
+    """Find the optimal recipe via grid search over gap x belt speed.
 
-    The objective minimizes energy consumption subject to:
-    - Outlet moisture <= target_moisture_wb
-    - Max temperature <= max_temperature_c (protein denaturation)
-    - Energy <= max_energy_kwh_per_kg
+    The objective minimizes energy consumption subject to constraints.
+    Phase 4 adds protein denaturation from the Arrhenius kinetics model.
+
+    When ``use_desirability=True``, the objective maximizes the
+    Derringer-Suich composite desirability score instead of minimizing
+    energy with constraints.  This multi-criteria approach balances
+    thermal treatment, flavour improvement, protein preservation,
+    moisture retention, and energy efficiency.
+
+    Constraints (default objective):
+        - Outlet moisture <= target_moisture_wb
+        - Max temperature <= max_temperature_c
+        - Protein denaturation <= max_denaturation (Phase 4)
+        - Energy <= max_energy_kwh_per_kg
 
     Args:
         config: Machine config.
         material: Material properties.
         target_moisture_wb: Target outlet moisture (wet basis).
-        max_temperature_c: Max allowed material temperature [°C].
+        max_temperature_c: Max allowed material temperature [C].
+        max_denaturation: Max protein denaturation fraction [0-1].
         max_energy_kwh_per_kg: Max specific energy [kWh/kg water].
         duration_s: Simulation duration per trial [s].
+        run_mass_kg: Batch mass for finite-mass mode (0 = continuous).
         gap_range_mm: (min, max) electrode gap [mm].
         speed_range: (min, max) belt speed [m/min].
         n_gap: Grid points in gap dimension.
         n_speed: Grid points in speed dimension.
+        use_desirability: Use desirability score as objective.
 
     Returns:
         :class:`OptimizationResult` with the best recipe and all trials.
     """
+    from .desirability import score_desirability
+
     config = config or MachineConfig()
     material = material or MaterialProperties()
 
@@ -155,26 +183,52 @@ def optimize_recipe(
                 config=config,
                 material=material,
                 duration_s=duration_s,
+                run_mass_kg=run_mass_kg,
             )
+
+            # Compute desirability score for every trial (Phase 4)
+            if trial["feasible"]:
+                ds = score_desirability(
+                    outfeed_temperature_c=trial["T_outfeed_c"],
+                    max_temperature_c=trial["T_max_c"],
+                    outfeed_moisture_wb=trial["moisture_wb"],
+                    initial_moisture_wb=material.initial_moisture_wb,
+                    energy_kwh=trial["energy_kwh_per_kg"] * (run_mass_kg or 1.0),
+                    run_mass_kg=run_mass_kg or 1.0,
+                )
+                trial["desirability"] = ds.overall_10
+                trial["d_protein"] = ds.d_protein
+            else:
+                trial["desirability"] = 0.0
+                trial["d_protein"] = 0.0
+
             trials.append(trial)
 
             if not trial["feasible"]:
                 continue
 
-            # Feasibility check
-            if trial["T_max_c"] > max_temperature_c:
-                continue
+            if use_desirability:
+                # Maximize desirability (minimize negative)
+                cost = -trial["desirability"]
+            else:
+                # Feasibility constraints
+                if trial["T_max_c"] > max_temperature_c:
+                    continue
+                if trial["denaturation"] > max_denaturation:
+                    continue
 
-            # Cost: energy consumption + penalty for missing moisture target
-            moisture_penalty = max(0, trial["moisture_wb"] - target_moisture_wb) * 100
-            cost = trial["energy_kwh_per_kg"] + moisture_penalty
+                # Cost: energy + penalty for missing moisture target
+                # + denaturation penalty (Phase 4)
+                moisture_penalty = max(0, trial["moisture_wb"] - target_moisture_wb) * 100
+                denat_penalty = max(0, trial["denaturation"] - max_denaturation) * 50
+                cost = trial["energy_kwh_per_kg"] + moisture_penalty + denat_penalty
 
             if cost < best_cost:
                 best_cost = cost
                 best_trial = trial
 
     if best_trial is None:
-        # No feasible solution found — return the trial closest to target
+        # No feasible solution found -- return the trial closest to target
         best_trial = min(
             [t for t in trials if t["feasible"]],
             key=lambda t: abs(t["moisture_wb"] - target_moisture_wb),
@@ -187,6 +241,7 @@ def optimize_recipe(
         electrode_gap_mm=best_trial["gap_mm"],
         belt_speed_m_per_min=best_trial["speed"],
         extraction_fan_hz=30.0,
+        run_mass_kg=run_mass_kg,
     )
 
     return OptimizationResult(

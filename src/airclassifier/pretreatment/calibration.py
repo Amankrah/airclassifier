@@ -18,9 +18,11 @@ Improvements over naive approach:
     - Simulator reuse (reset() instead of re-constructing per evaluation)
     - Ia included in loss function (most informative signal)
     - Loss terms normalized by PLC signal variance (interpretable weights)
+    - Trajectory weighting (2x on last 25%) to constrain wind-down dynamics
     - polish=True for local refinement after DE convergence
     - Sensitivity analysis at the optimum
     - Proper exception handling with logging
+    - Particle system reset between evaluations (correct batch lifecycle)
 
 Usage::
 
@@ -267,6 +269,12 @@ class CalibrationOptimizer:
         self._var_Ia = max(float(np.var(self._plc_ia)), 0.01)
         self._var_gap = max(float(np.var(self._plc_gap)), 1.0)
 
+        # Trajectory weights: emphasize the wind-down phase (last 25%).
+        # The wind-down (Ia drop, gap return, T cooling) is critical for
+        # constraining gap_rate and end-of-batch behavior, but uniform
+        # weighting dilutes it relative to the longer steady-state phase.
+        self._trajectory_weights = self._build_trajectory_weights(n_compare_points)
+
         # Persistent simulator (reused across evaluations)
         self._sim: Optional[GP15Simulator] = None
         self._eval_count = 0
@@ -374,6 +382,30 @@ class CalibrationOptimizer:
 
         return T_sim, Ia_sim, gap_sim
 
+    @staticmethod
+    def _build_trajectory_weights(n_pts: int) -> np.ndarray:
+        """Build trajectory weights with end-point emphasis.
+
+        The wind-down phase (last 25% of the PLC recording) is critical
+        for constraining gap control dynamics and end-of-batch behavior.
+        Under uniform weighting, the long steady-state phase (middle ~50%)
+        dominates the loss, and the optimizer can ignore the wind-down
+        where T, Ia, and gap should all return to idle/setpoint values.
+
+        Weights::
+
+            First 75%:  w = 1.0  (uniform)
+            Last  25%:  w = 2.0  (2x emphasis on wind-down)
+
+        Normalized so ``mean(weights) = 1.0`` — the total loss magnitude
+        is comparable to the uniform-weight version.
+        """
+        w = np.ones(n_pts)
+        cutoff = int(0.75 * n_pts)
+        w[cutoff:] = 2.0
+        w /= w.mean()
+        return w
+
     def _compute_loss(
         self,
         T_sim: np.ndarray,
@@ -382,11 +414,15 @@ class CalibrationOptimizer:
     ) -> Tuple[float, float, float, float]:
         """Compute normalized weighted loss components.
 
+        Uses trajectory weights to emphasize the wind-down phase
+        (last 25% of the recording gets 2x weight).
+
         Returns (total, L_T, L_Ia, L_gap).
         """
-        L_T = float(np.mean((T_sim - self._plc_temp) ** 2)) / self._var_T
-        L_Ia = float(np.mean((Ia_sim - self._plc_ia) ** 2)) / self._var_Ia
-        L_gap = float(np.mean((gap_sim - self._plc_gap) ** 2)) / self._var_gap
+        w = self._trajectory_weights
+        L_T = float(np.mean(w * (T_sim - self._plc_temp) ** 2)) / self._var_T
+        L_Ia = float(np.mean(w * (Ia_sim - self._plc_ia) ** 2)) / self._var_Ia
+        L_gap = float(np.mean(w * (gap_sim - self._plc_gap) ** 2)) / self._var_gap
         total = self._w_T * L_T + self._w_Ia * L_Ia + self._w_gap * L_gap
         return total, L_T, L_Ia, L_gap
 

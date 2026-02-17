@@ -46,11 +46,12 @@ KEY_K_DISPERSION = "k_dispersion"
 KEY_SAVED_AT = "saved_at"
 KEY_SOURCE = "source"
 
-# Fallbacks when JSON is missing
-_FALLBACK_COUPLING = 0.181
-_FALLBACK_K_EVAP = 1.01e-6
-_FALLBACK_GAP_RATE = 0.649
-_FALLBACK_K_DISPERSION = 2.0
+# Fallbacks when JSON is missing — updated from Nelder-Mead calibration
+# against Run#1 PLC data (Feb 2026, 289 evals, loss=3.54).
+_FALLBACK_COUPLING = 0.138
+_FALLBACK_K_EVAP = 1.02e-6
+_FALLBACK_GAP_RATE = 0.191
+_FALLBACK_K_DISPERSION = 2.10
 
 _cached_defaults: Optional[Tuple[float, float, float, float]] = None
 

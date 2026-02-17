@@ -46,16 +46,16 @@ class MachineConfig:
     # across the electrodes:  V_rf = V_anode * coupling_factor.
     #
     # Calibrated against Run#1 PLC data (25-Mar-2025, full 2794 s)
-    # using differential_evolution (calibration.py).
+    # using Nelder-Mead local optimization (calibration.py, 289 evals).
     #
     # Run#1: 61 kg whole yellow pea, gap=75mm, speed=0.2 m/min,
     #        bed=25mm, MRH=1.7 A.  PLC shows T reaching 101 C,
     #        Ia=1.65-1.70 A, gap opens 75→87 mm.
     #
-    # Full calibration found k_evap ≈ 0 — whole seeds barely
-    # evaporate moisture (intact seed coat).  The GP-15 at these
-    # settings performs thermal conditioning, not drying.
-    # Max temp reaches 84 C (vs 82-93 C temperature strips).
+    # Calibrated value: k ≈ 0.138 (from 0.181 baseline).
+    # k_evap collapsed to ~1e-6 — whole seeds barely evaporate
+    # moisture (intact seed coat).  The GP-15 at these settings
+    # performs thermal conditioning, not drying.
     # Default from utility_docs/calibration_latest.json (single source of truth).
     oscillator_coupling_factor: float = field(
         default_factory=lambda: get_calibration_defaults()[0]
@@ -192,8 +192,9 @@ class MaterialProperties:
     # For 8mm peas with moderate airflow (~0.3 m/s):
     #   k_disp ≈ 1.2 * 1000 * 0.3 * 0.008 ≈ 2.9 W/(m·K)
     #
-    # Calibrated against Run#1 PLC data, validated against Run#2
-    # temperature strip measurements (77-82°C).
+    # Calibrated value: 2.10 W/(m·K), sensitivity dL/dp = 0.008
+    # (insensitive — well-determined by temperature data).
+    # Validated against Run#2 temperature strip measurements (77-82°C).
     # Default from utility_docs/calibration_latest.json (single source of truth).
     k_dispersion: float = field(default_factory=lambda: get_calibration_defaults()[3])
 
