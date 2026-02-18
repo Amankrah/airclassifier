@@ -192,6 +192,8 @@ if _HAS_PYSIDE6:
                             "rf_power_kw": state.rf_power_kw,
                             "anode_current_a": state.anode_current_a,
                             "electrode_gap_mm": state.electrode_gap_mm,
+                            "protein_denaturation": state.protein_denaturation,
+                            "total_energy_kwh": state.total_energy_kwh,
                         })
 
                 outlet = sim.get_outlet_conditions()
@@ -205,19 +207,33 @@ if _HAS_PYSIDE6:
                 )
 
                 self.progress_updated.emit(100, sim._sim._time, {})
+                history = sim._sim._history
                 self.simulation_completed.emit({
                     "outlet": outlet,
                     "meshes": meshes,
                     "time_series": {
-                        "time_s": [s.time_s for s in sim._sim._history],
-                        "T_mean_c": [s.T_mean_c for s in sim._sim._history],
-                        "T_outfeed_c": [s.T_outfeed_c for s in sim._sim._history],
-                        "T_outfeed_sensor_c": [s.T_outfeed_sensor_c for s in sim._sim._history],
-                        "M_mean_wb": [s.M_mean_wb for s in sim._sim._history],
-                        "M_outfeed_wb": [s.M_outfeed_wb for s in sim._sim._history],
-                        "rf_power_kw": [s.rf_power_kw for s in sim._sim._history],
-                        "anode_current_a": [s.anode_current_a for s in sim._sim._history],
-                        "electrode_gap_mm": [s.electrode_gap_mm for s in sim._sim._history],
+                        "time_s": [s.time_s for s in history],
+                        "T_mean_c": [s.T_mean_c for s in history],
+                        "T_max_c": [s.T_max_c for s in history],
+                        "T_outfeed_c": [s.T_outfeed_c for s in history],
+                        "T_outfeed_sensor_c": [s.T_outfeed_sensor_c for s in history],
+                        "M_mean_wb": [s.M_mean_wb for s in history],
+                        "M_outfeed_wb": [s.M_outfeed_wb for s in history],
+                        "rf_power_kw": [s.rf_power_kw for s in history],
+                        "evap_power_kw": [s.evap_power_kw for s in history],
+                        "anode_current_a": [s.anode_current_a for s in history],
+                        "electrode_gap_mm": [s.electrode_gap_mm for s in history],
+                        "total_energy_kwh": [s.total_energy_kwh for s in history],
+                        "water_removed_kg": [s.water_removed_kg for s in history],
+                        "specific_energy_kwh_per_kg": [
+                            s.specific_energy_kwh_per_kg for s in history
+                        ],
+                        "protein_denaturation": [
+                            s.protein_denaturation for s in history
+                        ],
+                        "controller_state": [
+                            s.controller_state for s in history
+                        ],
                     },
                 })
 
@@ -314,6 +330,8 @@ if _HAS_PYSIDE6:
             self._card_P = _StatCard("RF Power", COLORS.WARNING)
             self._card_Ia = _StatCard("Anode Current", COLORS.SUCCESS)
             self._card_gap = _StatCard("Electrode Gap", COLORS.TEXT_SECONDARY)
+            self._card_protein = _StatCard("Protein (Native Loss)", COLORS.WARNING)
+            self._card_energy = _StatCard("Energy Consumed", COLORS.INFO)
 
             cards.addWidget(self._card_time, 0, 0)
             cards.addWidget(self._card_T, 0, 1)
@@ -321,6 +339,8 @@ if _HAS_PYSIDE6:
             cards.addWidget(self._card_P, 1, 1)
             cards.addWidget(self._card_Ia, 2, 0)
             cards.addWidget(self._card_gap, 2, 1)
+            cards.addWidget(self._card_protein, 3, 0)
+            cards.addWidget(self._card_energy, 3, 1)
 
             layout.addLayout(cards)
             layout.addStretch()
@@ -528,6 +548,14 @@ if _HAS_PYSIDE6:
                 self._card_Ia.set_value(f"{stats['anode_current_a']:.2f} A")
             if "electrode_gap_mm" in stats:
                 self._card_gap.set_value(f"{stats['electrode_gap_mm']:.0f} mm")
+            if "protein_denaturation" in stats:
+                self._card_protein.set_value(
+                    f"{stats['protein_denaturation'] * 100:.1f} %"
+                )
+            if "total_energy_kwh" in stats:
+                self._card_energy.set_value(
+                    f"{stats['total_energy_kwh']:.4f} kWh"
+                )
 
         # ── Simulation Lifecycle ──────────────────────────────────
 

@@ -617,6 +617,9 @@ class PretreatmentPage(QWidget):
             plots_section = self._build_results_plots_section()
             content_layout.addWidget(plots_section)
 
+            particle_section = self._build_results_particle_section()
+            content_layout.addWidget(particle_section)
+
             outfeed_section = self._build_results_outfeed_section()
             content_layout.addWidget(outfeed_section)
         else:
@@ -723,6 +726,10 @@ class PretreatmentPage(QWidget):
         self._rc_specific = _StatCard("Specific Energy", COLORS.TEXT_PRIMARY)
         self._rc_throughput = _StatCard("Throughput", COLORS.CAT_FEED)
         self._rc_wall = _StatCard("Wall-Clock Time", COLORS.TEXT_SECONDARY)
+        self._rc_protein = _StatCard("Protein Quality (Native Loss)", COLORS.WARNING)
+        self._rc_mass_balance = _StatCard("Mass Balance", COLORS.INFO)
+        self._rc_final_gap = _StatCard("Final Electrode Gap", COLORS.SUCCESS)
+        self._rc_sim_speed = _StatCard("Simulation Speed", COLORS.TEXT_SECONDARY)
 
         grid.addWidget(self._rc_moisture, 0, 0)
         grid.addWidget(self._rc_temp, 0, 1)
@@ -732,6 +739,10 @@ class PretreatmentPage(QWidget):
         grid.addWidget(self._rc_specific, 1, 1)
         grid.addWidget(self._rc_throughput, 1, 2)
         grid.addWidget(self._rc_wall, 1, 3)
+        grid.addWidget(self._rc_protein, 2, 0)
+        grid.addWidget(self._rc_mass_balance, 2, 1)
+        grid.addWidget(self._rc_final_gap, 2, 2)
+        grid.addWidget(self._rc_sim_speed, 2, 3)
 
         layout.addLayout(grid)
         return section
@@ -970,6 +981,36 @@ class PretreatmentPage(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         layout.addWidget(self._outfeed_canvas)
+
+        return section
+
+    def _build_results_particle_section(self) -> QWidget:
+        section = QFrame()
+        section.setStyleSheet(f"""
+            QFrame {{
+                background: {COLORS.BG_BASE};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 8px;
+            }}
+        """)
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(12, 8, 12, 8)
+
+        section_title = QLabel("Particle System Analysis")
+        section_title.setStyleSheet(
+            f"font-size: 10pt; font-weight: 600; color: {COLORS.TEXT_SECONDARY};"
+            " border: none; background: transparent;"
+        )
+        layout.addWidget(section_title)
+
+        self._particle_figure = Figure(figsize=(16, 9), dpi=100)
+        self._particle_figure.patch.set_facecolor(COLORS.BG_DARK)
+        self._particle_canvas = FigureCanvas(self._particle_figure)
+        self._particle_canvas.setMinimumHeight(600)
+        self._particle_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        layout.addWidget(self._particle_canvas)
 
         return section
 
@@ -1528,13 +1569,56 @@ class PretreatmentPage(QWidget):
                     "specific_energy_kwh_per_kg": [
                         h.specific_energy_kwh_per_kg for h in history
                     ],
+                    "protein_denaturation": [
+                        h.protein_denaturation for h in history
+                    ],
+                    "controller_state": [
+                        h.controller_state for h in history
+                    ],
                 }
 
             collected_mass_kg = 0.0
             collected_count = 0
+            dispatched_mass_kg = 0.0
             if hasattr(particle_sys, "collected_mass_kg"):
                 collected_mass_kg = particle_sys.collected_mass_kg
                 collected_count = particle_sys.collected_count
+            if hasattr(particle_sys, "dispatched_mass_kg"):
+                dispatched_mass_kg = particle_sys.dispatched_mass_kg
+
+            # Capture particle-level data for analysis plots
+            particle_data = {}
+            if particle_sys is not None:
+                collected_mask = (particle_sys.state == particle_sys._STATE_COLLECTED)
+                riding_mask = (particle_sys.state == particle_sys._STATE_RIDING)
+
+                particle_data["n_total"] = particle_sys.cfg.max_particles
+                particle_data["hopper_count"] = particle_sys.hopper_count
+                particle_data["riding_count"] = particle_sys.riding_count
+                particle_data["collected_count"] = particle_sys.collected_count
+                particle_data["falling_count"] = particle_sys.falling_count
+
+                if collected_mask.any():
+                    if hasattr(particle_sys, "T_at_oven_exit"):
+                        particle_data["T_collected"] = particle_sys.T_at_oven_exit[collected_mask].copy()
+                    else:
+                        particle_data["T_collected"] = particle_sys.temperature[collected_mask].copy()
+                    if hasattr(particle_sys, "M_at_oven_exit"):
+                        particle_data["M_collected"] = particle_sys.M_at_oven_exit[collected_mask].copy() * 100
+                if hasattr(particle_sys, "vicilin_native"):
+                    active_mask = collected_mask if collected_mask.any() else riding_mask
+                    if active_mask.any():
+                        particle_data["vicilin_native_mean"] = float(np.mean(particle_sys.vicilin_native[active_mask]))
+                        particle_data["legumin_native_mean"] = float(np.mean(particle_sys.legumin_native[active_mask]))
+                if hasattr(particle_sys, "T_core"):
+                    active_mask = collected_mask if collected_mask.any() else riding_mask
+                    if active_mask.any():
+                        if not collected_mask.any() or not hasattr(particle_sys, "T_core_at_oven_exit"):
+                            particle_data["T_surface"] = particle_sys.temperature[active_mask].copy()
+                            particle_data["T_core"] = particle_sys.T_core[active_mask].copy()
+                        else:
+                            particle_data["T_surface"] = particle_sys.T_at_oven_exit[active_mask].copy()
+                            particle_data["T_core"] = particle_sys.T_core_at_oven_exit[active_mask].copy()
 
             self._results = {
                 "outlet": outlet,
@@ -1545,6 +1629,7 @@ class PretreatmentPage(QWidget):
                 "n_steps": len(history),
                 "collected_mass_kg": collected_mass_kg,
                 "collected_count": collected_count,
+                "dispatched_mass_kg": dispatched_mass_kg,
                 "run_mass_kg": self._recipe.run_mass_kg,
                 "gap_mm": self._recipe.electrode_gap_mm,
                 "bed_depth_mm": self._material.bed_depth_m * 1000.0,
@@ -1552,6 +1637,7 @@ class PretreatmentPage(QWidget):
                 "duration_s": self._duration_s,
                 "initial_moisture": self._material.initial_moisture_wb,
                 "initial_temp_c": self._material.initial_temperature_c,
+                "particle_data": particle_data,
             }
 
             # Stop render timer
@@ -1571,6 +1657,7 @@ class PretreatmentPage(QWidget):
             if _HAS_MATPLOTLIB:
                 if outlet:
                     self._draw_outfeed_section(self._results)
+                self._draw_particle_plots(self._results)
 
             # Enable "View Full Results" and update status
             self._view_results_btn.setEnabled(True)
@@ -1684,7 +1771,7 @@ class PretreatmentPage(QWidget):
             fontsize=10, fontweight="bold", color=COLORS.TEXT_PRIMARY,
         )
 
-        # ── [0,0] Temperature ────────────────────────────────────
+        # ── [0,0] Temperature + Protein Denaturation ──────────────
         ax = axes[0, 0]
         self._style_ax(ax)
         if "T_mean_c" in ts and "T_max_c" in ts:
@@ -1693,15 +1780,32 @@ class PretreatmentPage(QWidget):
                 alpha=0.15, color="red", label="T range",
             )
         if "T_outfeed_sensor_c" in ts:
-            # Sensor-comparable temperature (75th percentile) - matches PLC/strips
             ax.plot(t_min, ts["T_outfeed_sensor_c"], "r-", lw=2, label="T sensor (P75)")
         if "T_outfeed_c" in ts:
             ax.plot(t_min, ts["T_outfeed_c"], "r--", lw=1.2, alpha=0.6, label="T outfeed (mean)")
-        ax.axhline(70, color="orange", ls=":", alpha=0.6, label="Denaturation 70\u00b0C")
+        ax.axhline(76, color="orange", ls=":", alpha=0.6, label="Legumin onset 76\u00b0C")
         ax.set_xlabel("Time [min]")
         ax.set_ylabel("Temperature [\u00b0C]")
-        ax.set_title("Material Temperature")
-        ax.legend(fontsize=6, loc="upper left")
+        ax.set_title("Temperature & Protein Quality")
+        # Secondary Y-axis: protein denaturation (globulin native loss)
+        if "protein_denaturation" in ts:
+            denat_pct = np.array(ts["protein_denaturation"]) * 100
+            if np.any(denat_pct > 0):
+                ax_d = ax.twinx()
+                ax_d.plot(t_min, denat_pct, "k-", lw=1.5, alpha=0.7,
+                          label="Globulin native loss [%]")
+                ax_d.axhline(15, color="green", ls="--", alpha=0.6, lw=1,
+                             label="Target max 15%")
+                ax_d.set_ylabel("Globulin native loss [%]", color="k", fontsize=7)
+                ax_d.set_ylim(bottom=0)
+                ax_d.tick_params(colors=COLORS.TEXT_SECONDARY, labelsize=7)
+                lines1, labels1 = ax.get_legend_handles_labels()
+                lines2, labels2 = ax_d.get_legend_handles_labels()
+                ax.legend(lines1 + lines2, labels1 + labels2, fontsize=5, loc="upper left")
+            else:
+                ax.legend(fontsize=6, loc="upper left")
+        else:
+            ax.legend(fontsize=6, loc="upper left")
         ax.grid(True, alpha=0.2, color=COLORS.BORDER)
 
         # ── [0,1] Moisture ───────────────────────────────────────
@@ -1948,6 +2052,148 @@ class PretreatmentPage(QWidget):
         fig.tight_layout(rect=[0, 0, 1, 0.92])
         self._outfeed_canvas.draw()
 
+    def _draw_particle_plots(self, results: dict):
+        """Draw 2x2 particle system analysis plots (matches example Figures 3+5).
+
+        Layout:
+          [0,0] Particle state pie chart
+          [0,1] Treatment temperature histogram (collected at oven exit)
+          [1,0] Protein fraction bars (Vicilin 7S vs Legumin 11S)
+          [1,1] Core vs Surface temperature (Biot model)
+        """
+        fig = self._particle_figure
+        fig.clear()
+
+        pd = results.get("particle_data", {})
+        if not pd:
+            ax = fig.add_subplot(111)
+            self._style_ax(ax)
+            ax.text(0.5, 0.5, "No particle data available",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color=COLORS.TEXT_MUTED, fontsize=12)
+            self._particle_canvas.draw()
+            return
+
+        n_total = pd.get("n_total", 0)
+        collected_n = pd.get("collected_count", 0)
+
+        fig.suptitle(
+            f"Particle System Analysis  |  "
+            f"n={n_total}  |  Collected: {collected_n}",
+            fontsize=10, fontweight="bold", color=COLORS.TEXT_PRIMARY,
+        )
+
+        axes = fig.subplots(2, 2)
+
+        # ── [0,0] Particle state pie chart ──────────────────────────
+        ax = axes[0, 0]
+        self._style_ax(ax)
+        states = {
+            "Hopper": pd.get("hopper_count", 0),
+            "Riding": pd.get("riding_count", 0),
+            "Falling": pd.get("falling_count", 0),
+            "Collected": pd.get("collected_count", 0),
+        }
+        states_nz = {k: v for k, v in states.items() if v > 0}
+        if states_nz:
+            color_map = {
+                "Hopper": "#FFA500", "Riding": "#4169E1",
+                "Falling": "#DC143C", "Collected": "#228B22",
+            }
+            ax.pie(
+                states_nz.values(),
+                labels=[f"{k}\n({v})" for k, v in states_nz.items()],
+                colors=[color_map[k] for k in states_nz.keys()],
+                autopct="%1.1f%%", startangle=90,
+                textprops={"color": COLORS.TEXT_PRIMARY, "fontsize": 7},
+            )
+            ax.set_title(f"Particle States (n={n_total})", fontsize=9,
+                         color=COLORS.TEXT_PRIMARY)
+        else:
+            ax.text(0.5, 0.5, "No particles", ha="center", va="center",
+                    transform=ax.transAxes, color=COLORS.TEXT_MUTED)
+
+        # ── [0,1] Treatment temperature histogram ───────────────────
+        ax = axes[0, 1]
+        self._style_ax(ax)
+        T_collected = pd.get("T_collected")
+        if T_collected is not None and len(T_collected) > 0:
+            ax.hist(T_collected, bins=30, alpha=0.7, color="#228B22",
+                    label=f"Collected (n={len(T_collected)})", edgecolor="black",
+                    linewidth=0.5)
+            ax.axvline(np.mean(T_collected), color="red", ls="--", lw=2,
+                       label=f"Mean: {np.mean(T_collected):.1f}\u00b0C")
+            ax.axvline(np.percentile(T_collected, 75), color="orange", ls=":",
+                       lw=1.5, label=f"P75: {np.percentile(T_collected, 75):.1f}\u00b0C")
+            ax.set_xlabel("Temperature [\u00b0C]")
+            ax.set_ylabel("Count")
+            ax.set_title("Treatment Temperature\n(at oven exit)")
+            ax.legend(fontsize=6)
+        else:
+            ax.text(0.5, 0.5, "No collected particles", ha="center", va="center",
+                    transform=ax.transAxes, color=COLORS.TEXT_MUTED)
+        ax.grid(True, alpha=0.2, color=COLORS.BORDER)
+
+        # ── [1,0] Protein fraction bars (Vicilin 7S vs Legumin 11S) ─
+        ax = axes[1, 0]
+        self._style_ax(ax)
+        vic_mean = pd.get("vicilin_native_mean")
+        leg_mean = pd.get("legumin_native_mean")
+        if vic_mean is not None and leg_mean is not None:
+            vic_denat_pct = (1.0 - vic_mean) * 100
+            leg_denat_pct = (1.0 - leg_mean) * 100
+            vic_native_pct = vic_mean * 100
+            leg_native_pct = leg_mean * 100
+
+            x = np.arange(2)
+            width = 0.35
+            ax.bar(x - width / 2, [vic_native_pct, leg_native_pct], width,
+                   label="Native (preserved)", color="#228B22", alpha=0.8)
+            ax.bar(x + width / 2, [vic_denat_pct, leg_denat_pct], width,
+                   label="Denatured (lost)", color="#DC143C", alpha=0.8)
+
+            ax.set_ylabel("Percentage [%]")
+            ax.set_title("Protein Fraction Status")
+            ax.set_xticks(x)
+            ax.set_xticklabels(["Vicilin (7S)\nonset 62\u00b0C",
+                                "Legumin (11S)\nonset 76\u00b0C"])
+            ax.legend(fontsize=6)
+            ax.set_ylim(0, 105)
+            ax.grid(True, alpha=0.2, color=COLORS.BORDER, axis="y")
+
+            for i, (nat, den) in enumerate([(vic_native_pct, vic_denat_pct),
+                                             (leg_native_pct, leg_denat_pct)]):
+                ax.text(i - width / 2, nat + 2, f"{nat:.0f}%", ha="center",
+                        fontsize=7, color=COLORS.TEXT_PRIMARY)
+                ax.text(i + width / 2, den + 2, f"{den:.0f}%", ha="center",
+                        fontsize=7, color=COLORS.TEXT_PRIMARY)
+        else:
+            ax.text(0.5, 0.5, "No denaturation data", ha="center", va="center",
+                    transform=ax.transAxes, color=COLORS.TEXT_MUTED)
+
+        # ── [1,1] Core vs Surface temperature (Biot model) ──────────
+        ax = axes[1, 1]
+        self._style_ax(ax)
+        T_surface = pd.get("T_surface")
+        T_core = pd.get("T_core")
+        if T_surface is not None and T_core is not None and len(T_surface) > 0:
+            ax.scatter(T_surface, T_core, alpha=0.3, s=5, c="blue")
+            ax.plot([T_surface.min(), T_surface.max()],
+                    [T_surface.min(), T_surface.max()],
+                    "k--", alpha=0.5, label="T_core = T_surface")
+            lag = np.mean(T_surface - T_core)
+            ax.set_title(f"Core vs Surface Temperature\n(Biot model, avg lag: {lag:.1f}\u00b0C)")
+            ax.set_xlabel("Surface Temperature [\u00b0C]")
+            ax.set_ylabel("Core Temperature [\u00b0C]")
+            ax.legend(fontsize=6)
+        else:
+            ax.text(0.5, 0.5, "No Biot model data", ha="center", va="center",
+                    transform=ax.transAxes, color=COLORS.TEXT_MUTED)
+        ax.grid(True, alpha=0.2, color=COLORS.BORDER)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        self._particle_canvas.draw()
+
     # ──────────────────────────────────────────────────────────────
     #  Summary (KPI cards on results page)
     # ──────────────────────────────────────────────────────────────
@@ -1981,9 +2227,42 @@ class PretreatmentPage(QWidget):
         elapsed = results.get("elapsed_s", 0)
         n_steps = results.get("n_steps", 0)
         wall_str = f"{elapsed:.1f} s"
-        if n_steps > 0 and elapsed > 0:
-            wall_str += f"  ({n_steps / elapsed:.0f} steps/s)"
         self._rc_wall.set_value(wall_str)
+
+        # Simulation speed
+        if n_steps > 0 and elapsed > 0:
+            self._rc_sim_speed.set_value(f"{n_steps / elapsed:.0f} steps/s")
+
+        # Protein quality (globulin native loss)
+        denat = outlet.protein_denaturation_fraction
+        particle_data = results.get("particle_data", {})
+        if denat > 0 or particle_data.get("vicilin_native_mean") is not None:
+            denat_pct = denat * 100
+            protein_str = f"{denat_pct:.1f}%"
+            vic_mean = particle_data.get("vicilin_native_mean")
+            leg_mean = particle_data.get("legumin_native_mean")
+            if vic_mean is not None and leg_mean is not None:
+                vic_denat = (1.0 - vic_mean) * 100
+                leg_denat = (1.0 - leg_mean) * 100
+                protein_str += f"  (7S: {vic_denat:.1f}%, 11S: {leg_denat:.1f}%)"
+            self._rc_protein.set_value(protein_str)
+
+        # Mass balance
+        dispatched_kg = results.get("dispatched_mass_kg", 0.0)
+        collected_kg = results.get("collected_mass_kg", 0.0)
+        if dispatched_kg > 0:
+            balance_pct = (collected_kg - dispatched_kg) / dispatched_kg * 100
+            self._rc_mass_balance.set_value(
+                f"{collected_kg:.1f} / {dispatched_kg:.1f} kg ({balance_pct:+.1f}%)"
+            )
+        elif collected_kg > 0:
+            self._rc_mass_balance.set_value(f"{collected_kg:.1f} kg")
+
+        # Final electrode gap
+        ts = results.get("time_series", {})
+        if ts.get("electrode_gap_mm"):
+            final_gap = ts["electrode_gap_mm"][-1]
+            self._rc_final_gap.set_value(f"{final_gap:.1f} mm")
 
         # Desirability scoring
         self._update_desirability(results)

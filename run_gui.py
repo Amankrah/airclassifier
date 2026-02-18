@@ -20,8 +20,9 @@ Requirements:
 import sys
 import os
 
-# Add src to path for development
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# Add src to path for development (skip when frozen — PyInstaller handles it)
+if not getattr(sys, 'frozen', False):
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 
 def check_dependencies():
@@ -101,9 +102,10 @@ def main():
     print("=" * 60)
     print()
 
-    # Check dependencies
-    if not check_dependencies():
-        sys.exit(1)
+    # Check dependencies (skip when frozen — all deps are bundled)
+    if not getattr(sys, 'frozen', False):
+        if not check_dependencies():
+            sys.exit(1)
 
     print("Launching application...")
     print()
