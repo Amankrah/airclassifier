@@ -10,7 +10,7 @@ heating machine.  Uses an internal ``QStackedWidget`` to switch between:
   - **Results View** — Full-page detailed results with KPI cards,
     3x3 matplotlib plots, outfeed cross-section, and export toolbar.
 
-Architecture::
+Architecture (modular sections)::
 
     PretreatmentPage
         └── QStackedWidget
@@ -20,9 +20,16 @@ Architecture::
             └── Page 1: Results View
                 ├── Header: Back + title + Export (CSV/JSON/PNG/PDF)
                 └── QScrollArea
-                    ├── 4×2 KPI Result Cards
-                    ├── 3×3 Matplotlib Plot Grid
-                    └── Outfeed Cross-Section (T + M)
+                    ├── KPI section (_build_results_kpi_section)
+                    ├── Desirability section (_build_desirability_section)
+                    ├── 3×3 time-series plots (_build_results_plots_section / _draw_simulation_plots)
+                    ├── Particle analysis (_build_results_particle_section / _draw_particle_plots)
+                    └── Outfeed cross-section (_build_results_outfeed_section / _draw_outfeed_section)
+
+Reporting is aligned with examples/simulate_and_visualize.py and canonical
+PretreatmentResult/OutletState: time_series from result.time_series + controller_state,
+sensor temperature for desirability and PDF, specific energy (kWh/kg water), mass balance %,
+and "at oven exit (peak)" when applicable.
 
 Usage::
 
@@ -723,7 +730,7 @@ class PretreatmentPage(QWidget):
         self._rc_max_temp = _StatCard("Max Temperature", COLORS.WARNING)
         self._rc_cv = _StatCard("Moisture Uniformity (CV)", COLORS.ACCENT)
         self._rc_energy = _StatCard("RF Energy Consumed", COLORS.SUCCESS)
-        self._rc_specific = _StatCard("Specific Energy", COLORS.TEXT_PRIMARY)
+        self._rc_specific = _StatCard("Specific Energy (kWh/kg water)", COLORS.TEXT_PRIMARY)
         self._rc_throughput = _StatCard("Throughput", COLORS.CAT_FEED)
         self._rc_wall = _StatCard("Wall-Clock Time", COLORS.TEXT_SECONDARY)
         self._rc_protein = _StatCard("Protein Quality (Native Loss)", COLORS.WARNING)
@@ -1029,6 +1036,11 @@ class PretreatmentPage(QWidget):
     # ──────────────────────────────────────────────────────────────
     #  Simulation Lifecycle
     # ──────────────────────────────────────────────────────────────
+
+    def run_simulation(self):
+        """Start the GP-15 simulation (called by MainWindow F5 when in Pretreatment mode)."""
+        if not self._running:
+            self._on_run()
 
     def _on_run(self):
         """Start the GP-15 simulation."""
@@ -1549,33 +1561,11 @@ class PretreatmentPage(QWidget):
             outlet = self._sim.get_outlet_conditions()
             meshes = self._sim.get_mesh()
 
+            # Use canonical result.time_series (includes electrode_temperature_c); add controller_state from history for GUI/export
             history = self._sim.history
-            ts = {}
-            if history:
-                ts = {
-                    "time_s": [h.time_s for h in history],
-                    "T_mean_c": [h.T_mean_c for h in history],
-                    "T_max_c": [h.T_max_c for h in history],
-                    "T_outfeed_c": [h.T_outfeed_c for h in history],
-                    "T_outfeed_sensor_c": [h.T_outfeed_sensor_c for h in history],
-                    "M_mean_wb": [h.M_mean_wb for h in history],
-                    "M_outfeed_wb": [h.M_outfeed_wb for h in history],
-                    "rf_power_kw": [h.rf_power_kw for h in history],
-                    "evap_power_kw": [h.evap_power_kw for h in history],
-                    "anode_current_a": [h.anode_current_a for h in history],
-                    "electrode_gap_mm": [h.electrode_gap_mm for h in history],
-                    "total_energy_kwh": [h.total_energy_kwh for h in history],
-                    "water_removed_kg": [h.water_removed_kg for h in history],
-                    "specific_energy_kwh_per_kg": [
-                        h.specific_energy_kwh_per_kg for h in history
-                    ],
-                    "protein_denaturation": [
-                        h.protein_denaturation for h in history
-                    ],
-                    "controller_state": [
-                        h.controller_state for h in history
-                    ],
-                }
+            ts = dict(result.time_series) if result.time_series else {}
+            if history and ts and hasattr(history[0], "controller_state"):
+                ts["controller_state"] = [h.controller_state for h in history]
 
             collected_mass_kg = 0.0
             collected_count = 0
@@ -1943,24 +1933,29 @@ class PretreatmentPage(QWidget):
                 )
         ax.set_xlabel("Time [min]")
         ax.set_ylabel("kWh / kg water")
-        ax.set_title("Specific Energy")
+        ax.set_title("Specific Energy (kWh/kg water)")
         ax.legend(fontsize=6)
         ax.grid(True, alpha=0.2, color=COLORS.BORDER)
         ax.set_ylim(bottom=0)
 
-        # ── [2,1] Material Accounting ────────────────────────────
+        # ── [2,1] Material Accounting (Mass Balance) ─────────────
         ax = axes[2, 1]
         self._style_ax(ax)
         collected_kg = r.get("collected_mass_kg", 0)
         collected_n = r.get("collected_count", 0)
+        dispatched_kg = r.get("dispatched_mass_kg", 0)
         if collected_kg > 0 or mass_kg > 0:
             ax.bar(
-                ["Infeed\n(run mass)", "Collected\n(bin)"],
+                ["Input", "Collected"],
                 [mass_kg, collected_kg],
                 color=["#4169E1", "#DAA520"], alpha=0.8,
             )
             ax.set_ylabel("Mass [kg]")
-            ax.set_title(f"Material Accounting ({collected_n} particles)")
+            balance_str = ""
+            if dispatched_kg > 0:
+                balance_pct = (collected_kg - dispatched_kg) / dispatched_kg * 100
+                balance_str = f", {balance_pct:+.1f}%"
+            ax.set_title(f"Mass Balance ({collected_n} particles{balance_str})")
         else:
             ax.text(
                 0.5, 0.5, "No particle data",
@@ -2011,8 +2006,9 @@ class PretreatmentPage(QWidget):
         if outlet.temperature_field is not None and outlet.moisture_field is not None:
             axes = fig.subplots(1, 2)
 
+            peak_note = " at oven exit (peak)" if getattr(outlet, "at_peak_processing_snapshot", False) else ""
             fig.suptitle(
-                f"Outfeed Cross-Section \u2014 Pipeline Output to Milling  |  "
+                f"Outfeed Cross-Section \u2014 Pipeline Output to Milling{peak_note}  |  "
                 f"Residence {outlet.residence_time_s:.0f} s  |  "
                 f"Throughput {outlet.throughput_kg_per_hr:.0f} kg/h",
                 fontsize=9, fontweight="bold", color=COLORS.TEXT_PRIMARY,
@@ -2045,7 +2041,7 @@ class PretreatmentPage(QWidget):
             ax.set_title(
                 f"Moisture  (avg {outlet.avg_moisture_wb:.1%}, "
                 f"CV {outlet.moisture_uniformity:.3f})  |  "
-                f"Spec. energy {outlet.specific_energy_kwh_per_kg:.2f} kWh/kg",
+                f"Spec. energy {outlet.specific_energy_kwh_per_kg:.2f} kWh/kg water",
             )
             fig.colorbar(im_m, ax=ax, label="% wb")
 
@@ -2221,7 +2217,7 @@ class PretreatmentPage(QWidget):
 
         if outlet.specific_energy_kwh_per_kg > 0:
             self._rc_specific.set_value(
-                f"{outlet.specific_energy_kwh_per_kg:.3f} kWh/kg"
+                f"{outlet.specific_energy_kwh_per_kg:.3f} kWh/kg water"
             )
 
         elapsed = results.get("elapsed_s", 0)
@@ -2405,7 +2401,7 @@ class PretreatmentPage(QWidget):
                         "Results\n"
                         "-" * 40 + "\n"
                         f"Outfeed Moisture:    {outlet.avg_moisture_wb:.2%}\n"
-                        f"Outfeed Temperature: {outlet.avg_temperature_c:.1f} C\n"
+                        f"Outfeed Temperature (sensor P75): {outlet.sensor_temperature_c:.1f} C\n"
                         f"Max Temperature:     {outlet.max_temperature_c:.1f} C\n"
                         f"Moisture CV:         {outlet.moisture_uniformity:.4f}\n"
                         f"RF Energy:           {outlet.total_energy_kwh:.4f} kWh\n"

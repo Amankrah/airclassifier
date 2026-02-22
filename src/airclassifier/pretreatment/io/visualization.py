@@ -3,7 +3,7 @@
 ==============================
 
 Utilities for rendering pretreatment simulation fields in the
-Air Classifier Designer's PyVista viewport (engineering guide §9.3).
+ProteinProcessIO's PyVista viewport (engineering guide §9.3).
 
 Provides:
 - ``fields_to_pyvista_grid`` — convert NumPy fields to PyVista grid
@@ -112,7 +112,7 @@ def build_pyvista_scene(
     """Build a complete PyVista scene from a GP15Simulator instance.
 
     Returns a dict of named mesh actors that can be added to the
-    Air Classifier Designer's existing PyVista viewport (§9.3).
+    ProteinProcessIO's existing PyVista viewport (§9.3).
 
     The scene contains all meshes from the assembled machine geometry
     (geometry.machine): oven, belt, material_bed, upper/lower electrodes,

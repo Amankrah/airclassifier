@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Air Classifier Designer - GUI Launcher
-=======================================
+ProteinProcessIO - GUI Launcher
+================================
 
-Launch the PySide6-based desktop application for air classifier
+Launch the PySide6-based desktop application for protein processing
 design and NVIDIA Warp multiphysics simulation.
 
 Usage:
@@ -97,8 +97,8 @@ def check_dependencies():
 def main():
     """Main entry point."""
     print("=" * 60)
-    print("Air Classifier Designer")
-    print("Interactive Air Classification System Design & Simulation")
+    print("ProteinProcessIO")
+    print("Protein Processing Design & Simulation")
     print("=" * 60)
     print()
 

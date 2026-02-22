@@ -1,0 +1,295 @@
+"""
+Breakage Kernel
+===============
+
+Warp kernel for particle breakage (size reduction) based on impact events.
+Implements a selection + breakage model:
+    - Selection: probability of breakage given impact energy
+    - Breakage: daughter size distribution given parent size
+
+This kernel can operate on:
+    1. Lagrangian particles (update individual particle sizes)
+    2. PSD bins (population balance on size classes)
+
+The breakage model uses:
+    - Selection function: S(d, E) = k * (d/d_ref)^alpha * f(E)
+    - Breakage function: B(d_daughter | d_parent) ~ (d_daughter/d_parent)^gamma
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Optional, Tuple
+
+import numpy as np
+
+try:
+    import warp as wp
+    WARP_AVAILABLE = True
+except ImportError:
+    WARP_AVAILABLE = False
+    wp = None
+
+
+if WARP_AVAILABLE:
+    @wp.kernel
+    def breakage_kernel(
+        sizes: wp.array(dtype=float),
+        masses: wp.array(dtype=float),
+        impact_flags: wp.array(dtype=int),
+        impact_energies: wp.array(dtype=float),
+        break_flags: wp.array(dtype=int),
+        rand_states: wp.array(dtype=wp.uint32),
+        selection_k: float,
+        selection_alpha: float,
+        reference_size: float,
+        min_energy: float,
+        energy_scale: float,
+        breakage_gamma: float,
+        min_size: float,
+    ):
+        """Apply breakage to impacted particles.
+
+        For each particle with an impact, determine if breakage occurs
+        (stochastic selection) and if so, reduce the particle size.
+        """
+        tid = wp.tid()
+
+        # Skip if no impact
+        if impact_flags[tid] == 0:
+            break_flags[tid] = 0
+            return
+
+        size = sizes[tid]
+        mass = masses[tid]
+        energy = impact_energies[tid]
+
+        # Skip inactive or too-small particles
+        if mass <= 0.0 or size < min_size:
+            break_flags[tid] = 0
+            return
+
+        # --- Selection probability ---
+        # S = k * (d / d_ref)^alpha * energy_factor
+        size_factor = wp.pow(size / reference_size, selection_alpha)
+        energy_factor = wp.min(1.0, energy / min_energy * energy_scale)
+        selection_prob = selection_k * size_factor * energy_factor
+        selection_prob = wp.clamp(selection_prob, 0.0, 1.0)
+
+        # Stochastic selection (simple LCG random)
+        state = rand_states[tid]
+        state = state * wp.uint32(1103515245) + wp.uint32(12345)
+        rand_states[tid] = state
+        rand_val = float(state & wp.uint32(0x7FFFFFFF)) / float(0x7FFFFFFF)
+
+        if rand_val > selection_prob:
+            break_flags[tid] = 0
+            return
+
+        # --- Breakage occurs! ---
+        break_flags[tid] = 1
+
+        # Daughter size: use breakage distribution
+        # For simplicity, reduce size by a factor based on gamma
+        # More sophisticated: sample from distribution
+        # B(d_daughter | d_parent) ~ (d_daughter/d_parent)^gamma
+        # Mean daughter size ~ d_parent * (gamma / (gamma + 1))
+        reduction_factor = breakage_gamma / (breakage_gamma + 1.0)
+
+        # Add some randomness to reduction
+        state = state * wp.uint32(1103515245) + wp.uint32(12345)
+        rand_states[tid] = state
+        rand_factor = 0.5 + float(state & wp.uint32(0x7FFFFFFF)) / float(0x7FFFFFFF)
+        reduction_factor = reduction_factor * rand_factor
+
+        new_size = size * wp.clamp(reduction_factor, 0.3, 0.9)
+        new_size = wp.max(new_size, min_size)
+
+        # Update size
+        sizes[tid] = new_size
+
+        # Update mass (proportional to volume ~ d^3)
+        size_ratio = new_size / size
+        new_mass = mass * size_ratio * size_ratio * size_ratio
+        masses[tid] = new_mass
+
+
+def breakage_step_warp(
+    sizes: "wp.array",
+    masses: "wp.array",
+    impact_flags: "wp.array",
+    impact_energies: "wp.array",
+    break_flags: "wp.array",
+    rand_states: "wp.array",
+    selection_k: float = 0.15,
+    selection_alpha: float = 1.2,
+    reference_size: float = 0.001,
+    min_energy: float = 0.001,
+    energy_scale: float = 5.0,
+    breakage_gamma: float = 0.8,
+    min_size: float = 1e-5,
+):
+    """Launch breakage kernel.
+
+    Args:
+        sizes: Particle sizes [n] (updated in place)
+        masses: Particle masses [n] (updated in place)
+        impact_flags: Impact indicators [n]
+        impact_energies: Impact energies [n]
+        break_flags: Output breakage indicators [n]
+        rand_states: Random number generator states [n]
+        selection_k: Base selection rate constant
+        selection_alpha: Size exponent in selection function
+        reference_size: Reference size for selection [m]
+        min_energy: Minimum energy for breakage [J]
+        energy_scale: Energy scaling factor
+        breakage_gamma: Breakage distribution exponent
+        min_size: Minimum particle size [m]
+    """
+    n = sizes.shape[0]
+    wp.launch(
+        breakage_kernel,
+        dim=n,
+        inputs=[
+            sizes, masses, impact_flags, impact_energies, break_flags,
+            rand_states, selection_k, selection_alpha, reference_size,
+            min_energy, energy_scale, breakage_gamma, min_size,
+        ],
+    )
+
+
+# NumPy fallback
+def breakage_step_np(
+    sizes: np.ndarray,
+    masses: np.ndarray,
+    impact_flags: np.ndarray,
+    impact_energies: np.ndarray,
+    selection_k: float = 0.15,
+    selection_alpha: float = 1.2,
+    reference_size: float = 0.001,
+    min_energy: float = 0.001,
+    energy_scale: float = 5.0,
+    breakage_gamma: float = 0.8,
+    min_size: float = 1e-5,
+    rng: Optional[np.random.Generator] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """NumPy implementation of breakage step.
+
+    Returns:
+        (new_sizes, new_masses, break_flags)
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    n = len(sizes)
+    new_sizes = sizes.copy()
+    new_masses = masses.copy()
+    break_flags = np.zeros(n, dtype=np.int32)
+
+    for i in range(n):
+        if impact_flags[i] == 0:
+            continue
+
+        size = sizes[i]
+        mass = masses[i]
+        energy = impact_energies[i]
+
+        if mass <= 0.0 or size < min_size:
+            continue
+
+        # Selection probability
+        size_factor = (size / reference_size) ** selection_alpha
+        energy_factor = min(1.0, energy / min_energy * energy_scale)
+        selection_prob = min(1.0, selection_k * size_factor * energy_factor)
+
+        if rng.random() > selection_prob:
+            continue
+
+        # Breakage!
+        break_flags[i] = 1
+
+        # Daughter size
+        reduction_factor = breakage_gamma / (breakage_gamma + 1.0)
+        rand_factor = 0.5 + rng.random()
+        reduction_factor = reduction_factor * rand_factor
+        reduction_factor = np.clip(reduction_factor, 0.3, 0.9)
+
+        new_size = max(size * reduction_factor, min_size)
+        new_sizes[i] = new_size
+
+        # Update mass
+        size_ratio = new_size / size
+        new_masses[i] = mass * size_ratio ** 3
+
+    return new_sizes, new_masses, break_flags
+
+
+# Population balance on PSD bins
+def breakage_psd_np(
+    psd_masses: np.ndarray,
+    size_classes: np.ndarray,
+    total_impact_energy: float,
+    selection_k: float = 0.15,
+    selection_alpha: float = 1.2,
+    breakage_gamma: float = 0.8,
+    dt: float = 0.001,
+) -> np.ndarray:
+    """Apply breakage to a particle size distribution (population balance).
+
+    This operates on mass fractions in size classes rather than
+    individual particles.
+
+    Args:
+        psd_masses: Mass in each size class [n_classes]
+        size_classes: Size class midpoints [n_classes]
+        total_impact_energy: Total impact energy this timestep
+        selection_k: Selection rate constant
+        selection_alpha: Size exponent
+        breakage_gamma: Breakage distribution exponent
+        dt: Timestep
+
+    Returns:
+        New PSD masses [n_classes]
+    """
+    n = len(psd_masses)
+    new_masses = psd_masses.copy()
+
+    # Build breakage matrix
+    # B[i, j] = fraction of mass from class j going to class i
+    # Upper triangular: mass only moves to smaller sizes
+    B = np.zeros((n, n))
+    for j in range(n):
+        d_parent = size_classes[j]
+        for i in range(j + 1):  # i <= j (smaller or equal)
+            d_daughter = size_classes[i]
+            # Cumulative breakage function
+            ratio = d_daughter / d_parent
+            B[i, j] = ratio ** breakage_gamma
+
+    # Normalize columns (mass conservation)
+    for j in range(n):
+        col_sum = B[:, j].sum()
+        if col_sum > 0:
+            B[:, j] /= col_sum
+
+    # Selection rates
+    d_ref = size_classes[n // 2]
+    S = np.array([
+        selection_k * (d / d_ref) ** selection_alpha
+        for d in size_classes
+    ])
+
+    # Energy scaling
+    energy_factor = min(1.0, total_impact_energy * 100)
+    S = np.clip(S * energy_factor, 0, 1)
+
+    # Apply population balance
+    # dm_i/dt = sum_j(S_j * B_ij * m_j) - S_i * m_i
+    for j in range(n):
+        mass_breaking = S[j] * psd_masses[j] * dt
+        new_masses[j] -= mass_breaking
+        # Distribute to smaller sizes
+        for i in range(j + 1):
+            new_masses[i] += B[i, j] * mass_breaking
+
+    return np.maximum(new_masses, 0)

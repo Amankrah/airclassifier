@@ -1,0 +1,515 @@
+"""
+Coupled Milling Engine
+======================
+
+Orchestrates the physics simulation step sequence for the hammer mill.
+Combines transport, impact, breakage, and screen classification into
+a coherent simulation loop.
+
+Step sequence per timestep:
+    1. FEED — Inject new particles from inlet
+    2. TRANSPORT — Advect particles in chamber
+    3. IMPACT — Detect hammer-particle collisions
+    4. BREAKAGE — Apply size reduction to impacted particles
+    5. SCREEN — Test passage through screen
+    6. DISCHARGE — Move passed particles to outlet
+    7. RECORD — Log state and KPIs
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+
+from .impact import ImpactSolver, ImpactStats
+from .breakage import BreakageModel, BreakageStats
+from .screen_classifier import ScreenClassifier, ScreenStats
+from ..kernels import transport_step_np, GRAVITY
+from ..config import MillConfig, MillRecipe, BreakageParams, ScreenConfig
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from airclassifier.pretreatment.physics.coupling import OutletState
+
+
+@dataclass
+class MillingStepState:
+    """State snapshot at each timestep."""
+
+    time_s: float = 0.0
+    rotor_theta_rad: float = 0.0
+
+    # Particle counts
+    num_particles: int = 0
+    num_fed: int = 0
+    num_discharged: int = 0
+
+    # Masses
+    holdup_kg: float = 0.0
+    feed_rate_kg_per_s: float = 0.0
+    discharge_rate_kg_per_s: float = 0.0
+
+    # Impact stats
+    num_impacts: int = 0
+    total_impact_energy_j: float = 0.0
+    mean_impact_energy_j: float = 0.0
+
+    # Breakage stats
+    num_breakage_events: int = 0
+    mean_size_reduction: float = 1.0
+
+    # Screen stats
+    num_passed_screen: int = 0
+    screen_passage_rate: float = 0.0
+
+    # PSD (d10, d50, d90 in meters)
+    d10_m: float = 0.0
+    d50_m: float = 0.0
+    d90_m: float = 0.0
+
+    # Power
+    power_kw: float = 0.0
+
+
+@dataclass
+class ParticleState:
+    """State of all particles in the mill."""
+
+    positions: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float32))
+    velocities: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float32))
+    sizes: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+    masses: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+    residence_times: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+
+    @property
+    def count(self) -> int:
+        return len(self.positions)
+
+    @property
+    def total_mass(self) -> float:
+        return float(self.masses.sum())
+
+
+@dataclass
+class CoupledMillingEngine:
+    """Orchestrates the hammer mill physics simulation.
+
+    Combines all physics solvers and manages the particle state.
+    """
+
+    # Configuration
+    config: MillConfig = field(default_factory=MillConfig)
+    recipe: MillRecipe = field(default_factory=MillRecipe)
+
+    # Physics solvers
+    impact_solver: ImpactSolver = None
+    breakage_model: BreakageModel = None
+    screen_classifier: ScreenClassifier = None
+
+    # Particle state
+    particles: ParticleState = field(default_factory=ParticleState)
+
+    # Time tracking
+    time_s: float = 0.0
+    rotor_theta: float = 0.0
+
+    # Chamber geometry
+    chamber_radius: float = 0.22
+    chamber_length: float = 0.40
+
+    # Feed state
+    _feed_rate_kg_per_s: float = 0.0
+    _feed_particle_size: float = 0.003  # 3mm for whole seeds
+    _feed_particle_mass: float = 0.0001  # ~100mg per particle
+    _feed_accumulator: float = 0.0
+    _inlet_temperature_c: float = 25.0   # Passthrough from pretreatment
+    _inlet_moisture_wb: float = 0.12     # Passthrough from pretreatment
+
+    # Discharge tracking
+    _last_discharge_mass: float = 0.0
+    _last_feed_mass: float = 0.0
+
+    # History
+    history: List[MillingStepState] = field(default_factory=list)
+
+    # Device
+    device: str = "cpu"
+
+    def __post_init__(self):
+        """Initialize physics solvers."""
+        if self.impact_solver is None:
+            self.impact_solver = ImpactSolver.from_config(self.config, self.device)
+
+        if self.breakage_model is None:
+            self.breakage_model = BreakageModel(
+                params=BreakageParams(),
+                device=self.device,
+            )
+
+        if self.screen_classifier is None:
+            self.screen_classifier = ScreenClassifier.from_config(
+                self.config,
+                device=self.device,
+            )
+
+        # Update chamber geometry from config
+        self.chamber_radius = self.config.housing_inner_radius_m
+        self.chamber_length = self.config.housing_length_m
+
+    def load_recipe(self, recipe: MillRecipe):
+        """Load a milling recipe.
+
+        Args:
+            recipe: Milling recipe with operating parameters
+        """
+        self.recipe = recipe
+        self._feed_rate_kg_per_s = recipe.feed_rate_kg_per_hr / 3600.0
+        self._feed_particle_size = recipe.feed_d50_um * 1e-6
+        self._inlet_temperature_c = recipe.feed_temperature_c
+        self._inlet_moisture_wb = recipe.feed_moisture_wb
+
+        # Update screen aperture
+        self.screen_classifier.config.aperture_mm = recipe.screen_aperture_mm
+
+    def set_inlet_state(self, outlet_state: "OutletState"):
+        """Set feed from pretreatment outlet (pipeline integration).
+
+        Args:
+            outlet_state: OutletState from airclassifier.pretreatment (GP-15 outfeed).
+        """
+        self._feed_rate_kg_per_s = outlet_state.throughput_kg_per_hr / 3600.0
+        self._inlet_temperature_c = outlet_state.avg_temperature_c
+        self._inlet_moisture_wb = outlet_state.avg_moisture_wb
+        if self.recipe is not None:
+            self.recipe.feed_temperature_c = outlet_state.avg_temperature_c
+            self.recipe.feed_moisture_wb = outlet_state.avg_moisture_wb
+
+    def initialize(
+        self,
+        initial_particles: int = 0,
+        initial_holdup_kg: float = 0.0,
+    ):
+        """Initialize the simulation.
+
+        Args:
+            initial_particles: Number of particles to start with
+            initial_holdup_kg: Initial mass in mill (alternative to particle count)
+        """
+        self.time_s = 0.0
+        self.rotor_theta = 0.0
+        self.history.clear()
+        self.screen_classifier.clear_discharge_buffer()
+        self._feed_accumulator = 0.0
+        self._last_discharge_mass = 0.0
+        self._last_feed_mass = 0.0
+
+        # Initialize particles
+        if initial_holdup_kg > 0:
+            # Compute particle count from mass
+            initial_particles = int(initial_holdup_kg / self._feed_particle_mass)
+
+        if initial_particles > 0:
+            self._create_initial_particles(initial_particles)
+        else:
+            self.particles = ParticleState()
+
+    def _create_initial_particles(self, n: int):
+        """Create initial particle distribution in chamber."""
+        # Random positions within chamber
+        rng = np.random.default_rng()
+
+        # Distribute along chamber length
+        x = rng.uniform(0.05, self.chamber_length - 0.05, n)
+
+        # Random radial positions (uniform in disk)
+        r = self.chamber_radius * 0.8 * np.sqrt(rng.uniform(0, 1, n))
+        theta = rng.uniform(0, 2 * np.pi, n)
+        y = r * np.cos(theta)
+        z = r * np.sin(theta)
+
+        positions = np.column_stack([x, y, z]).astype(np.float32)
+
+        # Random velocities (low initial speed)
+        velocities = rng.uniform(-0.5, 0.5, (n, 3)).astype(np.float32)
+
+        # Feed particle size with some variation
+        sizes = (self._feed_particle_size * rng.uniform(0.8, 1.2, n)).astype(np.float32)
+
+        # Masses (proportional to size^3)
+        size_ratio = sizes / self._feed_particle_size
+        masses = (self._feed_particle_mass * size_ratio ** 3).astype(np.float32)
+
+        # Zero residence time
+        residence_times = np.zeros(n, dtype=np.float32)
+
+        self.particles = ParticleState(
+            positions=positions,
+            velocities=velocities,
+            sizes=sizes,
+            masses=masses,
+            residence_times=residence_times,
+        )
+
+    def step(self, dt: float) -> MillingStepState:
+        """Advance the simulation by one timestep.
+
+        Args:
+            dt: Timestep [s]
+
+        Returns:
+            State at end of step
+        """
+        # Update rotor angle
+        omega = self.recipe.rotor_omega
+        self.rotor_theta += omega * dt
+        self.rotor_theta = self.rotor_theta % (2 * np.pi)
+
+        # Update impact solver rotor state
+        self.impact_solver.set_rotor_state(self.rotor_theta, omega)
+
+        # Store pre-step state for rate calculations
+        pre_holdup = self.particles.total_mass
+
+        # --- 1. FEED ---
+        num_fed = self._feed_step(dt)
+
+        # --- 2. TRANSPORT ---
+        self._transport_step(dt)
+
+        # --- 3. IMPACT ---
+        impact_flags, impact_energies = self._impact_step(dt)
+
+        # --- 4. BREAKAGE ---
+        break_flags = self._breakage_step(impact_flags, impact_energies)
+
+        # --- 5. SCREEN ---
+        num_discharged = self._screen_step()
+
+        # --- 6. DISCHARGE ---
+        # (handled in screen step)
+
+        # --- 7. RECORD ---
+        self.time_s += dt
+        post_holdup = self.particles.total_mass
+
+        # Compute rates
+        discharge_mass = pre_holdup + (num_fed * self._feed_particle_mass) - post_holdup
+        feed_mass = num_fed * self._feed_particle_mass
+
+        # Get PSD stats
+        d10, d50, d90 = self.screen_classifier.get_d_values()
+
+        # Compute power
+        impact_power = self.impact_solver.compute_power_draw(dt)
+        no_load_power = self.config.no_load_power_kw * 1000  # W
+        total_power = (impact_power + no_load_power) / 1000  # kW
+
+        state = MillingStepState(
+            time_s=self.time_s,
+            rotor_theta_rad=self.rotor_theta,
+            num_particles=self.particles.count,
+            num_fed=num_fed,
+            num_discharged=num_discharged,
+            holdup_kg=post_holdup,
+            feed_rate_kg_per_s=feed_mass / dt if dt > 0 else 0.0,
+            discharge_rate_kg_per_s=discharge_mass / dt if dt > 0 else 0.0,
+            num_impacts=self.impact_solver.stats.num_impacts,
+            total_impact_energy_j=self.impact_solver.stats.total_impact_energy,
+            mean_impact_energy_j=self.impact_solver.stats.mean_impact_energy,
+            num_breakage_events=self.breakage_model.stats.num_breakage_events,
+            mean_size_reduction=self.breakage_model.stats.size_reduction_ratio,
+            num_passed_screen=self.screen_classifier.stats.num_passed,
+            screen_passage_rate=self.screen_classifier.stats.passage_rate,
+            d10_m=d10,
+            d50_m=d50,
+            d90_m=d90,
+            power_kw=total_power,
+        )
+
+        self.history.append(state)
+        return state
+
+    def _feed_step(self, dt: float) -> int:
+        """Inject new particles from feed.
+
+        Returns:
+            Number of particles fed
+        """
+        # Accumulate feed mass
+        self._feed_accumulator += self._feed_rate_kg_per_s * dt
+
+        # Convert to particles
+        num_new = int(self._feed_accumulator / self._feed_particle_mass)
+        if num_new <= 0:
+            return 0
+
+        self._feed_accumulator -= num_new * self._feed_particle_mass
+
+        # Create new particles at feed inlet
+        rng = np.random.default_rng()
+
+        # Position at feed chute outlet (top of housing)
+        feed_x = 0.15  # Center of feed opening
+        feed_y = self.chamber_radius * 0.9  # Near top
+        feed_z = 0.0
+
+        x = rng.normal(feed_x, 0.02, num_new)
+        y = np.full(num_new, feed_y)
+        z = rng.normal(feed_z, 0.03, num_new)
+
+        new_pos = np.column_stack([x, y, z]).astype(np.float32)
+
+        # Initial velocity (falling into chamber)
+        new_vel = np.zeros((num_new, 3), dtype=np.float32)
+        new_vel[:, 1] = -1.0  # Falling
+
+        # Sizes
+        new_sizes = (self._feed_particle_size * rng.uniform(0.8, 1.2, num_new)).astype(np.float32)
+
+        # Masses
+        size_ratio = new_sizes / self._feed_particle_size
+        new_masses = (self._feed_particle_mass * size_ratio ** 3).astype(np.float32)
+
+        # Residence times
+        new_res = np.zeros(num_new, dtype=np.float32)
+
+        # Append to existing particles
+        self.particles = ParticleState(
+            positions=np.vstack([self.particles.positions, new_pos]) if self.particles.count > 0 else new_pos,
+            velocities=np.vstack([self.particles.velocities, new_vel]) if self.particles.count > 0 else new_vel,
+            sizes=np.concatenate([self.particles.sizes, new_sizes]) if self.particles.count > 0 else new_sizes,
+            masses=np.concatenate([self.particles.masses, new_masses]) if self.particles.count > 0 else new_masses,
+            residence_times=np.concatenate([self.particles.residence_times, new_res]) if self.particles.count > 0 else new_res,
+        )
+
+        return num_new
+
+    def _transport_step(self, dt: float):
+        """Advect particles in chamber."""
+        if self.particles.count == 0:
+            return
+
+        new_pos, new_vel, new_res = transport_step_np(
+            positions=self.particles.positions,
+            velocities=self.particles.velocities,
+            sizes=self.particles.sizes,
+            masses=self.particles.masses,
+            residence_times=self.particles.residence_times,
+            chamber_radius=self.chamber_radius,
+            chamber_length=self.chamber_length,
+            rotor_omega=self.recipe.rotor_omega,
+            dt=dt,
+        )
+
+        self.particles.positions = new_pos
+        self.particles.velocities = new_vel
+        self.particles.residence_times = new_res
+
+    def _impact_step(self, dt: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Detect and resolve impacts.
+
+        Returns:
+            (impact_flags, impact_energies)
+        """
+        if self.particles.count == 0:
+            return np.array([], dtype=np.int32), np.array([], dtype=np.float32)
+
+        impact_flags, impact_energies, new_vel = self.impact_solver.step(
+            positions=self.particles.positions,
+            velocities=self.particles.velocities,
+            sizes=self.particles.sizes,
+            masses=self.particles.masses,
+            dt=dt,
+        )
+
+        self.particles.velocities = new_vel
+        return impact_flags, impact_energies
+
+    def _breakage_step(
+        self,
+        impact_flags: np.ndarray,
+        impact_energies: np.ndarray,
+    ) -> np.ndarray:
+        """Apply breakage to impacted particles.
+
+        Returns:
+            break_flags
+        """
+        if self.particles.count == 0:
+            return np.array([], dtype=np.int32)
+
+        new_sizes, new_masses, break_flags = self.breakage_model.step_lagrangian(
+            sizes=self.particles.sizes,
+            masses=self.particles.masses,
+            impact_flags=impact_flags,
+            impact_energies=impact_energies,
+        )
+
+        self.particles.sizes = new_sizes
+        self.particles.masses = new_masses
+        return break_flags
+
+    def _screen_step(self) -> int:
+        """Test screen passage and discharge.
+
+        Returns:
+            Number of particles discharged
+        """
+        if self.particles.count == 0:
+            return 0
+
+        ret_pos, ret_vel, ret_sizes, ret_masses, passage_flags = self.screen_classifier.step(
+            positions=self.particles.positions,
+            velocities=self.particles.velocities,
+            sizes=self.particles.sizes,
+            masses=self.particles.masses,
+        )
+
+        num_discharged = int(passage_flags.sum())
+
+        # Update particle state to retained only
+        self.particles = ParticleState(
+            positions=ret_pos,
+            velocities=ret_vel,
+            sizes=ret_sizes,
+            masses=ret_masses,
+            residence_times=self.particles.residence_times[passage_flags == 0],
+        )
+
+        return num_discharged
+
+    def run(
+        self,
+        duration_s: float,
+        dt: float = 0.001,
+    ) -> List[MillingStepState]:
+        """Run simulation for a duration.
+
+        Args:
+            duration_s: Total duration [s]
+            dt: Timestep [s]
+
+        Returns:
+            List of step states
+        """
+        num_steps = int(duration_s / dt)
+        states = []
+
+        for _ in range(num_steps):
+            state = self.step(dt)
+            states.append(state)
+
+        return states
+
+    def get_discharge_psd(self) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Get PSD of discharged material.
+
+        Returns:
+            (size_classes, mass_fractions, total_mass)
+        """
+        size_classes = self.breakage_model.get_size_classes()
+        mass_fractions, total_mass = self.screen_classifier.get_discharge_psd(size_classes)
+        return size_classes, mass_fractions, total_mass

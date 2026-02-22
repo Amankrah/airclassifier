@@ -46,6 +46,12 @@ try:
 except Exception:
     _HAS_PRETREATMENT = False
 
+try:
+    from .pages.milling_page import MillingPage
+    _HAS_MILLING = True
+except Exception:
+    _HAS_MILLING = False
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  Welcome overlay
@@ -221,15 +227,19 @@ class MainWindow(QMainWindow):
     # Mode constants
     MODE_CLASSIFICATION = "classification"
     MODE_PRETREATMENT = "pretreatment"
+    MODE_MILLING = "milling"
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
-        # Project state
+        # Project state (per-system params for independent configure/build/run)
         self._project_path: Optional[Path] = None
         self._is_modified: bool = False
         self._assembly_config: Dict[str, Any] = {}
         self._assembly_params: Dict[str, Any] = {}
+        self._pretreatment_params: Dict[str, Any] = {}
+        self._classification_params: Dict[str, Any] = {}
+        self._milling_params: Dict[str, Any] = {}
         self._current_mode: str = self.MODE_CLASSIFICATION
 
         # Build UI
@@ -304,7 +314,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def switch_mode(self, mode: str):
-        """Switch between Classification and Pretreatment pages."""
+        """Switch between Classification, Pretreatment, and Milling pages."""
         if mode == self._current_mode:
             return
 
@@ -315,16 +325,26 @@ class MainWindow(QMainWindow):
             self._sim_toolbar.show()
             self._cls_mode_btn.setProperty("cssClass", "primary")
             self._pt_mode_btn.setProperty("cssClass", "")
+            self._mill_mode_btn.setProperty("cssClass", "")
             self.statusBar().showMessage("Mode: Air Classification", 3000)
-        else:
+        elif mode == self.MODE_PRETREATMENT:
             self._central_stack.setCurrentIndex(1)
             self._sim_toolbar.hide()
             self._cls_mode_btn.setProperty("cssClass", "")
             self._pt_mode_btn.setProperty("cssClass", "primary")
+            self._mill_mode_btn.setProperty("cssClass", "")
             self.statusBar().showMessage("Mode: RF Pretreatment (GP-15)", 3000)
+        else:
+            # MODE_MILLING
+            self._central_stack.setCurrentIndex(2)
+            self._sim_toolbar.hide()
+            self._cls_mode_btn.setProperty("cssClass", "")
+            self._pt_mode_btn.setProperty("cssClass", "")
+            self._mill_mode_btn.setProperty("cssClass", "primary")
+            self.statusBar().showMessage("Mode: Pin Mill (Milling)", 3000)
 
         # Force style refresh
-        for btn in (self._cls_mode_btn, self._pt_mode_btn):
+        for btn in (self._cls_mode_btn, self._pt_mode_btn, self._mill_mode_btn):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
@@ -380,10 +400,29 @@ class MainWindow(QMainWindow):
         # Assembly
         self.action_add_component = QAction("&Configure Assembly...", self)
         self.action_add_component.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.action_add_component.setStatusTip("Configure all process stages (pretreatment, classification, milling)")
         self.action_add_component.triggered.connect(self.show_assembly_config)
 
-        self.action_build_system = QAction("&Build Full System", self)
+        self.action_configure_pretreatment = QAction("Configure &Pretreatment (GP-15)...", self)
+        self.action_configure_pretreatment.setStatusTip("Configure RF Pretreatment only; then Build current system")
+        self.action_configure_pretreatment.triggered.connect(self.show_pretreatment_config)
+
+        self.action_configure_classification = QAction("Configure &Classification...", self)
+        self.action_configure_classification.setStatusTip("Configure Air Classification only; then Build current system")
+        self.action_configure_classification.triggered.connect(self.show_classification_config)
+
+        self.action_configure_current = QAction("Configure &Current System...", self)
+        self.action_configure_current.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.action_configure_current.setStatusTip("Configure the active stage (Pretreatment, Classification, or Milling)")
+        self.action_configure_current.triggered.connect(self.show_config_current_system)
+
+        self.action_configure_milling = QAction("Configure &Milling (Pin Mill)...", self)
+        self.action_configure_milling.setStatusTip("Configure Pin Mill only; then Build current system")
+        self.action_configure_milling.triggered.connect(self.show_milling_config)
+
+        self.action_build_system = QAction("&Build Current System", self)
         self.action_build_system.setShortcut(QKeySequence("Ctrl+B"))
+        self.action_build_system.setStatusTip("Build the system for the active page (Pretreatment, Classification, or Milling)")
         self.action_build_system.triggered.connect(self.build_full_system)
 
         # Simulation (toolbar actions — delegate to active page)
@@ -455,7 +494,12 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_fullscreen)
 
         assembly_menu = menubar.addMenu("&Assembly")
+        assembly_menu.addAction(self.action_configure_current)
         assembly_menu.addAction(self.action_add_component)
+        assembly_menu.addSeparator()
+        assembly_menu.addAction(self.action_configure_pretreatment)
+        assembly_menu.addAction(self.action_configure_classification)
+        assembly_menu.addAction(self.action_configure_milling)
         assembly_menu.addSeparator()
         assembly_menu.addAction(self.action_build_system)
 
@@ -506,6 +550,11 @@ class MainWindow(QMainWindow):
         self._pt_mode_btn.clicked.connect(lambda: self.switch_mode(self.MODE_PRETREATMENT))
         mode_tb.addWidget(self._pt_mode_btn)
 
+        self._mill_mode_btn = QPushButton("  Pin Mill")
+        self._mill_mode_btn.setMinimumHeight(28)
+        self._mill_mode_btn.clicked.connect(lambda: self.switch_mode(self.MODE_MILLING))
+        mode_tb.addWidget(self._mill_mode_btn)
+
         self.addToolBar(mode_tb)
 
         # Simulation (classification only — hidden in pretreatment mode)
@@ -543,6 +592,20 @@ class MainWindow(QMainWindow):
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             placeholder.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 12pt;")
             self._central_stack.addWidget(placeholder)
+
+        # Page 2: Milling
+        if _HAS_MILLING:
+            self.milling_page = MillingPage()
+            self._central_stack.addWidget(self.milling_page)
+        else:
+            self.milling_page = None
+            placeholder_mill = QLabel(
+                "Milling module not available.\n"
+                "Check that airclassifier.milling is installed."
+            )
+            placeholder_mill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder_mill.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 12pt;")
+            self._central_stack.addWidget(placeholder_mill)
 
         self._central_stack.setCurrentIndex(0)
         self.setCentralWidget(self._central_stack)
@@ -596,7 +659,7 @@ class MainWindow(QMainWindow):
             self.gpu_status_label.setStyleSheet(f"color: {COLORS.DANGER};")
 
     def _update_component_count(self):
-        p = self._assembly_params
+        p = self._assembly_params or self._classification_params
         count = 1
         if p.get("include_feed_system", True):
             count += 1
@@ -605,6 +668,37 @@ class MainWindow(QMainWindow):
         if p.get("include_exhaust", True):
             count += 1
         self._component_count_label.setText(f"{count} subsystems")
+
+    def _merge_assembly_params(self) -> Dict[str, Any]:
+        """Merge per-system params for backward compatibility and single-dialog use."""
+        out = dict(self._classification_params)
+        out.update(self._pretreatment_params)
+        out.update(self._milling_params)
+        return out
+
+    def _split_assembly_params(self, params: Dict[str, Any]):
+        """Split a full params dict into _pretreatment_params and _classification_params."""
+        pt_keys = {"enable_pretreatment"} | {k for k in params if k.startswith("pt_")}
+        cls_keys = {
+            "enable_classification", "use_preclassification",
+            "include_feed_system", "include_air_system", "include_exhaust",
+            "include_ductwork", "include_dropout", "include_coarse_collection",
+            "throughput_kg_h", "air_flow_m3_h",
+            "venturi_inlet_diameter", "venturi_throat_ratio",
+            "zigzag_channel_width", "zigzag_channel_depth", "zigzag_num_stages",
+            "wheel_diameter", "wheel_rpm",
+            "primary_cyclone_diameter", "secondary_cyclone_diameter", "tertiary_cyclone_diameter",
+            "bag_filter_flow_rate", "hopper_diameter", "main_duct_diameter", "stack_height",
+        }
+        mill_keys = {"enable_milling"} | {k for k in params if k.startswith("mill_")}
+        self._pretreatment_params = {k: params[k] for k in pt_keys if k in params}
+        self._classification_params = {k: params[k] for k in cls_keys if k in params}
+        self._milling_params = {k: params[k] for k in mill_keys if k in params}
+        # Keep any other keys in _assembly_params via merge
+        self._assembly_params = self._merge_assembly_params()
+        for k, v in params.items():
+            if k not in self._pretreatment_params and k not in self._classification_params and k not in self._milling_params:
+                self._assembly_params[k] = v
 
     # ================================================================
     #  State save / restore
@@ -643,6 +737,12 @@ class MainWindow(QMainWindow):
                 self._on_pretreatment_finished
             )
 
+        # Milling page → status bar updates
+        if self.milling_page is not None:
+            self.milling_page.simulation_finished.connect(
+                self._on_milling_finished
+            )
+
     @Slot(str)
     def _on_cls_state_changed(self, state: str):
         """Update toolbar button states when classification sim state changes."""
@@ -665,6 +765,17 @@ class MainWindow(QMainWindow):
                 10000,
             )
 
+    @Slot(dict)
+    def _on_milling_finished(self, results: Dict[str, Any]):
+        outlet = results.get("outlet")
+        if outlet:
+            self.statusBar().showMessage(
+                f"Mill complete: d50={outlet.d50_um:.0f} µm, "
+                f"throughput={outlet.throughput_kg_per_hr:.0f} kg/h, "
+                f"power={outlet.power_kw:.2f} kW",
+                10000,
+            )
+
     def _update_window_title(self):
         title = "ProteinProcessIO"
         if self._project_path:
@@ -682,11 +793,23 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _run_active_simulation(self):
-        """Route F5 / Run to the classification page."""
-        if self._current_mode == self.MODE_CLASSIFICATION:
+        """Run simulation for the current page (F5 / Run)."""
+        if self._current_mode == self.MODE_PRETREATMENT and self.pretreatment_page is not None:
+            if not getattr(self.pretreatment_page, "_sim", None) and getattr(
+                self.pretreatment_page, "build_system", None
+            ):
+                self.build_full_system()
+            self.pretreatment_page.run_simulation()
+        elif self._current_mode == self.MODE_CLASSIFICATION:
             if not self.classification_page.is_built:
                 self.build_full_system()
             self.classification_page.run_simulation()
+        elif self._current_mode == self.MODE_MILLING and self.milling_page is not None:
+            if not getattr(self.milling_page, "_sim", None) and getattr(
+                self.milling_page, "build_system", None
+            ):
+                self.build_full_system()
+            self.milling_page.run_simulation()
 
     def _pause_active_simulation(self):
         if self._current_mode == self.MODE_CLASSIFICATION:
@@ -719,6 +842,9 @@ class MainWindow(QMainWindow):
         self._project_path = None
         self._assembly_config = {}
         self._assembly_params = {}
+        self._pretreatment_params = {}
+        self._classification_params = {}
+        self._milling_params = {}
         self._is_modified = False
         self.classification_page.viewport.clear()
         self._update_window_title()
@@ -741,7 +867,14 @@ class MainWindow(QMainWindow):
                 data = json.load(f)
             self._project_path = path
             self._assembly_config = data.get("assembly", {})
-            self._assembly_params = data.get("assembly_params", {})
+            if "pretreatment_params" in data and "classification_params" in data:
+                self._pretreatment_params = data.get("pretreatment_params", {})
+                self._classification_params = data.get("classification_params", {})
+                self._milling_params = data.get("milling_params", {})
+                self._assembly_params = self._merge_assembly_params()
+            else:
+                self._assembly_params = data.get("assembly_params", {})
+                self._split_assembly_params(self._assembly_params)
             self.classification_page.viewport.load_state(data.get("viewport", {}))
             self._is_modified = False
             self._update_window_title()
@@ -773,7 +906,10 @@ class MainWindow(QMainWindow):
             data = {
                 "version": "1.0",
                 "assembly": self._assembly_config,
-                "assembly_params": self._assembly_params,
+                "assembly_params": self._merge_assembly_params(),
+                "pretreatment_params": self._pretreatment_params,
+                "classification_params": self._classification_params,
+                "milling_params": self._milling_params,
                 "viewport": self.classification_page.viewport.save_state(),
             }
             with open(path, "w") as f:
@@ -840,12 +976,17 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _toggle_pt_results(self):
-        """Toggle between simulation and results views in pretreatment mode."""
+        """Toggle between simulation and results views in pretreatment or milling mode."""
         if self._current_mode == self.MODE_PRETREATMENT and self.pretreatment_page is not None:
             if self.pretreatment_page._view_stack.currentIndex() == 0:
                 self.pretreatment_page._show_results_view()
             else:
                 self.pretreatment_page._show_simulation_view()
+        elif self._current_mode == self.MODE_MILLING and self.milling_page is not None:
+            if self.milling_page._view_stack.currentIndex() == 0:
+                self.milling_page._show_results_view()
+            else:
+                self.milling_page._show_simulation_view()
 
     # ================================================================
     #  Assembly operations
@@ -853,51 +994,122 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def show_assembly_config(self):
+        """Open full process configuration (all stages)."""
         from .dialogs.assembly_config_dialog import AssemblyConfigDialog
         dialog = AssemblyConfigDialog(self, self._assembly_params)
         dialog.assembly_configured.connect(self._on_assembly_configured)
         dialog.exec()
 
+    @Slot()
+    def show_pretreatment_config(self):
+        """Open RF Pretreatment-only configuration. Apply & Build builds GP-15."""
+        from .dialogs.pretreatment_config_dialog import PretreatmentConfigDialog
+        dialog = PretreatmentConfigDialog(self, self._pretreatment_params)
+        dialog.pretreatment_configured.connect(self._on_pretreatment_configured)
+        dialog.exec()
+
+    def _on_pretreatment_configured(self, params: Dict[str, Any]):
+        self._pretreatment_params = params
+        self._assembly_params = self._merge_assembly_params()
+        self._set_modified(True)
+        if self._current_mode == self.MODE_PRETREATMENT and self.pretreatment_page is not None:
+            self.build_full_system()
+        self.statusBar().showMessage("Pretreatment configuration applied", 3000)
+
+    @Slot()
+    def show_classification_config(self):
+        """Open Air Classification-only configuration. Apply & Build builds classifier."""
+        from .dialogs.classification_config_dialog import ClassificationConfigDialog
+        dialog = ClassificationConfigDialog(self, self._classification_params)
+        dialog.classification_configured.connect(self._on_classification_configured)
+        dialog.exec()
+
+    def _on_classification_configured(self, params: Dict[str, Any]):
+        self._classification_params = params
+        self._assembly_params = self._merge_assembly_params()
+        self._set_modified(True)
+        self._update_component_count()
+        self.classification_page.sync_settings_from_params(self._assembly_params)
+        if self._current_mode == self.MODE_CLASSIFICATION:
+            self.build_full_system()
+        self.statusBar().showMessage("Classification configuration applied", 3000)
+
+    @Slot()
+    def show_milling_config(self):
+        """Open Pin Mill-only configuration. Apply & Build builds the mill."""
+        from .dialogs.milling_config_dialog import MillingConfigDialog
+        dialog = MillingConfigDialog(self, self._milling_params)
+        dialog.milling_configured.connect(self._on_milling_configured)
+        dialog.exec()
+
+    def _on_milling_configured(self, params: Dict[str, Any]):
+        self._milling_params = params
+        self._assembly_params = self._merge_assembly_params()
+        self._set_modified(True)
+        if self._current_mode == self.MODE_MILLING and self.milling_page is not None:
+            self.build_full_system()
+        self.statusBar().showMessage("Milling configuration applied", 3000)
+
+    @Slot()
+    def show_config_current_system(self):
+        """Open configuration for the current page (Pretreatment, Classification, or Milling)."""
+        if self._current_mode == self.MODE_PRETREATMENT:
+            self.show_pretreatment_config()
+        elif self._current_mode == self.MODE_CLASSIFICATION:
+            self.show_classification_config()
+        elif self._current_mode == self.MODE_MILLING:
+            self.show_milling_config()
+
     def _on_assembly_configured(self, params: Dict[str, Any]):
-        self._assembly_params = params
+        self._split_assembly_params(params)
         self._set_modified(True)
         self._update_component_count()
 
         # Switch mode based on selected stage
-        if params.get("enable_pretreatment", False):
+        if params.get("enable_milling", False):
+            self.switch_mode(self.MODE_MILLING)
+        elif params.get("enable_pretreatment", False):
             self.switch_mode(self.MODE_PRETREATMENT)
         elif params.get("enable_classification", True):
             self.switch_mode(self.MODE_CLASSIFICATION)
 
         # Sync params into classification page settings
-        self.classification_page.sync_settings_from_params(params)
+        self.classification_page.sync_settings_from_params(self._assembly_params)
 
-        # Build preview in classification mode
-        if self._current_mode == self.MODE_CLASSIFICATION:
-            self.build_full_system()
+        # Build current system
+        self.build_full_system()
 
     @Slot()
     def build_full_system(self):
-        """Build the system for the active mode.
-
-        - Classification mode: builds air classifier system
-        - Pretreatment mode: builds GP-15 RF pretreatment machine
-        """
+        """Build the system for the active mode (uses per-system params)."""
         self.statusBar().showMessage("Building process system...")
         try:
             if self._current_mode == self.MODE_PRETREATMENT:
-                # Build RF pretreatment machine
                 if self.pretreatment_page is not None:
-                    ok = self.pretreatment_page.build_system(self._assembly_params)
+                    params = dict(self._pretreatment_params)
+                    params.setdefault("enable_pretreatment", True)
+                    ok = self.pretreatment_page.build_system(params)
                     if ok:
                         self.statusBar().showMessage("GP-15 machine built successfully", 5000)
                     else:
                         self.statusBar().showMessage("GP-15 build produced no geometry", 3000)
                 else:
                     self.statusBar().showMessage("Pretreatment module not available", 3000)
+            elif self._current_mode == self.MODE_MILLING:
+                if self.milling_page is not None:
+                    params = dict(self._milling_params)
+                    params.setdefault("enable_milling", True)
+                    ok = self.milling_page.build_system(params)
+                    if ok:
+                        self.statusBar().showMessage("Hammer mill built successfully", 5000)
+                    else:
+                        self.statusBar().showMessage("Mill build produced no geometry", 3000)
+                else:
+                    self.statusBar().showMessage("Milling module not available", 3000)
             else:
-                # Build air classifier system
-                ok = self.classification_page.build_system(self._assembly_params)
+                params = dict(self._classification_params)
+                params.setdefault("enable_classification", True)
+                ok = self.classification_page.build_system(params)
                 if ok:
                     self.statusBar().showMessage("System built successfully", 5000)
                 else:
@@ -973,6 +1185,8 @@ class MainWindow(QMainWindow):
         self.classification_page.cleanup()
         if self.pretreatment_page is not None:
             self.pretreatment_page.cleanup()
+        if self.milling_page is not None:
+            self.milling_page.cleanup()
 
         self._save_state()
         event.accept()

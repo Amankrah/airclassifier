@@ -41,7 +41,28 @@ Gap peak:    75.0 mm at t=0s
 Gap final:   75.0 mm
 ```
 
-**Root cause:** The simulated anode current peaked at ~1.46 A, which is below the MRL threshold of 1.5 A. Since Ia never exceeded MRL, the controller never triggered gap opening.
+**Root cause:** The simulated anode current peaks at ~1.46 A, which is **below MRH (1.7 A)**. The controller opens the gap only when `Ia > MRH`. Since the sim never exceeds 1.7 A, the gap never opens.
+
+### Run#2 CSV data (why gap and temperature differ)
+
+Source: `utility_docs/Run2 RF data(in).csv`, `utility_docs/Pea RF summary(Run#2).csv`.
+
+**Physical Run#2 (from CSV):**
+
+| Time (approx) | Ia (A) | Electrode_Act (mm) | Product_Temp (°C) |
+|---------------|--------|--------------------|-------------------|
+| 14:20:28      | 0.21   | 106.8              | 27 (idle)         |
+| 14:25:28      | 0.30   | 75.1               | 37 (setpoint)     |
+| **14:28:08**  | **1.72** | 75.1 → **MRH trip** | 39                |
+| 14:28:13–14:31 | 1.65–1.70 | **75 → 79 → 82** (opening) | 39–42 |
+| 14:32–14:35   | 1.66–1.71 | **87–94.1** (peak gap) | 42–43 |
+| 14:35–14:40   | 1.59–1.69 | **94.1** (held)   | 43–89 (PLC sensor rises) |
+| 14:39–14:41   | 1.55–1.62 | 93.9              | **94–103** (PLC)  |
+
+- **Temperature strips** (Pea RF summary): outfeed strips **77, 77, 82, 77, 82** °C.
+- **NIR outfeed moisture:** **10.53%** wb (avg of 15 samples).
+
+So in the real run, **Ia hits 1.72 A** (row 94 in CSV), **exceeds MRH 1.7 A**, the relay trips, and the gap opens from 75 mm to **94.1 mm**. Product_Temp (PLC) and strips then reach 77–103°C. In the simulation, **Ia never reaches 1.7 A** (peaks ~1.46 A), so the controller never opens the gap, and the sim under-delivers power → outfeed stays ~65°C and moisture stays higher (11.59%).
 
 ### Run#2 PLC Data Confirmation
 
@@ -162,6 +183,64 @@ The mass balance is acceptable (within 2% tolerance).
 | Legumin (11S) loss | 16.2% | <20% |
 
 Note: These values are computed based on the simulated temperature profile. With actual temperatures being lower in the physical run, real protein damage may differ.
+
+## Code audit: coupling, config, controller, particles
+
+Trace of where each Run#2 metric comes from and why mismatches occur.
+
+### Outfeed temperature (sim 65°C vs target 77–82°C)
+
+- **Source in code:** `coupling.py` → `_record_step()`:
+  - Outfeed slice: `T_out_cells = self.thermal.T[-1, :, :][outfeed_mat]`
+  - When `has_material`: `T_outfeed_sensor = np.percentile(T_out_cells, 75)` (sensor‑comparable)
+  - `get_outlet_conditions()` returns `sensor_temperature_c` from peak snapshot or `_last_valid_T_outfeed_sensor`
+- **Example:** `simulate_and_visualize.py` prints `outlet.sensor_temperature_c` as “Outfeed temperature”.
+- **Diagnosis:** Sim thermal solution produces a cooler outfeed cross‑section than the physical strips. Possible causes: (1) overall RF power too low (Ia/gap cascade), (2) convective cooling or thermal inertia not matched, (3) 75th‑percentile vs strip placement/sampling difference.
+
+### Anode current Ia (sim peak ~1.45 A vs target 1.5–1.7 A)
+
+- **Source in code:** `coupling.py` → same step:
+  - `fraction = P_rf_kw_theoretical / machine.max_rf_power_kw`
+  - `I_a = no_load + (full_load - no_load) * fraction`, then RC‑filtered
+  - `P_rf_theoretical` comes from RF field + dielectric heating (coupling factor, E², σ'').
+- **Diagnosis:** At Run#2 conditions (90 kg, 35 mm bed), simulated load gives P_rf such that Ia stays just below 1.5 A. Calibration was on Run#1 (61 kg, 25 mm); coupling factor is not scaled for thicker/heavier beds, so Ia is under‑predicted and never reaches MRH (1.7 A).
+
+### Gap never opening (sim 75 mm vs target peak 94.1 mm)
+
+- **Source in code:** `controller.py` → `_gap_step()`:
+  - `mrh_active = (anode_current_a > recipe.mrh_amps)` (1.7 A)
+  - Only when `mrh_active`: gap increases at `gap_adjust_rate_mm_s * gain * dt`
+  - `mrl_active = (anode_current_a < recipe.mrl_amps)` (1.5 A); when batch exhausted, gap closes toward setpoint.
+- **Config:** `Recipe` defaults `mrh_amps=1.7`, `mrl_amps=1.5` (`config.py`). Example does not override them.
+- **Diagnosis:** Because sim Ia never exceeds 1.7 A (and barely reaches 1.5 A), `mrh_active` is never True, so the controller never opens the gap. Cascade: under‑predicted Ia → no MRH trip → gap fixed at 75 mm → different power density and thermal outcome than Run#2.
+
+### Outfeed moisture (sim 11.59% vs target 10.53% wb)
+
+- **Source in code:** Same `_record_step()`: `M_outfeed_mean` from `moisture.M[-1, :, :][outfeed_mat]`; when belt has cleared, `get_outlet_conditions()` uses `_moisture_at_batch_exhausted`.
+- **Diagnosis:** Sim retains slightly more moisture (less drying). Consistent with underheating (lower T and possibly lower effective drying rate).
+
+### Mass balance (dispatched 90 kg, collected 89 kg, −1.1%)
+
+- **Source in code:** `particles.py`:
+  - Dispatch: `_dispatched_mass_kg += mass_per_particle` (throughput/spawn_rate or run_mass_kg/max_particles).
+  - Collection: `mass_ratio = (1 - M_initial) / (1 - M_landed)`; `_total_collected_kg += sum(mass_per_particle * mass_ratio)`.
+- **Diagnosis:** Collected < dispatched is correct when moisture is lost. The small deficit is within tolerance; possible minor contribution from particle‑level moisture interpolation and rounding.
+
+### Config and calibration loading
+
+- **MachineConfig:** `oscillator_coupling_factor` uses `default_factory=lambda: get_calibration_defaults()[0]`, so `calibration_latest.json` is loaded when the config is created.
+- **MaterialProperties:** `k_evap` (and `k_dispersion`) similarly use `get_calibration_defaults()`.
+- **Example:** Only `gap_adjust_rate` is passed explicitly via `sim._sim.update_parameters(gap_adjust_rate=...)`; coupling and k_evap come from config/material built with defaults, so calibration is applied for non‑`--calibrate` runs.
+
+### Validation helper
+
+- `src/airclassifier/utils/validation.py`: `RUN2_TARGETS`, `compare_sim_to_run2(outlet, ts=..., dispatched_kg=..., collected_kg=...)` return a `ValidationResult` with pass/fail and short notes for outfeed T, moisture, gap, Ia, and mass balance.
+
+### Figure 5 / particle treatment temperature (fixed)
+
+**Particle Treatment Analysis** (e.g. Figure 5) plots treatment temperature and moisture **at oven exit**. Previously, `T_at_oven_exit` was captured when a particle crossed **oven_x_end** (3.6 m). By then the particle had already left the RF grid (grid ends at ~2.96 m) and was no longer interpolated, so its `self.temperature` had been cooling for ~200 s. That made the particle histogram show mean ~41°C and a large 20–25°C spike while the grid outfeed reported ~65°C.
+
+**Fix (particles.py):** Capture treatment temperature when the particle first crosses **grid_x_end** (RF zone exit), not oven_x_end. At that moment `self.temperature` still holds the last interpolated value (outfeed cell). The particle histogram and the grid outfeed metric (sensor P75) now refer to the same physical moment (exit from RF zone).
 
 ## Summary
 

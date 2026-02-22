@@ -198,6 +198,7 @@ if _HAS_PYSIDE6:
 
                 outlet = sim.get_outlet_conditions()
                 meshes = sim.get_mesh()
+                result = sim.build_result()
 
                 self.log_message.emit(
                     f"Complete | M_out={outlet.avg_moisture_wb:.1%} "
@@ -208,33 +209,15 @@ if _HAS_PYSIDE6:
 
                 self.progress_updated.emit(100, sim._sim._time, {})
                 history = sim._sim._history
+                # Use canonical result.time_series (includes electrode_temperature_c); add controller_state for GUI
+                ts = dict(result.time_series) if result.time_series else {}
+                if history and ts and hasattr(history[0], "controller_state"):
+                    ts["controller_state"] = [s.controller_state for s in history]
                 self.simulation_completed.emit({
                     "outlet": outlet,
+                    "result": result,
                     "meshes": meshes,
-                    "time_series": {
-                        "time_s": [s.time_s for s in history],
-                        "T_mean_c": [s.T_mean_c for s in history],
-                        "T_max_c": [s.T_max_c for s in history],
-                        "T_outfeed_c": [s.T_outfeed_c for s in history],
-                        "T_outfeed_sensor_c": [s.T_outfeed_sensor_c for s in history],
-                        "M_mean_wb": [s.M_mean_wb for s in history],
-                        "M_outfeed_wb": [s.M_outfeed_wb for s in history],
-                        "rf_power_kw": [s.rf_power_kw for s in history],
-                        "evap_power_kw": [s.evap_power_kw for s in history],
-                        "anode_current_a": [s.anode_current_a for s in history],
-                        "electrode_gap_mm": [s.electrode_gap_mm for s in history],
-                        "total_energy_kwh": [s.total_energy_kwh for s in history],
-                        "water_removed_kg": [s.water_removed_kg for s in history],
-                        "specific_energy_kwh_per_kg": [
-                            s.specific_energy_kwh_per_kg for s in history
-                        ],
-                        "protein_denaturation": [
-                            s.protein_denaturation for s in history
-                        ],
-                        "controller_state": [
-                            s.controller_state for s in history
-                        ],
-                    },
+                    "time_series": ts,
                 })
 
             except Exception as e:

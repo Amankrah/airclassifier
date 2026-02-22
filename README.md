@@ -1,4 +1,4 @@
-# Air Classifier Designer
+# ProteinProcessIO
 
 GPU-accelerated design and simulation of air classification systems for particle separation, powered by [NVIDIA Warp](https://github.com/NVIDIA/warp).
 

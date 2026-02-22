@@ -943,7 +943,7 @@ def _print_results(sim, result, elapsed):
         recipe = sim._recipe
         run_mass = recipe.run_mass_kg if recipe else 0.0
         ds = score_desirability(
-            outfeed_temperature_c=outlet.avg_temperature_c,
+            outfeed_temperature_c=outlet.sensor_temperature_c,  # Align with GUI: sensor (P75) for desirability
             max_temperature_c=outlet.max_temperature_c,
             outfeed_moisture_wb=outlet.avg_moisture_wb,
             initial_moisture_wb=sim.material.initial_moisture_wb,
@@ -958,6 +958,20 @@ def _print_results(sim, result, elapsed):
         print(f"    Energy efficiency:       {ds.d_energy:.2f}")
     except Exception as e:
         print(f"  Desirability score:        (unavailable: {e})")
+    # Run#2 validation comparison (targets: 10.53% wb, 77-82°C, gap peak 94 mm, Ia 1.5-1.7 A)
+    try:
+        from airclassifier.utils.validation import compare_sim_to_run2
+        dispatched = getattr(sim.particles, "dispatched_mass_kg", 0.0) if hasattr(sim, "particles") else 0.0
+        collected = getattr(sim.particles, "collected_mass_kg", None) if hasattr(sim, "particles") else None
+        vr = compare_sim_to_run2(outlet, ts=ts, dispatched_kg=dispatched, collected_kg=collected)
+        print("  Run#2 validation:          " + " | ".join(
+            ["moisture OK" if vr.outfeed_moisture_ok else "moisture HIGH",
+             "temp OK" if vr.outfeed_temp_ok else "temp LOW",
+             "gap OK" if vr.gap_triggered_ok else "gap NO OPEN",
+             "Ia OK" if vr.ia_steady_ok else "Ia LOW"])
+        )
+    except Exception:
+        pass
     print()
     print(f"  Simulation wall-clock:     {elapsed:.2f} s")
     n_steps = len(ts.get("time_s", []))

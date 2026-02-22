@@ -1,0 +1,308 @@
+"""
+Milling Configuration Dataclasses
+==================================
+
+Machine specifications, screen parameters, breakage properties, and recipe
+definitions for the hammer mill simulation.
+
+Process chain: Pretreatment (GP-15) -> Hammer Mill -> Air Classifier
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Tuple, Optional
+
+
+# ============================================================================
+#  Machine Configuration
+# ============================================================================
+
+@dataclass
+class MillConfig:
+    """Hammer mill machine parameters.
+
+    Describes a horizontal-shaft hammer mill (pin mill / impact mill)
+    for dry fractionation lines. Material from the pretreatment stage
+    enters, is impacted by rotating hammers against the screen/housing,
+    breaks, and exits through the screen apertures.
+    """
+
+    # --- Rotor / Drive ---
+    rotor_rpm: float = 3000.0                    # Typical: 2000-4000 rpm
+    rotor_diameter_m: float = 0.20               # Rotor hub outer diameter
+    rotor_length_m: float = 0.30                 # Rotor active length (along shaft)
+    shaft_diameter_m: float = 0.05               # Main shaft diameter
+
+    # Power and motor
+    motor_power_kw: float = 22.0                 # Typical: 15-55 kW
+    motor_efficiency: float = 0.92               # Motor efficiency
+    no_load_power_kw: float = 2.5                # Power at idle (bearing/windage)
+
+    # --- Hammer configuration ---
+    hammer_rows: int = 4                         # Rows along rotor length
+    hammers_per_row: int = 4                     # Hammers per row (evenly spaced)
+    hammer_mass_kg: float = 0.35                 # Mass per hammer
+    hammer_length_m: float = 0.08                # From pivot to tip
+    hammer_width_m: float = 0.05                 # Width (along rotor axis)
+    hammer_thickness_m: float = 0.008            # Thickness
+    hammer_clearance_m: float = 0.008            # Gap between hammer tip and screen
+
+    # --- Screen ---
+    screen_arc_angle_deg: float = 180.0          # Screen wraps bottom half
+    screen_inner_radius_m: float = 0.188         # Inside radius of screen (tip + clearance)
+    screen_thickness_m: float = 0.003            # Screen plate thickness
+    screen_aperture_mm: float = 1.5              # Hole size (defines max product size)
+    screen_open_area: float = 0.40               # Open area fraction (0-1)
+
+    # --- Housing ---
+    housing_inner_radius_m: float = 0.20         # Casing inner radius
+    housing_length_m: float = 0.40               # Housing length (includes end plates)
+    housing_wall_thickness_m: float = 0.008      # Casing wall
+
+    # --- Feed inlet ---
+    feed_chute_width_m: float = 0.15             # Chute cross-section width
+    feed_chute_height_m: float = 0.12            # Chute cross-section height
+    feed_chute_length_m: float = 0.25            # Chute length
+    feed_rate_kg_per_hr: float = 500.0           # Nominal feed rate
+
+    # --- Discharge ---
+    discharge_chute_width_m: float = 0.20
+    discharge_chute_height_m: float = 0.15
+
+    # --- Machine envelope ---
+    machine_height_m: float = 0.80
+    machine_width_m: float = 0.60
+    machine_depth_m: float = 0.50
+
+    @property
+    def rotor_angular_velocity(self) -> float:
+        """Rotor angular velocity [rad/s]."""
+        return self.rotor_rpm * 2.0 * math.pi / 60.0
+
+    @property
+    def hammer_tip_speed(self) -> float:
+        """Hammer tip linear velocity [m/s]."""
+        # Tip radius = rotor radius + hammer length
+        tip_radius = self.rotor_diameter_m / 2.0 + self.hammer_length_m
+        return tip_radius * self.rotor_angular_velocity
+
+    @property
+    def total_hammers(self) -> int:
+        """Total number of hammers."""
+        return self.hammer_rows * self.hammers_per_row
+
+    @property
+    def screen_arc_angle_rad(self) -> float:
+        """Screen arc angle in radians."""
+        return math.radians(self.screen_arc_angle_deg)
+
+    def tip_to_screen_clearance(self) -> float:
+        """Clearance between hammer tip and screen inner surface [m]."""
+        tip_radius = self.rotor_diameter_m / 2.0 + self.hammer_length_m
+        return self.screen_inner_radius_m - tip_radius
+
+
+@dataclass
+class ScreenConfig:
+    """Screen-specific parameters for aperture and passage model.
+
+    The screen is the curved perforated plate at the bottom of the
+    mill chamber. Particles smaller than the aperture can pass through;
+    larger particles are retained for further breakage.
+    """
+
+    aperture_mm: float = 1.5                     # Nominal hole diameter [mm]
+    open_area: float = 0.40                      # Open area fraction
+    hole_shape: str = "round"                    # "round", "square", "slotted"
+
+    # Passage model parameters
+    passage_probability_factor: float = 1.0      # Tuning factor for passage rate
+    size_ratio_threshold: float = 0.8            # d_particle/d_aperture below which passage is likely
+
+    # Screen wear
+    wear_factor: float = 1.0                     # 1.0 = new, increases with wear
+
+    @property
+    def aperture_m(self) -> float:
+        """Aperture size in meters."""
+        return self.aperture_mm / 1000.0
+
+    def passage_probability(self, particle_size_m: float) -> float:
+        """Compute probability of passage for a given particle size.
+
+        Args:
+            particle_size_m: Particle characteristic size [m]
+
+        Returns:
+            Probability of passage (0-1)
+        """
+        ratio = particle_size_m / self.aperture_m
+        if ratio > 1.0:
+            return 0.0  # Cannot pass if larger than aperture
+        elif ratio < self.size_ratio_threshold:
+            # High probability of passage for small particles
+            return self.passage_probability_factor * self.open_area
+        else:
+            # Decreasing probability as size approaches aperture
+            t = (ratio - self.size_ratio_threshold) / (1.0 - self.size_ratio_threshold)
+            return self.passage_probability_factor * self.open_area * (1.0 - t * t)
+
+
+@dataclass
+class BreakageParams:
+    """Parameters for the breakage model (selection + breakage function).
+
+    Uses a population-balance approach where particles are characterized
+    by size classes. The selection function gives the probability of
+    breakage per impact, and the breakage function describes the daughter
+    size distribution.
+    """
+
+    # Size classes for PSD (geometric progression)
+    num_size_classes: int = 20
+    d_min_um: float = 10.0                       # Smallest size class [um]
+    d_max_um: float = 5000.0                     # Largest size class [um]
+
+    # Selection function: S(d) = k * (d / d_ref)^alpha
+    # Probability of breakage per impact for size d
+    selection_rate_constant: float = 0.15        # k: base selection rate
+    selection_size_exponent: float = 1.2         # alpha: larger particles break more easily
+    selection_reference_size_um: float = 1000.0  # d_ref
+
+    # Breakage function: B(d_daughter | d_parent)
+    # Cumulative mass fraction finer than d_daughter given breakage of d_parent
+    # Uses Gaudin-Schuhmann: B = (d_daughter / d_parent)^gamma
+    breakage_distribution_exponent: float = 0.8  # gamma
+
+    # Impact energy threshold
+    min_impact_energy_j: float = 0.001           # Below this, no breakage
+    energy_to_breakage_factor: float = 5.0       # Converts impact energy to selection probability
+
+    @property
+    def size_classes_um(self) -> Tuple[float, ...]:
+        """Size class boundaries in micrometers (geometric progression)."""
+        ratio = (self.d_max_um / self.d_min_um) ** (1.0 / self.num_size_classes)
+        return tuple(self.d_min_um * (ratio ** i) for i in range(self.num_size_classes + 1))
+
+    @property
+    def size_classes_m(self) -> Tuple[float, ...]:
+        """Size class boundaries in meters."""
+        return tuple(d * 1e-6 for d in self.size_classes_um)
+
+    def selection_probability(self, d_um: float, impact_energy_j: float = 0.01) -> float:
+        """Compute selection probability for a particle size.
+
+        Args:
+            d_um: Particle size [um]
+            impact_energy_j: Impact energy [J]
+
+        Returns:
+            Probability of breakage (0-1)
+        """
+        if impact_energy_j < self.min_impact_energy_j:
+            return 0.0
+
+        # Size-dependent selection
+        S = self.selection_rate_constant * (d_um / self.selection_reference_size_um) ** self.selection_size_exponent
+
+        # Energy scaling
+        energy_factor = min(1.0, impact_energy_j / self.min_impact_energy_j * self.energy_to_breakage_factor)
+
+        return min(1.0, S * energy_factor)
+
+
+# ============================================================================
+#  Recipe — Operating setpoints
+# ============================================================================
+
+@dataclass
+class MillRecipe:
+    """Hammer mill operating recipe.
+
+    Defines the operating setpoints for a milling run. Analogous to
+    the GP-15 Recipe for pretreatment.
+    """
+
+    name: str = "default"
+    recipe_number: int = 0                       # Recipe slot number
+
+    # --- Operating setpoints ---
+    rotor_rpm: float = 3000.0                    # Rotor speed setpoint
+    screen_aperture_mm: float = 1.5              # Screen aperture size
+    feed_rate_kg_per_hr: float = 500.0           # Target feed rate
+
+    # --- Run parameters ---
+    run_mass_kg: float = 0.0                     # Total mass for run (0 = continuous)
+    run_duration_s: float = 60.0                 # Duration if run_mass_kg = 0
+
+    # --- Control parameters ---
+    power_limit_kw: float = 20.0                 # Max power before feed cutback
+    temperature_limit_c: float = 80.0            # Max product temperature
+
+    # --- Feed material (from pretreatment or synthetic) ---
+    feed_moisture_wb: float = 0.12               # Feed moisture (wet basis)
+    feed_temperature_c: float = 60.0             # Feed temperature
+    feed_d50_um: float = 3000.0                  # Feed median size [um] (whole seeds ~3mm)
+
+    @property
+    def rotor_omega(self) -> float:
+        """Rotor angular velocity [rad/s] from recipe rpm."""
+        return self.rotor_rpm * 2.0 * math.pi / 60.0
+
+    def throughput_kg_per_s(self) -> float:
+        """Feed rate in kg/s."""
+        return self.feed_rate_kg_per_hr / 3600.0
+
+
+# ============================================================================
+#  Outlet State — For pipeline integration
+# ============================================================================
+
+@dataclass
+class MillingOutletState:
+    """Outlet conditions from the hammer mill.
+
+    This is the data passed to the downstream air classifier.
+    Analogous to OutletState from pretreatment.
+    """
+
+    # --- Particle size distribution ---
+    psd_mass_fractions: Tuple[float, ...] = field(default_factory=tuple)
+    psd_size_classes_um: Tuple[float, ...] = field(default_factory=tuple)
+    d10_um: float = 0.0
+    d50_um: float = 0.0
+    d90_um: float = 0.0
+
+    # --- Flow rates ---
+    throughput_kg_per_hr: float = 0.0
+    mass_holdup_kg: float = 0.0                  # Material in mill at end
+
+    # --- Thermal state (passthrough from feed) ---
+    avg_temperature_c: float = 25.0
+    avg_moisture_wb: float = 0.12
+
+    # --- Power and energy ---
+    power_kw: float = 0.0
+    specific_energy_kwh_per_t: float = 0.0       # kWh per tonne
+
+    # --- Residence time ---
+    mean_residence_time_s: float = 0.0
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for serialization."""
+        return {
+            "psd_mass_fractions": list(self.psd_mass_fractions),
+            "psd_size_classes_um": list(self.psd_size_classes_um),
+            "d10_um": self.d10_um,
+            "d50_um": self.d50_um,
+            "d90_um": self.d90_um,
+            "throughput_kg_per_hr": self.throughput_kg_per_hr,
+            "mass_holdup_kg": self.mass_holdup_kg,
+            "avg_temperature_c": self.avg_temperature_c,
+            "avg_moisture_wb": self.avg_moisture_wb,
+            "power_kw": self.power_kw,
+            "specific_energy_kwh_per_t": self.specific_energy_kwh_per_t,
+            "mean_residence_time_s": self.mean_residence_time_s,
+        }

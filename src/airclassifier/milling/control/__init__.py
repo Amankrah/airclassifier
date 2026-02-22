@@ -1,1 +1,16 @@
-# Milling control and recipe — see BUILD_AND_INTEGRATE.md §2.
+"""
+Milling Control Module
+======================
+
+Recipe management and control systems for the hammer mill.
+"""
+
+from .recipe import (
+    RecipeStore,
+    DEFAULT_RECIPES,
+)
+
+__all__ = [
+    "RecipeStore",
+    "DEFAULT_RECIPES",
+]

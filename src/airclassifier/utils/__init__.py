@@ -20,6 +20,12 @@ from .constants import (
     WP_AIR_VISCOSITY,
     WP_EPSILON,
 )
+from .validation import (
+    RUN2_TARGETS,
+    ValidationResult,
+    compare_sim_to_run2,
+    get_run2_targets,
+)
 
 __all__ = [
     # Mathematical constants
@@ -42,4 +48,9 @@ __all__ = [
     "WP_AIR_DENSITY",
     "WP_AIR_VISCOSITY",
     "WP_EPSILON",
+    # Run#2 validation
+    "RUN2_TARGETS",
+    "ValidationResult",
+    "compare_sim_to_run2",
+    "get_run2_targets",
 ]

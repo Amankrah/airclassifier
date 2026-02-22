@@ -3,7 +3,7 @@
 **RF Dielectric Heating Digital Twin**
 *QMTI GP-15 Gentle Processing Machine — NVIDIA Warp Implementation*
 
-Air Classifier Designer Project · Pretreatment Module
+ProteinProcessIO Project · Pretreatment Module
 Emmanuel Kwofie · February 2026
 
 ---
@@ -14,7 +14,7 @@ This document is the build specification for the `pretreatment` module — a phy
 
 The GP-15 sits at the head of the dry fractionation line. Raw whole flour (yellow pea, faba bean, oat) enters with moisture content in the range of 8–14% wet basis. The RF field heats the material volumetrically — water molecules absorb dielectric energy preferentially — reducing moisture to 2–4% in a single pass. The conditioned material then feeds the pin mill and air classifier. Moisture content and its spatial uniformity at the GP-15 outlet directly control particle size distribution after milling and protein separation efficiency in the classifier. This module must therefore produce accurate, spatially-resolved temperature and moisture fields at the outfeed, not merely bulk averages.
 
-The simulation engine is NVIDIA Warp. All heavy computation — field solves, heat transfer, moisture diffusion, material advection — runs as JIT-compiled GPU kernels. The module supports differentiable simulation via `wp.Tape` for gradient-based recipe optimization and integrates with the existing Air Classifier Designer GUI (PySide6 + PyVista) for real-time 3D visualization.
+The simulation engine is NVIDIA Warp. All heavy computation — field solves, heat transfer, moisture diffusion, material advection — runs as JIT-compiled GPU kernels. The module supports differentiable simulation via `wp.Tape` for gradient-based recipe optimization and integrates with the existing ProteinProcessIO GUI (PySide6 + PyVista) for real-time 3D visualization.
 
 ---
 
@@ -183,7 +183,7 @@ These sensors enable the automatic temperature control mode described in Section
 
 ## 3. Coordinate System and Simulation Domain
 
-The simulation uses the same **Y-up** coordinate system as the Air Classifier Designer project.
+The simulation uses the same **Y-up** coordinate system as the ProteinProcessIO project.
 
 ```
         Y (up — vertical, electrode gap direction)
@@ -605,7 +605,7 @@ Constituent property values:
 
 ### 5.3 Material Presets
 
-Matching the Air Classifier Designer's material system, the pretreatment module provides presets for the three target feedstocks:
+Matching the ProteinProcessIO's material system, the pretreatment module provides presets for the three target feedstocks:
 
 ```python
 MATERIAL_PRESETS = {
@@ -652,7 +652,7 @@ MATERIAL_PRESETS = {
 
 ## 6. Module Architecture
 
-The `pretreatment` module is a self-contained Python package within the Air Classifier Designer project. It follows the same patterns as the existing `airclassifier` package: parametric geometry, GPU-accelerated physics via Warp, and integration with the PySide6/PyVista GUI.
+The `pretreatment` module is a self-contained Python package within the ProteinProcessIO project. It follows the same patterns as the existing `airclassifier` package: parametric geometry, GPU-accelerated physics via Warp, and integration with the PySide6/PyVista GUI.
 
 ### 6.1 Package Structure
 
@@ -830,7 +830,7 @@ class GP15Simulator:
         """Return PyVista-compatible mesh for 3D visualization.
         
         Returns (vertices, faces, field_data) suitable for adding
-        to the Air Classifier Designer's PyVista viewport.
+        to the ProteinProcessIO's PyVista viewport.
         """
 ```
 
@@ -1587,7 +1587,7 @@ The energy balance error should be less than 0.1% per timestep.
 | `warp-lang` | >= 1.11.0 | GPU simulation (kernels, FEM, sparse solvers, autodiff) |
 | `numpy` | >= 2.0.0 | Array interchange, post-processing |
 | `scipy` | >= 1.15.0 | Material property interpolation, optimization |
-| `PySide6` | >= 6.5.0 | GUI framework (shared with Air Classifier Designer) |
+| `PySide6` | >= 6.5.0 | GUI framework (shared with ProteinProcessIO) |
 | `pyvista` | >= 0.42.0 | 3D visualization (shared) |
 | `pyvistaqt` | >= 0.11.0 | PyVista-Qt bridge (shared) |
 | `matplotlib` | >= 3.7.0 | 2D plots, diagnostics |
@@ -1610,4 +1610,4 @@ The pretreatment module is complete when:
 5. **Controller fidelity**: MRH/MRL gap control, recycle sequence (4 restarts + lockout), temperature control mode all function correctly.
 6. **Pipeline integration**: OutletState feeds milling module; full pretreatment → milling → classification workflow produces plausible results.
 7. **Performance**: GPU simulation runs faster than real-time at 60,000-cell resolution on RTX 3070.
-8. **GUI**: 3D oven visualization with live temperature/moisture fields renders in the Air Classifier Designer viewport.
+8. **GUI**: 3D oven visualization with live temperature/moisture fields renders in the ProteinProcessIO viewport.

@@ -1,6 +1,6 @@
 # Hammer Mill Module — Build and Integration Guide
 
-**Real-world hammer mill digital twin for the Air Classifier Designer**
+**Real-world hammer mill digital twin for ProteinProcessIO**
 
 This document specifies how to build the milling module separately (like the pretreatment module), implement geometry component-by-component with animations, implement physics and kinetics with NVIDIA Warp kernels, couple product flow with physics into a simulator, and pipe the module into the GUI.
 
@@ -257,4 +257,4 @@ Power draw can be derived from impact energy (sum of ΔE per impact) plus a base
 
 ---
 
-*This document is the single specification for building and integrating the hammer mill module into the Air Classifier Designer.*
+*This document is the single specification for building and integrating the hammer mill module into ProteinProcessIO.*

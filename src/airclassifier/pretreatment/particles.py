@@ -791,20 +791,25 @@ class MaterialParticleSystem:
                 grid_origin, cell_sizes,
                 initial_fill_active=initial_fill_active,
             )
+            # Grid extent: RF zone ends here; particles past this are no longer interpolated
+            grid_x_end = grid_origin[0] + cell_sizes[0] * T_field.shape[0]
 
-        # ── Capture treatment temperature at oven exit ────────────────
-        # This happens AFTER interpolation but BEFORE post-grid cooling,
-        # so we capture the actual RF treatment temperature.
-        just_exited_oven = (
-            riding
-            & (self.pos[:, 0] > cfg.oven_x_end)
-            & ~self._crossed_oven_exit
-        )
-        if just_exited_oven.any():
-            self.T_at_oven_exit[just_exited_oven] = self.temperature[just_exited_oven]
-            self.T_core_at_oven_exit[just_exited_oven] = self.T_core[just_exited_oven]
-            self.M_at_oven_exit[just_exited_oven] = self.moisture[just_exited_oven]
-            self._crossed_oven_exit[just_exited_oven] = True
+            # ── Capture treatment temperature at RF zone exit (not oven exit) ──
+            # We must capture when the particle first crosses grid_x_end, while
+            # self.temperature still holds the last interpolated value (outfeed cell).
+            # Previously we captured at oven_x_end (3.6 m): by then particles have
+            # cooled for ~(3.6 - grid_x_end)/v_belt seconds, so the particle
+            # histogram showed mean ~41°C vs grid outfeed ~65°C (Figure 5 bug).
+            just_exited_rf = (
+                riding
+                & (self.pos[:, 0] >= grid_x_end)
+                & ~self._crossed_oven_exit
+            )
+            if just_exited_rf.any():
+                self.T_at_oven_exit[just_exited_rf] = self.temperature[just_exited_rf]
+                self.T_core_at_oven_exit[just_exited_rf] = self.T_core[just_exited_rf]
+                self.M_at_oven_exit[just_exited_rf] = self.moisture[just_exited_rf]
+                self._crossed_oven_exit[just_exited_rf] = True
 
         # ── Post-grid cooling (Newton's law) ─────────────────────────
         # The Eulerian grid only covers the RF zone.  Once material

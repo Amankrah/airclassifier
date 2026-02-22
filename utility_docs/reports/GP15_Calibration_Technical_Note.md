@@ -808,7 +808,7 @@ Central differences (epsilon = 0.5 mm for gap, 0.02 m/min for speed) estimate th
 ## References
 
 1. QMTI GP-15 Installation and Operation Manual, Quantum Mechanical Technologies Inc., Prince Albert, SK, Canada, 2021.
-2. Kwofie, E., "Pretreatment Engineering Guide: RF Dielectric Heating Digital Twin — QMTI GP-15 Gentle Processing Machine," Air Classifier Designer Project, February 2026.
+2. Kwofie, E., "Pretreatment Engineering Guide: RF Dielectric Heating Digital Twin — QMTI GP-15 Gentle Processing Machine," ProteinProcessIO Project, February 2026.
 3. Storn, R. and Price, K., "Differential Evolution — A Simple and Efficient Heuristic for Global Optimization over Continuous Spaces," J. Global Optimization, 11, pp. 341-359, 1997.
 4. NVIDIA Warp Documentation, https://nvidia.github.io/warp/, 2024.
 5. Piyasena, P., Dussault, C., Koutchma, T., Ramaswamy, H.S., and Awuah, G.B., "Radio frequency heating of foods: principles, applications and related properties — a review," Critical Reviews in Food Science and Nutrition, 43(6), pp. 587-606, 2003.

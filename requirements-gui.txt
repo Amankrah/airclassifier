@@ -1,4 +1,4 @@
-# GUI Requirements for Air Classifier Designer
+# GUI Requirements for ProteinProcessIO
 # Install with: pip install -r requirements-gui.txt
 
 # Core GUI framework

@@ -74,6 +74,7 @@ class _FlowDiagram(QFrame):
         self,
         pretreatment_enabled: bool,
         classification_enabled: bool,
+        milling_enabled: bool,
         preclassification: bool,
         include_feed: bool,
         include_air: bool,
@@ -101,12 +102,33 @@ class _FlowDiagram(QFrame):
                 f"  (moisture 8-14% → 2-4% wb)",
             ]
 
-        # Connector
-        if pretreatment_enabled and classification_enabled:
+        # Connector to Milling
+        if pretreatment_enabled and milling_enabled:
             lines += [
                 "",
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                 "  │  conditioned material",
+                "  ↓",
+            ]
+
+        # Stage 1b: Milling
+        if milling_enabled:
+            lines += [
+                "",
+                "━━━ PIN MILL (Hammer Mill) ━━━",
+                "",
+                "Conditioned / whole seeds → Feed chute → Mill chamber",
+                "  Rotor + hammers → Impact + breakage",
+                "  Screen → Milled product (PSD)",
+                "",
+            ]
+
+        # Connector to Classification
+        if (pretreatment_enabled or milling_enabled) and classification_enabled:
+            lines += [
+                "",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "  │  milled flour",
                 "  ↓",
             ]
 
@@ -200,6 +222,7 @@ class AssemblyConfigDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(_scrollable(self._create_stages_tab()), "Stages")
         tabs.addTab(_scrollable(self._create_pretreatment_tab()), "RF Pretreatment")
+        tabs.addTab(_scrollable(self._create_milling_tab()), "Milling")
         tabs.addTab(_scrollable(self._create_classification_tab()), "Classification")
         tabs.addTab(_scrollable(self._create_sizing_tab()), "Sizing")
         splitter.addWidget(tabs)
@@ -264,10 +287,22 @@ class AssemblyConfigDialog(QDialog):
 
         stage_layout.addSpacing(6)
 
+        self.radio_milling = QRadioButton(
+            "Pin Mill — Hammer mill (impact milling, screen classification)"
+        )
+        self._stage_group.addButton(self.radio_milling, 1)
+        stage_layout.addWidget(self.radio_milling)
+
+        hint_mill = QLabel("Size reduction: conditioned seeds → milled flour (PSD for classifier)")
+        hint_mill.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED}; margin-left: 24px;")
+        stage_layout.addWidget(hint_mill)
+
+        stage_layout.addSpacing(6)
+
         self.radio_classification = QRadioButton(
             "Air Classification — Zigzag + Wheel + Cyclones"
         )
-        self._stage_group.addButton(self.radio_classification, 1)
+        self._stage_group.addButton(self.radio_classification, 2)
         stage_layout.addWidget(self.radio_classification)
 
         hint_cls = QLabel("Protein-starch separation via particle size / density classification")
@@ -596,10 +631,12 @@ class AssemblyConfigDialog(QDialog):
 
     def _update_flow_diagram(self):
         pretreatment_on = self.radio_pretreatment.isChecked()
+        milling_on = self.radio_milling.isChecked()
         classification_on = self.radio_classification.isChecked()
         self._flow_diagram.update_flow(
             pretreatment_enabled=pretreatment_on,
             classification_enabled=classification_on,
+            milling_enabled=milling_on,
             preclassification=(self.mode_combo.currentIndex() == 0),
             include_feed=self.chk_feed.isChecked(),
             include_air=self.chk_air.isChecked(),
@@ -609,12 +646,49 @@ class AssemblyConfigDialog(QDialog):
     # Build params dict
     # ================================================================
 
+    # ================================================================
+    # Milling tab
+    # ================================================================
+
+    def _create_milling_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(8)
+        _M = (10, 14, 10, 10)
+
+        g = QGroupBox("Mill operating point")
+        f = QFormLayout(g)
+        f.setContentsMargins(*_M)
+
+        self.mill_rotor_rpm_spin = QDoubleSpinBox()
+        self.mill_rotor_rpm_spin.setRange(500, 6000)
+        self.mill_rotor_rpm_spin.setValue(3000)
+        self.mill_rotor_rpm_spin.setSuffix(" rpm")
+        f.addRow("Rotor RPM:", self.mill_rotor_rpm_spin)
+
+        self.mill_screen_aperture_spin = QDoubleSpinBox()
+        self.mill_screen_aperture_spin.setRange(0.5, 5.0)
+        self.mill_screen_aperture_spin.setValue(1.5)
+        self.mill_screen_aperture_spin.setDecimals(2)
+        self.mill_screen_aperture_spin.setSuffix(" mm")
+        f.addRow("Screen aperture:", self.mill_screen_aperture_spin)
+
+        self.mill_feed_rate_spin = QDoubleSpinBox()
+        self.mill_feed_rate_spin.setRange(10, 2000)
+        self.mill_feed_rate_spin.setValue(500)
+        self.mill_feed_rate_spin.setSuffix(" kg/h")
+        f.addRow("Feed rate:", self.mill_feed_rate_spin)
+
+        layout.addWidget(g)
+        return w
+
     def get_params(self) -> Dict[str, Any]:
         """Build a params dict with all process configuration."""
         preclassification = self.mode_combo.currentIndex() == 0
         return {
             # Process stages (mutually exclusive)
             "enable_pretreatment": self.radio_pretreatment.isChecked(),
+            "enable_milling": self.radio_milling.isChecked(),
             "enable_classification": self.radio_classification.isChecked(),
             # System
             "use_preclassification": preclassification,
@@ -638,6 +712,10 @@ class AssemblyConfigDialog(QDialog):
             "pt_heaters_on": self.pt_heater_check.isChecked(),
             "pt_duration_s": self.pt_duration_spin.value(),
             "pt_oscillator_efficiency": self.pt_eff_spin.value(),
+            # Milling
+            "mill_rotor_rpm": self.mill_rotor_rpm_spin.value(),
+            "mill_screen_aperture_mm": self.mill_screen_aperture_spin.value(),
+            "mill_feed_rate_kg_per_hr": self.mill_feed_rate_spin.value(),
             # Classification
             "venturi_inlet_diameter": self.venturi_inlet_spin.value() / 1000.0,
             "venturi_throat_ratio": self.venturi_throat_spin.value(),
@@ -663,6 +741,8 @@ class AssemblyConfigDialog(QDialog):
         # Stages (mutually exclusive radio buttons)
         if p.get("enable_pretreatment", False):
             self.radio_pretreatment.setChecked(True)
+        elif p.get("enable_milling", False):
+            self.radio_milling.setChecked(True)
         elif p.get("enable_classification", True):
             self.radio_classification.setChecked(True)
         if "use_preclassification" in p:
@@ -686,6 +766,13 @@ class AssemblyConfigDialog(QDialog):
             self.pt_gap_spin.setValue(p["pt_electrode_gap_mm"])
         if "pt_belt_speed" in p:
             self.pt_speed_spin.setValue(p["pt_belt_speed"])
+        # Milling
+        if "mill_rotor_rpm" in p:
+            self.mill_rotor_rpm_spin.setValue(p["mill_rotor_rpm"])
+        if "mill_screen_aperture_mm" in p:
+            self.mill_screen_aperture_spin.setValue(p["mill_screen_aperture_mm"])
+        if "mill_feed_rate_kg_per_hr" in p:
+            self.mill_feed_rate_spin.setValue(p["mill_feed_rate_kg_per_hr"])
         # Classification
         if "venturi_throat_ratio" in p:
             self.venturi_throat_spin.setValue(p["venturi_throat_ratio"])

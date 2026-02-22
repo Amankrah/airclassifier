@@ -8,9 +8,14 @@ Each page contains its own 3D viewport, controls, and results.
 Pages:
   - **ClassificationPage** — Air classification (zigzag + wheel + cyclones)
   - **PretreatmentPage**   — RF pretreatment (GP-15 dielectric heating)
+  - **MillingPage**        — Hammer mill (pin mill)
 """
 
 from .classification_page import ClassificationPage
 from .pretreatment_page import PretreatmentPage
+try:
+    from .milling_page import MillingPage
+except Exception:
+    MillingPage = None  # type: ignore[misc, assignment]
 
-__all__ = ["ClassificationPage", "PretreatmentPage"]
+__all__ = ["ClassificationPage", "PretreatmentPage", "MillingPage"]
