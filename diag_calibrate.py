@@ -1,7 +1,7 @@
-"""Calibrate simulation against Run#1 PLC data, validate against Run#2.
+"""Calibrate simulation against PLC data.
 
-Run#1 (calibration):  61 kg, 25mm bed, 0.2 m/min, 17.6°C, 11.7% M
-Run#2 (validation):   90 kg, 35mm bed, 0.2 m/min, 17.0°C, 11.8% M
+Default: Run#1 (61 kg, 25mm bed, 0.2 m/min, 17.6°C, 11.7% M)
+With --run2: Run#2 (90 kg, 35mm bed, 0.2 m/min, 17.0°C, 11.8% M)
 
 Parameters fitted (4):
   oscillator_coupling_factor  -- tank circuit efficiency
@@ -13,6 +13,7 @@ Uses the infeed-delay + empty-grid initialisation so the Ia ramp-up
 matches the real PLC recording (~6 min idle before material arrives).
 """
 import sys, os, time
+import argparse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 import numpy as np
@@ -21,18 +22,63 @@ from airclassifier.pretreatment.calibration import (
 )
 from airclassifier.pretreatment.config import MachineConfig, MaterialProperties
 
-# ── Load Run#1 PLC data (calibration set) ─────────────────────────────
-plc_full = load_plc_data("utility_docs/Run1 RF data(in).csv")
-print(f"Run#1 PLC: {plc_full.n_samples} samples, {plc_full.duration_s:.0f} s")
+# ── Parse arguments ─────────────────────────────────────────────────
+parser = argparse.ArgumentParser(description="Calibrate against PLC data")
+parser.add_argument("--run2", action="store_true",
+                    help="Use Run#2 data instead of Run#1")
+parser.add_argument("--plc", type=str, default=None,
+                    help="Path to PLC CSV file (overrides --run1/--run2)")
+parser.add_argument("--mass", type=float, default=None,
+                    help="Run mass in kg")
+parser.add_argument("--bed-depth", type=float, default=None,
+                    help="Bed depth in mm")
+parser.add_argument("--moisture", type=float, default=None,
+                    help="Initial moisture (wet basis fraction, e.g. 0.1174)")
+parser.add_argument("--temp", type=float, default=None,
+                    help="Initial temperature in °C")
+parser.add_argument("--maxiter", type=int, default=150,
+                    help="Maximum optimizer iterations")
+args = parser.parse_args()
+
+# ── Select run configuration ────────────────────────────────────────
+if args.run2:
+    # Run#2: 90 kg, 35mm feeder gap, 0.2 m/min, 17.0°C starting temp
+    # NIR raw moisture: 11.2%, 12.49%, 11.73% → avg 11.81%
+    plc_path = args.plc or "utility_docs/Run2 RF data(in).csv"
+    run_mass_kg = args.mass if args.mass is not None else 90.0
+    bed_depth_mm = args.bed_depth if args.bed_depth is not None else 35.0
+    initial_moisture = args.moisture if args.moisture is not None else 0.1181
+    initial_temp = args.temp if args.temp is not None else 17.0
+    run_name = "Run#2"
+else:
+    # Run#1: 61 kg, 25mm feeder gap, 0.2 m/min, 17.6°C starting temp
+    # NIR raw moisture: 11.37%, 12.33%, 11.51% → avg 11.74%
+    plc_path = args.plc or "utility_docs/Run1 RF data(in).csv"
+    run_mass_kg = args.mass if args.mass is not None else 61.0
+    bed_depth_mm = args.bed_depth if args.bed_depth is not None else 25.0
+    initial_moisture = args.moisture if args.moisture is not None else 0.1174
+    initial_temp = args.temp if args.temp is not None else 17.6
+    run_name = "Run#1"
+
+# Override with explicit args if provided
+if args.plc:
+    plc_path = args.plc
+if args.mass is not None:
+    run_mass_kg = args.mass
+if args.bed_depth is not None:
+    bed_depth_mm = args.bed_depth
+if args.moisture is not None:
+    initial_moisture = args.moisture
+if args.temp is not None:
+    initial_temp = args.temp
+
+# ── Load PLC data ───────────────────────────────────────────────────
+plc_full = load_plc_data(plc_path)
+print(f"{run_name} PLC: {plc_full.n_samples} samples, {plc_full.duration_s:.0f} s")
 print(f"  Ia range: {plc_full.anode_current_a.min():.2f}-{plc_full.anode_current_a.max():.2f} A")
 print(f"  Temp range: {plc_full.product_temp_c.min():.0f}-{plc_full.product_temp_c.max():.0f} C")
 
 # ── Use FULL PLC recording (no trimming) ─────────────────────────────
-# The simulation now models the infeed delay naturally (empty oven at
-# t=0, material arrives at grid after belt transit ~211s).  The PLC
-# also starts with idle Ia (~0.22A) before material reaches the RF zone
-# (~410s).  Using the full recording lets the optimizer fit the entire
-# lifecycle: idle → ramp → steady → run-out → idle.
 plc = plc_full
 
 # Find material arrival for reference only
@@ -57,32 +103,26 @@ for offset_s in [0, 60, 120, 300, 450, 600, 900, 1200, 1500, 1800, 2100, 2400, 2
     print(f"  {offset_s:6d}  {plc.anode_current_a[idx]:6.2f}  "
           f"{plc.electrode_act_mm[idx]:8.1f}  {plc.product_temp_c[idx]:6.0f}")
 
-# ── Configure for Run#1 ─────────────────────────────────────────────
-# Run#1: 61 kg, 25mm feeder gap, 0.2 m/min, 17.6°C starting temp
-# NIR raw moisture: 11.37%, 12.33%, 11.51% → avg 11.74%
+# ── Configure material properties ───────────────────────────────────
 material = MaterialProperties(
-    bed_depth_m=0.025,            # 25mm feeder gap (Run#1)
-    initial_moisture_wb=0.1174,   # 11.74% wb (NIR average)
-    initial_temperature_c=17.6,   # 17.6°C starting temp (Run#1 avg)
+    bed_depth_m=bed_depth_mm / 1000.0,
+    initial_moisture_wb=initial_moisture,
+    initial_temperature_c=initial_temp,
 )
 config = MachineConfig()
 
-# Recipe overrides for Run#1 (61 kg batch)
+# Recipe overrides
 recipe_overrides = {
-    "run_mass_kg": 61.0,
+    "run_mass_kg": run_mass_kg,
 }
 
 # ── Run calibration ──────────────────────────────────────────────────
-# Fit against the full PLC recording so the optimizer sees every phase:
-#   1. Ia ramp (material filling RF zone)
-#   2. Steady-state processing (gap at peak, Ia at MRH band)
-#   3. Run-out (Ia drop, gap return to setpoint)
-# Truncating would miss the run-out dynamics that constrain gap_rate.
 cal_duration = None  # None = full PLC duration
 cal_duration_display = cal_duration or plc.duration_s
 print(f"\n{'='*60}")
-print(f"Calibrating against {cal_duration_display:.0f}s of Run#1 PLC data")
-print(f"  Material: bed=25mm, M=11.74%, T0=17.6°C, mass=61kg")
+print(f"Calibrating against {cal_duration_display:.0f}s of {run_name} PLC data")
+print(f"  Material: bed={bed_depth_mm:.0f}mm, M={initial_moisture*100:.2f}%, "
+      f"T0={initial_temp:.1f}°C, mass={run_mass_kg:.0f}kg")
 print(f"  Recipe from PLC: gap={np.median(plc.electrode_set_mm):.0f}mm, "
       f"speed={np.median(plc.conv_speed_m_per_min):.1f} m/min, "
       f"MRH={plc.ia_limit_2:.1f}A, MRL={plc.ia_limit_1:.1f}A")
@@ -119,10 +159,8 @@ est_300 = baseline_sec * 300 / 60
 print(f"  Baseline eval: {baseline_sec:.1f} s  →  est. ~{est_100:.0f} min (100 evals) to ~{est_300:.0f} min (300 evals)")
 
 # Run optimizer
-# "nelder-mead" from baseline: ~5x faster than DE, good when baseline is close
-# "de": global search, more robust but slower
-print(f"\nRunning calibration (method=nelder-mead, maxiter=150)...")
-cal_result = cal.run(method="nelder-mead", maxiter=150, seed=42)
+print(f"\nRunning calibration (method=nelder-mead, maxiter={args.maxiter})...")
+cal_result = cal.run(method="nelder-mead", maxiter=args.maxiter, seed=42)
 
 elapsed = time.time() - t_start
 print(f"\n{'='*60}")
@@ -143,14 +181,26 @@ print(f"  gap_rate         = {cal_result.gap_adjust_rate_mm_s:.6f} mm/s")
 
 # ── Validation reminder ──────────────────────────────────────────────
 print(f"\n{'='*60}")
-print("NEXT: Validate against Run#2")
-print("  python examples/simulate_and_visualize.py \\")
-print("    --mass 90 --gap 75 --bed-depth 35 --speed 0.2 \\")
-print("    --temp 17.0 --moisture 0.118067")
-print()
-print("Run#2 targets (NIR):")
-print("  Outfeed moisture:  10.53% wb (avg of 15 samples)")
-print("  Temperature strips: 77-82°C")
-print("  Gap peak:          94.1 mm")
-print("  Ia steady:         1.5-1.7 A")
+if args.run2:
+    print("Calibrated on Run#2. Validate against Run#1:")
+    print("  python examples/simulate_and_visualize.py \\")
+    print("    --mass 61 --gap 75 --bed-depth 25 --speed 0.2 \\")
+    print("    --temp 17.6 --moisture 0.1174")
+    print()
+    print("Run#1 targets (NIR):")
+    print("  Outfeed moisture:  10.45% wb")
+    print("  Temperature strips: 77-93°C")
+    print("  Gap peak:          ~87 mm")
+    print("  Ia steady:         1.6-1.7 A")
+else:
+    print("Calibrated on Run#1. Validate against Run#2:")
+    print("  python examples/simulate_and_visualize.py \\")
+    print("    --mass 90 --gap 75 --bed-depth 35 --speed 0.2 \\")
+    print("    --temp 17.0 --moisture 0.118067")
+    print()
+    print("Run#2 targets (NIR):")
+    print("  Outfeed moisture:  10.53% wb (avg of 15 samples)")
+    print("  Temperature strips: 77-82°C")
+    print("  Gap peak:          94.1 mm")
+    print("  Ia steady:         1.5-1.7 A")
 print(f"{'='*60}")

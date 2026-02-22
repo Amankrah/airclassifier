@@ -21,6 +21,7 @@ setup(
         "pandas>=2.0.0",
         "matplotlib>=3.7.0",
         "pyyaml>=6.0.0",
+        "h5py>=3.0.0",
     ],
     extras_require={
         "dev": [
@@ -35,6 +36,13 @@ setup(
             "pyglet>=2.0.0",
             "vtk>=9.0.0",
         ],
+        "gui": [
+            "PySide6>=6.5.0",
+            "pyvista>=0.42.0",
+            "pyvistaqt>=0.11.0",
+            "vtk>=9.2.0",
+            "h5py>=3.0.0",
+        ],
         "ml": [
             "torch>=2.0.0",
         ],
@@ -42,6 +50,9 @@ setup(
     entry_points={
         "console_scripts": [
             "airclassifier=airclassifier.simulation.simulator:main",
+        ],
+        "gui_scripts": [
+            "airclassifier-gui=airclassifier.gui:launch_app",
         ],
     },
 )

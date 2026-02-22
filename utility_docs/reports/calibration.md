@@ -980,3 +980,310 @@ asymmetric model, as the optimizer can now separately control the opening
 dynamics via gap_rate while the close behavior is structurally correct.
 
 Re-calibration recommended: `python diag_calibrate.py`
+
+
+
+(venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier> python diag_calibrate.py --plc "utility_docs/Run2 RF data(in).csv"  --mass 90 --bed-depth 35 --moisture 0.1181 --temp 17.0
+Run#1 PLC: 559 samples, 2794 s
+  Ia range: 0.01-1.72 A
+  Temp range: 19-101 C
+
+Material arrival at index 82, t=410s into recording
+Using full PLC: 559 samples, 2794 s
+  Ia at t=0: 0.01 A (idle)
+  Gap at t=0: 107.1 mm
+
+PLC trajectory (full recording):
+    t(s)   Ia(A)   Gap(mm)    T(C)
+       0    0.01     107.1      19
+      60    0.25      75.2      23
+     120    0.28      75.2      26
+     300    0.29      75.2      31
+     450    0.82      75.2      33
+     600    1.70      75.9      35
+     900    1.63      87.3      39
+    1200    1.60      87.4      92
+    1500    1.53      86.7      78
+    1800    1.53      84.1      77
+    2100    1.31      75.2      80
+    2400    0.31      75.2     100
+    2700    0.30      75.2      45
+
+============================================================
+Calibrating against 2794s of Run#1 PLC data
+  Material: bed=25mm, M=11.74%, T0=17.6°C, mass=61kg
+  Recipe from PLC: gap=75mm, speed=0.2 m/min, MRH=1.7A, MRL=1.5A
+  Parameters: coupling, k_evap, gap_rate, k_dispersion
+============================================================
+
+Baseline (current calibration):
+Warp 1.11.0 initialized:
+   CUDA Toolkit 12.9, Driver 12.0
+   Devices:
+     "cpu"      : "AMD64 Family 25 Model 24 Stepping 1, AuthenticAMD"
+     "cuda:0"   : "NVIDIA RTX 6000 Ada Generation" (48 GiB, sm_89, mempool enabled)
+   Kernel cache:
+     \\?\C:\Users\Windows\AppData\Local\NVIDIA\warp\Cache\1.11.0
+  Physics: GPU (Warp)
+Module airclassifier.pretreatment.kernels.transport 21f9392 load on device 'cuda:0' took 13.38 ms  (cached)
+Module airclassifier.pretreatment.kernels.field_solve e938513 load on device 'cuda:0' took 13.41 ms  (cached)
+Module airclassifier.pretreatment.kernels.dielectric_heating 79ff1d2 load on device 'cuda:0' took 14.58 ms  (cached)
+Module airclassifier.pretreatment.kernels.heat_transfer fd9ea03 load on device 'cuda:0' took 11.89 ms  (cached)
+Module airclassifier.pretreatment.kernels.drying b18a1ab load on device 'cuda:0' took 12.86 ms  (cached)
+  coupling=0.1294, k_evap=1.42e-06, k_disp=0.10, gap_rate=0.2737
+  T_sim=64.1°C vs T_plc=45°C
+  Ia_sim=1.008A vs Ia_plc=0.30A
+  gap_sim=75.0mm vs gap_plc=75.2mm
+  loss=3.267 (T=0.676, Ia=0.972, gap=1.471)
+  Baseline eval: 78.9 s  →  est. ~131 min (100 evals) to ~394 min (300 evals)
+
+Running calibration (method=nelder-mead, maxiter=150)...
+Calibration: 559 PLC samples, 2794 s, device=auto-detect
+  Normalization: var_T=603.5, var_Ia=0.3908, var_gap=40.9
+  Weights: w_T=0.5, w_Ia=1.5, w_gap=1.0
+
+  Estimated max evals: 300 (ETA after first evals)
+  Method: Nelder-Mead from baseline (coupling=0.1294, k_evap=1.42e-06, gap_rate=0.2737, k_disp=0.10)
+  eval  10: k=0.1311 k_evap=1.43e-06 k_disp=0.10 gap_rate=0.2763  L_T=0.657 L_Ia=0.979 L_gap=1.471 total=3.269  (88.9s  ETA ~409.2 min)
+  eval  20: k=0.1295 k_evap=1.44e-06 k_disp=0.10 gap_rate=0.2778  L_T=0.677 L_Ia=0.970 L_gap=1.471 total=3.264  (86.4s  ETA ~404.4 min)
+  eval  30: k=0.1295 k_evap=1.28e-06 k_disp=0.10 gap_rate=0.2916  L_T=0.675 L_Ia=0.970 L_gap=1.471 total=3.263  (85.9s  ETA ~389.4 min)
+  eval  40: k=0.1295 k_evap=1.08e-06 k_disp=0.10 gap_rate=0.3131  L_T=0.672 L_Ia=0.970 L_gap=1.471 total=3.262  (88.4s  ETA ~375.7 min)
+  eval  50: k=0.1295 k_evap=1.02e-06 k_disp=0.10 gap_rate=0.3155  L_T=0.671 L_Ia=0.970 L_gap=1.471 total=3.262  (85.2s  ETA ~358.3 min)
+  eval  60: k=0.1295 k_evap=1.00e-06 k_disp=0.10 gap_rate=0.3199  L_T=0.671 L_Ia=0.970 L_gap=1.471 total=3.262  (79.0s  ETA ~341.1 min)
+  eval  70: k=0.1295 k_evap=1.00e-06 k_disp=0.10 gap_rate=0.3165  L_T=0.671 L_Ia=0.970 L_gap=1.471 total=3.262  (78.9s  ETA ~324.1 min)
+  eval  80: k=0.1295 k_evap=1.00e-06 k_disp=0.10 gap_rate=0.3162  L_T=0.671 L_Ia=0.970 L_gap=1.471 total=3.262  (79.8s  ETA ~307.7 min)
+  eval  90: k=0.1295 k_evap=1.00e-06 k_disp=0.10 gap_rate=0.3143  L_T=0.671 L_Ia=0.970 L_gap=1.471 total=3.262  (79.7s  ETA ~292.0 min)
+  eval 100: k=0.1295 k_evap=1.00e-06 k_disp=0.10 gap_rate=0.3150  L_T=0.671 L_Ia=0.970 L_gap=1.471 total=3.262  (78.9s  ETA ~276.7 min)
+  eval 110: k=0.1295 k_evap=1.00e-06 k_disp=0.10 gap_rate=0.3150  L_T=0.671 L_Ia=0.970 L_gap=1.471 total=3.262  (79.3s  ETA ~261.8 min)
+  eval 120: k=0.1295 k_evap=1.00e-06 k_disp=0.10 gap_rate=0.3150  L_T=0.671 L_Ia=0.970 L_gap=1.471 total=3.262  (79.3s  ETA ~247.2 min)
+  eval 130: k=0.1295 k_evap=1.00e-06 k_disp=0.20 gap_rate=0.3150  L_T=0.696 L_Ia=0.970 L_gap=1.471 total=3.274  (109.0s  ETA ~233.5 min)
+
+  Calibration wall time: 10870 s (181.2 min), 131 evals, ~82.4 s/eval
+
+============================================================
+Calibration complete in 10949s (182.5 min)
+============================================================
+CalibrationResult:
+  coupling_factor = 0.1295
+  k_evap          = 1.00e-06
+  k_dispersion    = 0.101 W/(m·K)
+  gap_rate         = 0.3150 mm/s
+  loss_total       = 3.2618
+    L_temperature  = 0.6706
+    L_anode_current = 0.9701
+    L_gap          = 1.4713
+  evaluations      = 131
+  iterations       = 86
+  converged        = True
+  sensitivity (dL/dp):
+    coupling_factor                = +2.8958
+    k_evap                         = +10509.1233
+    gap_rate_mm_s                  = +0.0000
+    k_dispersion                   = +0.1248
+
+Saved to utility_docs\calibration_latest.json
+  coupling_factor = 0.129527
+  k_evap          = 1.00e-06
+  k_dispersion    = 0.1007 W/(m·K)
+  gap_rate         = 0.314956 mm/s
+
+============================================================
+NEXT: Validate against Run#2
+  python examples/simulate_and_visualize.py \
+    --mass 90 --gap 75 --bed-depth 35 --speed 0.2 \
+    --temp 17.0 --moisture 0.118067
+
+Run#2 targets (NIR):
+  Outfeed moisture:  10.53% wb (avg of 15 samples)
+  Temperature strips: 77-82°C
+  Gap peak:          94.1 mm
+  Ia steady:         1.5-1.7 A
+============================================================
+(venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier> python examples/simulate_and_visualize.py  --mass 90 --gap 75 --bed-depth 35 --speed 0.2  --temp 17.0 --moisture 0.118067
+============================================================
+  GP-15 RF Dielectric Heating -- Simulation
+============================================================
+
+Creating GP-15 simulator ...
+  Architecture: GP15Simulator -> GP15MachineAssembly
+                             -> CoupledSimulator (9-step loop)
+Warp 1.11.0 initialized:
+   CUDA Toolkit 12.9, Driver 12.0
+   Devices:
+     "cpu"      : "AMD64 Family 25 Model 24 Stepping 1, AuthenticAMD"
+     "cuda:0"   : "NVIDIA RTX 6000 Ada Generation" (48 GiB, sm_89, mempool enabled)
+   Kernel cache:
+     \\?\C:\Users\Windows\AppData\Local\NVIDIA\warp\Cache\1.11.0
+  Device:  cuda
+  Physics: GPU (Warp CUDA kernels)
+
+  Machine:           GP-15 RF Dielectric Heating Machine
+  RF zone:           1.50 m  (x = 1.46 - 2.96 m)
+  Belt width:        800 mm
+  Electrode gap:     75 mm
+  Bed depth:         35 mm (feeder gap)
+  Belt stack:        3.5 mm
+  Air gap:           36 mm
+  Residence time:    450.0 s
+  Simulation grid:   60 x 30 x 32 = 57,600 cells
+  Cell sizes:        dx=25.0 mm  dy=10.0 mm  dz=25.0 mm
+  Initial moisture:  12% (wet basis)
+  Initial temp:      17.0 C
+  Run mass:          90.0 kg
+  Throughput:        331 kg/h
+  Run duration:      2155 s (35.9 min)
+    Feed time:       978 s  (hopper → belt dispatch)
+    Belt runout:     1175 s  (3.92 m to head roller)
+    Fall buffer:     2 s  (drop into collection bin)
+    (Oven exit at:   766 s / 2.56 m)
+
+Running LIVE simulation  |  90.0 kg  |  2155 s (35.9 min)  |  belt 0.2 m/min ...
+  3D window will update in real-time.
+
+Module airclassifier.pretreatment.kernels.transport 21f9392 load on device 'cuda:0' took 13.24 ms  (cached)
+Module airclassifier.pretreatment.kernels.field_solve e938513 load on device 'cuda:0' took 13.05 ms  (cached)
+Module airclassifier.pretreatment.kernels.dielectric_heating 79ff1d2 load on device 'cuda:0' took 13.49 ms  (cached)
+Module airclassifier.pretreatment.kernels.heat_transfer fd9ea03 load on device 'cuda:0' took 11.89 ms  (cached)
+Module airclassifier.pretreatment.kernels.drying b18a1ab load on device 'cuda:0' took 12.88 ms  (cached)
+[DEBUG t=    60s] Ia=1.042A  Gap=75.0mm  Hopper=7509  Belt=491  Disp=5.5kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=7509 R=491 F=0 C=0 D=0]
+[DEBUG t=   120s] Ia=1.099A  Gap=75.0mm  Hopper=7018  Belt=982  Disp=11.0kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=7018 R=982 F=0 C=0 D=0]
+[DEBUG t=   180s] Ia=1.158A  Gap=75.0mm  Hopper=6527  Belt=1473  Disp=16.6kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=6527 R=1473 F=0 C=0 D=0]
+[DEBUG t=   240s] Ia=1.228A  Gap=75.0mm  Hopper=6036  Belt=1964  Disp=22.1kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=6036 R=1964 F=0 C=0 D=0]
+[DEBUG t=   300s] Ia=1.291A  Gap=75.0mm  Hopper=5545  Belt=2455  Disp=27.6kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=5545 R=2455 F=0 C=0 D=0]
+[DEBUG t=   360s] Ia=1.356A  Gap=75.0mm  Hopper=5054  Belt=2946  Disp=33.1kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=5054 R=2946 F=0 C=0 D=0]
+[DEBUG t=   420s] Ia=1.419A  Gap=75.0mm  Hopper=4563  Belt=3437  Disp=38.7kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=4563 R=3437 F=0 C=0 D=0]
+[DEBUG t=   480s] Ia=1.442A  Gap=75.0mm  Hopper=4072  Belt=3928  Disp=44.2kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=4072 R=3928 F=0 C=0 D=0]
+[DEBUG t=   540s] Ia=1.446A  Gap=75.0mm  Hopper=3581  Belt=4419  Disp=49.7kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=3581 R=4419 F=0 C=0 D=0]
+[DEBUG t=   600s] Ia=1.446A  Gap=75.0mm  Hopper=3090  Belt=4910  Disp=55.2kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=3090 R=4910 F=0 C=0 D=0]
+[DEBUG t=   660s] Ia=1.447A  Gap=75.0mm  Hopper=2599  Belt=5401  Disp=60.8kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=2599 R=5401 F=0 C=0 D=0]
+[DEBUG t=   720s] Ia=1.448A  Gap=75.0mm  Hopper=2108  Belt=5892  Disp=66.3kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=2108 R=5892 F=0 C=0 D=0]
+[DEBUG t=   780s] Ia=1.449A  Gap=75.0mm  Hopper=1617  Belt=6383  Disp=71.8kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=1617 R=6383 F=0 C=0 D=0]
+[DEBUG t=   840s] Ia=1.451A  Gap=75.0mm  Hopper=1126  Belt=6874  Disp=77.3kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=1126 R=6874 F=0 C=0 D=0]
+[DEBUG t=   900s] Ia=1.453A  Gap=75.0mm  Hopper=635  Belt=7365  Disp=82.9kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=635 R=7365 F=0 C=0 D=0]
+[DEBUG t=   960s] Ia=1.455A  Gap=75.0mm  Hopper=144  Belt=7856  Disp=88.4kg  batch_exh=False  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=144 R=7856 F=0 C=0 D=0]
+
+[EVENT t=978s] BATCH EXHAUSTED - Dispatched=90.00kg  Hopper=0  Belt=8000
+
+[DEBUG t=  1020s] Ia=1.468A  Gap=75.0mm  Hopper=0  Belt=8000  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=0 R=8000 F=0 C=0 D=0]
+[DEBUG t=  1080s] Ia=1.409A  Gap=75.0mm  Hopper=0  Belt=8000  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=0 R=8000 F=0 C=0 D=0]
+[DEBUG t=  1140s] Ia=1.332A  Gap=75.0mm  Hopper=0  Belt=8000  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=0.0035 max=0.0385 below_belt=0  states=[H=0 R=8000 F=0 C=0 D=0]
+[DEBUG t=  1200s] Ia=1.184A  Gap=75.0mm  Hopper=0  Belt=7796  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=204  states=[H=0 R=7796 F=1 C=203 D=0]
+[DEBUG t=  1260s] Ia=1.092A  Gap=75.0mm  Hopper=0  Belt=7305  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=695  states=[H=0 R=7305 F=1 C=694 D=0]
+[DEBUG t=  1320s] Ia=0.951A  Gap=75.0mm  Hopper=0  Belt=6812  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=1188  states=[H=0 R=6812 F=2 C=1186 D=0]
+[DEBUG t=  1380s] Ia=0.752A  Gap=75.0mm  Hopper=0  Belt=6320  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=1680  states=[H=0 R=6320 F=1 C=1679 D=0]
+[DEBUG t=  1440s] Ia=0.541A  Gap=75.0mm  Hopper=0  Belt=5829  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=2171  states=[H=0 R=5829 F=1 C=2170 D=0]
+[DEBUG t=  1501s] Ia=0.429A  Gap=75.0mm  Hopper=0  Belt=5336  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=2664  states=[H=0 R=5336 F=2 C=2662 D=0]
+[DEBUG t=  1561s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=4844  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=3156  states=[H=0 R=4844 F=1 C=3155 D=0]
+[DEBUG t=  1621s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=4353  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=3647  states=[H=0 R=4353 F=1 C=3646 D=0]
+[DEBUG t=  1681s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=3860  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=4140  states=[H=0 R=3860 F=2 C=4138 D=0]
+[DEBUG t=  1741s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=3369  Disp=90.0kg  batch_exh=True  ctrl_batch=False
+         Y: min=-1.2950 max=0.0385 below_belt=4631  states=[H=0 R=3369 F=2 C=4629 D=0]
+[DEBUG t=  1801s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=2877  Disp=90.0kg  batch_exh=True  ctrl_batch=True
+         Y: min=-1.2950 max=0.0385 below_belt=5123  states=[H=0 R=2877 F=1 C=5122 D=0]
+[DEBUG t=  1861s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=2386  Disp=90.0kg  batch_exh=True  ctrl_batch=True
+         Y: min=-1.2950 max=0.0385 below_belt=5614  states=[H=0 R=2386 F=1 C=5613 D=0]
+[DEBUG t=  1921s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=1893  Disp=90.0kg  batch_exh=True  ctrl_batch=True
+         Y: min=-1.2950 max=0.0385 below_belt=6107  states=[H=0 R=1893 F=2 C=6105 D=0]
+[DEBUG t=  1981s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=1402  Disp=90.0kg  batch_exh=True  ctrl_batch=True
+         Y: min=-1.2950 max=0.0384 below_belt=6598  states=[H=0 R=1402 F=2 C=6596 D=0]
+[DEBUG t=  2041s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=910  Disp=90.0kg  batch_exh=True  ctrl_batch=True
+         Y: min=-1.2950 max=0.0384 below_belt=7090  states=[H=0 R=910 F=1 C=7089 D=0]
+[DEBUG t=  2102s] Ia=0.400A  Gap=75.0mm  Hopper=0  Belt=417  Disp=90.0kg  batch_exh=True  ctrl_batch=True
+         Y: min=-1.2950 max=0.0384 below_belt=7583  states=[H=0 R=417 F=3 C=7580 D=0]
+
+------------------------------------------------------------
+  RESULTS
+------------------------------------------------------------
+  Outfeed moisture:          11.59%
+  Outfeed temperature:       65.0 C
+  Max temperature:           88.2 C
+  Moisture uniformity (CV):  0.0000
+
+  Protein quality (globulin native loss): 24.7%  (pretreatment target typically <15%)
+    Vicilin (7S):            37.7%  (onset 62 C)
+    Legumin (11S):           17.8%  (onset 76 C)
+
+  RF energy consumed:        2.4194 kWh
+  Specific energy:           5.717 kWh/kg water
+  Throughput:                331 kg/h
+  Final electrode gap:       75.0 mm
+  Mass input:                90.00 kg
+  Mass collected:            89.00 kg
+  Mass balance:              -1.1%
+
+  Desirability score:        5.3 / 10
+    Thermal treatment:       0.66
+    Flavour (LOX kill):      0.66
+    Protein preservation:    0.09
+    Moisture retention:      1.00
+    Energy efficiency:       1.00
+
+  Simulation wall-clock:     76.51 s
+  Timesteps completed:       11282
+  Speed:                     147 steps/s
+------------------------------------------------------------
+
+------------------------------------------------------------
+  GAP CONTROL DEBUG
+------------------------------------------------------------
+  Gap peak:         75.0 mm at t=0s (0.0 min)
+  Gap final:        75.0 mm
+  Batch exhausted:  True
+  Controller batch: True
+
+  Ia trajectory:
+        t(s)    t(min)     Ia(A)     Gap(mm)         State
+           0       0.0     0.564        75.0               <-- peak
+           0       0.0     0.564        75.0               <-- peak
+          60       1.0     1.042        75.0
+         120       2.0     1.099        75.0
+         300       5.0     1.291        75.0
+         600      10.0     1.446        75.0
+         900      15.0     1.453        75.0
+        1200      20.0     1.184        75.0
+        1500      25.0     0.430        75.0
+        1800      30.0     0.400        75.0
+        2100      35.0     0.400        75.0
+
+------------------------------------------------------------
+  PARTICLE SYSTEM DEBUG
+------------------------------------------------------------
+  Total particles:   8000
+  Hopper count:      0
+  Riding count:      0
+  Collected count:   8000
+  Dispatched mass:   90.00 kg
+  Collected mass:    89.00 kg
+  Run mass target:   90.00 kg
+  Dispatch progress: 100.0%
+------------------------------------------------------------
+
+(venv) PS C:\Users\Windows\Desktop\Dev_Projects\airclassifier> 
