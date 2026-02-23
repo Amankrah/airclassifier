@@ -35,7 +35,7 @@ from ..components import (
     FeedChuteParams, FeedChuteGeometry,
     DriveParams, DriveGeometry,
 )
-from ..mesh_utils import concat_meshes, translate_mesh
+from ..mesh_utils import concat_meshes, translate_mesh, box_mesh
 from ...config import MillConfig
 
 
@@ -55,7 +55,10 @@ class HammerMillMachineAssembly:
     """Complete hammer mill machine assembly.
 
     Holds all component geometries and their parameters, built from
-    a single MillConfig through the parameter chain.
+    a single MillConfig through the parameter chain. Dimensions are
+    proportionally consistent: housing/rotor/screen from config; feed
+    chute and drive from housing + config (e.g. drive pulleys and motor
+    scale with rotor and power).
     """
 
     config: MillConfig = field(default_factory=MillConfig)
@@ -112,9 +115,16 @@ class HammerMillMachineAssembly:
                 self.housing_params, c
             )
 
-        # Drive (beside housing)
+        # Drive (beside housing; dimensions proportional to config and housing)
         if self.drive_params is None:
             self.drive_params = DriveParams.from_housing(self.housing_params, c)
+
+    def validate_proportional_dimensions(self) -> Dict[str, list]:
+        """Run proportion checks on components that support it. Returns {component: [(name, ok, msg), ...]}."""
+        out = {}
+        if hasattr(self.drive_params, "validate_proportions"):
+            out["drive"] = self.drive_params.validate_proportions()
+        return out
 
     def _create_geometries(self):
         """Create geometry objects from params."""
@@ -164,9 +174,24 @@ class HammerMillMachineAssembly:
         verts, tris, meta = self.feed_chute_geometry.generate_mesh()
         self._component_meshes["feed_chute"] = (verts, tris, meta)
 
-        # Drive
-        verts, tris, meta = self.drive_geometry.generate_mesh(resolution)
-        self._component_meshes["drive"] = (verts, tris, meta)
+        # Drive (color-coded parts)
+        hp = self.housing_params
+        dp = self.drive_params
+        drive_meta = {"type": "drive", "animation_type": None}
+        for part_name, (v, t) in self.drive_geometry.generate_mesh_parts(resolution).items():
+            self._component_meshes[part_name] = (v, t, drive_meta)
+
+        # Bracket: thin vertical plate at housing drive end (X=0), connecting housing to motor
+        bracket_thickness = 0.02
+        z_housing = hp.outer_radius_m
+        z_motor_inner = dp.motor_z_offset_m - dp.motor_width_m / 2.0
+        y_low = min(dp.motor_y_offset_m - 0.12, -hp.outer_radius_m * 0.5)
+        y_high = max(dp.motor_y_offset_m + 0.12, hp.outer_radius_m * 0.5)
+        bracket_v, bracket_t = box_mesh(
+            -bracket_thickness / 2, y_low, z_motor_inner,
+            bracket_thickness, y_high - y_low, z_housing - z_motor_inner,
+        )
+        self._component_meshes["drive_bracket"] = (bracket_v, bracket_t, drive_meta)
 
         return self._component_meshes
 

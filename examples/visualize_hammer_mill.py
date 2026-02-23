@@ -59,6 +59,47 @@ COMPONENT_STYLE = {
         "opacity": 0.9,
         "label": "Drive Assembly",
     },
+    # Drive assembly parts (industrial look: blue motor, yellow guard, visible belt)
+    "drive_motor": {
+        "color": (0.18, 0.35, 0.55),
+        "opacity": 0.95,
+        "label": "Motor (body)",
+    },
+    "drive_belt": {
+        "color": (0.22, 0.22, 0.24),
+        "opacity": 1.0,
+        "label": "Belt",
+    },
+    "drive_base": {
+        "color": (0.5, 0.52, 0.55),
+        "opacity": 0.95,
+        "label": "Base plate",
+    },
+    "drive_feet": {
+        "color": (0.45, 0.47, 0.5),
+        "opacity": 0.95,
+        "label": "Motor feet",
+    },
+    "drive_pulley_motor": {
+        "color": (0.38, 0.39, 0.42),
+        "opacity": 1.0,
+        "label": "Motor pulley",
+    },
+    "drive_pulley_mill": {
+        "color": (0.62, 0.63, 0.66),
+        "opacity": 1.0,
+        "label": "Mill pulley",
+    },
+    "drive_guard": {
+        "color": (0.95, 0.78, 0.15),
+        "opacity": 0.9,
+        "label": "Belt guard",
+    },
+    "drive_bracket": {
+        "color": (0.4, 0.42, 0.48),
+        "opacity": 0.9,
+        "label": "Mount bracket",
+    },
 }
 
 
