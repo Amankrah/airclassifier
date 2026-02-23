@@ -55,6 +55,7 @@ def compare_sim_to_run2(
     tolerance_temp_c: float = 3.0,
     tolerance_moisture_pp: float = 0.5,
     tolerance_mass_pct: float = 2.0,
+    prefer_particle_stats: bool = True,
 ) -> ValidationResult:
     """Compare simulation results to Run#2 physical targets.
 
@@ -67,6 +68,9 @@ def compare_sim_to_run2(
         tolerance_temp_c: Allowable error on outfeed temp [°C].
         tolerance_moisture_pp: Allowable error on outfeed moisture [percentage points].
         tolerance_mass_pct: Allowable mass balance error [%].
+        prefer_particle_stats: If True, use particle-based statistics (Lagrangian)
+            over grid-based (Eulerian) when available. Particle stats match the
+            physical measurement methodology from Pea RF summary(Run#2).csv.
 
     Returns:
         ValidationResult with pass/fail flags and short notes.
@@ -79,24 +83,49 @@ def compare_sim_to_run2(
     ia_lo = RUN2_TARGETS["ia_steady_min"]
     ia_hi = RUN2_TARGETS["ia_steady_max"]
 
+    # Check for particle-based statistics (preferred - matches physical methodology)
+    particle_count = getattr(outlet, "particle_count", 0)
+    use_particles = prefer_particle_stats and particle_count > 0
+
     # Outfeed temperature (sensor = 75th percentile, matches strips)
-    T_sensor = getattr(outlet, "sensor_temperature_c", None) or getattr(outlet, "avg_temperature_c", 0.0)
+    # Prefer particle P75 temperature when available - this matches
+    # temperature strip measurement methodology from physical runs.
+    if use_particles:
+        T_sensor = getattr(outlet, "particle_p75_temperature_c", 0.0)
+        source = "particle"
+    else:
+        T_sensor = getattr(outlet, "sensor_temperature_c", None) or getattr(outlet, "avg_temperature_c", 0.0)
+        source = "grid"
+
     T_ok = t_min - tolerance_temp_c <= T_sensor <= t_max + tolerance_temp_c
     details["outfeed_temp_sim_c"] = T_sensor
     details["outfeed_temp_target_c"] = f"{t_min}-{t_max}"
+    details["outfeed_temp_source"] = source
     if T_ok:
-        details["outfeed_temp_note"] = f"{T_sensor:.1f}°C (target {t_min}-{t_max}°C)"
+        details["outfeed_temp_note"] = f"{T_sensor:.1f}°C (target {t_min}-{t_max}°C, {source})"
     else:
-        details["outfeed_temp_note"] = f"{T_sensor:.1f}°C vs {t_min}-{t_max}°C (too cold)" if T_sensor < t_min else f"{T_sensor:.1f}°C vs {t_min}-{t_max}°C (too hot)"
+        status = "too cold" if T_sensor < t_min else "too hot"
+        details["outfeed_temp_note"] = f"{T_sensor:.1f}°C vs {t_min}-{t_max}°C ({status}, {source})"
 
     # Outfeed moisture (wb fraction)
-    M_wb = getattr(outlet, "avg_moisture_wb", 0.0)
+    # Prefer particle mean moisture when available - this matches NIR
+    # measurement methodology (sampling individual seeds at oven exit).
+    if use_particles:
+        M_wb = getattr(outlet, "particle_avg_moisture_wb", 0.0)
+        source = "particle"
+    else:
+        M_wb = getattr(outlet, "avg_moisture_wb", 0.0)
+        source = "grid"
+
     M_pp = M_wb * 100.0
     M_tgt_pp = m_tgt * 100.0
     M_ok = abs(M_pp - M_tgt_pp) <= tolerance_moisture_pp
     details["outfeed_moisture_wb"] = M_wb
     details["outfeed_moisture_target_wb"] = m_tgt
-    details["outfeed_moisture_note"] = f"{M_pp:.2f}% vs {M_tgt_pp:.2f}%"
+    details["outfeed_moisture_source"] = source
+    details["outfeed_moisture_note"] = f"{M_pp:.2f}% vs {M_tgt_pp:.2f}% ({source})"
+    if use_particles:
+        details["particle_count"] = particle_count
 
     # Gap: did controller open gap above setpoint? (Run#2 peak 94.1 mm)
     gap_triggered = False

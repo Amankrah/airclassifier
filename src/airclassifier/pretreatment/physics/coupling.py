@@ -133,11 +133,21 @@ class OutletState:
     temperature_field: Optional[np.ndarray] = None  # [ny, nz] degC
     moisture_field: Optional[np.ndarray] = None      # [ny, nz] wet-basis
 
-    # Bulk averages
+    # Bulk averages (Eulerian grid)
     avg_temperature_c: float = 0.0
     sensor_temperature_c: float = 0.0  # 75th percentile - matches PLC/strip sensors
     avg_moisture_wb: float = 0.0
     moisture_uniformity: float = 0.0   # CV = std / mean
+
+    # Particle-based statistics (Lagrangian tracers at RF zone exit)
+    # These match the physical measurement methodology: NIR samples and
+    # temperature strips taken from individual seeds at oven exit.
+    # See utility_docs/Pea RF summary(Run#2).csv for reference data.
+    particle_avg_temperature_c: float = 0.0    # mean T at RF zone exit
+    particle_p75_temperature_c: float = 0.0    # 75th percentile (strip sensor)
+    particle_avg_moisture_wb: float = 0.0      # mean M at RF zone exit (NIR)
+    particle_moisture_std: float = 0.0         # std dev for CV calculation
+    particle_count: int = 0                    # number of samples
 
     # Process metrics
     throughput_kg_per_hr: float = 0.0
@@ -1653,10 +1663,33 @@ class CoupledSimulator:
         # Uses the Biot core temperature model — denaturation happens inside
         # the seed, not at the surface.  Two-fraction model: vicilin (7S, onset
         # 62 C) + legumin (11S, onset 76 C) weighted by pea globulin composition.
+        denaturation = 0.0
+        particle_avg_T = 0.0
+        particle_p75_T = 0.0
+        particle_avg_M = mat.initial_moisture_wb
+        particle_M_std = 0.0
+        particle_count = 0
+
         if self._particles is not None:
             denaturation = self._particles.mean_denaturation
-        else:
-            denaturation = 0.0
+
+            # Particle-based statistics from RF zone exit measurements.
+            # These match the physical methodology: NIR samples and temperature
+            # strips taken from individual seeds as they exit the RF zone.
+            # See utility_docs/Pea RF summary(Run#2).csv.
+            #
+            # Use particles that have CROSSED the RF zone exit (not just collected).
+            # This includes: particles in bin + particles still on belt past RF zone.
+            crossed_exit = self._particles._crossed_oven_exit
+            if crossed_exit.any():
+                T_exit = self._particles.T_at_oven_exit[crossed_exit]
+                M_exit = self._particles.M_at_oven_exit[crossed_exit]
+                particle_count = int(crossed_exit.sum())
+                if particle_count > 0:
+                    particle_avg_T = float(np.mean(T_exit))
+                    particle_p75_T = float(np.percentile(T_exit, 75))
+                    particle_avg_M = float(np.mean(M_exit))
+                    particle_M_std = float(np.std(M_exit))
 
         return OutletState(
             temperature_field=T_yz.copy(),
@@ -1665,6 +1698,11 @@ class CoupledSimulator:
             sensor_temperature_c=sensor_T,
             avg_moisture_wb=avg_M,
             moisture_uniformity=moisture_cv,
+            particle_avg_temperature_c=particle_avg_T,
+            particle_p75_temperature_c=particle_p75_T,
+            particle_avg_moisture_wb=particle_avg_M,
+            particle_moisture_std=particle_M_std,
+            particle_count=particle_count,
             throughput_kg_per_hr=throughput_kg_h,
             total_energy_kwh=total_kwh,
             specific_energy_kwh_per_kg=specific_energy,
@@ -1729,10 +1767,12 @@ class CoupledSimulator:
         # correction restores the proper Ia scaling.
         #
         # Reference bed depth: Run#1 calibration baseline (25mm).
-        # Alpha: 0.40 (derived from Run#2 Ia ratio 1.72/1.46 = 1.18).
+        # Alpha: 0.48 (tuned to match Run#2 gap peak of 94mm).
+        # Initial estimate 0.40 gave Ia=1.70A, gap=85mm; increased to
+        # sustain Ia above MRH longer for full gap opening.
         d_bed_m = self._material.bed_depth_m
         d_ref_m = 0.025  # Run#1 calibration reference bed depth [m]
-        alpha = 0.40     # coupling sensitivity to bed depth
+        alpha = 0.48     # coupling sensitivity to bed depth
 
         k = k_base * (1.0 + alpha * (d_bed_m - d_ref_m) / d_ref_m)
 

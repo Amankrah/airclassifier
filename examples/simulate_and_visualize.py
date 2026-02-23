@@ -902,10 +902,19 @@ def _print_results(sim, result, elapsed):
     print("-" * 60)
     print("  RESULTS")
     print("-" * 60)
-    print(f"  Outfeed moisture:          {outlet.avg_moisture_wb:.2%}")
-    print(f"  Outfeed temperature:       {outlet.sensor_temperature_c:.1f} C")
+    # Grid-based (Eulerian) statistics - outfeed cross-section
+    print(f"  Outfeed moisture (grid):   {outlet.avg_moisture_wb:.2%}")
+    print(f"  Outfeed temp (grid P75):   {outlet.sensor_temperature_c:.1f} C")
     print(f"  Max temperature:           {outlet.max_temperature_c:.1f} C")
     print(f"  Moisture uniformity (CV):  {outlet.moisture_uniformity:.4f}")
+    # Particle-based (Lagrangian) statistics - individual seeds at RF zone exit
+    # These match the physical measurement methodology: NIR samples and
+    # temperature strips from individual seeds (Pea RF summary methodology).
+    if outlet.particle_count > 0:
+        print()
+        print(f"  Particle moisture (NIR):   {outlet.particle_avg_moisture_wb:.2%}  (n={outlet.particle_count})")
+        print(f"  Particle temp (P75 strip): {outlet.particle_p75_temperature_c:.1f} C")
+        print(f"  Particle temp (mean):      {outlet.particle_avg_temperature_c:.1f} C")
     print()
     # Phase 4: protein quality (weighted 7S+11S native loss). Pretreatment target: keep low (<15%).
     denat = outlet.protein_denaturation_fraction

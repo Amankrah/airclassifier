@@ -1,8 +1,8 @@
 {
-  "oscillator_coupling_factor": 0.12952734579790803,
-  "k_evap": 1.0000407942969652e-06,
-  "gap_adjust_rate_mm_s": 0.3149561788887722,
-  "k_dispersion": 0.10073747987590279,
-  "saved_at": "2026-02-22T05:40:27.680499+00:00",
+  "oscillator_coupling_factor": 0.12549916347043108,
+  "k_evap": 1.0076913012754452e-06,
+  "gap_adjust_rate_mm_s": 0.14340147685541232,
+  "k_dispersion": 0.10399556546072192,
+  "saved_at": "2026-02-22T19:08:08.522279+00:00",
   "source": "calibration"
 }
