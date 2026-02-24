@@ -35,7 +35,7 @@ from ..components import (
     FeedChuteParams, FeedChuteGeometry,
     DriveParams, DriveGeometry,
 )
-from ..mesh_utils import concat_meshes, translate_mesh, box_mesh
+from ..mesh_utils import concat_meshes
 from ...config import MillConfig
 
 
@@ -43,6 +43,7 @@ from ...config import MillConfig
 COMPONENT_COLORS = {
     "rotor": (0.6, 0.6, 0.65, 1.0),        # Steel gray
     "hammers": (0.8, 0.75, 0.3, 1.0),      # Gold/brass
+    "hammer_pins": (0.55, 0.55, 0.58, 1.0), # Steel pins
     "screen": (0.5, 0.5, 0.55, 0.8),       # Dark gray, semi-transparent
     "housing": (0.45, 0.5, 0.55, 0.6),     # Blue-gray, transparent
     "feed_chute": (0.5, 0.55, 0.6, 0.8),   # Light gray
@@ -156,9 +157,15 @@ class HammerMillMachineAssembly:
         verts, tris, meta = self.rotor_geometry.generate_mesh(resolution)
         self._component_meshes["rotor"] = (verts, tris, meta)
 
-        # Hammers
-        verts, tris, meta = self.hammer_geometry.generate_mesh()
-        self._component_meshes["hammers"] = (verts, tris, meta)
+        # Hammers (color-coded parts: bodies + pins)
+        hammer_meta = {
+            "type": "hammers",
+            "animation_type": "rotate",
+            "animation_axis": "x",
+            "pivot": (0.0, 0.0, 0.0),
+        }
+        for part_name, (v, t) in self.hammer_geometry.generate_mesh_parts(resolution).items():
+            self._component_meshes[part_name] = (v, t, hammer_meta)
 
         # Screen
         verts, tris, meta = self.screen_geometry.generate_mesh(
@@ -180,18 +187,6 @@ class HammerMillMachineAssembly:
         drive_meta = {"type": "drive", "animation_type": None}
         for part_name, (v, t) in self.drive_geometry.generate_mesh_parts(resolution).items():
             self._component_meshes[part_name] = (v, t, drive_meta)
-
-        # Bracket: thin vertical plate at housing drive end (X=0), connecting housing to motor
-        bracket_thickness = 0.02
-        z_housing = hp.outer_radius_m
-        z_motor_inner = dp.motor_z_offset_m - dp.motor_width_m / 2.0
-        y_low = min(dp.motor_y_offset_m - 0.12, -hp.outer_radius_m * 0.5)
-        y_high = max(dp.motor_y_offset_m + 0.12, hp.outer_radius_m * 0.5)
-        bracket_v, bracket_t = box_mesh(
-            -bracket_thickness / 2, y_low, z_motor_inner,
-            bracket_thickness, y_high - y_low, z_housing - z_motor_inner,
-        )
-        self._component_meshes["drive_bracket"] = (bracket_v, bracket_t, drive_meta)
 
         return self._component_meshes
 

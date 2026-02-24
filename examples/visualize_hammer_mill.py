@@ -39,6 +39,11 @@ COMPONENT_STYLE = {
         "opacity": 1.0,
         "label": "Hammers (brass)",
     },
+    "hammer_pins": {
+        "color": (0.55, 0.55, 0.58),
+        "opacity": 1.0,
+        "label": "Hammer pins (steel)",
+    },
     "screen": {
         "color": (0.4, 0.45, 0.5),
         "opacity": 0.6,
@@ -59,16 +64,11 @@ COMPONENT_STYLE = {
         "opacity": 0.9,
         "label": "Drive Assembly",
     },
-    # Drive assembly parts (industrial look: blue motor, yellow guard, visible belt)
+    # Drive assembly parts (industrial look like centrifugal_blower: gray motor, visible belt)
     "drive_motor": {
-        "color": (0.18, 0.35, 0.55),
+        "color": (0.32, 0.34, 0.38),
         "opacity": 0.95,
         "label": "Motor (body)",
-    },
-    "drive_belt": {
-        "color": (0.22, 0.22, 0.24),
-        "opacity": 1.0,
-        "label": "Belt",
     },
     "drive_base": {
         "color": (0.5, 0.52, 0.55),
@@ -81,7 +81,7 @@ COMPONENT_STYLE = {
         "label": "Motor feet",
     },
     "drive_pulley_motor": {
-        "color": (0.38, 0.39, 0.42),
+        "color": (0.28, 0.30, 0.32),
         "opacity": 1.0,
         "label": "Motor pulley",
     },
@@ -90,15 +90,15 @@ COMPONENT_STYLE = {
         "opacity": 1.0,
         "label": "Mill pulley",
     },
-    "drive_guard": {
-        "color": (0.95, 0.78, 0.15),
-        "opacity": 0.9,
-        "label": "Belt guard",
+    "drive_shaft": {
+        "color": (0.35, 0.37, 0.4),
+        "opacity": 1.0,
+        "label": "Motor shaft",
     },
-    "drive_bracket": {
-        "color": (0.4, 0.42, 0.48),
-        "opacity": 0.9,
-        "label": "Mount bracket",
+    "drive_belt": {
+        "color": (0.22, 0.22, 0.24),
+        "opacity": 1.0,
+        "label": "Belt",
     },
 }
 
@@ -188,13 +188,12 @@ def visualize_hammer_mill(config: MillConfig = None, animate: bool = True, dark:
         line_width=2,
     )
 
-    # Set camera for good viewing angle - closer to the mill
-    plotter.camera_position = [
-        (0.45, 0.25, 0.45),  # Camera position (closer)
-        (0.15, 0.0, 0.0),    # Focal point (center of mill)
-        (0, 1, 0),           # Up vector
-    ]
-    plotter.camera.zoom(0.8)  # Zoom in (smaller value = closer)
+    # Frame the entire system (hammer mill + drive), not just the mill center
+    plotter.reset_camera()
+    # Y is vertical: set camera up vector so Y points up on screen (not Z)
+    plotter.camera.up = (0, 1, 0)
+    # Zoom out so the whole assembly fits with comfortable margin
+    plotter.camera.zoom(1.4)
 
     print("\nControls: Left-click drag to rotate, scroll to zoom, close window to exit")
 
@@ -211,7 +210,7 @@ def visualize_hammer_mill(config: MillConfig = None, animate: bool = True, dark:
             cos_t = np.cos(theta[0])
             sin_t = np.sin(theta[0])
 
-            for name in ["rotor", "hammers"]:
+            for name in ["rotor", "hammers", "hammer_pins"]:
                 if name in mesh_data:
                     info = mesh_data[name]
                     verts = info["verts"]

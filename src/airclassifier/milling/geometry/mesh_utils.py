@@ -126,6 +126,62 @@ def cylinder_mesh(
     return verts, tris
 
 
+def frustum_mesh(
+    center: Tuple[float, float, float],
+    radius_base: float,
+    radius_top: float,
+    height: float,
+    resolution: int = 24,
+    axis: str = "z",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generate a truncated cone (frustum) mesh along the given axis.
+
+    Base (radius_base) is at center; top (radius_top) is at center + height.
+
+    Args:
+        center: Center of the base.
+        radius_base: Radius at the base.
+        radius_top: Radius at the top.
+        height: Length along the axis.
+        resolution: Number of radial segments.
+        axis: 'x', 'y', or 'z'.
+
+    Returns:
+        (vertices, triangles) for the lateral surface (no caps).
+    """
+    cx, cy, cz = center
+    angles = np.linspace(0, 2 * np.pi, resolution, endpoint=False)
+    cos_a = np.cos(angles)
+    sin_a = np.sin(angles)
+
+    verts = []
+    if axis == "x":
+        for i in range(resolution):
+            verts.append([cx, cy + radius_base * cos_a[i], cz + radius_base * sin_a[i]])
+        for i in range(resolution):
+            verts.append([cx + height, cy + radius_top * cos_a[i], cz + radius_top * sin_a[i]])
+    elif axis == "y":
+        for i in range(resolution):
+            verts.append([cx + radius_base * cos_a[i], cy, cz + radius_base * sin_a[i]])
+        for i in range(resolution):
+            verts.append([cx + radius_top * cos_a[i], cy + height, cz + radius_top * sin_a[i]])
+    else:  # axis == "z"
+        for i in range(resolution):
+            verts.append([cx + radius_base * cos_a[i], cy + radius_base * sin_a[i], cz])
+        for i in range(resolution):
+            verts.append([cx + radius_top * cos_a[i], cy + radius_top * sin_a[i], cz + height])
+
+    verts = np.array(verts, dtype=np.float32)
+    tris = []
+    n = resolution
+    for i in range(n):
+        i_next = (i + 1) % n
+        tris.append([i, i_next, i_next + n])
+        tris.append([i, i_next + n, i + n])
+    tris = np.array(tris, dtype=np.int32)
+    return verts, tris
+
+
 def disc_mesh(
     center: Tuple[float, float, float],
     inner_radius: float,

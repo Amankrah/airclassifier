@@ -1,19 +1,26 @@
 """
-Feed Chute Geometry
-===================
+Feed Chute / Hopper Geometry
+============================
 
-Hammer mill feed chute: the inlet duct that delivers material
-from the pretreatment stage (or hopper) to the mill housing.
+Realistic gravity-fed hammer-mill hopper for pouring seeds
+(e.g. yellow peas) into the mill housing.
 
-Physical components:
-    - Rectangular or tapered chute
-    - Inlet flange (connection to pretreatment/hopper)
-    - Outlet flange (connection to housing feed opening)
-    - Optional feed gate/valve
+Physical sections (bottom → top):
+    - Outlet flange    – bolted ring connecting to housing feed opening
+    - Throat           – short straight duct matching the housing opening
+    - Transition       – tapered section widening from throat to hopper body
+    - Hopper body      – open-top rectangular bin with slight outward draft
+    - Top rim          – folded/rolled lip for rigidity and safe handling
+
+Design notes:
+    - Transition wall angle ≥ 60° from horizontal to ensure mass-flow
+      of granular seeds (~8 mm yellow peas, angle of repose ~28°).
+    - Hopper body has slight outward draft so poured material doesn't
+      bridge against vertical walls.
 
 Coordinate system:
     X = along rotor axis
-    Y = vertical (chute descends from above)
+    Y = vertical  (hopper rises above housing)
     Z = lateral
 """
 
@@ -31,69 +38,197 @@ if TYPE_CHECKING:
     from .housing import HousingParams
 
 
+# ---------------------------------------------------------------------------
+# Mesh helper
+# ---------------------------------------------------------------------------
+
+def _rect_frustum(
+    bot_center: Tuple[float, float, float],
+    bot_w: float,
+    bot_d: float,
+    top_center: Tuple[float, float, float],
+    top_w: float,
+    top_d: float,
+    wall_t: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Hollow rectangular frustum (open-ended tapered duct).
+
+    Generates a rectangular duct section whose cross-section changes
+    linearly from *bottom* to *top*, with a constant wall thickness.
+
+    Args:
+        bot_center: (x, y, z) centre of the bottom rectangle.
+        bot_w, bot_d: Bottom width (X) and depth (Z).
+        top_center: (x, y, z) centre of the top rectangle.
+        top_w, top_d: Top width (X) and depth (Z).
+        wall_t: Wall thickness (inward offset).
+
+    Returns:
+        (vertices [16, 3], triangles [N, 3])
+    """
+    bx, by, bz = bot_center
+    tx, ty, tz = top_center
+
+    verts = np.array([
+        # Outer bottom (0-3): -X-Z, +X-Z, +X+Z, -X+Z
+        [bx - bot_w / 2, by, bz - bot_d / 2],
+        [bx + bot_w / 2, by, bz - bot_d / 2],
+        [bx + bot_w / 2, by, bz + bot_d / 2],
+        [bx - bot_w / 2, by, bz + bot_d / 2],
+        # Outer top (4-7)
+        [tx - top_w / 2, ty, tz - top_d / 2],
+        [tx + top_w / 2, ty, tz - top_d / 2],
+        [tx + top_w / 2, ty, tz + top_d / 2],
+        [tx - top_w / 2, ty, tz + top_d / 2],
+        # Inner bottom (8-11)
+        [bx - bot_w / 2 + wall_t, by, bz - bot_d / 2 + wall_t],
+        [bx + bot_w / 2 - wall_t, by, bz - bot_d / 2 + wall_t],
+        [bx + bot_w / 2 - wall_t, by, bz + bot_d / 2 - wall_t],
+        [bx - bot_w / 2 + wall_t, by, bz + bot_d / 2 - wall_t],
+        # Inner top (12-15)
+        [tx - top_w / 2 + wall_t, ty, tz - top_d / 2 + wall_t],
+        [tx + top_w / 2 - wall_t, ty, tz - top_d / 2 + wall_t],
+        [tx + top_w / 2 - wall_t, ty, tz + top_d / 2 - wall_t],
+        [tx - top_w / 2 + wall_t, ty, tz + top_d / 2 - wall_t],
+    ], dtype=np.float32)
+
+    tris = []
+    for i in range(4):
+        j = (i + 1) % 4
+        # Outer faces (normals point outward)
+        tris.extend([[i, i + 4, j + 4], [i, j + 4, j]])
+        # Inner faces (normals point inward — visible from inside)
+        tris.extend([[8 + j, 8 + j + 4, 8 + i + 4],
+                     [8 + j, 8 + i + 4, 8 + i]])
+        # Top rim strip (normals up)
+        tris.extend([[4 + i, 12 + i, 12 + j],
+                     [4 + i, 12 + j, 4 + j]])
+        # Bottom rim strip (normals down)
+        tris.extend([[i, j, 8 + j], [i, 8 + j, 8 + i]])
+
+    return verts, np.array(tris, dtype=np.int32)
+
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+
 @dataclass
 class FeedChuteParams:
-    """Feed chute geometry parameters."""
+    """Realistic feed-hopper geometry parameters.
 
-    # --- Chute dimensions ---
-    inlet_width_m: float = 0.18                   # Width at inlet (X direction)
-    inlet_depth_m: float = 0.15                   # Depth at inlet (Z direction)
-    outlet_width_m: float = 0.15                  # Width at outlet
-    outlet_depth_m: float = 0.12                  # Depth at outlet
-    length_m: float = 0.25                        # Chute length (vertical)
-    wall_thickness_m: float = 0.003               # Wall thickness
+    Sections (bottom → top):
+        outlet flange → throat → transition → hopper body → rim
+    """
 
-    # --- Position (outlet connects to housing feed opening) ---
-    outlet_x_m: float = 0.15                      # X position of outlet center
-    outlet_y_m: float = 0.22                      # Y position of outlet (top of housing)
-    outlet_z_m: float = 0.0                       # Z position of outlet center
+    # --- Throat (matches housing feed opening) ---
+    throat_width_m: float = 0.15            # Width at feed opening (X)
+    throat_depth_m: float = 0.12            # Depth at feed opening (Z)
+    throat_height_m: float = 0.035          # Short straight section
 
-    # --- Flange dimensions ---
-    inlet_flange_width_m: float = 0.025           # Flange width around inlet
-    outlet_flange_width_m: float = 0.020          # Flange width around outlet
+    # --- Transition (tapered from throat to hopper) ---
+    transition_height_m: float = 0.15       # Height of tapered section
+
+    # --- Hopper body (open-top bin) ---
+    hopper_width_m: float = 0.30            # Width at hopper bottom (X)
+    hopper_depth_m: float = 0.25            # Depth at hopper bottom (Z)
+    hopper_height_m: float = 0.20           # Vertical height of the bin
+    hopper_draft_m: float = 0.005           # Outward draft per side at top
+
+    # --- Wall & rim ---
+    wall_thickness_m: float = 0.003         # 3 mm steel sheet
+    rim_width_m: float = 0.012              # Folded lip width
+    rim_height_m: float = 0.015             # Folded lip height
+
+    # --- Outlet flange (bolts to housing) ---
+    flange_width_m: float = 0.020           # Flange ring width
+    flange_thickness_m: float = 0.006       # Flange plate thickness
+
+    # --- Position (outlet centre, bottom of throat) ---
+    outlet_x_m: float = 0.15               # X centre of the opening
+    outlet_y_m: float = 0.22               # Y position (top of housing)
+    outlet_z_m: float = 0.0                # Z centre of the opening
+
+    # ---- Derived heights ----
+
+    @property
+    def throat_top_y(self) -> float:
+        return self.outlet_y_m + self.throat_height_m
+
+    @property
+    def transition_top_y(self) -> float:
+        return self.throat_top_y + self.transition_height_m
+
+    @property
+    def hopper_top_y(self) -> float:
+        return self.transition_top_y + self.hopper_height_m
+
+    @property
+    def rim_top_y(self) -> float:
+        return self.hopper_top_y + self.rim_height_m
 
     @property
     def inlet_y_m(self) -> float:
-        """Y position of inlet (top of chute)."""
-        return self.outlet_y_m + self.length_m
+        """Y position of the top of the hopper (where seeds are poured)."""
+        return self.rim_top_y
+
+    @property
+    def total_height_m(self) -> float:
+        return self.inlet_y_m - self.outlet_y_m
 
     @classmethod
     def from_mill_config(cls, config: "MillConfig") -> "FeedChuteParams":
-        """Create feed chute params from mill configuration."""
+        """Create hopper params from mill configuration."""
+        tw = config.feed_chute_width_m
+        td = config.feed_chute_height_m
         return cls(
-            inlet_width_m=config.feed_chute_width_m + 0.03,
-            inlet_depth_m=config.feed_chute_height_m + 0.03,
-            outlet_width_m=config.feed_chute_width_m,
-            outlet_depth_m=config.feed_chute_height_m,
-            length_m=config.feed_chute_length_m,
-            outlet_x_m=0.05 + config.feed_chute_width_m / 2 + 0.05,
+            throat_width_m=tw,
+            throat_depth_m=td,
+            hopper_width_m=tw * 2.0,
+            hopper_depth_m=td * 2.0,
+            transition_height_m=max(tw, td) * 1.0,
+            outlet_x_m=0.05 + tw / 2 + 0.05,
             outlet_y_m=config.housing_inner_radius_m,
         )
 
     @classmethod
-    def from_housing(cls, housing_params: "HousingParams", config: "MillConfig") -> "FeedChuteParams":
-        """Create feed chute params aligned to housing geometry."""
+    def from_housing(
+        cls,
+        housing_params: "HousingParams",
+        config: "MillConfig",
+    ) -> "FeedChuteParams":
+        """Create hopper params aligned to housing feed opening."""
         hp = housing_params
+        tw = hp.feed_opening_width_m
+        td = hp.feed_opening_depth_m
         return cls(
-            outlet_width_m=hp.feed_opening_width_m,
-            outlet_depth_m=hp.feed_opening_depth_m,
-            inlet_width_m=hp.feed_opening_width_m + 0.03,
-            inlet_depth_m=hp.feed_opening_depth_m + 0.03,
-            length_m=config.feed_chute_length_m,
-            outlet_x_m=hp.center_x_m + hp.feed_opening_x_offset_m + hp.feed_opening_width_m / 2,
+            throat_width_m=tw,
+            throat_depth_m=td,
+            hopper_width_m=tw * 2.0,
+            hopper_depth_m=td * 2.0,
+            transition_height_m=max(tw, td) * 1.0,
+            outlet_x_m=(
+                hp.center_x_m
+                + hp.feed_opening_x_offset_m
+                + tw / 2
+            ),
             outlet_y_m=hp.inner_radius_m,
             outlet_z_m=hp.center_z_m,
         )
 
 
+# ---------------------------------------------------------------------------
+# Geometry
+# ---------------------------------------------------------------------------
+
 class FeedChuteGeometry:
-    """Generates feed chute meshes.
+    """Generates a realistic feed-hopper mesh.
 
-    The feed chute is a tapered rectangular duct that delivers
-    material to the hammer mill. It connects the pretreatment
-    outlet (or hopper) to the housing feed inlet.
+    The hopper is an open-top rectangular bin with tapered walls
+    that funnels poured material (seeds) into the hammer-mill
+    housing through a straight throat section.
 
-    The chute is static (no animation).
+    Static geometry (no animation).
     """
 
     def __init__(self, params: Optional[FeedChuteParams] = None):
@@ -102,7 +237,7 @@ class FeedChuteGeometry:
         self._cached_tris: Optional[np.ndarray] = None
 
     def generate_mesh(self) -> Tuple[np.ndarray, np.ndarray, dict]:
-        """Generate the feed chute mesh.
+        """Generate the feed-hopper mesh.
 
         Returns:
             (vertices, triangles, metadata)
@@ -110,94 +245,103 @@ class FeedChuteGeometry:
         p = self.params
         parts = []
 
-        # Calculate dimensions
-        out_w = p.outlet_width_m
-        out_d = p.outlet_depth_m
-        in_w = p.inlet_width_m
-        in_d = p.inlet_depth_m
+        cx = p.outlet_x_m
+        cz = p.outlet_z_m
         t = p.wall_thickness_m
+        tw, td = p.throat_width_m, p.throat_depth_m
 
-        # Outlet position (bottom of chute)
-        out_x = p.outlet_x_m - out_w / 2
-        out_y = p.outlet_y_m
-        out_z = p.outlet_z_m - out_d / 2
+        # ── 1. Outlet flange ──────────────────────────────────────
+        fw = p.flange_width_m
+        ft = p.flange_thickness_m
+        fy = p.outlet_y_m - ft          # flange sits just below throat
 
-        # Inlet position (top of chute)
-        in_x = p.outlet_x_m - in_w / 2
-        in_y = p.inlet_y_m
-        in_z = p.outlet_z_m - in_d / 2
-
-        # For a tapered chute, we create 4 trapezoidal walls
-        # Simplified: use boxes for the walls at outlet dimensions
-        # (true taper would require custom quad mesh generation)
-
-        # --- Chute walls (using outlet dimensions, approximation) ---
-        avg_w = (out_w + in_w) / 2
-        avg_d = (out_d + in_d) / 2
-        cx = p.outlet_x_m - avg_w / 2
-        cz = p.outlet_z_m - avg_d / 2
-
-        # Front wall (-X side)
+        # Four bars forming a rectangular frame around the opening
+        # Front bar (-X)
         parts.append(box_mesh(
-            cx - t, out_y, cz,
-            t, p.length_m, avg_d,
+            cx - tw / 2 - fw, fy, cz - td / 2 - fw,
+            fw, ft, td + 2 * fw,
+        ))
+        # Back bar (+X)
+        parts.append(box_mesh(
+            cx + tw / 2, fy, cz - td / 2 - fw,
+            fw, ft, td + 2 * fw,
+        ))
+        # Left bar (-Z)
+        parts.append(box_mesh(
+            cx - tw / 2, fy, cz - td / 2 - fw,
+            tw, ft, fw,
+        ))
+        # Right bar (+Z)
+        parts.append(box_mesh(
+            cx - tw / 2, fy, cz + td / 2,
+            tw, ft, fw,
         ))
 
-        # Back wall (+X side)
-        parts.append(box_mesh(
-            cx + avg_w, out_y, cz,
-            t, p.length_m, avg_d,
+        # ── 2. Throat (straight duct) ────────────────────────────
+        parts.append(_rect_frustum(
+            (cx, p.outlet_y_m, cz), tw, td,
+            (cx, p.throat_top_y, cz), tw, td,
+            t,
         ))
 
-        # Left wall (-Z side)
-        parts.append(box_mesh(
-            cx, out_y, cz - t,
-            avg_w, p.length_m, t,
+        # ── 3. Transition (tapered from throat → hopper) ─────────
+        hw, hd = p.hopper_width_m, p.hopper_depth_m
+        parts.append(_rect_frustum(
+            (cx, p.throat_top_y, cz), tw, td,
+            (cx, p.transition_top_y, cz), hw, hd,
+            t,
         ))
 
-        # Right wall (+Z side)
-        parts.append(box_mesh(
-            cx, out_y, cz + avg_d,
-            avg_w, p.length_m, t,
+        # ── 4. Hopper body (slight outward draft) ────────────────
+        draft = p.hopper_draft_m
+        parts.append(_rect_frustum(
+            (cx, p.transition_top_y, cz), hw, hd,
+            (cx, p.hopper_top_y, cz), hw + 2 * draft, hd + 2 * draft,
+            t,
         ))
 
-        # --- Inlet flange ---
-        flange_w = p.inlet_flange_width_m
-        flange_t = 0.005
+        # ── 5. Top rim / rolled lip ──────────────────────────────
+        rw = p.rim_width_m
+        rh = p.rim_height_m
+        top_hw = hw + 2 * draft
+        top_hd = hd + 2 * draft
+        ry = p.hopper_top_y
 
-        # Front flange
+        # Four thicker bars forming the rim around the hopper top
+        # Front rim (-X)
         parts.append(box_mesh(
-            in_x - flange_w, in_y, in_z - flange_w,
-            flange_w, flange_t, in_d + 2 * flange_w,
+            cx - top_hw / 2 - rw, ry, cz - top_hd / 2 - rw,
+            rw, rh, top_hd + 2 * rw,
         ))
-        # Back flange
+        # Back rim (+X)
         parts.append(box_mesh(
-            in_x + in_w, in_y, in_z - flange_w,
-            flange_w, flange_t, in_d + 2 * flange_w,
+            cx + top_hw / 2, ry, cz - top_hd / 2 - rw,
+            rw, rh, top_hd + 2 * rw,
         ))
-        # Left flange
+        # Left rim (-Z)
         parts.append(box_mesh(
-            in_x, in_y, in_z - flange_w,
-            in_w, flange_t, flange_w,
+            cx - top_hw / 2, ry, cz - top_hd / 2 - rw,
+            top_hw, rh, rw,
         ))
-        # Right flange
+        # Right rim (+Z)
         parts.append(box_mesh(
-            in_x, in_y, in_z + in_d,
-            in_w, flange_t, flange_w,
+            cx - top_hw / 2, ry, cz + top_hd / 2,
+            top_hw, rh, rw,
         ))
 
+        # ── Combine ──────────────────────────────────────────────
         self._cached_verts, self._cached_tris = concat_meshes(parts)
 
         metadata = {
             "type": "feed_chute",
-            "animation_type": None,  # Static
-            "inlet_width_m": p.inlet_width_m,
-            "inlet_depth_m": p.inlet_depth_m,
-            "outlet_width_m": p.outlet_width_m,
-            "outlet_depth_m": p.outlet_depth_m,
-            "length_m": p.length_m,
-            "inlet_position": (p.outlet_x_m, p.inlet_y_m, p.outlet_z_m),
-            "outlet_position": (p.outlet_x_m, p.outlet_y_m, p.outlet_z_m),
+            "animation_type": None,     # Static
+            "throat_width_m": tw,
+            "throat_depth_m": td,
+            "hopper_width_m": hw,
+            "hopper_depth_m": hd,
+            "total_height_m": p.total_height_m,
+            "inlet_position": (cx, p.inlet_y_m, cz),
+            "outlet_position": (cx, p.outlet_y_m, cz),
         }
 
         return self._cached_verts, self._cached_tris, metadata

@@ -2,14 +2,13 @@
 Drive Geometry
 ==============
 
-Hammer mill drive system: motor, belt/coupling, and belt guard.
+Hammer mill drive system: motor and pulleys.
 This is primarily for visualization; the physics uses rpm directly.
 
 Physical components:
-    - Electric motor (simplified box)
+    - Electric motor (simplified cylinder)
     - Motor mount/base plate
-    - Belt guard / coupling cover
-    - Pulley (optional detail)
+    - Pulleys (mill pulley on rotor, motor pulley on motor shaft)
 
 Coordinate system:
     X = along rotor axis (motor is offset in Z)
@@ -25,7 +24,14 @@ from typing import Dict, Optional, Tuple, TYPE_CHECKING, List
 
 import numpy as np
 
-from ..mesh_utils import box_mesh, cylinder_mesh, concat_meshes, arc_surface_mesh, disc_mesh
+from ..mesh_utils import (
+    arc_surface_mesh,
+    box_mesh,
+    cylinder_mesh,
+    frustum_mesh,
+    concat_meshes,
+    disc_mesh,
+)
 
 if TYPE_CHECKING:
     from ...config import MillConfig
@@ -68,10 +74,12 @@ class DriveParams:
     # --- Pulley (on motor shaft) ---
     pulley_radius_m: float = 0.06
     pulley_width_m: float = 0.04
+    motor_pulley_x_m: float = 0.04   # X position: positive = allowance between motor body and pulley
 
-    # --- Mill pulley (on rotor shaft) ---
+    # --- Mill pulley (on rotor shaft, outside housing at drive end -X) ---
     mill_pulley_radius_m: float = 0.10
     mill_pulley_width_m: float = 0.04
+    mill_pulley_x_m: float = -0.03   # X position: negative = outside housing (drive end)
 
     @classmethod
     def from_mill_config(cls, config: "MillConfig") -> "DriveParams":
@@ -123,13 +131,24 @@ class DriveParams:
     def from_housing(cls, housing_params: "HousingParams", config: "MillConfig") -> "DriveParams":
         """Create drive params positioned and scaled relative to housing.
 
-        - Motor flush against housing drive end (X=0).
-        - Motor beside housing in +Z with minimal clearance.
-        - Motor Y offset proportional to housing (below rotor centerline).
+        - Mill pulley outside housing in -X (drive end) with allowance.
+        - Motor pulley at same X as mill pulley for positional alignment (belt plane).
+        - Motor placed so its shaft extends to that pulley X with allowance.
         """
         params = cls.from_mill_config(config)
-        # Motor flush against drive end: right face of motor at housing start (X=0)
-        params.motor_x_offset_m = housing_params.center_x_m - params.motor_length_m
+        # Mill pulley outside housing in -X with allowance between housing and pulley
+        params.mill_pulley_x_m = -(
+            housing_params.end_plate_thickness_m
+            + params.mill_pulley_width_m / 2.0
+            + 0.04
+        )
+        # Motor pulley at same X as mill pulley for coordinate alignment (same belt plane)
+        params.motor_pulley_x_m = params.mill_pulley_x_m
+        # Motor position: shaft extends from motor end to pulley X; min shaft allowance
+        shaft_allowance_m = 0.05
+        params.motor_x_offset_m = (
+            params.mill_pulley_x_m - shaft_allowance_m - params.motor_length_m
+        )
         # Motor beside housing
         params.motor_z_offset_m = (
             housing_params.outer_radius_m + params.motor_width_m / 2.0 + 0.02
@@ -159,9 +178,8 @@ class DriveParams:
 class DriveGeometry:
     """Generates drive system meshes.
 
-    Creates motor, base plate, belt guard, and pulleys for
-    visualization. The motor is positioned beside the housing
-    at the drive end of the rotor.
+    Creates motor, base plate, and pulleys for visualization.
+    The motor is positioned beside the housing at the drive end of the rotor.
 
     Animation:
         The motor pulley can optionally rotate (scaled from rotor rpm
@@ -181,7 +199,7 @@ class DriveGeometry:
         """Generate the drive system mesh.
 
         Motor is a cylindrical body (realistic NEMA-style) with base plate and feet,
-        shaft pulley, and a curved belt guard. Mill pulley sits at housing drive end.
+        and shaft pulley. Mill pulley sits at housing drive end.
 
         Args:
             resolution: Number of segments for cylindrical parts.
@@ -256,33 +274,45 @@ class DriveGeometry:
                 foot_len, foot_h, foot_w,
             ))
 
-        # --- Motor shaft pulley (at drive end of motor, +X) ---
-        pulley_x = motor_x + body_length
+        # --- Motor output shaft: extends in +X from motor body to pulley (allowance between body and pulley) ---
+        pulley_x = p.motor_pulley_x_m
+        shaft_radius = 0.02
+        shaft_start_x = motor_x + body_length
+        motor_shaft = cylinder_mesh(
+            center=(shaft_start_x, motor_y, motor_z),
+            radius=shaft_radius,
+            height=pulley_x - shaft_start_x,
+            resolution=resolution,
+            axis="x",
+        )
+        parts.append(motor_shaft)
+
+        # --- Motor shaft pulley (at motor_pulley_x_m for allowance from motor body) ---
         pulley_y = motor_y
         pulley_z = motor_z
 
-        motor_pulley = cylinder_mesh(
+        motor_pulley = self._v_groove_pulley_mesh(
             center=(pulley_x, pulley_y, pulley_z),
             radius=p.pulley_radius_m,
-            height=p.pulley_width_m,
+            width_m=p.pulley_width_m,
             resolution=resolution,
-            axis="z",
+            axis="x",
         )
         parts.append(motor_pulley)
 
-        # --- Mill pulley (on rotor shaft at housing drive end, same Z as motor pulley for belt) ---
-        mill_pulley_x = 0.0
-        mill_pulley = cylinder_mesh(
-            center=(mill_pulley_x, 0.0, pulley_z),
+        # --- Mill pulley (on rotor shaft outside housing at drive end, -X; same side as motor) ---
+        mill_pulley_x = p.mill_pulley_x_m
+        mill_pulley = self._v_groove_pulley_mesh(
+            center=(mill_pulley_x, 0.0, 0.0),
             radius=p.mill_pulley_radius_m,
-            height=p.mill_pulley_width_m,
+            width_m=p.mill_pulley_width_m,
             resolution=resolution,
-            axis="z",
+            axis="x",
         )
         parts.append(mill_pulley)
 
-        # --- Belt guard (curved half-cylinder over belt path between pulleys) ---
-        parts.append(self._belt_guard_mesh(p, pulley_x, motor_y, motor_z, resolution))
+        # --- Belt (loop in Y-Z plane at pulley X; both pulleys aligned at same X) ---
+        parts.append(self._belt_mesh(p, pulley_x, motor_y, motor_z, resolution))
 
         self._cached_verts, self._cached_tris = concat_meshes(parts)
 
@@ -305,11 +335,12 @@ class DriveGeometry:
         Returns:
             Dict mapping part name to (vertices, triangles):
             - drive_motor: cylindrical body + end bells
+            - drive_shaft: motor output shaft (to pulley)
             - drive_base: base plate
             - drive_feet: motor feet (all four)
             - drive_pulley_motor: motor shaft pulley
-            - drive_pulley_mill: mill (rotor) pulley
-            - drive_guard: belt guard
+            - drive_pulley_mill: mill (rotor) pulley, outside housing
+            - drive_belt: belt loop between pulleys
         """
         p = self.params
         motor_x = p.motor_x_offset_m
@@ -324,7 +355,7 @@ class DriveGeometry:
         foot_len = body_length * 0.35
         foot_w = 0.04
         foot_h = 0.02
-        pulley_x = motor_x + body_length
+        pulley_x = p.motor_pulley_x_m  # allowance from motor body in +X
 
         out: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
@@ -381,6 +412,18 @@ class DriveGeometry:
             [motor_body, end_bell_drive, end_bell_shaft, *fins, fan]
         )
 
+        # Motor output shaft (extends +X from motor body to pulley for allowance)
+        shaft_radius = 0.02
+        shaft_start_x = motor_x + body_length
+        motor_shaft = cylinder_mesh(
+            center=(shaft_start_x, motor_y, motor_z),
+            radius=shaft_radius,
+            height=pulley_x - shaft_start_x,
+            resolution=resolution,
+            axis="x",
+        )
+        out["drive_shaft"] = motor_shaft
+
         # Base plate (dimensions from params for proportional consistency)
         out["drive_base"] = box_mesh(
             motor_x - (p.base_plate_width_m - body_length) / 2,
@@ -406,81 +449,174 @@ class DriveGeometry:
             ))
         out["drive_feet"] = concat_meshes(feet_parts)
 
-        # Motor pulley
-        out["drive_pulley_motor"] = cylinder_mesh(
+        # Motor pulley (V-groove sheave; motor shaft along X)
+        out["drive_pulley_motor"] = self._v_groove_pulley_mesh(
             center=(pulley_x, motor_y, motor_z),
             radius=p.pulley_radius_m,
-            height=p.pulley_width_m,
+            width_m=p.pulley_width_m,
             resolution=resolution,
-            axis="z",
+            axis="x",
         )
 
-        # Mill pulley
-        out["drive_pulley_mill"] = cylinder_mesh(
-            center=(0.0, 0.0, motor_z),
+        # Mill pulley (V-groove sheave on rotor shaft at drive end; on rotor axis)
+        out["drive_pulley_mill"] = self._v_groove_pulley_mesh(
+            center=(p.mill_pulley_x_m, 0.0, 0.0),
             radius=p.mill_pulley_radius_m,
-            height=p.mill_pulley_width_m,
+            width_m=p.mill_pulley_width_m,
             resolution=resolution,
-            axis="z",
+            axis="x",
         )
 
-        # Belt (visible strip connecting mill pulley to motor pulley — shows drive connection)
-        out["drive_belt"] = self._belt_mesh(p, motor_y, motor_z)
-
-        # Belt guard (curved half-cylinder)
-        out["drive_guard"] = self._belt_guard_mesh(p, pulley_x, motor_y, motor_z, resolution)
+        # Belt (loop in Y-Z plane at pulley X)
+        out["drive_belt"] = self._belt_mesh(p, pulley_x, motor_y, motor_z, resolution)
 
         return out
 
-    def _belt_mesh(
+    def _v_groove_pulley_mesh(
         self,
-        p: "DriveParams",
-        motor_y: float,
-        motor_z: float,
+        center: Tuple[float, float, float],
+        radius: float,
+        width_m: float,
+        resolution: int,
+        axis: str = "z",
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Visible belt run between mill pulley (Y=0) and motor pulley (Y=motor_y) at Z=motor_z."""
-        belt_thick_x = max(0.008, p.pulley_width_m * 0.35)
-        belt_len_y = abs(motor_y) + 0.03
-        belt_depth_z = p.pulley_width_m + 0.002
-        cx = 0.0
-        cy = motor_y / 2.0
-        cz = motor_z
-        box = box_mesh(
-            cx - belt_thick_x / 2,
-            cy - belt_len_y / 2,
-            cz - belt_depth_z / 2,
-            belt_thick_x,
-            belt_len_y,
-            belt_depth_z,
-        )
-        return box
+        """V-groove pulley (sheave) for V-belt drive: hub + two frustums forming the V.
 
-    def _belt_guard_mesh(
+        Standard ~40° included groove angle; groove depth proportional to radius.
+        Belt sits in the groove (pitch at groove bottom).
+        """
+        groove_depth = radius * 0.12
+        half_w = width_m / 2
+        cx, cy, cz = center
+        parts_list: List[Tuple[np.ndarray, np.ndarray]] = []
+
+        # Hub (cylinder at groove bottom radius)
+        hub = cylinder_mesh(
+            center=center,
+            radius=radius - groove_depth,
+            height=width_m,
+            resolution=resolution,
+            axis=axis,
+        )
+        parts_list.append(hub)
+
+        # Left and right faces of V (frustums: outer radius at rim, groove bottom at centre)
+        # Offset for right frustum along the pulley axis
+        if axis == "x":
+            right_center = (cx + half_w, cy, cz)
+        elif axis == "y":
+            right_center = (cx, cy + half_w, cz)
+        else:
+            right_center = (cx, cy, cz + half_w)
+        left_f = frustum_mesh(
+            center=(cx, cy, cz),
+            radius_base=radius,
+            radius_top=radius - groove_depth,
+            height=half_w,
+            resolution=resolution,
+            axis=axis,
+        )
+        right_f = frustum_mesh(
+            center=right_center,
+            radius_base=radius - groove_depth,
+            radius_top=radius,
+            height=half_w,
+            resolution=resolution,
+            axis=axis,
+        )
+        parts_list.append(left_f)
+        parts_list.append(right_f)
+
+        return concat_meshes(parts_list)
+
+    def _belt_mesh(
         self,
         p: "DriveParams",
         pulley_x: float,
         motor_y: float,
         motor_z: float,
-        resolution: int,
+        resolution: int = 16,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Curved belt guard: half-cylinder tunnel along the belt path (Y) over the pulleys."""
-        inner_r = max(p.mill_pulley_radius_m, p.pulley_radius_m) + 0.02
-        outer_r = inner_r + 0.03
-        # Pulleys are at X=0; belt runs in Y from (0, 0, z) to (0, motor_y, z)
-        center_y = motor_y / 2.0
-        guard_length_y = abs(motor_y) + p.pulley_width_m + 0.04
-        arc = arc_surface_mesh(
-            center=(0.0, center_y, motor_z),
-            inner_radius=inner_r,
-            outer_radius=outer_r,
-            start_angle_rad=-math.pi / 2,
-            end_angle_rad=math.pi / 2,
-            length=guard_length_y,
-            radial_resolution=max(8, resolution // 2),
-            axial_resolution=8,
-            axis="y",
-        )
-        return arc
+        """Belt as tangent strips + wrap arcs between pulleys in Y-Z plane.
+
+        Both pulleys at same X; belt loop runs in Y-Z plane.
+        Mill pulley centered at (0, 0) in Y-Z, motor pulley at (motor_y, motor_z).
+        Two straight tangent strips connect the pulleys; wrap arcs close the loop
+        around each pulley on the far side.
+        """
+        groove_frac = 0.12
+        R_mill = p.mill_pulley_radius_m * (1 - groove_frac)
+        R_motor = p.pulley_radius_m * (1 - groove_frac)
+        belt_w = p.pulley_width_m * 0.8
+        belt_hw = belt_w / 2
+        belt_thick = 0.005  # radial thickness for wrap arcs
+
+        # Groove midpoints along X (pulley center = start_x + width/2)
+        mill_gx = p.mill_pulley_x_m + p.mill_pulley_width_m / 2
+        motor_gx = pulley_x + p.pulley_width_m / 2
+
+        # Direction from mill to motor center in Y-Z
+        dy = motor_y
+        dz = motor_z
+        d = math.sqrt(dy**2 + dz**2)
+        if d < 1e-6:
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32)
+
+        # Angle of center-line (arc convention: Y = R*cos, Z = R*sin)
+        phi = math.atan2(dz, dy)
+        # Perpendicular unit vector in Y-Z (at angle phi + pi/2)
+        py = -dz / d  # -sin(phi)
+        pz = dy / d   #  cos(phi)
+
+        parts: List[Tuple[np.ndarray, np.ndarray]] = []
+
+        # --- Tangent strips (two straight runs between pulleys) ---
+        for sign in (+1, -1):
+            t_mill_y = sign * R_mill * py
+            t_mill_z = sign * R_mill * pz
+            t_mot_y = motor_y + sign * R_motor * py
+            t_mot_z = motor_z + sign * R_motor * pz
+
+            verts = np.array([
+                [mill_gx - belt_hw, t_mill_y, t_mill_z],
+                [mill_gx + belt_hw, t_mill_y, t_mill_z],
+                [motor_gx + belt_hw, t_mot_y, t_mot_z],
+                [motor_gx - belt_hw, t_mot_y, t_mot_z],
+            ], dtype=np.float32)
+            tris = np.array([
+                [0, 1, 2], [0, 2, 3],
+                [0, 2, 1], [0, 3, 2],
+            ], dtype=np.int32)
+            parts.append((verts, tris))
+
+        # --- Wrap arcs around each pulley (close the belt loop) ---
+        # Mill pulley: far side from motor (phi+pi/2 → phi+3pi/2)
+        parts.append(arc_surface_mesh(
+            center=(mill_gx - belt_hw, 0.0, 0.0),
+            inner_radius=R_mill,
+            outer_radius=R_mill + belt_thick,
+            start_angle_rad=phi + math.pi / 2,
+            end_angle_rad=phi + 3 * math.pi / 2,
+            length=belt_w,
+            radial_resolution=resolution,
+            axial_resolution=2,
+            axis="x",
+        ))
+
+        # Motor pulley: far side from mill (phi-pi/2 → phi+pi/2)
+        parts.append(arc_surface_mesh(
+            center=(motor_gx - belt_hw, motor_y, motor_z),
+            inner_radius=R_motor,
+            outer_radius=R_motor + belt_thick,
+            start_angle_rad=phi - math.pi / 2,
+            end_angle_rad=phi + math.pi / 2,
+            length=belt_w,
+            radial_resolution=resolution,
+            axial_resolution=2,
+            axis="x",
+        ))
+
+        return concat_meshes(parts)
 
     @property
     def ports(self) -> Dict[str, any]:

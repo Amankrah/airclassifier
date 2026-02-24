@@ -53,6 +53,7 @@ class RotorParams:
     # --- Bearing journals (shaft extensions) ---
     journal_length_m: float = 0.04                # Length of each bearing journal
     journal_radius_m: float = 0.025               # Journal radius (slightly smaller than shaft)
+    drive_journal_extension_m: float = 0.05      # Extra length in -X at drive end (allowance for pulley)
 
     # --- Derived positions ---
     @property
@@ -143,11 +144,12 @@ class RotorGeometry:
             parts.append((disc_verts, disc_tris))
 
         # --- Bearing journals (thinner shaft extensions) ---
-        # Drive end journal (X < 0)
+        # Drive end journal: extends in -X for allowance between housing and mill pulley
+        drive_journal_length = p.journal_length_m + p.drive_journal_extension_m
         journal_drive = cylinder_mesh(
-            center=(-p.journal_length_m, 0.0, 0.0),
+            center=(-drive_journal_length, 0.0, 0.0),
             radius=p.journal_radius_m,
-            height=p.journal_length_m,
+            height=drive_journal_length,
             resolution=resolution,
             axis="x",
         )
