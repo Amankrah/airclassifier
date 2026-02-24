@@ -54,6 +54,11 @@ COMPONENT_STYLE = {
         "opacity": 0.3,  # Very transparent to see inside
         "label": "Housing (casing)",
     },
+    "housing_discharge": {
+        "color": (0.45, 0.48, 0.52),
+        "opacity": 0.85,
+        "label": "Discharge chute",
+    },
     "feed_chute": {
         "color": (0.5, 0.6, 0.65),
         "opacity": 0.75,

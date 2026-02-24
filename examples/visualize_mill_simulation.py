@@ -32,6 +32,24 @@ from airclassifier.milling import (
 )
 
 
+# ── Component styling (matches visualize_hammer_mill.py) ────────────────────
+COMPONENT_STYLE = {
+    "rotor":              {"color": (0.6, 0.6, 0.65),   "opacity": 0.95, "label": "Rotor (steel)"},
+    "hammers":            {"color": (0.85, 0.70, 0.15), "opacity": 1.0,  "label": "Hammers (brass)"},
+    "hammer_pins":        {"color": (0.55, 0.55, 0.58), "opacity": 1.0,  "label": "Hammer pins"},
+    "screen":             {"color": (0.4, 0.45, 0.5),   "opacity": 0.6,  "label": "Screen"},
+    "housing":            {"color": (0.35, 0.45, 0.55), "opacity": 0.3,  "label": "Housing"},
+    "feed_chute":         {"color": (0.5, 0.6, 0.65),   "opacity": 0.75, "label": "Feed Chute"},
+    "drive_motor":        {"color": (0.32, 0.34, 0.38), "opacity": 0.95, "label": "Motor"},
+    "drive_base":         {"color": (0.5, 0.52, 0.55),  "opacity": 0.95, "label": "Base plate"},
+    "drive_feet":         {"color": (0.45, 0.47, 0.5),  "opacity": 0.95, "label": "Motor feet"},
+    "drive_pulley_motor": {"color": (0.28, 0.30, 0.32), "opacity": 1.0,  "label": "Motor pulley"},
+    "drive_pulley_mill":  {"color": (0.62, 0.63, 0.66), "opacity": 1.0,  "label": "Mill pulley"},
+    "drive_shaft":        {"color": (0.35, 0.37, 0.4),  "opacity": 1.0,  "label": "Motor shaft"},
+    "drive_belt":         {"color": (0.22, 0.22, 0.24), "opacity": 1.0,  "label": "Belt"},
+}
+
+
 def _mesh_to_polydata(verts: np.ndarray, tris: np.ndarray) -> "pv.PolyData":
     """Convert vertices/triangles to PyVista PolyData."""
     n = tris.shape[0]
@@ -98,49 +116,40 @@ def run_live_simulation(args):
     plotter = pv.Plotter(window_size=(1400, 900))
     plotter.set_background("#1a1a2e" if args.dark else "white")
 
-    # Component opacity settings (X-ray view)
-    xray_opacities = {
-        "housing": 0.25,      # Very transparent to see inside
-        "screen": 0.50,       # Semi-transparent
-        "rotor": 0.95,        # Nearly opaque
-        "hammers": 0.95,      # Nearly opaque
-        "feed_chute": 0.70,   # Mostly visible
-        "drive": 0.80,        # Visible
-    }
-
     # Store mesh data for animation
     mesh_actors = {}
     original_verts = {}
-    animated_components = {"rotor", "hammers"}
+    animated_components = {"rotor", "hammers", "hammer_pins"}
 
     # ── Add geometry meshes with proper colors ────────────────────────
     print("\nAdding components:")
     for name, (verts, tris, meta) in meshes.items():
-        # Get color from COMPONENT_COLORS
-        color_rgba = COMPONENT_COLORS.get(name, (0.5, 0.5, 0.5, 1.0))
-        rgb = color_rgba[:3]
+        style = COMPONENT_STYLE.get(name, {})
+        if style:
+            rgb = style["color"]
+            opacity = style["opacity"]
+            label = style["label"]
+        else:
+            color_rgba = COMPONENT_COLORS.get(name, (0.5, 0.5, 0.5, 1.0))
+            rgb = color_rgba[:3]
+            opacity = color_rgba[3] if len(color_rgba) > 3 else 0.8
+            label = name.replace("_", " ").title()
 
-        # Use xray opacity for better visibility
-        opacity = xray_opacities.get(name, color_rgba[3] if len(color_rgba) > 3 else 0.8)
-
-        # Create PyVista mesh
         pd = _mesh_to_polydata(verts, tris)
-
-        # Add to plotter
-        actor = plotter.add_mesh(
+        plotter.add_mesh(
             pd,
             color=rgb,
             opacity=opacity,
             smooth_shading=True,
             name=name,
-            label=name.replace("_", " ").title(),
+            label=label,
         )
 
         mesh_actors[name] = pd
         original_verts[name] = verts.copy()
 
-        print(f"  {name:15} {len(verts):5} verts, {len(tris):5} tris, "
-              f"color={rgb}, opacity={opacity:.2f}")
+        print(f"  {name:20} {len(verts):5} verts, {len(tris):5} tris, "
+              f"opacity={opacity:.2f}")
 
     # ── Create particle point cloud ───────────────────────────────────
     # Initialize with positions (may be empty)
@@ -188,13 +197,10 @@ def run_live_simulation(args):
     # Title
     plotter.add_title("Hammer Mill Live  |  Initializing...", font_size=10)
 
-    # Camera position - closer to the mill for better view
-    plotter.camera_position = [
-        (0.45, 0.25, 0.45),  # Camera position (closer)
-        (0.15, 0.0, 0.0),    # Focal point (center of rotor)
-        (0, 1, 0),           # Up vector
-    ]
-    plotter.camera.zoom(0.8)  # Zoom in (smaller value = closer)
+    # Camera: auto-frame the full assembly (mill + drive), Y-up
+    plotter.reset_camera()
+    plotter.camera.up = (0, 1, 0)
+    plotter.camera.zoom(1.4)
 
     # ══════════════════════════════════════════════════════════════════
     # Simulation Loop State
@@ -391,24 +397,35 @@ def main():
     args = parser.parse_args()
 
     if args.static:
-        # Just show static geometry
+        # Just show static geometry with same styling
         from airclassifier.milling import create_hammer_mill_machine
         config = MillConfig()
         assembly = create_hammer_mill_machine(config=config)
         meshes = assembly.get_component_meshes()
 
-        plotter = pv.Plotter()
-        plotter.set_background("white")
+        plotter = pv.Plotter(window_size=(1400, 900))
+        plotter.set_background("#1a1a2e" if args.dark else "white")
 
         for name, (verts, tris, meta) in meshes.items():
-            color_rgba = COMPONENT_COLORS.get(name, (0.5, 0.5, 0.5, 1.0))
+            style = COMPONENT_STYLE.get(name, {})
+            if style:
+                rgb, opacity, label = style["color"], style["opacity"], style["label"]
+            else:
+                c = COMPONENT_COLORS.get(name, (0.5, 0.5, 0.5, 1.0))
+                rgb, opacity, label = c[:3], (c[3] if len(c) > 3 else 0.8), name
             pd = _mesh_to_polydata(verts, tris)
-            plotter.add_mesh(pd, color=color_rgba[:3], opacity=color_rgba[3],
-                             smooth_shading=True, label=name)
+            plotter.add_mesh(pd, color=rgb, opacity=opacity,
+                             smooth_shading=True, label=label)
 
-        plotter.add_legend()
-        plotter.add_axes()
-        plotter.add_title("Hammer Mill - Static View")
+        text_color = "white" if args.dark else "black"
+        plotter.add_legend(bcolor=(0.1, 0.1, 0.15, 0.8) if args.dark else "white")
+        plotter.add_axes(xlabel="X (rotor axis)", ylabel="Y (vertical)",
+                         zlabel="Z (lateral)", line_width=2)
+        plotter.add_text("Hammer Mill - Static View", position="upper_left",
+                         font_size=12, color=text_color)
+        plotter.reset_camera()
+        plotter.camera.up = (0, 1, 0)
+        plotter.camera.zoom(1.4)
         plotter.show()
     else:
         run_live_simulation(args)

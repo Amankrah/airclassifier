@@ -48,7 +48,7 @@ class ScreenParams:
 
     # --- Arc geometry ---
     arc_angle_deg: float = 180.0                  # Angular extent (180 = semicircle)
-    start_angle_deg: float = 180.0                # Start angle (180 = -Y direction)
+    start_angle_deg: float = 90.0                 # Start angle (90 = +Z, wraps bottom)
 
     # --- Position ---
     center_x_m: float = 0.05                      # X position of screen start
@@ -145,6 +145,19 @@ class ScreenGeometry:
         )
         parts.append((screen_verts, screen_tris))
 
+        # --- Screen frame bars at arc edges (screen cradle) ---
+        frame_w = 0.008
+        frame_h = 0.012
+        for edge_angle in (p.start_angle_rad, p.end_angle_rad):
+            ey = p.center_y_m + p.outer_radius_m * math.cos(edge_angle)
+            ez = p.center_z_m + p.outer_radius_m * math.sin(edge_angle)
+            parts.append(box_mesh(
+                p.center_x_m,
+                ey - frame_h / 2,
+                ez - frame_w / 2,
+                p.length_m, frame_h, frame_w,
+            ))
+
         # --- Support ribs (radial bars under screen) ---
         if p.rib_count > 0:
             rib_spacing = p.length_m / (p.rib_count + 1)
@@ -154,7 +167,7 @@ class ScreenGeometry:
                 rib_verts, rib_tris = box_mesh(
                     x_pos - p.rib_width_m / 2.0,
                     -p.outer_radius_m - p.rib_height_m,
-                    p.center_z_m - p.inner_radius_m * 0.8,  # Span most of screen width
+                    p.center_z_m - p.inner_radius_m * 0.8,
                     p.rib_width_m,
                     p.rib_height_m,
                     p.inner_radius_m * 1.6,

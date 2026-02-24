@@ -46,6 +46,7 @@ COMPONENT_COLORS = {
     "hammer_pins": (0.55, 0.55, 0.58, 1.0), # Steel pins
     "screen": (0.5, 0.5, 0.55, 0.8),       # Dark gray, semi-transparent
     "housing": (0.45, 0.5, 0.55, 0.6),     # Blue-gray, transparent
+    "housing_discharge": (0.45, 0.48, 0.52, 0.85),  # Discharge funnel
     "feed_chute": (0.5, 0.55, 0.6, 0.8),   # Light gray
     "drive": (0.3, 0.35, 0.4, 1.0),        # Dark gray
 }
@@ -173,9 +174,10 @@ class HammerMillMachineAssembly:
         )
         self._component_meshes["screen"] = (verts, tris, meta)
 
-        # Housing
-        verts, tris, meta = self.housing_geometry.generate_mesh(resolution)
-        self._component_meshes["housing"] = (verts, tris, meta)
+        # Housing (color-coded parts: shell + discharge funnel)
+        housing_meta = {"type": "housing", "animation_type": None}
+        for part_name, (v, t) in self.housing_geometry.generate_mesh_parts(resolution).items():
+            self._component_meshes[part_name] = (v, t, housing_meta)
 
         # Feed chute
         verts, tris, meta = self.feed_chute_geometry.generate_mesh()
