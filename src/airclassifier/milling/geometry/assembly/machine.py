@@ -41,14 +41,23 @@ from ...config import MillConfig
 
 # Component colors for visualization (RGBA or named)
 COMPONENT_COLORS = {
-    "rotor": (0.6, 0.6, 0.65, 1.0),        # Steel gray
-    "hammers": (0.8, 0.75, 0.3, 1.0),      # Gold/brass
-    "hammer_pins": (0.55, 0.55, 0.58, 1.0), # Steel pins
-    "screen": (0.5, 0.5, 0.55, 0.8),       # Dark gray, semi-transparent
-    "housing": (0.45, 0.5, 0.55, 0.6),     # Blue-gray, transparent
-    "housing_discharge": (0.45, 0.48, 0.52, 0.85),  # Discharge funnel
-    "feed_chute": (0.5, 0.55, 0.6, 0.8),   # Light gray
-    "drive": (0.3, 0.35, 0.4, 1.0),        # Dark gray
+    # --- Mill internals ---
+    "rotor":              (0.52, 0.55, 0.62, 1.0),   # Machined steel blue-gray
+    "hammers":            (0.85, 0.68, 0.15, 1.0),   # Hardened tool-steel gold
+    "hammer_pins":        (0.70, 0.72, 0.75, 1.0),   # Bright chrome pins
+    # --- Enclosure ---
+    "screen":             (0.40, 0.58, 0.52, 0.75),  # Perforated-plate teal
+    "housing":            (0.34, 0.42, 0.54, 0.50),  # Painted mild-steel blue
+    "housing_discharge":  (0.34, 0.42, 0.54, 0.80),  # Discharge funnel (same hue, more opaque)
+    "feed_chute":         (0.55, 0.48, 0.38, 0.80),  # Feed hopper warm brown
+    # --- Drive train ---
+    "drive_motor":        (0.22, 0.30, 0.22, 1.0),   # Motor casing dark green
+    "drive_shaft":        (0.70, 0.72, 0.75, 1.0),   # Polished shaft chrome
+    "drive_base":         (0.28, 0.28, 0.30, 1.0),   # Baseplate dark charcoal
+    "drive_feet":         (0.28, 0.28, 0.30, 1.0),   # Mounting feet charcoal
+    "drive_pulley_motor": (0.50, 0.50, 0.55, 1.0),   # Cast-iron pulley
+    "drive_pulley_mill":  (0.50, 0.50, 0.55, 1.0),   # Cast-iron pulley
+    "drive_belt":         (0.15, 0.15, 0.15, 1.0),   # Rubber V-belt black
 }
 
 

@@ -64,6 +64,7 @@ class _WelcomeOverlay(QWidget):
     open_project_clicked = Signal()
     load_preset_clicked = Signal()
     pretreatment_clicked = Signal()
+    milling_clicked = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -74,7 +75,7 @@ class _WelcomeOverlay(QWidget):
         outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         card = QFrame()
-        card.setFixedSize(520, 460)
+        card.setFixedSize(520, 520)
         card.setStyleSheet(f"""
             QFrame {{
                 background: {COLORS.BG_ELEVATED};
@@ -145,6 +146,20 @@ class _WelcomeOverlay(QWidget):
         pt_btn.setToolTip("GP-15 RF dielectric heating simulation\nMoisture conditioning: 8–14% → 2–4% wb")
         pt_btn.clicked.connect(self.pretreatment_clicked.emit)
         card_layout.addWidget(pt_btn)
+
+        _milling = f"""
+            QPushButton {{
+                background: {COLORS.SUCCESS_MUTED}; color: {COLORS.SUCCESS};
+                border: 1px solid {COLORS.SUCCESS}; border-radius: 6px;
+                padding: 10px 20px; font-size: 11pt; font-weight: 600; min-height: 28px;
+            }}
+            QPushButton:hover {{ background: {COLORS.SUCCESS}; color: {COLORS.BG_DARKEST}; }}
+        """
+        mill_btn = QPushButton("  Pin Mill (Hammer Mill)")
+        mill_btn.setStyleSheet(_milling)
+        mill_btn.setToolTip("Hammer mill impact milling simulation\nSize reduction: whole seeds → milled flour")
+        mill_btn.clicked.connect(self.milling_clicked.emit)
+        card_layout.addWidget(mill_btn)
 
         cls_btn = QPushButton("  Air Classification")
         cls_btn.setStyleSheet(_primary)
@@ -278,6 +293,7 @@ class MainWindow(QMainWindow):
         self._welcome.open_project_clicked.connect(self._dismiss_welcome_and_open)
         self._welcome.load_preset_clicked.connect(self._dismiss_welcome_and_preset)
         self._welcome.pretreatment_clicked.connect(self._dismiss_welcome_and_pretreatment)
+        self._welcome.milling_clicked.connect(self._dismiss_welcome_and_milling)
         self._welcome.setGeometry(self.centralWidget().geometry())
         self._welcome.show()
         self._welcome.raise_()
@@ -302,6 +318,10 @@ class MainWindow(QMainWindow):
     def _dismiss_welcome_and_pretreatment(self):
         self._dismiss_welcome()
         self.switch_mode(self.MODE_PRETREATMENT)
+
+    def _dismiss_welcome_and_milling(self):
+        self._dismiss_welcome()
+        self.switch_mode(self.MODE_MILLING)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

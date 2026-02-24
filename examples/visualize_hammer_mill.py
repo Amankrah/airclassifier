@@ -29,81 +29,78 @@ from airclassifier.milling import (
 
 # Enhanced color scheme with labels for legend
 COMPONENT_STYLE = {
+    # --- Mill internals ---
     "rotor": {
-        "color": (0.6, 0.6, 0.65),
+        "color": (0.52, 0.55, 0.62),
         "opacity": 0.95,
         "label": "Rotor (steel)",
     },
     "hammers": {
-        "color": (0.85, 0.70, 0.15),  # Bright gold
+        "color": (0.85, 0.68, 0.15),
         "opacity": 1.0,
-        "label": "Hammers (brass)",
+        "label": "Hammers (tool steel)",
     },
     "hammer_pins": {
-        "color": (0.55, 0.55, 0.58),
+        "color": (0.70, 0.72, 0.75),
         "opacity": 1.0,
-        "label": "Hammer pins (steel)",
+        "label": "Hammer pins (chrome)",
     },
+    # --- Enclosure ---
     "screen": {
-        "color": (0.4, 0.45, 0.5),
-        "opacity": 0.6,
+        "color": (0.40, 0.58, 0.52),
+        "opacity": 0.55,
         "label": "Screen (perforated)",
     },
     "housing": {
-        "color": (0.35, 0.45, 0.55),
-        "opacity": 0.3,  # Very transparent to see inside
+        "color": (0.34, 0.42, 0.54),
+        "opacity": 0.30,
         "label": "Housing (casing)",
     },
     "housing_discharge": {
-        "color": (0.45, 0.48, 0.52),
-        "opacity": 0.85,
+        "color": (0.34, 0.42, 0.54),
+        "opacity": 0.80,
         "label": "Discharge chute",
     },
     "feed_chute": {
-        "color": (0.5, 0.6, 0.65),
+        "color": (0.55, 0.48, 0.38),
         "opacity": 0.75,
-        "label": "Feed Chute",
+        "label": "Feed chute",
     },
-    "drive": {
-        "color": (0.25, 0.3, 0.35),
-        "opacity": 0.9,
-        "label": "Drive Assembly",
-    },
-    # Drive assembly parts (industrial look like centrifugal_blower: gray motor, visible belt)
+    # --- Drive train ---
     "drive_motor": {
-        "color": (0.32, 0.34, 0.38),
+        "color": (0.22, 0.30, 0.22),
         "opacity": 0.95,
-        "label": "Motor (body)",
+        "label": "Motor",
     },
     "drive_base": {
-        "color": (0.5, 0.52, 0.55),
+        "color": (0.28, 0.28, 0.30),
         "opacity": 0.95,
         "label": "Base plate",
     },
     "drive_feet": {
-        "color": (0.45, 0.47, 0.5),
+        "color": (0.28, 0.28, 0.30),
         "opacity": 0.95,
         "label": "Motor feet",
     },
     "drive_pulley_motor": {
-        "color": (0.28, 0.30, 0.32),
+        "color": (0.50, 0.50, 0.55),
         "opacity": 1.0,
         "label": "Motor pulley",
     },
     "drive_pulley_mill": {
-        "color": (0.62, 0.63, 0.66),
+        "color": (0.50, 0.50, 0.55),
         "opacity": 1.0,
         "label": "Mill pulley",
     },
     "drive_shaft": {
-        "color": (0.35, 0.37, 0.4),
+        "color": (0.70, 0.72, 0.75),
         "opacity": 1.0,
         "label": "Motor shaft",
     },
     "drive_belt": {
-        "color": (0.22, 0.22, 0.24),
+        "color": (0.15, 0.15, 0.15),
         "opacity": 1.0,
-        "label": "Belt",
+        "label": "V-Belt",
     },
 }
 

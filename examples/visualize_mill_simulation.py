@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import math
 import time
 import numpy as np
 
@@ -57,6 +58,59 @@ def _mesh_to_polydata(verts: np.ndarray, tris: np.ndarray) -> "pv.PolyData":
     faces[:, 0] = 3
     faces[:, 1:] = tris
     return pv.PolyData(verts.copy(), faces.ravel())
+
+
+def _build_belt_path(dp):
+    """Build belt centerline as a closed polyline in Y-Z plane.
+
+    The path follows the belt loop: mill wrap -> straight -> motor wrap -> straight.
+    Returns (path_yz, cum_s, total_len, belt_x).
+    """
+    groove_frac = 0.12
+    R_mill = dp.mill_pulley_radius_m * (1 - groove_frac)
+    R_motor = dp.pulley_radius_m * (1 - groove_frac)
+    my, mz = dp.motor_y_offset_m, dp.motor_z_offset_m
+    d = math.sqrt(my**2 + mz**2)
+    phi = math.atan2(mz, my)
+    n_arc = 24
+
+    pts = []
+    # 1. Mill wrap (far side from motor): phi+pi/2 -> phi+3pi/2
+    for i in range(n_arc + 1):
+        a = (phi + math.pi / 2) + i * math.pi / n_arc
+        pts.append((R_mill * math.cos(a), R_mill * math.sin(a)))
+    # 2. Straight to motor -tangent
+    a0 = phi - math.pi / 2
+    pts.append((my + R_motor * math.cos(a0), mz + R_motor * math.sin(a0)))
+    # 3. Motor wrap (far side from mill): phi-pi/2 -> phi+pi/2
+    for i in range(1, n_arc + 1):
+        a = (phi - math.pi / 2) + i * math.pi / n_arc
+        pts.append((my + R_motor * math.cos(a), mz + R_motor * math.sin(a)))
+    # 4. Close loop back to start
+    pts.append(pts[0])
+
+    path_yz = np.array(pts, dtype=np.float64)
+    diffs = np.diff(path_yz, axis=0)
+    seg_lens = np.sqrt(diffs[:, 0]**2 + diffs[:, 1]**2)
+    cum_s = np.zeros(len(path_yz))
+    cum_s[1:] = np.cumsum(seg_lens)
+    belt_x = dp.mill_pulley_x_m + dp.mill_pulley_width_m / 2
+    return path_yz, cum_s, cum_s[-1], belt_x
+
+
+def _sample_belt_markers(path_yz, cum_s, total_len, belt_x, phase, n=15):
+    """Return (n, 3) marker positions at given phase along belt path."""
+    out = np.zeros((n, 3), dtype=np.float32)
+    for i in range(n):
+        s = (phase + i * total_len / n) % total_len
+        idx = min(int(np.searchsorted(cum_s, s)) - 1, len(path_yz) - 2)
+        idx = max(idx, 0)
+        seg_len = cum_s[idx + 1] - cum_s[idx]
+        t = (s - cum_s[idx]) / max(seg_len, 1e-10)
+        out[i, 0] = belt_x
+        out[i, 1] = path_yz[idx, 0] + t * (path_yz[idx + 1, 0] - path_yz[idx, 0])
+        out[i, 2] = path_yz[idx, 1] + t * (path_yz[idx + 1, 1] - path_yz[idx, 1])
+    return out
 
 
 def run_live_simulation(args):
@@ -119,7 +173,23 @@ def run_live_simulation(args):
     # Store mesh data for animation
     mesh_actors = {}
     original_verts = {}
-    animated_components = {"rotor", "hammers", "hammer_pins"}
+
+    # Rotor-axis components (rotate around Y=0, Z=0 at rotor speed)
+    rotor_animated = {"rotor", "hammers", "hammer_pins", "drive_pulley_mill"}
+
+    # Motor-axis components (rotate around motor shaft center, faster speed)
+    motor_animated = {"drive_pulley_motor", "drive_shaft"}
+
+    # Drive params for motor animation center and pulley ratio
+    dp = sim.assembly.drive_params
+    motor_center_y = dp.motor_y_offset_m
+    motor_center_z = dp.motor_z_offset_m
+    pulley_ratio = dp.mill_pulley_radius_m / dp.pulley_radius_m
+
+    # Belt path for marker animation
+    belt_path_yz, belt_cum_s, belt_total_len, belt_x = _build_belt_path(dp)
+    belt_pitch_r = dp.mill_pulley_radius_m * (1 - 0.12)  # belt pitch radius
+    n_belt_markers = 15
 
     # ── Add geometry meshes with proper colors ────────────────────────
     print("\nAdding components:")
@@ -183,6 +253,20 @@ def run_live_simulation(args):
         label="Particles",
     )
 
+    # ── Belt markers (small flat dots that travel along the belt loop) ──
+    belt_marker_pos = _sample_belt_markers(
+        belt_path_yz, belt_cum_s, belt_total_len, belt_x, 0.0, n_belt_markers,
+    )
+    belt_marker_cloud = pv.PolyData(belt_marker_pos)
+    plotter.add_mesh(
+        belt_marker_cloud,
+        color=(0.45, 0.45, 0.40),  # subtle gray-brown (blends with belt)
+        point_size=4,
+        render_points_as_spheres=False,  # flat squares — distinct from particles
+        opacity=0.85,
+        name="belt_markers",
+    )
+
     # ── Add axes and legend ───────────────────────────────────────────
     plotter.add_axes(
         xlabel="X (rotor axis)",
@@ -194,12 +278,12 @@ def run_live_simulation(args):
     legend_bg = (0.1, 0.1, 0.15, 0.8) if args.dark else "white"
     plotter.add_legend(loc="upper left", bcolor=legend_bg)
 
-    # Title — create the VTK text actor ONCE; update via SetInput()
-    # to avoid repeated actor create/destroy that corrupts VTK heap.
+    # Title — use a vtkTextActor (tuple position) so we can call
+    # SetInput() safely each frame without actor churn.
     text_color = "white" if args.dark else "black"
     title_actor = plotter.add_text(
         "Hammer Mill Live  |  Initializing...",
-        position="upper_edge",
+        position="upper_left",
         font_size=10,
         color=text_color,
         name="sim_title",
@@ -211,131 +295,193 @@ def run_live_simulation(args):
     plotter.camera.zoom(1.4)
 
     # ══════════════════════════════════════════════════════════════════
-    # Simulation state (mutable — accessed from timer callback)
+    # Simulation state
     # ══════════════════════════════════════════════════════════════════
     dt = 0.002  # 2ms timestep
     omega = config.rotor_angular_velocity
     t_end = args.duration
     t0_wall = time.time()
 
-    theta = [0.0]
-    step_count = [0]
-    total_impacts = [0]
-    total_breakage = [0]
-    total_discharged = [0]
-    sim_done = [False]
+    theta = 0.0
+    step_count = 0
+    total_impacts = 0
+    total_breakage = 0
+    total_discharged = 0
 
     # Adaptive pacing: fewer steps early (see transient), more later
     steps_min = 2
     steps_max = 15
     transient_s = 0.5
 
-    # Pre-allocate a particle buffer so VTK never reallocates mid-render
+    # Pre-allocate particle buffer (fixed size → no VTK reallocation)
     max_particles = 2000
     particle_buf = np.zeros((max_particles, 3), dtype=np.float32)
     size_buf = np.zeros(max_particles, dtype=np.float32)
     particle_buf[:, 1] = -10.0  # off-screen
-    particle_cloud.points = particle_buf
-    particle_cloud["Size"] = size_buf
+    particle_cloud.points = particle_buf.copy()
+    particle_cloud["Size"] = size_buf.copy()
 
-    # ── Timer callback: runs simulation + updates meshes ────────────
-    def _sim_tick(*_cb_args):
-        if sim_done[0]:
-            return
-
-        sim_time = sim.engine.time_s
-
-        # ── Check if finished ────────────────────────────────────
-        if sim_time >= t_end:
-            sim_done[0] = True
-            elapsed_wall = time.time() - t0_wall
-            title_actor.SetText(
-                2,
-                f"DONE  |  {sim_time:.1f}s  |  "
-                f"Impacts: {total_impacts[0]}  |  "
-                f"Discharged: {total_discharged[0]}  |  "
-                f"Wall: {elapsed_wall:.1f}s",
-            )
-            print("\nSimulation complete!")
-            print(f"  Total impacts:     {total_impacts[0]}")
-            print(f"  Total breakage:    {total_breakage[0]}")
-            print(f"  Total discharged:  {total_discharged[0]}")
-            print(f"  Wall-clock time:   {elapsed_wall:.1f}s")
-            print("\nClose the window to see final results.")
-            return
-
-        # ── Adaptive stepping ────────────────────────────────────
-        ramp = min(sim_time / max(transient_s, 0.01), 1.0)
-        steps = int(steps_min + ramp * (steps_max - steps_min))
-
-        for _ in range(steps):
-            if sim.engine.time_s >= t_end:
-                break
-            state = sim.step(dt)
-            step_count[0] += 1
-            theta[0] += omega * dt
-            total_impacts[0] += state.num_impacts
-            total_breakage[0] += state.num_breakage_events
-            total_discharged[0] += state.num_discharged
-
-        # ── Rotate rotor / hammers / pins ────────────────────────
-        cos_t = np.cos(theta[0])
-        sin_t = np.sin(theta[0])
-        for name in animated_components:
-            if name in mesh_actors:
-                ov = original_verts[name]
-                nv = ov.copy()
-                nv[:, 1] = cos_t * ov[:, 1] - sin_t * ov[:, 2]
-                nv[:, 2] = sin_t * ov[:, 1] + cos_t * ov[:, 2]
-                mesh_actors[name].points = nv
-
-        # ── Update particles (in-place into pre-allocated buffer) ─
-        positions = sim.get_particle_positions()
-        sizes = sim.get_particle_sizes()
-        n = min(len(positions), max_particles)
-
-        particle_buf[:] = 0.0
-        particle_buf[:, 1] = -10.0          # hide unused slots
-        size_buf[:] = 0.0
-        if n > 0:
-            particle_buf[:n] = positions[:n]
-            size_buf[:n] = sizes[:n] * 1000  # mm
-        particle_cloud.points = particle_buf
-        particle_cloud["Size"] = size_buf
-
-        # ── Update title text in-place ───────────────────────────
-        n_particles = len(positions)
-        last = sim.history[-1] if sim.history else None
-        if last:
-            title_actor.SetText(
-                2,
-                f"t={sim_time:.2f}/{t_end:.0f}s  |  "
-                f"Particles: {n_particles}  |  "
-                f"Holdup: {last.holdup_kg*1000:.0f}g  |  "
-                f"Power: {last.power_kw:.1f}kW  |  "
-                f"Impacts: {total_impacts[0]}",
-            )
-        else:
-            title_actor.SetText(
-                2, f"t={sim_time:.2f}s  |  Particles: {n_particles}"
-            )
-
-    # ── Register timer callback (same pattern as visualize_hammer_mill) ─
-    timer_ms = 33  # ~30 fps
-    try:
-        plotter.iren.add_observer("TimerEvent", _sim_tick)
-        plotter.iren.create_repeating_timer(timer_ms)
-    except Exception:
-        # Fallback: fire on every render (user must move mouse)
-        plotter.add_on_render_callback(_sim_tick)
+    # Non-blocking show
+    plotter.show(interactive_update=True, auto_close=False)
 
     print("\n" + "=" * 60)
     print("  LIVE SIMULATION RUNNING")
     print("  Close window to stop")
     print("=" * 60 + "\n")
 
-    # Blocking show — VTK manages its own event loop safely
-    plotter.show()
+    # ══════════════════════════════════════════════════════════════════
+    # Main loop
+    # ══════════════════════════════════════════════════════════════════
+    target_fps = 30.0
+    frame_dt = 1.0 / target_fps
+    sim_done = False
+
+    try:
+        while not sim_done:
+            t_frame_start = time.perf_counter()
+
+            # Pump VTK events (window close, mouse, etc.)
+            try:
+                plotter.iren.process_events()
+            except Exception:
+                break
+            if plotter.render_window is None:
+                break
+
+            sim_time = sim.engine.time_s
+
+            # ── Adaptive stepping ────────────────────────────────────
+            ramp = min(sim_time / max(transient_s, 0.01), 1.0)
+            steps = int(steps_min + ramp * (steps_max - steps_min))
+
+            for _ in range(steps):
+                if sim.engine.time_s >= t_end:
+                    break
+                state = sim.step(dt)
+                step_count += 1
+                theta += omega * dt
+                total_impacts += state.num_impacts
+                total_breakage += state.num_breakage_events
+                total_discharged += state.num_discharged
+
+            # ── Rotate rotor-axis components (rotor, hammers, pins, mill pulley) ──
+            cos_t = np.cos(theta)
+            sin_t = np.sin(theta)
+            for name in rotor_animated:
+                if name in mesh_actors:
+                    ov = original_verts[name]
+                    nv = ov.copy()
+                    nv[:, 1] = cos_t * ov[:, 1] - sin_t * ov[:, 2]
+                    nv[:, 2] = sin_t * ov[:, 1] + cos_t * ov[:, 2]
+                    mesh_actors[name].points = nv
+
+            # ── Rotate motor-axis components (motor pulley, shaft) ─────
+            motor_theta = theta * pulley_ratio
+            cos_m = np.cos(motor_theta)
+            sin_m = np.sin(motor_theta)
+            for name in motor_animated:
+                if name in mesh_actors:
+                    ov = original_verts[name]
+                    nv = ov.copy()
+                    y_c = ov[:, 1] - motor_center_y
+                    z_c = ov[:, 2] - motor_center_z
+                    nv[:, 1] = cos_m * y_c - sin_m * z_c + motor_center_y
+                    nv[:, 2] = sin_m * y_c + cos_m * z_c + motor_center_z
+                    mesh_actors[name].points = nv
+
+            # ── Advance belt markers along the belt path ──────────────
+            belt_phase = theta * belt_pitch_r
+            belt_marker_cloud.points = _sample_belt_markers(
+                belt_path_yz, belt_cum_s, belt_total_len, belt_x,
+                belt_phase, n_belt_markers,
+            )
+
+            # ── Update particles (fixed-size buffer) ─────────────────
+            positions = sim.get_particle_positions()
+            sizes = sim.get_particle_sizes()
+            n = min(len(positions), max_particles)
+
+            particle_buf[:] = 0.0
+            particle_buf[:, 1] = -10.0
+            size_buf[:] = 0.0
+            if n > 0:
+                particle_buf[:n] = positions[:n]
+                size_buf[:n] = sizes[:n] * 1000
+            particle_cloud.points = particle_buf.copy()
+            particle_cloud["Size"] = size_buf.copy()
+
+            # ── Update title (in-place, no actor churn) ──────────────
+            sim_time = sim.engine.time_s  # re-read after stepping
+            n_particles = len(positions)
+            last = sim.history[-1] if sim.history else None
+            if last:
+                title_actor.SetText(
+                    2,
+                    f"t={sim_time:.2f}/{t_end:.0f}s  |  "
+                    f"Particles: {n_particles}  |  "
+                    f"Holdup: {last.holdup_kg*1000:.0f}g  |  "
+                    f"Power: {last.power_kw:.1f}kW  |  "
+                    f"Impacts: {total_impacts}",
+                )
+            else:
+                title_actor.SetText(
+                    2, f"t={sim_time:.2f}s  |  Particles: {n_particles}"
+                )
+
+            # ── Render frame ─────────────────────────────────────────
+            try:
+                plotter.render()
+            except Exception:
+                break
+
+            # ── Check if simulation finished ─────────────────────────
+            if sim.engine.time_s >= t_end:
+                sim_done = True
+                elapsed_wall = time.time() - t0_wall
+
+                # Clear particles and belt markers from view
+                particle_buf[:] = 0.0
+                particle_buf[:, 1] = -10.0
+                size_buf[:] = 0.0
+                particle_cloud.points = particle_buf.copy()
+                particle_cloud["Size"] = size_buf.copy()
+                offscreen = np.zeros((n_belt_markers, 3), dtype=np.float32)
+                offscreen[:, 1] = -10.0
+                belt_marker_cloud.points = offscreen
+
+                title_actor.SetText(
+                    2,
+                    f"DONE  |  {sim_time:.1f}s  |  "
+                    f"Impacts: {total_impacts}  |  "
+                    f"Discharged: {total_discharged}  |  "
+                    f"Wall: {elapsed_wall:.1f}s",
+                )
+                plotter.render()
+                print("\nSimulation complete!")
+                print(f"  Total impacts:     {total_impacts}")
+                print(f"  Total breakage:    {total_breakage}")
+                print(f"  Total discharged:  {total_discharged}")
+                print(f"  Wall-clock time:   {elapsed_wall:.1f}s")
+
+            # ── Frame-rate limiter ───────────────────────────────────
+            elapsed_frame = time.perf_counter() - t_frame_start
+            time.sleep(max(0.001, frame_dt - elapsed_frame))
+
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+
+    # Keep window open after sim finishes — pump events until closed
+    if sim_done and plotter.render_window is not None:
+        print("Close the window to see final results.")
+        try:
+            plotter.show()
+        except Exception:
+            pass
+
+    try:
+        plotter.close()
+    except Exception:
+        pass
 
     # ══════════════════════════════════════════════════════════════════
     # Final Results
@@ -357,9 +503,9 @@ def run_live_simulation(args):
         print(f"  Specific energy:   {result.specific_energy_kwh_per_t:.1f} kWh/t")
     print(f"\nSimulation:")
     print(f"  Duration:          {sim.engine.time_s:.2f}s")
-    print(f"  Steps:             {step_count[0]}")
+    print(f"  Steps:             {step_count}")
     print(f"  Wall-clock:        {elapsed:.1f}s")
-    print(f"  Speed:             {step_count[0]/max(elapsed, 0.001):.0f} steps/s")
+    print(f"  Speed:             {step_count/max(elapsed, 0.001):.0f} steps/s")
     print("=" * 60)
 
     return result

@@ -656,30 +656,222 @@ class AssemblyConfigDialog(QDialog):
         layout.setSpacing(8)
         _M = (10, 14, 10, 10)
 
-        g = QGroupBox("Mill operating point")
+        # --- Rotor & Drive ---
+        g = QGroupBox("Rotor && Drive")
         f = QFormLayout(g)
         f.setContentsMargins(*_M)
 
         self.mill_rotor_rpm_spin = QDoubleSpinBox()
         self.mill_rotor_rpm_spin.setRange(500, 6000)
         self.mill_rotor_rpm_spin.setValue(3000)
-        self.mill_rotor_rpm_spin.setSuffix(" rpm")
+        self.mill_rotor_rpm_spin.setDecimals(0)
+        self.mill_rotor_rpm_spin.setSuffix("  rpm")
         f.addRow("Rotor RPM:", self.mill_rotor_rpm_spin)
 
+        self.mill_rotor_diameter_spin = QDoubleSpinBox()
+        self.mill_rotor_diameter_spin.setRange(0.05, 0.50)
+        self.mill_rotor_diameter_spin.setValue(0.20)
+        self.mill_rotor_diameter_spin.setDecimals(3)
+        self.mill_rotor_diameter_spin.setSingleStep(0.01)
+        self.mill_rotor_diameter_spin.setSuffix("  m")
+        f.addRow("Rotor diameter:", self.mill_rotor_diameter_spin)
+
+        self.mill_rotor_length_spin = QDoubleSpinBox()
+        self.mill_rotor_length_spin.setRange(0.10, 1.00)
+        self.mill_rotor_length_spin.setValue(0.30)
+        self.mill_rotor_length_spin.setDecimals(3)
+        self.mill_rotor_length_spin.setSingleStep(0.01)
+        self.mill_rotor_length_spin.setSuffix("  m")
+        f.addRow("Rotor length:", self.mill_rotor_length_spin)
+
+        self.mill_shaft_diameter_spin = QDoubleSpinBox()
+        self.mill_shaft_diameter_spin.setRange(0.02, 0.15)
+        self.mill_shaft_diameter_spin.setValue(0.05)
+        self.mill_shaft_diameter_spin.setDecimals(3)
+        self.mill_shaft_diameter_spin.setSingleStep(0.005)
+        self.mill_shaft_diameter_spin.setSuffix("  m")
+        f.addRow("Shaft diameter:", self.mill_shaft_diameter_spin)
+
+        self.mill_motor_power_spin = QDoubleSpinBox()
+        self.mill_motor_power_spin.setRange(5, 100)
+        self.mill_motor_power_spin.setValue(22.0)
+        self.mill_motor_power_spin.setDecimals(1)
+        self.mill_motor_power_spin.setSuffix("  kW")
+        f.addRow("Motor power:", self.mill_motor_power_spin)
+
+        layout.addWidget(g)
+
+        # --- Hammers ---
+        g = QGroupBox("Hammers")
+        f = QFormLayout(g)
+        f.setContentsMargins(*_M)
+
+        self.mill_hammer_rows_spin = QSpinBox()
+        self.mill_hammer_rows_spin.setRange(1, 12)
+        self.mill_hammer_rows_spin.setValue(4)
+        f.addRow("Hammer rows:", self.mill_hammer_rows_spin)
+
+        self.mill_hammers_per_row_spin = QSpinBox()
+        self.mill_hammers_per_row_spin.setRange(2, 8)
+        self.mill_hammers_per_row_spin.setValue(4)
+        f.addRow("Hammers per row:", self.mill_hammers_per_row_spin)
+
+        self.mill_hammer_mass_spin = QDoubleSpinBox()
+        self.mill_hammer_mass_spin.setRange(0.05, 2.0)
+        self.mill_hammer_mass_spin.setValue(0.35)
+        self.mill_hammer_mass_spin.setDecimals(3)
+        self.mill_hammer_mass_spin.setSingleStep(0.05)
+        self.mill_hammer_mass_spin.setSuffix("  kg")
+        f.addRow("Hammer mass:", self.mill_hammer_mass_spin)
+
+        self.mill_hammer_length_spin = QDoubleSpinBox()
+        self.mill_hammer_length_spin.setRange(0.02, 0.20)
+        self.mill_hammer_length_spin.setValue(0.08)
+        self.mill_hammer_length_spin.setDecimals(3)
+        self.mill_hammer_length_spin.setSingleStep(0.005)
+        self.mill_hammer_length_spin.setSuffix("  m")
+        f.addRow("Hammer length:", self.mill_hammer_length_spin)
+
+        self.mill_hammer_width_spin = QDoubleSpinBox()
+        self.mill_hammer_width_spin.setRange(0.01, 0.15)
+        self.mill_hammer_width_spin.setValue(0.05)
+        self.mill_hammer_width_spin.setDecimals(3)
+        self.mill_hammer_width_spin.setSingleStep(0.005)
+        self.mill_hammer_width_spin.setSuffix("  m")
+        f.addRow("Hammer width:", self.mill_hammer_width_spin)
+
+        self.mill_hammer_thickness_spin = QDoubleSpinBox()
+        self.mill_hammer_thickness_spin.setRange(0.002, 0.020)
+        self.mill_hammer_thickness_spin.setValue(0.008)
+        self.mill_hammer_thickness_spin.setDecimals(3)
+        self.mill_hammer_thickness_spin.setSingleStep(0.001)
+        self.mill_hammer_thickness_spin.setSuffix("  m")
+        f.addRow("Hammer thickness:", self.mill_hammer_thickness_spin)
+
+        self.mill_hammer_clearance_spin = QDoubleSpinBox()
+        self.mill_hammer_clearance_spin.setRange(0.002, 0.030)
+        self.mill_hammer_clearance_spin.setValue(0.008)
+        self.mill_hammer_clearance_spin.setDecimals(3)
+        self.mill_hammer_clearance_spin.setSingleStep(0.001)
+        self.mill_hammer_clearance_spin.setSuffix("  m")
+        f.addRow("Hammer clearance:", self.mill_hammer_clearance_spin)
+
+        layout.addWidget(g)
+
+        # --- Screen ---
+        g = QGroupBox("Screen")
+        f = QFormLayout(g)
+        f.setContentsMargins(*_M)
+
         self.mill_screen_aperture_spin = QDoubleSpinBox()
-        self.mill_screen_aperture_spin.setRange(0.5, 5.0)
+        self.mill_screen_aperture_spin.setRange(0.5, 10.0)
         self.mill_screen_aperture_spin.setValue(1.5)
         self.mill_screen_aperture_spin.setDecimals(2)
-        self.mill_screen_aperture_spin.setSuffix(" mm")
-        f.addRow("Screen aperture:", self.mill_screen_aperture_spin)
+        self.mill_screen_aperture_spin.setSuffix("  mm")
+        f.addRow("Aperture:", self.mill_screen_aperture_spin)
+
+        self.mill_screen_open_area_spin = QDoubleSpinBox()
+        self.mill_screen_open_area_spin.setRange(0.10, 0.80)
+        self.mill_screen_open_area_spin.setValue(0.40)
+        self.mill_screen_open_area_spin.setDecimals(2)
+        self.mill_screen_open_area_spin.setSingleStep(0.05)
+        f.addRow("Open area fraction:", self.mill_screen_open_area_spin)
+
+        self.mill_screen_inner_radius_spin = QDoubleSpinBox()
+        self.mill_screen_inner_radius_spin.setRange(0.05, 0.50)
+        self.mill_screen_inner_radius_spin.setValue(0.188)
+        self.mill_screen_inner_radius_spin.setDecimals(3)
+        self.mill_screen_inner_radius_spin.setSingleStep(0.005)
+        self.mill_screen_inner_radius_spin.setSuffix("  m")
+        f.addRow("Inner radius:", self.mill_screen_inner_radius_spin)
+
+        self.mill_screen_thickness_spin = QDoubleSpinBox()
+        self.mill_screen_thickness_spin.setRange(0.001, 0.010)
+        self.mill_screen_thickness_spin.setValue(0.003)
+        self.mill_screen_thickness_spin.setDecimals(3)
+        self.mill_screen_thickness_spin.setSingleStep(0.001)
+        self.mill_screen_thickness_spin.setSuffix("  m")
+        f.addRow("Thickness:", self.mill_screen_thickness_spin)
+
+        layout.addWidget(g)
+
+        # --- Housing ---
+        g = QGroupBox("Housing")
+        f = QFormLayout(g)
+        f.setContentsMargins(*_M)
+
+        self.mill_housing_inner_radius_spin = QDoubleSpinBox()
+        self.mill_housing_inner_radius_spin.setRange(0.05, 0.60)
+        self.mill_housing_inner_radius_spin.setValue(0.20)
+        self.mill_housing_inner_radius_spin.setDecimals(3)
+        self.mill_housing_inner_radius_spin.setSingleStep(0.01)
+        self.mill_housing_inner_radius_spin.setSuffix("  m")
+        f.addRow("Inner radius:", self.mill_housing_inner_radius_spin)
+
+        self.mill_housing_length_spin = QDoubleSpinBox()
+        self.mill_housing_length_spin.setRange(0.10, 1.50)
+        self.mill_housing_length_spin.setValue(0.40)
+        self.mill_housing_length_spin.setDecimals(3)
+        self.mill_housing_length_spin.setSingleStep(0.01)
+        self.mill_housing_length_spin.setSuffix("  m")
+        f.addRow("Length:", self.mill_housing_length_spin)
+
+        self.mill_housing_wall_spin = QDoubleSpinBox()
+        self.mill_housing_wall_spin.setRange(0.002, 0.020)
+        self.mill_housing_wall_spin.setValue(0.008)
+        self.mill_housing_wall_spin.setDecimals(3)
+        self.mill_housing_wall_spin.setSingleStep(0.001)
+        self.mill_housing_wall_spin.setSuffix("  m")
+        f.addRow("Wall thickness:", self.mill_housing_wall_spin)
+
+        layout.addWidget(g)
+
+        # --- Feed & Discharge ---
+        g = QGroupBox("Feed && Discharge")
+        f = QFormLayout(g)
+        f.setContentsMargins(*_M)
 
         self.mill_feed_rate_spin = QDoubleSpinBox()
         self.mill_feed_rate_spin.setRange(10, 2000)
         self.mill_feed_rate_spin.setValue(500)
-        self.mill_feed_rate_spin.setSuffix(" kg/h")
+        self.mill_feed_rate_spin.setDecimals(0)
+        self.mill_feed_rate_spin.setSuffix("  kg/h")
         f.addRow("Feed rate:", self.mill_feed_rate_spin)
 
+        self.mill_feed_chute_width_spin = QDoubleSpinBox()
+        self.mill_feed_chute_width_spin.setRange(0.05, 0.40)
+        self.mill_feed_chute_width_spin.setValue(0.15)
+        self.mill_feed_chute_width_spin.setDecimals(3)
+        self.mill_feed_chute_width_spin.setSingleStep(0.01)
+        self.mill_feed_chute_width_spin.setSuffix("  m")
+        f.addRow("Feed chute width:", self.mill_feed_chute_width_spin)
+
+        self.mill_feed_chute_height_spin = QDoubleSpinBox()
+        self.mill_feed_chute_height_spin.setRange(0.05, 0.30)
+        self.mill_feed_chute_height_spin.setValue(0.12)
+        self.mill_feed_chute_height_spin.setDecimals(3)
+        self.mill_feed_chute_height_spin.setSingleStep(0.01)
+        self.mill_feed_chute_height_spin.setSuffix("  m")
+        f.addRow("Feed chute height:", self.mill_feed_chute_height_spin)
+
+        self.mill_discharge_width_spin = QDoubleSpinBox()
+        self.mill_discharge_width_spin.setRange(0.05, 0.50)
+        self.mill_discharge_width_spin.setValue(0.20)
+        self.mill_discharge_width_spin.setDecimals(3)
+        self.mill_discharge_width_spin.setSingleStep(0.01)
+        self.mill_discharge_width_spin.setSuffix("  m")
+        f.addRow("Discharge chute width:", self.mill_discharge_width_spin)
+
+        self.mill_discharge_height_spin = QDoubleSpinBox()
+        self.mill_discharge_height_spin.setRange(0.05, 0.40)
+        self.mill_discharge_height_spin.setValue(0.15)
+        self.mill_discharge_height_spin.setDecimals(3)
+        self.mill_discharge_height_spin.setSingleStep(0.01)
+        self.mill_discharge_height_spin.setSuffix("  m")
+        f.addRow("Discharge chute height:", self.mill_discharge_height_spin)
+
         layout.addWidget(g)
+
         return w
 
     def get_params(self) -> Dict[str, Any]:
@@ -712,10 +904,35 @@ class AssemblyConfigDialog(QDialog):
             "pt_heaters_on": self.pt_heater_check.isChecked(),
             "pt_duration_s": self.pt_duration_spin.value(),
             "pt_oscillator_efficiency": self.pt_eff_spin.value(),
-            # Milling
+            # Milling — Rotor & Drive
             "mill_rotor_rpm": self.mill_rotor_rpm_spin.value(),
+            "mill_rotor_diameter_m": self.mill_rotor_diameter_spin.value(),
+            "mill_rotor_length_m": self.mill_rotor_length_spin.value(),
+            "mill_shaft_diameter_m": self.mill_shaft_diameter_spin.value(),
+            "mill_motor_power_kw": self.mill_motor_power_spin.value(),
+            # Milling — Hammers
+            "mill_hammer_rows": self.mill_hammer_rows_spin.value(),
+            "mill_hammers_per_row": self.mill_hammers_per_row_spin.value(),
+            "mill_hammer_mass_kg": self.mill_hammer_mass_spin.value(),
+            "mill_hammer_length_m": self.mill_hammer_length_spin.value(),
+            "mill_hammer_width_m": self.mill_hammer_width_spin.value(),
+            "mill_hammer_thickness_m": self.mill_hammer_thickness_spin.value(),
+            "mill_hammer_clearance_m": self.mill_hammer_clearance_spin.value(),
+            # Milling — Screen
             "mill_screen_aperture_mm": self.mill_screen_aperture_spin.value(),
+            "mill_screen_open_area": self.mill_screen_open_area_spin.value(),
+            "mill_screen_inner_radius_m": self.mill_screen_inner_radius_spin.value(),
+            "mill_screen_thickness_m": self.mill_screen_thickness_spin.value(),
+            # Milling — Housing
+            "mill_housing_inner_radius_m": self.mill_housing_inner_radius_spin.value(),
+            "mill_housing_length_m": self.mill_housing_length_spin.value(),
+            "mill_housing_wall_thickness_m": self.mill_housing_wall_spin.value(),
+            # Milling — Feed & Discharge
             "mill_feed_rate_kg_per_hr": self.mill_feed_rate_spin.value(),
+            "mill_feed_chute_width_m": self.mill_feed_chute_width_spin.value(),
+            "mill_feed_chute_height_m": self.mill_feed_chute_height_spin.value(),
+            "mill_discharge_chute_width_m": self.mill_discharge_width_spin.value(),
+            "mill_discharge_chute_height_m": self.mill_discharge_height_spin.value(),
             # Classification
             "venturi_inlet_diameter": self.venturi_inlet_spin.value() / 1000.0,
             "venturi_throat_ratio": self.venturi_throat_spin.value(),
@@ -767,12 +984,37 @@ class AssemblyConfigDialog(QDialog):
         if "pt_belt_speed" in p:
             self.pt_speed_spin.setValue(p["pt_belt_speed"])
         # Milling
-        if "mill_rotor_rpm" in p:
-            self.mill_rotor_rpm_spin.setValue(p["mill_rotor_rpm"])
-        if "mill_screen_aperture_mm" in p:
-            self.mill_screen_aperture_spin.setValue(p["mill_screen_aperture_mm"])
-        if "mill_feed_rate_kg_per_hr" in p:
-            self.mill_feed_rate_spin.setValue(p["mill_feed_rate_kg_per_hr"])
+        _mill_float = {
+            "mill_rotor_rpm": self.mill_rotor_rpm_spin,
+            "mill_rotor_diameter_m": self.mill_rotor_diameter_spin,
+            "mill_rotor_length_m": self.mill_rotor_length_spin,
+            "mill_shaft_diameter_m": self.mill_shaft_diameter_spin,
+            "mill_motor_power_kw": self.mill_motor_power_spin,
+            "mill_hammer_mass_kg": self.mill_hammer_mass_spin,
+            "mill_hammer_length_m": self.mill_hammer_length_spin,
+            "mill_hammer_width_m": self.mill_hammer_width_spin,
+            "mill_hammer_thickness_m": self.mill_hammer_thickness_spin,
+            "mill_hammer_clearance_m": self.mill_hammer_clearance_spin,
+            "mill_screen_aperture_mm": self.mill_screen_aperture_spin,
+            "mill_screen_open_area": self.mill_screen_open_area_spin,
+            "mill_screen_inner_radius_m": self.mill_screen_inner_radius_spin,
+            "mill_screen_thickness_m": self.mill_screen_thickness_spin,
+            "mill_housing_inner_radius_m": self.mill_housing_inner_radius_spin,
+            "mill_housing_length_m": self.mill_housing_length_spin,
+            "mill_housing_wall_thickness_m": self.mill_housing_wall_spin,
+            "mill_feed_rate_kg_per_hr": self.mill_feed_rate_spin,
+            "mill_feed_chute_width_m": self.mill_feed_chute_width_spin,
+            "mill_feed_chute_height_m": self.mill_feed_chute_height_spin,
+            "mill_discharge_chute_width_m": self.mill_discharge_width_spin,
+            "mill_discharge_chute_height_m": self.mill_discharge_height_spin,
+        }
+        for key, spin in _mill_float.items():
+            if key in p:
+                spin.setValue(p[key])
+        if "mill_hammer_rows" in p:
+            self.mill_hammer_rows_spin.setValue(int(p["mill_hammer_rows"]))
+        if "mill_hammers_per_row" in p:
+            self.mill_hammers_per_row_spin.setValue(int(p["mill_hammers_per_row"]))
         # Classification
         if "venturi_throat_ratio" in p:
             self.venturi_throat_spin.setValue(p["venturi_throat_ratio"])

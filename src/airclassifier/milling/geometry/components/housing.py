@@ -359,27 +359,27 @@ class HousingGeometry:
 
         # Funnel top centre — at the housing arc edge Y level.
         # At ±150°: Y = R·cos(150°) = -R·√3/2, Z = R·sin(150°) = R/2
-        top_cx = (
-            p.center_x_m
-            + p.discharge_opening_x_offset_m
-            + p.discharge_opening_width_m / 2
-        )
+        # The hopper spans the full housing length (X) so that the
+        # front/back walls close the bottom of the shell arc.
+        top_cx = p.center_x_m + p.length_m / 2          # centred on housing
         top_y = p.outer_radius_m * math.cos(_SHELL_HALF_ANGLE)   # negative
         top_cz = p.center_z_m
 
-        # Funnel top depth matches the Z span between the two arc edges
+        # Funnel top spans the full housing extent
+        top_width = p.length_m                           # full housing length (X)
         arc_edge_z = p.outer_radius_m * math.sin(_SHELL_HALF_ANGLE)
-        top_depth = 2 * arc_edge_z
+        top_depth = 2 * arc_edge_z                       # full arc-edge span (Z)
 
-        # Funnel bottom centre
+        # Funnel bottom centre (outlet centred below housing)
+        bot_cx = p.center_x_m + p.length_m / 2
         bot_y = top_y - p.discharge_funnel_height_m
 
-        # Tapered rectangular duct
+        # Tapered rectangular duct — wide hopper to narrow outlet
         parts.append(_rect_frustum(
             (top_cx, top_y, top_cz),
-            p.discharge_opening_width_m,
+            top_width,
             top_depth,
-            (top_cx, bot_y, top_cz),
+            (bot_cx, bot_y, top_cz),
             p.discharge_outlet_width_m,
             p.discharge_outlet_depth_m,
             wall_t,
@@ -395,22 +395,22 @@ class HousingGeometry:
         # Four bars forming the flange frame
         # Front (-X)
         parts.append(box_mesh(
-            top_cx - ow / 2 - fw, fy, top_cz - od / 2 - fw,
+            bot_cx - ow / 2 - fw, fy, top_cz - od / 2 - fw,
             fw, ft, od + 2 * fw,
         ))
         # Back (+X)
         parts.append(box_mesh(
-            top_cx + ow / 2, fy, top_cz - od / 2 - fw,
+            bot_cx + ow / 2, fy, top_cz - od / 2 - fw,
             fw, ft, od + 2 * fw,
         ))
         # Left (-Z)
         parts.append(box_mesh(
-            top_cx - ow / 2, fy, top_cz - od / 2 - fw,
+            bot_cx - ow / 2, fy, top_cz - od / 2 - fw,
             ow, ft, fw,
         ))
         # Right (+Z)
         parts.append(box_mesh(
-            top_cx - ow / 2, fy, top_cz + od / 2,
+            bot_cx - ow / 2, fy, top_cz + od / 2,
             ow, ft, fw,
         ))
 
@@ -424,11 +424,6 @@ class HousingGeometry:
     def ports(self) -> Dict[str, Tuple[float, float, float]]:
         """Connection ports for feed and discharge."""
         p = self.params
-        discharge_cx = (
-            p.center_x_m
-            + p.discharge_opening_x_offset_m
-            + p.discharge_opening_width_m / 2
-        )
         return {
             "feed_inlet": (
                 p.center_x_m + p.feed_opening_x_offset_m + p.feed_opening_width_m / 2,
@@ -436,7 +431,7 @@ class HousingGeometry:
                 p.center_z_m,
             ),
             "discharge_outlet": (
-                discharge_cx,
+                p.center_x_m + p.length_m / 2,
                 p.outer_radius_m * math.cos(_SHELL_HALF_ANGLE) - p.discharge_funnel_height_m - 0.008,
                 p.center_z_m,
             ),

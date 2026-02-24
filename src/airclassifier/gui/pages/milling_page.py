@@ -61,6 +61,29 @@ def _rgba_to_hex(rgba) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+# Visual style for each mill component (color + opacity).
+# Matches examples/visualize_hammer_mill.py COMPONENT_STYLE.
+_MILL_STYLE = {
+    # --- Mill internals ---
+    "rotor":              {"color": (0.52, 0.55, 0.62), "opacity": 0.95},
+    "hammers":            {"color": (0.85, 0.68, 0.15), "opacity": 1.0},
+    "hammer_pins":        {"color": (0.70, 0.72, 0.75), "opacity": 1.0},
+    # --- Enclosure ---
+    "screen":             {"color": (0.40, 0.58, 0.52), "opacity": 0.55},
+    "housing":            {"color": (0.34, 0.42, 0.54), "opacity": 0.30},
+    "housing_discharge":  {"color": (0.34, 0.42, 0.54), "opacity": 0.80},
+    "feed_chute":         {"color": (0.55, 0.48, 0.38), "opacity": 0.75},
+    # --- Drive train ---
+    "drive_motor":        {"color": (0.22, 0.30, 0.22), "opacity": 0.95},
+    "drive_shaft":        {"color": (0.70, 0.72, 0.75), "opacity": 1.0},
+    "drive_base":         {"color": (0.28, 0.28, 0.30), "opacity": 0.95},
+    "drive_feet":         {"color": (0.28, 0.28, 0.30), "opacity": 0.95},
+    "drive_pulley_motor": {"color": (0.50, 0.50, 0.55), "opacity": 1.0},
+    "drive_pulley_mill":  {"color": (0.50, 0.50, 0.55), "opacity": 1.0},
+    "drive_belt":         {"color": (0.15, 0.15, 0.15), "opacity": 1.0},
+}
+
+
 class _StatCard(QFrame):
     """KPI display card."""
 
@@ -109,6 +132,7 @@ class MillingPage(QWidget):
         self._render_timer: Optional[QTimer] = None
         self._plotter = None
         self._results: Optional[Dict[str, Any]] = None
+        self._last_params: Dict[str, Any] = {}
         self._build_ui()
 
     def _build_ui(self):
@@ -155,7 +179,9 @@ class MillingPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         if _HAS_PYVISTA:
             self._plotter = QtInteractor(container)
-            self._plotter.set_background(COLORS.BG_DARKEST)
+            self._plotter.set_background(
+                color="#3a3a44", top="#282830"
+            )
             self._plotter.camera.up = (0, 1, 0)
             self._plotter.add_axes()
             layout.addWidget(self._plotter.interactor)
@@ -337,11 +363,37 @@ class MillingPage(QWidget):
         self._progress.setValue(0)
         self._progress.setMaximum(100)
 
-        config = MillConfig()
+        p = self._last_params
+        config = MillConfig(
+            rotor_rpm=p.get("mill_rotor_rpm", self._rpm_spin.value()),
+            rotor_diameter_m=p.get("mill_rotor_diameter_m", 0.20),
+            rotor_length_m=p.get("mill_rotor_length_m", 0.30),
+            shaft_diameter_m=p.get("mill_shaft_diameter_m", 0.05),
+            motor_power_kw=p.get("mill_motor_power_kw", 22.0),
+            hammer_rows=int(p.get("mill_hammer_rows", 4)),
+            hammers_per_row=int(p.get("mill_hammers_per_row", 4)),
+            hammer_mass_kg=p.get("mill_hammer_mass_kg", 0.35),
+            hammer_length_m=p.get("mill_hammer_length_m", 0.08),
+            hammer_width_m=p.get("mill_hammer_width_m", 0.05),
+            hammer_thickness_m=p.get("mill_hammer_thickness_m", 0.008),
+            hammer_clearance_m=p.get("mill_hammer_clearance_m", 0.008),
+            screen_aperture_mm=p.get("mill_screen_aperture_mm", self._aperture_spin.value()),
+            screen_open_area=p.get("mill_screen_open_area", 0.40),
+            screen_inner_radius_m=p.get("mill_screen_inner_radius_m", 0.188),
+            screen_thickness_m=p.get("mill_screen_thickness_m", 0.003),
+            housing_inner_radius_m=p.get("mill_housing_inner_radius_m", 0.20),
+            housing_length_m=p.get("mill_housing_length_m", 0.40),
+            housing_wall_thickness_m=p.get("mill_housing_wall_thickness_m", 0.008),
+            feed_rate_kg_per_hr=p.get("mill_feed_rate_kg_per_hr", self._feed_spin.value()),
+            feed_chute_width_m=p.get("mill_feed_chute_width_m", 0.15),
+            feed_chute_height_m=p.get("mill_feed_chute_height_m", 0.12),
+            discharge_chute_width_m=p.get("mill_discharge_chute_width_m", 0.20),
+            discharge_chute_height_m=p.get("mill_discharge_chute_height_m", 0.15),
+        )
         recipe = MillRecipe(
-            rotor_rpm=self._rpm_spin.value(),
-            screen_aperture_mm=self._aperture_spin.value(),
-            feed_rate_kg_per_hr=self._feed_spin.value(),
+            rotor_rpm=config.rotor_rpm,
+            screen_aperture_mm=config.screen_aperture_mm,
+            feed_rate_kg_per_hr=config.feed_rate_kg_per_hr,
             run_duration_s=self._duration_spin.value(),
         )
         self._sim = HammerMillSimulator(config=config)
@@ -400,30 +452,53 @@ class MillingPage(QWidget):
 
     def build_system(self, assembly_params: Dict[str, Any]) -> bool:
         """Build and display hammer mill geometry in the viewport."""
+        self._last_params = dict(assembly_params)
         if self._plotter is None:
             self._log("3D viewport not available.")
             return False
         try:
             from airclassifier.milling import (
                 create_hammer_mill_machine,
-                COMPONENT_COLORS,
                 MillConfig,
             )
             import pyvista as pv
 
-            rpm = assembly_params.get("mill_rotor_rpm", 3000)
-            aperture = assembly_params.get("mill_screen_aperture_mm", 1.5)
-            config = MillConfig(rotor_rpm=rpm, screen_aperture_mm=aperture)
+            config = MillConfig(
+                rotor_rpm=assembly_params.get("mill_rotor_rpm", 3000),
+                rotor_diameter_m=assembly_params.get("mill_rotor_diameter_m", 0.20),
+                rotor_length_m=assembly_params.get("mill_rotor_length_m", 0.30),
+                shaft_diameter_m=assembly_params.get("mill_shaft_diameter_m", 0.05),
+                motor_power_kw=assembly_params.get("mill_motor_power_kw", 22.0),
+                hammer_rows=int(assembly_params.get("mill_hammer_rows", 4)),
+                hammers_per_row=int(assembly_params.get("mill_hammers_per_row", 4)),
+                hammer_mass_kg=assembly_params.get("mill_hammer_mass_kg", 0.35),
+                hammer_length_m=assembly_params.get("mill_hammer_length_m", 0.08),
+                hammer_width_m=assembly_params.get("mill_hammer_width_m", 0.05),
+                hammer_thickness_m=assembly_params.get("mill_hammer_thickness_m", 0.008),
+                hammer_clearance_m=assembly_params.get("mill_hammer_clearance_m", 0.008),
+                screen_aperture_mm=assembly_params.get("mill_screen_aperture_mm", 1.5),
+                screen_open_area=assembly_params.get("mill_screen_open_area", 0.40),
+                screen_inner_radius_m=assembly_params.get("mill_screen_inner_radius_m", 0.188),
+                screen_thickness_m=assembly_params.get("mill_screen_thickness_m", 0.003),
+                housing_inner_radius_m=assembly_params.get("mill_housing_inner_radius_m", 0.20),
+                housing_length_m=assembly_params.get("mill_housing_length_m", 0.40),
+                housing_wall_thickness_m=assembly_params.get("mill_housing_wall_thickness_m", 0.008),
+                feed_rate_kg_per_hr=assembly_params.get("mill_feed_rate_kg_per_hr", 500.0),
+                feed_chute_width_m=assembly_params.get("mill_feed_chute_width_m", 0.15),
+                feed_chute_height_m=assembly_params.get("mill_feed_chute_height_m", 0.12),
+                discharge_chute_width_m=assembly_params.get("mill_discharge_chute_width_m", 0.20),
+                discharge_chute_height_m=assembly_params.get("mill_discharge_chute_height_m", 0.15),
+            )
             assembly = create_hammer_mill_machine(config=config, build_meshes=True)
             meshes = assembly.get_component_meshes()
 
             self._plotter.clear()
             total_verts = 0
             for name, (verts, tris, meta) in meshes.items():
-                color_spec = COMPONENT_COLORS.get(name, (0.5, 0.5, 0.55, 0.8))
-                if len(color_spec) >= 4:
-                    color = _rgba_to_hex(color_spec[:3])
-                    opacity = float(color_spec[3])
+                style = _MILL_STYLE.get(name)
+                if style:
+                    color = _rgba_to_hex(style["color"])
+                    opacity = style["opacity"]
                 else:
                     color = _rgba_to_hex((0.5, 0.5, 0.55))
                     opacity = 0.8
