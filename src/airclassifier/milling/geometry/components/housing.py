@@ -37,6 +37,12 @@ if TYPE_CHECKING:
     from ...config import MillConfig
 
 
+# Housing shell spans 300° (leaving a 60° slot at the very bottom
+# for the discharge opening).  The half-angle is used for both the
+# arc mesh and for positioning the discharge funnel top.
+_SHELL_HALF_ANGLE = 5 * math.pi / 6   # 150° each side → 300° total
+
+
 # ---------------------------------------------------------------------------
 # Local mesh helper
 # ---------------------------------------------------------------------------
@@ -216,9 +222,9 @@ class HousingGeometry:
             },
             "discharge_opening": {
                 "x": p.center_x_m + p.discharge_opening_x_offset_m,
-                "y": -p.outer_radius_m,
+                "y": p.outer_radius_m * math.cos(_SHELL_HALF_ANGLE),
                 "width": p.discharge_opening_width_m,
-                "depth": p.discharge_opening_depth_m,
+                "depth": 2 * p.outer_radius_m * math.sin(_SHELL_HALF_ANGLE),
             },
         }
 
@@ -241,15 +247,18 @@ class HousingGeometry:
         # ---- Housing shell + end plates + feed flange ----
         shell_parts: List[Tuple[np.ndarray, np.ndarray]] = []
 
-        # Top semicircle: -π/2 → π/2 (left → top → right)
+        # Main shell arc: 300° (-150° → +150°)
+        # Wraps almost all the way around, leaving a 60° slot at the
+        # bottom for the discharge opening.  The screen sits inside
+        # the lower portion; the funnel connects at the arc edges.
         top_arc = arc_surface_mesh(
             center=(p.center_x_m, p.center_y_m, p.center_z_m),
             inner_radius=p.inner_radius_m,
             outer_radius=p.outer_radius_m,
-            start_angle_rad=-math.pi / 2,
-            end_angle_rad=math.pi / 2,
+            start_angle_rad=-_SHELL_HALF_ANGLE,
+            end_angle_rad=_SHELL_HALF_ANGLE,
             length=p.length_m,
-            radial_resolution=resolution // 2,
+            radial_resolution=max(resolution, 32),
             axial_resolution=8,
             axis="x",
         )
@@ -336,6 +345,11 @@ class HousingGeometry:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Create discharge funnel + bag-collector flange below the screen.
 
+        The funnel top connects at the housing arc edge level (where
+        the 300° shell ends at ±150°).  At this level the arc edges
+        are below the screen bottom, so the funnel sits entirely
+        outside the grinding chamber.
+
         Sections (top → bottom):
             1. Rectangular funnel tapering from discharge opening to outlet
             2. Bag-collector connection flange (bolting ring)
@@ -343,14 +357,19 @@ class HousingGeometry:
         wall_t = 0.004
         parts: List[Tuple[np.ndarray, np.ndarray]] = []
 
-        # Funnel top centre
+        # Funnel top centre — at the housing arc edge Y level.
+        # At ±150°: Y = R·cos(150°) = -R·√3/2, Z = R·sin(150°) = R/2
         top_cx = (
             p.center_x_m
             + p.discharge_opening_x_offset_m
             + p.discharge_opening_width_m / 2
         )
-        top_y = -(p.outer_radius_m)
+        top_y = p.outer_radius_m * math.cos(_SHELL_HALF_ANGLE)   # negative
         top_cz = p.center_z_m
+
+        # Funnel top depth matches the Z span between the two arc edges
+        arc_edge_z = p.outer_radius_m * math.sin(_SHELL_HALF_ANGLE)
+        top_depth = 2 * arc_edge_z
 
         # Funnel bottom centre
         bot_y = top_y - p.discharge_funnel_height_m
@@ -359,7 +378,7 @@ class HousingGeometry:
         parts.append(_rect_frustum(
             (top_cx, top_y, top_cz),
             p.discharge_opening_width_m,
-            p.discharge_opening_depth_m,
+            top_depth,
             (top_cx, bot_y, top_cz),
             p.discharge_outlet_width_m,
             p.discharge_outlet_depth_m,
@@ -418,7 +437,7 @@ class HousingGeometry:
             ),
             "discharge_outlet": (
                 discharge_cx,
-                -(p.outer_radius_m + p.discharge_funnel_height_m + 0.008),
+                p.outer_radius_m * math.cos(_SHELL_HALF_ANGLE) - p.discharge_funnel_height_m - 0.008,
                 p.center_z_m,
             ),
         }

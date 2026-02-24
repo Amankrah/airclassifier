@@ -60,7 +60,7 @@ class ScreenParams:
     open_area: float = 0.40                       # Open area fraction
 
     # --- Support ribs ---
-    rib_count: int = 3                            # Number of support ribs
+    rib_count: int = 0                            # Number of support ribs (0 = none)
     rib_width_m: float = 0.010                    # Rib width
     rib_height_m: float = 0.015                   # Rib height (radial)
 

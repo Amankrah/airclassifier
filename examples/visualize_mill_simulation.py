@@ -194,8 +194,16 @@ def run_live_simulation(args):
     legend_bg = (0.1, 0.1, 0.15, 0.8) if args.dark else "white"
     plotter.add_legend(loc="upper left", bcolor=legend_bg)
 
-    # Title
-    plotter.add_title("Hammer Mill Live  |  Initializing...", font_size=10)
+    # Title — create the VTK text actor ONCE; update via SetInput()
+    # to avoid repeated actor create/destroy that corrupts VTK heap.
+    text_color = "white" if args.dark else "black"
+    title_actor = plotter.add_text(
+        "Hammer Mill Live  |  Initializing...",
+        position="upper_edge",
+        font_size=10,
+        color=text_color,
+        name="sim_title",
+    )
 
     # Camera: auto-frame the full assembly (mill + drive), Y-up
     plotter.reset_camera()
@@ -203,149 +211,131 @@ def run_live_simulation(args):
     plotter.camera.zoom(1.4)
 
     # ══════════════════════════════════════════════════════════════════
-    # Simulation Loop State
+    # Simulation state (mutable — accessed from timer callback)
     # ══════════════════════════════════════════════════════════════════
     dt = 0.002  # 2ms timestep
     omega = config.rotor_angular_velocity
     t_end = args.duration
     t0_wall = time.time()
 
-    # Tracking
     theta = [0.0]
     step_count = [0]
     total_impacts = [0]
     total_breakage = [0]
     total_discharged = [0]
+    sim_done = [False]
 
     # Adaptive pacing: fewer steps early (see transient), more later
     steps_min = 2
     steps_max = 15
-    transient_s = 0.5  # Ramp up over 0.5s
+    transient_s = 0.5
 
-    # Show initial view
-    plotter.show(interactive_update=True, auto_close=False)
+    # Pre-allocate a particle buffer so VTK never reallocates mid-render
+    max_particles = 2000
+    particle_buf = np.zeros((max_particles, 3), dtype=np.float32)
+    size_buf = np.zeros(max_particles, dtype=np.float32)
+    particle_buf[:, 1] = -10.0  # off-screen
+    particle_cloud.points = particle_buf
+    particle_cloud["Size"] = size_buf
 
-    # ══════════════════════════════════════════════════════════════════
-    # Animation/Simulation Loop
-    # ══════════════════════════════════════════════════════════════════
+    # ── Timer callback: runs simulation + updates meshes ────────────
+    def _sim_tick(*_cb_args):
+        if sim_done[0]:
+            return
+
+        sim_time = sim.engine.time_s
+
+        # ── Check if finished ────────────────────────────────────
+        if sim_time >= t_end:
+            sim_done[0] = True
+            elapsed_wall = time.time() - t0_wall
+            title_actor.SetText(
+                2,
+                f"DONE  |  {sim_time:.1f}s  |  "
+                f"Impacts: {total_impacts[0]}  |  "
+                f"Discharged: {total_discharged[0]}  |  "
+                f"Wall: {elapsed_wall:.1f}s",
+            )
+            print("\nSimulation complete!")
+            print(f"  Total impacts:     {total_impacts[0]}")
+            print(f"  Total breakage:    {total_breakage[0]}")
+            print(f"  Total discharged:  {total_discharged[0]}")
+            print(f"  Wall-clock time:   {elapsed_wall:.1f}s")
+            print("\nClose the window to see final results.")
+            return
+
+        # ── Adaptive stepping ────────────────────────────────────
+        ramp = min(sim_time / max(transient_s, 0.01), 1.0)
+        steps = int(steps_min + ramp * (steps_max - steps_min))
+
+        for _ in range(steps):
+            if sim.engine.time_s >= t_end:
+                break
+            state = sim.step(dt)
+            step_count[0] += 1
+            theta[0] += omega * dt
+            total_impacts[0] += state.num_impacts
+            total_breakage[0] += state.num_breakage_events
+            total_discharged[0] += state.num_discharged
+
+        # ── Rotate rotor / hammers / pins ────────────────────────
+        cos_t = np.cos(theta[0])
+        sin_t = np.sin(theta[0])
+        for name in animated_components:
+            if name in mesh_actors:
+                ov = original_verts[name]
+                nv = ov.copy()
+                nv[:, 1] = cos_t * ov[:, 1] - sin_t * ov[:, 2]
+                nv[:, 2] = sin_t * ov[:, 1] + cos_t * ov[:, 2]
+                mesh_actors[name].points = nv
+
+        # ── Update particles (in-place into pre-allocated buffer) ─
+        positions = sim.get_particle_positions()
+        sizes = sim.get_particle_sizes()
+        n = min(len(positions), max_particles)
+
+        particle_buf[:] = 0.0
+        particle_buf[:, 1] = -10.0          # hide unused slots
+        size_buf[:] = 0.0
+        if n > 0:
+            particle_buf[:n] = positions[:n]
+            size_buf[:n] = sizes[:n] * 1000  # mm
+        particle_cloud.points = particle_buf
+        particle_cloud["Size"] = size_buf
+
+        # ── Update title text in-place ───────────────────────────
+        n_particles = len(positions)
+        last = sim.history[-1] if sim.history else None
+        if last:
+            title_actor.SetText(
+                2,
+                f"t={sim_time:.2f}/{t_end:.0f}s  |  "
+                f"Particles: {n_particles}  |  "
+                f"Holdup: {last.holdup_kg*1000:.0f}g  |  "
+                f"Power: {last.power_kw:.1f}kW  |  "
+                f"Impacts: {total_impacts[0]}",
+            )
+        else:
+            title_actor.SetText(
+                2, f"t={sim_time:.2f}s  |  Particles: {n_particles}"
+            )
+
+    # ── Register timer callback (same pattern as visualize_hammer_mill) ─
+    timer_ms = 33  # ~30 fps
+    try:
+        plotter.iren.add_observer("TimerEvent", _sim_tick)
+        plotter.iren.create_repeating_timer(timer_ms)
+    except Exception:
+        # Fallback: fire on every render (user must move mouse)
+        plotter.add_on_render_callback(_sim_tick)
+
     print("\n" + "=" * 60)
     print("  LIVE SIMULATION RUNNING")
     print("  Close window to stop")
     print("=" * 60 + "\n")
 
-    target_fps = 30.0
-    frame_dt = 1.0 / target_fps
-
-    try:
-        while True:
-            t_frame_start = time.perf_counter()
-
-            # Process UI events
-            try:
-                plotter.iren.process_events()
-            except Exception:
-                break
-
-            # Check if simulation finished
-            sim_time = sim.engine.time_s
-            if sim_time >= t_end:
-                # Final update
-                elapsed_wall = time.time() - t0_wall
-                plotter.add_title(
-                    f"Hammer Mill DONE  |  {sim_time:.1f}s  |  "
-                    f"Impacts: {total_impacts[0]}  |  "
-                    f"Discharged: {total_discharged[0]}  |  "
-                    f"Wall: {elapsed_wall:.1f}s",
-                    font_size=10,
-                )
-                plotter.render()
-                print("\nSimulation complete!")
-                print(f"  Total impacts:     {total_impacts[0]}")
-                print(f"  Total breakage:    {total_breakage[0]}")
-                print(f"  Total discharged:  {total_discharged[0]}")
-                print(f"  Wall-clock time:   {elapsed_wall:.1f}s")
-
-                # Keep window open
-                plotter.show()
-                break
-
-            # Adaptive stepping
-            ramp = min(sim_time / max(transient_s, 0.01), 1.0)
-            steps = int(steps_min + ramp * (steps_max - steps_min))
-
-            # Run simulation steps
-            for _ in range(steps):
-                if sim.engine.time_s >= t_end:
-                    break
-
-                state = sim.step(dt)
-                step_count[0] += 1
-                theta[0] += omega * dt
-
-                # Track statistics
-                total_impacts[0] += state.num_impacts
-                total_breakage[0] += state.num_breakage_events
-                total_discharged[0] += state.num_discharged
-
-            # ── Update rotor/hammer animation ─────────────────────────
-            cos_t = np.cos(theta[0])
-            sin_t = np.sin(theta[0])
-
-            for name in animated_components:
-                if name in mesh_actors:
-                    verts = original_verts[name]
-                    new_verts = verts.copy()
-                    # Rotate around X axis (rotor axis)
-                    new_verts[:, 1] = cos_t * verts[:, 1] - sin_t * verts[:, 2]
-                    new_verts[:, 2] = sin_t * verts[:, 1] + cos_t * verts[:, 2]
-                    mesh_actors[name].points = new_verts
-
-            # ── Update particle positions and sizes ───────────────────
-            positions = sim.get_particle_positions()
-            sizes = sim.get_particle_sizes()
-
-            if len(positions) > 0:
-                particle_cloud.points = positions
-                particle_cloud["Size"] = sizes * 1000  # mm
-            else:
-                # Hide particles if none
-                particle_cloud.points = np.array([[0.0, -1.0, 0.0]])
-                particle_cloud["Size"] = np.array([0.0])
-
-            # ── Update title with live stats ──────────────────────────
-            n_particles = len(positions)
-            last_state = sim.history[-1] if sim.history else None
-
-            if last_state:
-                title = (
-                    f"Hammer Mill Live  |  t={sim_time:.2f}/{t_end:.0f}s  |  "
-                    f"Particles: {n_particles}  |  "
-                    f"Holdup: {last_state.holdup_kg*1000:.0f}g  |  "
-                    f"Power: {last_state.power_kw:.1f}kW  |  "
-                    f"Impacts: {total_impacts[0]}"
-                )
-            else:
-                title = f"Hammer Mill Live  |  t={sim_time:.2f}s  |  Particles: {n_particles}"
-
-            plotter.add_title(title, font_size=10)
-
-            # Render
-            try:
-                plotter.render()
-            except Exception:
-                break
-
-            # Frame rate control
-            elapsed_frame = time.perf_counter() - t_frame_start
-            time.sleep(max(0.0, frame_dt - elapsed_frame))
-
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
-    finally:
-        try:
-            plotter.close()
-        except Exception:
-            pass
+    # Blocking show — VTK manages its own event loop safely
+    plotter.show()
 
     # ══════════════════════════════════════════════════════════════════
     # Final Results
