@@ -2,8 +2,8 @@
 Time Series Chart
 =================
 
-Multi-line time series chart for milling simulation results.
-Displays d50, power, and throughput over time with hover tooltips.
+Multi-line time series charts for milling simulation results.
+Series are split into separate graphs by scale (same units together).
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QCheckBox, QSizePolicy, QToolTip, QFrame,
+    QSizePolicy, QToolTip, QFrame, QGridLayout,
+    QScrollArea,
 )
 
 from ...theme import COLORS
@@ -37,168 +38,196 @@ class SeriesConfig:
     y_axis: str = "left"  # "left" or "right"
 
 
-class TimeSeriesChart(QWidget):
-    """Multi-line time series chart with dual Y-axes.
+# Minimum height for each individual chart (larger for better readability)
+_CHART_CANVAS_MIN_HEIGHT = 220
+_CHART_FRAME_MIN_HEIGHT = 260
 
-    Features:
-        - Multiple series (d50, power, throughput)
-        - Dual Y-axes for different units
-        - Hover crosshair with tooltips
-        - Series visibility toggles
-        - Glassmorphism styling
+_SCROLLBAR_STYLE = f"""
+    QScrollArea {{
+        background: transparent;
+        border: none;
+    }}
+    QScrollBar:vertical {{
+        background: {COLORS.BG_DARKEST};
+        width: 8px;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {COLORS.BG_HOVER};
+        border-radius: 4px;
+        min-height: 30px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background: {COLORS.BORDER};
+    }}
+    QScrollBar:horizontal {{
+        background: {COLORS.BG_DARKEST};
+        height: 8px;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: {COLORS.BG_HOVER};
+        border-radius: 4px;
+        min-width: 30px;
+    }}
+    QScrollBar::handle:horizontal:hover {{
+        background: {COLORS.BORDER};
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+        height: 0;
+        width: 0;
+    }}
+"""
+
+
+class _SingleScaleChart(QFrame):
+    """One chart with a single Y-axis scale (same units)."""
+
+    def __init__(self, title: str, unit: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._title = title
+        self._unit = unit
+        self._time_values: List[float] = []
+        self._series: Dict[str, SeriesConfig] = {}
+        self.setMinimumHeight(_CHART_FRAME_MIN_HEIGHT)
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: {COLORS.BG_DARKEST};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 8px;
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
+        title_lbl = QLabel(f"{title} ({unit})")
+        title_lbl.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 9pt; font-weight: 600;")
+        layout.addWidget(title_lbl)
+        self._canvas = _TimeSeriesCanvas(self)
+        self._canvas.setMinimumHeight(_CHART_CANVAS_MIN_HEIGHT)
+        self._canvas.setMinimumWidth(280)
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self._canvas, 1)
+
+    def set_data(self, time_values: List[float], series: Dict[str, SeriesConfig]) -> None:
+        """Set data; all series share the same Y scale (same unit)."""
+        self._time_values = time_values
+        self._series = {k: SeriesConfig(
+            name=s.name, values=s.values, color=s.color, unit=s.unit,
+            visible=s.visible, y_axis="left"
+        ) for k, s in series.items()}
+        self._canvas.set_data(time_values, self._series)
+
+    def clear(self) -> None:
+        self._time_values = []
+        self._series = {}
+        self._canvas.clear()
+
+
+class TimeSeriesChart(QWidget):
+    """Process timeline with separate charts by scale.
+
+    Each graph shows only series with the same unit so the Y-axis is meaningful:
+    - d50 (µm)
+    - Holdup (kg)
+    - Chamber count (#)
+    - Passed & Breakage (#/step)
+    - Throughput (kg/h)
+    - Power (kW)
     """
 
-    cursor_moved = Signal(float, dict)  # time, values_dict
+    cursor_moved = Signal(float, dict)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-
-        # Data
         self._time_values: List[float] = []
         self._series: Dict[str, SeriesConfig] = {}
-
-        # Hover state
-        self._hover_x = -1
-
         self._setup_ui()
 
     def _setup_ui(self):
-        """Build the chart UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(8)
 
-        # Toolbar with series toggles
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(12)
+        title = QLabel("Process Timeline")
+        title.setStyleSheet(f"font-size: 10pt; font-weight: 600; color: {COLORS.TEXT_PRIMARY};")
+        layout.addWidget(title)
 
-        self._title_label = QLabel("Process Timeline")
-        self._title_label.setStyleSheet(f"""
-            font-size: 10pt;
-            font-weight: 600;
-            color: {COLORS.TEXT_PRIMARY};
-        """)
-        toolbar.addWidget(self._title_label)
-        toolbar.addStretch()
+        # Grid of same-scale charts: each chart in its own scroll area (individually scrollable)
+        grid = QGridLayout()
+        grid.setSpacing(8)
 
-        # Series checkboxes
-        self._d50_check = QCheckBox("d50")
-        self._d50_check.setChecked(True)
-        self._d50_check.setStyleSheet(f"color: {COLORS.KPI_SIZE}; font-size: 9pt;")
-        self._d50_check.toggled.connect(lambda v: self._set_series_visible("d50", v))
-        toolbar.addWidget(self._d50_check)
+        def _wrap_scroll(chart: _SingleScaleChart) -> QScrollArea:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setWidget(chart)
+            scroll.setStyleSheet(_SCROLLBAR_STYLE)
+            scroll.setMinimumHeight(_CHART_FRAME_MIN_HEIGHT + 8)
+            return scroll
 
-        self._power_check = QCheckBox("Power")
-        self._power_check.setChecked(True)
-        self._power_check.setStyleSheet(f"color: {COLORS.KPI_POWER}; font-size: 9pt;")
-        self._power_check.toggled.connect(lambda v: self._set_series_visible("power", v))
-        toolbar.addWidget(self._power_check)
+        self._chart_d50 = _SingleScaleChart("d50", "µm")
+        self._chart_holdup = _SingleScaleChart("Holdup", "kg")
+        self._chart_chamber = _SingleScaleChart("Chamber count", "#")
+        self._chart_per_step = _SingleScaleChart("Passed & Breakage", "#/step")
+        self._chart_throughput = _SingleScaleChart("Throughput", "kg/h")
+        self._chart_power = _SingleScaleChart("Power", "kW")
 
-        self._throughput_check = QCheckBox("Throughput")
-        self._throughput_check.setChecked(True)
-        self._throughput_check.setStyleSheet(f"color: {COLORS.KPI_THROUGHPUT}; font-size: 9pt;")
-        self._throughput_check.toggled.connect(lambda v: self._set_series_visible("throughput", v))
-        toolbar.addWidget(self._throughput_check)
+        grid.addWidget(_wrap_scroll(self._chart_d50), 0, 0)
+        grid.addWidget(_wrap_scroll(self._chart_holdup), 0, 1)
+        grid.addWidget(_wrap_scroll(self._chart_chamber), 0, 2)
+        grid.addWidget(_wrap_scroll(self._chart_per_step), 1, 0)
+        grid.addWidget(_wrap_scroll(self._chart_throughput), 1, 1)
+        grid.addWidget(_wrap_scroll(self._chart_power), 1, 2)
 
-        layout.addLayout(toolbar)
-
-        # Chart canvas
-        self._canvas = _TimeSeriesCanvas(self)
-        self._canvas.setMinimumHeight(200)
-        self._canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding
-        )
-        layout.addWidget(self._canvas, 1)
-
-        # Legend
-        legend = QHBoxLayout()
-        legend.setSpacing(16)
-        legend.addStretch()
-
-        for name, color, unit in [
-            ("d50", COLORS.KPI_SIZE, "µm"),
-            ("Power", COLORS.KPI_POWER, "kW"),
-            ("Throughput", COLORS.KPI_THROUGHPUT, "kg/h"),
-        ]:
-            indicator = QLabel("●")
-            indicator.setStyleSheet(f"color: {color}; font-size: 12pt;")
-            legend.addWidget(indicator)
-
-            label = QLabel(f"{name} ({unit})")
-            label.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 8pt;")
-            legend.addWidget(label)
-
-        legend.addStretch()
-        layout.addLayout(legend)
+        layout.addLayout(grid)
 
     def set_data(self, history: List) -> None:
-        """Populate from simulation history.
-
-        Args:
-            history: List of MillingStepState objects
-        """
+        """Populate all charts from simulation history."""
         if not history:
             self.clear()
             return
 
-        # Sample history for performance (max 500 points)
         step = max(1, len(history) // 500)
         sampled = history[::step]
-
-        # Extract time series
         self._time_values = [s.time_s for s in sampled]
 
-        # d50 in micrometers
         d50_values = [s.d50_m * 1e6 for s in sampled]
-        self._series["d50"] = SeriesConfig(
-            name="d50",
-            values=d50_values,
-            color=COLORS.KPI_SIZE,
-            unit="µm",
-            visible=True,
-            y_axis="left",
-        )
-
-        # Power in kW
-        power_values = [s.power_kw for s in sampled]
-        self._series["power"] = SeriesConfig(
-            name="Power",
-            values=power_values,
-            color=COLORS.KPI_POWER,
-            unit="kW",
-            visible=True,
-            y_axis="right",
-        )
-
-        # Throughput in kg/h (convert from kg/s)
+        holdup_values = [s.holdup_kg for s in sampled]
+        chamber_values = [float(s.num_particles) for s in sampled]
+        passed_values = [float(s.num_passed_screen) for s in sampled]
+        breakage_values = [float(s.num_breakage_events) for s in sampled]
         throughput_values = [s.discharge_rate_kg_per_s * 3600 for s in sampled]
-        self._series["throughput"] = SeriesConfig(
-            name="Throughput",
-            values=throughput_values,
-            color=COLORS.KPI_THROUGHPUT,
-            unit="kg/h",
-            visible=True,
-            y_axis="right",
-        )
+        power_values = [s.power_kw for s in sampled]
 
-        self._update_canvas()
+        self._series["d50"] = SeriesConfig("d50", d50_values, COLORS.KPI_SIZE, "µm", True, "left")
+        self._series["holdup"] = SeriesConfig("Holdup", holdup_values, COLORS.MILLING_PRIMARY, "kg", True, "left")
+        self._series["chamber_count"] = SeriesConfig("Chamber", chamber_values, COLORS.SUCCESS, "#", True, "left")
+        self._series["passed"] = SeriesConfig("Passed", passed_values, COLORS.INFO, "#/step", True, "left")
+        self._series["breakage"] = SeriesConfig("Breakage", breakage_values, COLORS.WARNING, "#/step", True, "left")
+        self._series["throughput"] = SeriesConfig("Throughput", throughput_values, COLORS.KPI_THROUGHPUT, "kg/h", True, "left")
+        self._series["power"] = SeriesConfig("Power", power_values, COLORS.KPI_POWER, "kW", True, "left")
 
-    def _set_series_visible(self, name: str, visible: bool):
-        """Toggle series visibility."""
-        if name in self._series:
-            self._series[name].visible = visible
-            self._update_canvas()
+        self._chart_d50.set_data(self._time_values, {"d50": self._series["d50"]})
+        self._chart_holdup.set_data(self._time_values, {"holdup": self._series["holdup"]})
+        self._chart_chamber.set_data(self._time_values, {"chamber_count": self._series["chamber_count"]})
+        self._chart_per_step.set_data(self._time_values, {
+            "passed": self._series["passed"],
+            "breakage": self._series["breakage"],
+        })
+        self._chart_throughput.set_data(self._time_values, {"throughput": self._series["throughput"]})
+        self._chart_power.set_data(self._time_values, {"power": self._series["power"]})
 
-    def _update_canvas(self):
-        """Update canvas with current data."""
-        self._canvas.set_data(self._time_values, self._series)
-
-    def clear(self):
-        """Clear all data."""
+    def clear(self) -> None:
         self._time_values = []
         self._series = {}
-        self._canvas.clear()
+        self._chart_d50.clear()
+        self._chart_holdup.clear()
+        self._chart_chamber.clear()
+        self._chart_per_step.clear()
+        self._chart_throughput.clear()
+        self._chart_power.clear()
 
 
 class _TimeSeriesCanvas(QWidget):
@@ -353,13 +382,14 @@ class _TimeSeriesCanvas(QWidget):
         font.setPixelSize(9)
         painter.setFont(font)
 
-        # Left Y axis labels (d50)
+        # Left Y axis labels
         if left_series:
-            painter.setPen(QColor(COLORS.KPI_SIZE))
+            painter.setPen(QColor(COLORS.TEXT_MUTED))
             for i in range(5):
                 val = left_min + (left_max - left_min) * i / 4
                 y = chart_y + chart_height * (1 - i / 4)
-                painter.drawText(int(chart_x - 50), int(y + 4), f"{val:.0f}")
+                fmt = f"{val:.1f}" if abs(val) < 1000 and (left_max - left_min) < 100 else f"{val:.0f}"
+                painter.drawText(int(chart_x - 50), int(y + 4), fmt)
 
         # Right Y axis labels (power/throughput)
         if right_series:

@@ -2,14 +2,18 @@
 Impact Solver
 =============
 
-Python wrapper for hammer-particle impact detection and response.
-Provides a high-level interface for the impact kernel.
+Hammer–particle impact detection and energy transfer for hammer milling kinetics.
+
+The ImpactSolver detects collisions between particles and rotating hammers,
+computes impact energies (from relative velocity and restitution), and passes
+these to the breakage model. Hammer tip speed (rotor_omega * tip_radius) sets
+the impact velocity scale, so breakage is driven by real hammer-mill kinematics.
 
 The ImpactSolver:
     - Manages hammer geometry state (positions, angles)
     - Tracks rotor rotation over time
     - Calls impact detection kernel
-    - Accumulates impact statistics
+    - Accumulates impact statistics (energy for breakage)
 """
 
 from __future__ import annotations

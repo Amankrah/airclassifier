@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QTabWidget, QFrame,
     QScrollArea, QSizePolicy, QProgressBar,
     QFormLayout, QGraphicsDropShadowEffect, QSplitter,
+    QRadioButton,
 )
 
 from ...theme import COLORS, ANIMATIONS
@@ -125,18 +126,30 @@ class _PSDPanel(QFrame):
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(12)
 
-        # Header
+        # Header with discharge vs retained toggle
         header = QHBoxLayout()
         title = QLabel("Particle Size Distribution")
         title.setStyleSheet(f"color: {COLORS.TEXT_PRIMARY}; font-size: 12pt; font-weight: 600;")
         header.addWidget(title)
         header.addStretch()
+        self._psd_discharge_btn = QRadioButton("Discharge (fine)")
+        self._psd_discharge_btn.setChecked(True)
+        self._psd_discharge_btn.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 9pt;")
+        self._psd_retained_btn = QRadioButton("Retained (in mill)")
+        self._psd_retained_btn.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 9pt;")
+        self._psd_discharge_btn.toggled.connect(self._on_psd_mode_toggled)
+        self._psd_retained_btn.toggled.connect(self._on_psd_mode_toggled)
+        header.addWidget(self._psd_discharge_btn)
+        header.addWidget(self._psd_retained_btn)
         layout.addLayout(header)
 
         # Chart
         self._chart = InteractivePSDChart()
         self._chart.setMinimumHeight(280)
         layout.addWidget(self._chart, 1)
+        self._psd_discharge_data = None
+        self._psd_retained_data = None
+        self._psd_outlet = None
 
         # Statistics row
         stats_row = QHBoxLayout()
@@ -175,38 +188,65 @@ class _PSDPanel(QFrame):
 
         return {"layout": layout, "value": value_widget}
 
-    def update_psd(self, size_classes, mass_fractions, outlet):
-        """Update PSD chart and statistics."""
+    def _on_psd_mode_toggled(self):
+        """Switch PSD chart between discharge and retained."""
+        if self._psd_retained_btn.isChecked() and self._psd_retained_data is not None:
+            sc, mf = self._psd_retained_data
+            self._chart.set_data(np.asarray(sc), np.asarray(mf))
+        elif self._psd_discharge_data is not None:
+            sc, mf = self._psd_discharge_data
+            self._chart.set_data(np.asarray(sc), np.asarray(mf))
+        self._update_psd_stats()
+
+    def _update_psd_stats(self):
+        """Update PSD statistics for currently displayed data."""
+        if self._psd_retained_btn.isChecked() and self._psd_retained_data is not None:
+            size_classes, mass_fractions = self._psd_retained_data
+        elif self._psd_discharge_data is not None:
+            size_classes, mass_fractions = self._psd_discharge_data
+        else:
+            return
         size_classes = np.asarray(size_classes)
         mass_fractions = np.asarray(mass_fractions)
-
-        self._chart.set_data(size_classes, mass_fractions)
-
         if len(mass_fractions) > 0 and len(size_classes) > 1:
             midpoints = (size_classes[:-1] + size_classes[1:]) / 2
             if len(midpoints) == len(mass_fractions):
-                # Mode
                 mode_idx = np.argmax(mass_fractions)
-                mode = midpoints[mode_idx]
-                self._mode_stat["value"].setText(f"{mode:.0f} µm")
-
-                # Mean and Std Dev
+                self._mode_stat["value"].setText(f"{midpoints[mode_idx]:.0f} µm")
                 total = np.sum(mass_fractions)
                 if total > 0:
                     mean = np.sum(midpoints * mass_fractions) / total
                     self._mean_stat["value"].setText(f"{mean:.0f} µm")
-
                     variance = np.sum(mass_fractions * (midpoints - mean) ** 2) / total
                     std = np.sqrt(variance)
                     self._std_stat["value"].setText(f"{std:.0f} µm")
-
                     if mean > 0:
-                        cv = std / mean * 100
-                        self._cv_stat["value"].setText(f"{cv:.1f}%")
-
-        if outlet and outlet.d50_um > 0:
-            span = (outlet.d90_um - outlet.d10_um) / outlet.d50_um
+                        self._cv_stat["value"].setText(f"{std / mean * 100:.1f}%")
+        if self._psd_outlet and self._psd_outlet.d50_um > 0 and not self._psd_retained_btn.isChecked():
+            span = (self._psd_outlet.d90_um - self._psd_outlet.d10_um) / self._psd_outlet.d50_um
             self._span_stat["value"].setText(f"{span:.2f}")
+        elif self._psd_retained_btn.isChecked():
+            self._span_stat["value"].setText("--")
+
+    def update_psd(self, size_classes, mass_fractions, outlet,
+                   retained_size_classes=None, retained_mass_fractions=None):
+        """Update PSD chart and statistics (discharge and optionally retained)."""
+        size_classes = np.asarray(size_classes)
+        mass_fractions = np.asarray(mass_fractions)
+        self._psd_discharge_data = (size_classes, mass_fractions)
+        self._psd_outlet = outlet
+        if retained_size_classes is not None and retained_mass_fractions is not None:
+            self._psd_retained_data = (
+                np.asarray(retained_size_classes),
+                np.asarray(retained_mass_fractions),
+            )
+        else:
+            self._psd_retained_data = None
+        if not self._psd_retained_btn.isChecked():
+            self._chart.set_data(size_classes, mass_fractions)
+        elif self._psd_retained_data is not None:
+            self._chart.set_data(self._psd_retained_data[0], self._psd_retained_data[1])
+        self._update_psd_stats()
 
 
 class _TimeSeriesPanel(QFrame):
@@ -237,10 +277,37 @@ class _TimeSeriesPanel(QFrame):
         header.addStretch()
         layout.addLayout(header)
 
-        # Chart
+        # Chart in scroll area so graphs are scrollable
         self._chart = TimeSeriesChart()
-        self._chart.setMinimumHeight(280)
-        layout.addWidget(self._chart, 1)
+        self._chart.setMinimumHeight(560)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(self._chart)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: {COLORS.BG_DARKEST};
+                width: 10px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {COLORS.BG_HOVER};
+                border-radius: 5px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {COLORS.BORDER};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+        layout.addWidget(scroll, 1)
 
     def update_from_history(self, history: List):
         """Update chart from simulation history."""
@@ -289,9 +356,11 @@ class _AnalyticsPanel(QFrame):
         columns.addWidget(breakage_col["frame"])
         self._breakage_stats = breakage_col["stats"]
 
-        # Screen Column
-        screen_col = self._create_analytics_column("Screen Performance", COLORS.KPI_THROUGHPUT, [
+        # Screen Column (flow: passed vs retained)
+        screen_col = self._create_analytics_column("Screen & Flow", COLORS.KPI_THROUGHPUT, [
             ("Particles Passed", "passed"),
+            ("Particles Retained", "retained"),
+            ("Holdup (kg)", "holdup"),
             ("Passage Rate", "passage_rate"),
             ("Screen Aperture", "aperture"),
             ("Total Fed", "total_fed"),
@@ -372,12 +441,17 @@ class _AnalyticsPanel(QFrame):
                 avg_reduction = np.mean(reductions)
                 self._breakage_stats["size_reduction"].setText(f"{avg_reduction:.2f}x")
 
-            # Screen stats
+            # Screen and flow stats
             total_passed = sum(s.num_passed_screen for s in history)
             total_fed = sum(s.num_fed for s in history)
             passage_rate = (total_passed / total_fed * 100) if total_fed > 0 else 0
+            last = history[-1]
+            particles_retained = last.num_particles
+            holdup_kg = last.holdup_kg
 
             self._screen_stats["passed"].setText(f"{total_passed:,}")
+            self._screen_stats["retained"].setText(f"{particles_retained:,}")
+            self._screen_stats["holdup"].setText(f"{holdup_kg:.2f}")
             self._screen_stats["passage_rate"].setText(f"{passage_rate:.1f}%")
             self._screen_stats["total_fed"].setText(f"{total_fed:,}")
 
@@ -439,8 +513,12 @@ class _ProcessSummaryPanel(QFrame):
         row_data = [
             ("Duration", "duration", 0, 0),
             ("Total Mass Processed", "total_mass", 0, 1),
-            ("Mean Residence Time", "residence", 1, 0),
-            ("Screen Efficiency", "efficiency", 1, 1),
+            ("Particles Passed (fine)", "particles_passed", 1, 0),
+            ("Discharge Mass (fine)", "discharge_mass", 1, 1),
+            ("Particles in Chamber", "particles_retained", 2, 0),
+            ("Holdup (stuck in mill)", "holdup_kg", 2, 1),
+            ("Mean Residence Time", "residence", 3, 0),
+            ("Screen Efficiency", "efficiency", 3, 1),
         ]
 
         for label, key, row, col in row_data:
@@ -484,23 +562,30 @@ class _ProcessSummaryPanel(QFrame):
         if outlet:
             self._stats["residence"].setText(f"{outlet.mean_residence_time_s:.1f} s")
 
-        if result_obj and hasattr(result_obj, "history") and result_obj.history:
-            history = result_obj.history
+        if result_obj:
+            if hasattr(result_obj, "history") and result_obj.history:
+                history = result_obj.history
+                duration = history[-1].time_s if history else 0
+                self._stats["duration"].setText(f"{duration:.1f} s")
+                total_fed = sum(s.num_fed for s in history)
+                total_passed = sum(s.num_passed_screen for s in history)
+                if total_fed > 0:
+                    efficiency = total_passed / total_fed * 100
+                    self._stats["efficiency"].setText(f"{efficiency:.1f}%")
+            else:
+                self._stats["duration"].setText("--")
+                self._stats["efficiency"].setText("--")
 
-            # Duration
-            duration = history[-1].time_s if history else 0
-            self._stats["duration"].setText(f"{duration:.1f} s")
-
-            # Total mass
             if hasattr(result_obj, "psd_total_mass_kg"):
                 self._stats["total_mass"].setText(f"{result_obj.psd_total_mass_kg:.2f} kg")
-
-            # Screen efficiency
-            total_passed = sum(s.num_passed_screen for s in history)
-            total_fed = sum(s.num_fed for s in history)
-            if total_fed > 0:
-                efficiency = total_passed / total_fed * 100
-                self._stats["efficiency"].setText(f"{efficiency:.1f}%")
+            if hasattr(result_obj, "total_particles_passed"):
+                self._stats["particles_passed"].setText(f"{result_obj.total_particles_passed:,}")
+            if hasattr(result_obj, "psd_total_mass_kg"):
+                self._stats["discharge_mass"].setText(f"{result_obj.psd_total_mass_kg:.2f} kg")
+            if hasattr(result_obj, "total_particles_retained"):
+                self._stats["particles_retained"].setText(f"{result_obj.total_particles_retained:,}")
+            if hasattr(result_obj, "holdup_kg_final"):
+                self._stats["holdup_kg"].setText(f"{result_obj.holdup_kg_final:.2f} kg")
 
 
 class MillingResultsPage(QWidget):
@@ -669,12 +754,20 @@ class MillingResultsPage(QWidget):
         # KPI row
         self._kpi_row.update_values(outlet, result_obj)
 
-        # PSD panel
+        # PSD panel (discharge + retained)
         if result_obj and hasattr(result_obj, "psd_size_classes_m"):
+            retained_sc = getattr(result_obj, "retained_psd_size_classes_m", None)
+            retained_mf = getattr(result_obj, "retained_psd_mass_fractions", None)
+            has_retained = (
+                retained_sc is not None and len(retained_sc) > 0
+                and retained_mf is not None and len(retained_mf) > 0
+            )
             self._psd_panel.update_psd(
                 result_obj.psd_size_classes_m * 1e6,
                 result_obj.psd_mass_fractions,
-                outlet
+                outlet,
+                retained_size_classes=retained_sc * 1e6 if has_retained else None,
+                retained_mass_fractions=retained_mf if has_retained else None,
             )
 
         # Time series panel

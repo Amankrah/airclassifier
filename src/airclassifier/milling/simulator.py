@@ -43,10 +43,25 @@ class MillingResult:
     # Time series
     history: List[MillingStepState] = field(default_factory=list)
 
-    # Final PSD
+    # Final PSD (discharged / passed through screen)
     psd_size_classes_m: np.ndarray = field(default_factory=lambda: np.array([]))
     psd_mass_fractions: np.ndarray = field(default_factory=lambda: np.array([]))
     psd_total_mass_kg: float = 0.0
+
+    # Retained PSD (particles still in chamber / too large to pass)
+    retained_psd_mass_fractions: np.ndarray = field(default_factory=lambda: np.array([]))
+    retained_psd_size_classes_m: np.ndarray = field(default_factory=lambda: np.array([]))
+    retained_total_mass_kg: float = 0.0
+
+    # Particle tracking: passed through screen (fine powder) vs retained in mill
+    total_particles_passed: int = 0
+    total_particles_retained: int = 0
+    holdup_kg_final: float = 0.0
+    total_particles_fed: int = 0
+
+    # Breakage tracking
+    total_breakage_events: int = 0
+    total_impacts: int = 0
 
     # Summary statistics
     d10_um: float = 0.0
@@ -222,8 +237,11 @@ class HammerMillSimulator:
         # Run simulation
         states = self.engine.run(duration_s, dt)
 
-        # Extract PSD
+        # Extract PSD (discharged)
         size_classes, mass_fractions, total_mass = self.engine.get_discharge_psd()
+
+        # Extract retained PSD (still in chamber)
+        _, retained_fractions, retained_mass = self.engine.get_retained_psd()
 
         # Compute summary statistics
         d10, d50, d90 = self.engine.screen_classifier.get_d_values()
@@ -264,11 +282,28 @@ class HammerMillSimulator:
             mean_residence = 0.0
             specific_energy = 0.0
 
+        total_passed = sum(s.num_passed_screen for s in states)
+        total_fed = sum(s.num_fed for s in states)
+        total_breakage = sum(s.num_breakage_events for s in states)
+        total_impacts_sum = sum(s.num_impacts for s in states)
+        last_state = states[-1] if states else None
+        holdup_final = last_state.holdup_kg if last_state else 0.0
+        retained_count = last_state.num_particles if last_state else 0
+
         result = MillingResult(
             history=states,
             psd_size_classes_m=size_classes,
             psd_mass_fractions=mass_fractions,
             psd_total_mass_kg=total_mass,
+            retained_psd_mass_fractions=retained_fractions,
+            retained_psd_size_classes_m=size_classes.copy(),
+            retained_total_mass_kg=retained_mass,
+            total_particles_passed=total_passed,
+            total_particles_retained=retained_count,
+            holdup_kg_final=holdup_final,
+            total_particles_fed=total_fed,
+            total_breakage_events=total_breakage,
+            total_impacts=total_impacts_sum,
             d10_um=d10 * 1e6,
             d50_um=d50 * 1e6,
             d90_um=d90 * 1e6,
@@ -294,6 +329,7 @@ class HammerMillSimulator:
         """
         states = self.engine.history
         size_classes, mass_fractions, total_mass = self.engine.get_discharge_psd()
+        retained_size_classes, retained_fractions, retained_mass = self.engine.get_retained_psd()
         d10, d50, d90 = self.engine.screen_classifier.get_d_values()
 
         if len(states) > 0:
@@ -312,14 +348,32 @@ class HammerMillSimulator:
             total_energy_kwh = sum(s.power_kw * dt / 3600 for s in states)
             total_throughput_t = total_mass / 1000
             specific_energy = total_energy_kwh / total_throughput_t if total_throughput_t > 0 else 0.0
+            total_passed = sum(s.num_passed_screen for s in states)
+            total_breakage = sum(s.num_breakage_events for s in states)
+            total_impacts_sum = sum(s.num_impacts for s in states)
+            last_state = states[-1]
+            holdup_final = last_state.holdup_kg
+            retained_count = last_state.num_particles
         else:
             mean_power = max_power = throughput = mean_residence = specific_energy = 0.0
+            total_passed = total_fed = total_breakage = total_impacts_sum = 0
+            holdup_final = 0.0
+            retained_count = 0
 
         result = MillingResult(
             history=states,
             psd_size_classes_m=size_classes,
             psd_mass_fractions=mass_fractions,
             psd_total_mass_kg=total_mass,
+            retained_psd_mass_fractions=retained_fractions,
+            retained_psd_size_classes_m=retained_size_classes,
+            retained_total_mass_kg=retained_mass,
+            total_particles_passed=total_passed,
+            total_particles_retained=retained_count,
+            holdup_kg_final=holdup_final,
+            total_particles_fed=total_fed,
+            total_breakage_events=total_breakage,
+            total_impacts=total_impacts_sum,
             d10_um=d10 * 1e6,
             d50_um=d50 * 1e6,
             d90_um=d90 * 1e6,

@@ -228,6 +228,15 @@ class MillingConfigDialog(QDialog):
         f = QFormLayout(g)
         f.setContentsMargins(*_M)
 
+        self.mill_seeds_feed_mass_spin = QDoubleSpinBox()
+        self.mill_seeds_feed_mass_spin.setRange(0, 10000)
+        self.mill_seeds_feed_mass_spin.setValue(0)
+        self.mill_seeds_feed_mass_spin.setDecimals(2)
+        self.mill_seeds_feed_mass_spin.setSuffix("  kg")
+        self.mill_seeds_feed_mass_spin.setSpecialValueText("Continuous")
+        self.mill_seeds_feed_mass_spin.setToolTip("Total mass of seeds (yellow peas) to feed into the mill; 0 = continuous")
+        f.addRow("Seeds feed mass:", self.mill_seeds_feed_mass_spin)
+
         self.mill_feed_rate_spin = QDoubleSpinBox()
         self.mill_feed_rate_spin.setRange(10, 2000)
         self.mill_feed_rate_spin.setValue(500)
@@ -307,6 +316,7 @@ class MillingConfigDialog(QDialog):
             "mill_housing_length_m": self.mill_housing_length_spin.value(),
             "mill_housing_wall_thickness_m": self.mill_housing_wall_spin.value(),
             # Feed & Discharge
+            "mill_seeds_feed_mass_kg": self.mill_seeds_feed_mass_spin.value(),
             "mill_feed_rate_kg_per_hr": self.mill_feed_rate_spin.value(),
             "mill_feed_chute_width_m": self.mill_feed_chute_width_spin.value(),
             "mill_feed_chute_height_m": self.mill_feed_chute_height_spin.value(),
@@ -335,6 +345,7 @@ class MillingConfigDialog(QDialog):
             "mill_housing_inner_radius_m": self.mill_housing_inner_radius_spin,
             "mill_housing_length_m": self.mill_housing_length_spin,
             "mill_housing_wall_thickness_m": self.mill_housing_wall_spin,
+            "mill_seeds_feed_mass_kg": self.mill_seeds_feed_mass_spin,
             "mill_feed_rate_kg_per_hr": self.mill_feed_rate_spin,
             "mill_feed_chute_width_m": self.mill_feed_chute_width_spin,
             "mill_feed_chute_height_m": self.mill_feed_chute_height_spin,

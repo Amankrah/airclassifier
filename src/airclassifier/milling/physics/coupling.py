@@ -84,6 +84,8 @@ class ParticleState:
     sizes: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     masses: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     residence_times: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+    # Per-particle breakage count (number of times this particle has been broken)
+    break_count: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
 
     @property
     def count(self) -> int:
@@ -133,7 +135,9 @@ class CoupledMillingEngine:
     # Feed state
     _feed_rate_kg_per_s: float = 0.0
     _feed_particle_size: float = 0.003  # 3mm for whole seeds
-    _feed_particle_mass: float = 0.0001  # ~100mg per particle
+    _feed_particle_mass: float = 0.00015  # Mass per particle [kg] (internal; ~150 mg per pea)
+    _seeds_feed_mass_kg: float = 0.0     # Total seeds mass to feed [kg]; 0 = unlimited
+    _total_fed_mass_kg: float = 0.0  # Cumulative mass fed this run (for batch cap)
     _feed_accumulator: float = 0.0
     _inlet_temperature_c: float = 25.0   # Passthrough from pretreatment
     _inlet_moisture_wb: float = 0.12     # Passthrough from pretreatment
@@ -189,6 +193,8 @@ class CoupledMillingEngine:
         self.recipe = recipe
         self._feed_rate_kg_per_s = recipe.feed_rate_kg_per_hr / 3600.0
         self._feed_particle_size = recipe.feed_d50_um * 1e-6
+        self._feed_particle_mass = recipe.feed_particle_mass_kg
+        self._seeds_feed_mass_kg = recipe.seeds_feed_mass_kg
         self._inlet_temperature_c = recipe.feed_temperature_c
         self._inlet_moisture_wb = recipe.feed_moisture_wb
 
@@ -224,6 +230,7 @@ class CoupledMillingEngine:
         self.history.clear()
         self.screen_classifier.clear_discharge_buffer()
         self._feed_accumulator = 0.0
+        self._total_fed_mass_kg = 0.0
         self._last_discharge_mass = 0.0
         self._last_feed_mass = 0.0
         self._discharge_particles.clear()  # Clear discharge visualization
@@ -271,12 +278,14 @@ class CoupledMillingEngine:
         # Zero residence time
         residence_times = np.zeros(n, dtype=np.float32)
 
+        break_count = np.zeros(n, dtype=np.int32)
         self.particles = ParticleState(
             positions=positions,
             velocities=velocities,
             sizes=sizes,
             masses=masses,
             residence_times=residence_times,
+            break_count=break_count,
         )
 
     def step(self, dt: float) -> MillingStepState:
@@ -410,6 +419,10 @@ class CoupledMillingEngine:
         Returns:
             Number of particles fed
         """
+        # When seeds feed mass is set, do not exceed it (batch mode)
+        if self._seeds_feed_mass_kg > 0 and self._total_fed_mass_kg >= self._seeds_feed_mass_kg:
+            return 0
+
         # Accumulate feed mass
         self._feed_accumulator += self._feed_rate_kg_per_s * dt
 
@@ -418,7 +431,16 @@ class CoupledMillingEngine:
         if num_new <= 0:
             return 0
 
+        # Cap by remaining seeds mass when configured
+        if self._seeds_feed_mass_kg > 0:
+            remaining_kg = self._seeds_feed_mass_kg - self._total_fed_mass_kg
+            max_new = int(remaining_kg / self._feed_particle_mass)
+            num_new = min(num_new, max_new)
+            if num_new <= 0:
+                return 0
+
         self._feed_accumulator -= num_new * self._feed_particle_mass
+        self._total_fed_mass_kg += num_new * self._feed_particle_mass
 
         # Create new particles at feed inlet
         rng = np.random.default_rng()
@@ -449,12 +471,14 @@ class CoupledMillingEngine:
         new_res = np.zeros(num_new, dtype=np.float32)
 
         # Append to existing particles
+        new_break = np.zeros(num_new, dtype=np.int32)
         self.particles = ParticleState(
             positions=np.vstack([self.particles.positions, new_pos]) if self.particles.count > 0 else new_pos,
             velocities=np.vstack([self.particles.velocities, new_vel]) if self.particles.count > 0 else new_vel,
             sizes=np.concatenate([self.particles.sizes, new_sizes]) if self.particles.count > 0 else new_sizes,
             masses=np.concatenate([self.particles.masses, new_masses]) if self.particles.count > 0 else new_masses,
             residence_times=np.concatenate([self.particles.residence_times, new_res]) if self.particles.count > 0 else new_res,
+            break_count=np.concatenate([self.particles.break_count, new_break]) if self.particles.count > 0 else new_break,
         )
 
         return num_new
@@ -522,6 +546,8 @@ class CoupledMillingEngine:
 
         self.particles.sizes = new_sizes
         self.particles.masses = new_masses
+        # Track per-particle breakage count
+        self.particles.break_count = self.particles.break_count.astype(np.int32) + break_flags.astype(np.int32)
         return break_flags
 
     def _screen_step(self) -> int:
@@ -577,12 +603,14 @@ class CoupledMillingEngine:
                 ))
 
         # Update particle state to retained only
+        retained_mask = passage_flags == 0
         self.particles = ParticleState(
             positions=ret_pos,
             velocities=ret_vel,
             sizes=ret_sizes,
             masses=ret_masses,
-            residence_times=self.particles.residence_times[passage_flags == 0],
+            residence_times=self.particles.residence_times[retained_mask],
+            break_count=self.particles.break_count[retained_mask],
         )
 
         return num_discharged
@@ -618,6 +646,28 @@ class CoupledMillingEngine:
         """
         size_classes = self.breakage_model.get_size_classes()
         mass_fractions, total_mass = self.screen_classifier.get_discharge_psd(size_classes)
+        return size_classes, mass_fractions, total_mass
+
+    def get_retained_psd(self) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Get PSD of particles still retained in the mill chamber.
+
+        Returns:
+            (size_classes, mass_fractions, total_mass)
+        """
+        size_classes = self.breakage_model.get_size_classes()
+        sizes = self.particles.sizes
+        masses = self.particles.masses
+        total_mass = float(masses.sum()) if len(masses) > 0 else 0.0
+
+        n = len(size_classes) - 1
+        mass_fractions = np.zeros(n)
+
+        if len(sizes) > 0 and total_mass > 0:
+            for i in range(n):
+                mask = (sizes >= size_classes[i]) & (sizes < size_classes[i + 1])
+                mass_fractions[i] = masses[mask].sum()
+            mass_fractions /= total_mass
+
         return size_classes, mass_fractions, total_mass
 
     def update_discharge_visualization(self, dt: float) -> None:

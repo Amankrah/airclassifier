@@ -25,6 +25,7 @@ import numpy as np
 
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -584,6 +585,10 @@ class MillingPage(QWidget):
         self._running = True
         self._kpi_history.clear()
 
+        # Reset live KPIs so they update from 0 as the run progresses
+        if _HAS_NEW_WIDGETS and hasattr(self, "_kpi_dashboard"):
+            self._kpi_dashboard.clear()
+
         if _HAS_NEW_WIDGETS and hasattr(self, "_timeline"):
             from ..widgets.milling.timeline_widget import PlaybackState
             self._timeline.set_state(PlaybackState.PLAYING)
@@ -621,6 +626,7 @@ class MillingPage(QWidget):
             screen_aperture_mm=config.screen_aperture_mm,
             feed_rate_kg_per_hr=config.feed_rate_kg_per_hr,
             run_duration_s=recipe_data.get("duration_s", 60),
+            seeds_feed_mass_kg=recipe_data.get("seeds_feed_mass_kg", p.get("mill_seeds_feed_mass_kg", p.get("mill_yellow_peas_feed_mass_kg", 0.0))),
         )
 
         self._sim = HammerMillSimulator(config=config)
@@ -703,21 +709,19 @@ class MillingPage(QWidget):
                 current_time = current_step[0] * dt
                 self._timeline.set_time(current_time, duration_s)
 
-            # Get physics state and update KPIs
+            # Get latest physics state and update live KPIs every frame
             state = self._sim.engine.history[-1] if self._sim.engine.history else None
+            if state is not None and _HAS_NEW_WIDGETS and hasattr(self, "_kpi_dashboard"):
+                self._kpi_dashboard.update_from_state(state, animate=True)
+                # Allow the UI to repaint so Throughput/d50/Power update visibly during the run
+                app = QApplication.instance()
+                if app is not None:
+                    app.processEvents()
+
             if state:
                 throughput = state.discharge_rate_kg_per_s * 3600
                 d50 = state.d50_m * 1e6
                 power = state.power_kw
-
-                if _HAS_NEW_WIDGETS and hasattr(self, "_kpi_dashboard"):
-                    self._kpi_dashboard.update_kpis(
-                        throughput=throughput,
-                        d50=d50,
-                        power=power,
-                        animate=True
-                    )
-
                 # Store for waveform
                 self._kpi_history.append({
                     "throughput": throughput,
@@ -1028,6 +1032,8 @@ class MillingPage(QWidget):
             recipe["rotor_rpm"] = params["mill_rotor_rpm"]
         if "mill_screen_aperture_mm" in params:
             recipe["screen_aperture_mm"] = params["mill_screen_aperture_mm"]
+        if "mill_seeds_feed_mass_kg" in params:
+            recipe["seeds_feed_mass_kg"] = params["mill_seeds_feed_mass_kg"]
         if "mill_feed_rate_kg_per_hr" in params:
             recipe["feed_rate_kg_per_hr"] = params["mill_feed_rate_kg_per_hr"]
 
@@ -1040,6 +1046,8 @@ class MillingPage(QWidget):
                 self._rpm_spin.setValue(params["mill_rotor_rpm"])
             if "mill_screen_aperture_mm" in params and hasattr(self, "_aperture_spin"):
                 self._aperture_spin.setValue(params["mill_screen_aperture_mm"])
+            if "mill_seeds_feed_mass_kg" in params and hasattr(self, "_seeds_feed_mass_spin"):
+                self._seeds_feed_mass_spin.setValue(params["mill_seeds_feed_mass_kg"])
             if "mill_feed_rate_kg_per_hr" in params and hasattr(self, "_feed_spin"):
                 self._feed_spin.setValue(params["mill_feed_rate_kg_per_hr"])
 

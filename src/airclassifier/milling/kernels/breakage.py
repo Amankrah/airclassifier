@@ -2,18 +2,24 @@
 Breakage Kernel
 ===============
 
-Warp kernel for particle breakage (size reduction) based on impact events.
-Implements a selection + breakage model:
-    - Selection: probability of breakage given impact energy
-    - Breakage: daughter size distribution given parent size
+Hammer-mill impact breakage: size reduction driven by hammer–particle collisions.
 
-This kernel can operate on:
+Physics (high-fidelity digital twin):
+    - Selection S(d, E): probability of breakage per impact. E comes from the
+      impact kernel (hammer tip speed, particle mass, restitution). Larger
+      particles (d) break more readily (size exponent alpha).
+    - Breakage B(d_daughter | d_parent): Gaudin–Schuhmann distribution for
+      single-impact comminution; gamma controls daughter size (finer vs coarser).
+    - Only particles that received an impact in the impact step are candidates;
+      breakage is applied in-place, so kinetics are fully coupled to hammer milling.
+
+This kernel operates on:
     1. Lagrangian particles (update individual particle sizes)
     2. PSD bins (population balance on size classes)
 
-The breakage model uses:
-    - Selection function: S(d, E) = k * (d/d_ref)^alpha * f(E)
-    - Breakage function: B(d_daughter | d_parent) ~ (d_daughter/d_parent)^gamma
+Model:
+    - Selection: S(d, E) = k * (d/d_ref)^alpha * f(E); min_energy threshold.
+    - Breakage: B(d_daughter | d_parent) ~ (d_daughter/d_parent)^gamma
 """
 
 from __future__ import annotations

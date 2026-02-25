@@ -156,6 +156,18 @@ class ResultsSummaryTab(QWidget):
         self._efficiency_label.setStyleSheet(f"color: {COLORS.TEXT_SECONDARY}; font-size: 9pt;")
         stats_form.addRow(self._styled_label("Screen Efficiency:"), self._efficiency_label)
 
+        self._particles_passed_label = QLabel("--")
+        self._particles_passed_label.setStyleSheet(f"color: {COLORS.TEXT_SECONDARY}; font-size: 9pt;")
+        stats_form.addRow(self._styled_label("Particles Passed:"), self._particles_passed_label)
+
+        self._particles_retained_label = QLabel("--")
+        self._particles_retained_label.setStyleSheet(f"color: {COLORS.TEXT_SECONDARY}; font-size: 9pt;")
+        stats_form.addRow(self._styled_label("Particles in Chamber:"), self._particles_retained_label)
+
+        self._holdup_label = QLabel("--")
+        self._holdup_label.setStyleSheet(f"color: {COLORS.TEXT_SECONDARY}; font-size: 9pt;")
+        stats_form.addRow(self._styled_label("Holdup (kg):"), self._holdup_label)
+
         process_layout.addLayout(stats_form)
         layout.addWidget(process_frame)
 
@@ -250,6 +262,15 @@ class ResultsSummaryTab(QWidget):
                 if total_particles > 0:
                     efficiency = total_passed / total_particles * 100
                     self._efficiency_label.setText(f"{efficiency:.1f}%")
+                # Particle tracking
+                self._particles_passed_label.setText(f"{getattr(result_obj, 'total_particles_passed', total_passed):,}")
+                last_state = result_obj.history[-1] if result_obj.history else None
+                if last_state is not None:
+                    self._particles_retained_label.setText(f"{last_state.num_particles:,}")
+                    self._holdup_label.setText(f"{last_state.holdup_kg:.2f} kg")
+                elif hasattr(result_obj, "total_particles_retained"):
+                    self._particles_retained_label.setText(f"{result_obj.total_particles_retained:,}")
+                    self._holdup_label.setText(f"{getattr(result_obj, 'holdup_kg_final', 0):.2f} kg")
 
 
 class ResultsPSDTab(QWidget):
@@ -363,9 +384,37 @@ class ResultsTimeSeriesTab(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        # Time series chart
+        # Time series chart in scroll area so graphs are scrollable
         self._chart = TimeSeriesChart()
-        layout.addWidget(self._chart, 1)
+        self._chart.setMinimumHeight(520)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(self._chart)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: {COLORS.BG_DARKEST};
+                width: 8px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {COLORS.BG_HOVER};
+                border-radius: 4px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {COLORS.BORDER};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+        layout.addWidget(scroll, 1)
 
     def update_from_history(self, history: List):
         """Update chart from simulation history."""
@@ -430,6 +479,12 @@ class ResultsAnalyticsTab(QWidget):
 
         self._particles_passed_label = self._create_stat_row("Particles Passed:")
         screen_layout.addLayout(self._particles_passed_label["layout"])
+
+        self._particles_retained_label = self._create_stat_row("Particles Retained:")
+        screen_layout.addLayout(self._particles_retained_label["layout"])
+
+        self._holdup_label = self._create_stat_row("Holdup (kg):")
+        screen_layout.addLayout(self._holdup_label["layout"])
 
         self._passage_rate_label = self._create_stat_row("Passage Rate:")
         screen_layout.addLayout(self._passage_rate_label["layout"])
@@ -515,7 +570,10 @@ class ResultsAnalyticsTab(QWidget):
             total_fed = sum(s.num_fed for s in history)
             passage_rate = (total_passed / total_fed * 100) if total_fed > 0 else 0
 
+            last_state = history[-1]
             self._particles_passed_label["value"].setText(f"{total_passed:,}")
+            self._particles_retained_label["value"].setText(f"{last_state.num_particles:,}")
+            self._holdup_label["value"].setText(f"{last_state.holdup_kg:.2f}")
             self._passage_rate_label["value"].setText(f"{passage_rate:.1f}%")
 
             # Energy stats

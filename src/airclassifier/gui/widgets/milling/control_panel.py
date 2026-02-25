@@ -300,6 +300,16 @@ class MillingControlPanel(QFrame):
         form = QFormLayout()
         form.setSpacing(8)
 
+        self._seeds_feed_mass_spin = QDoubleSpinBox()
+        self._seeds_feed_mass_spin.setRange(0, 10000)
+        self._seeds_feed_mass_spin.setValue(0)
+        self._seeds_feed_mass_spin.setDecimals(2)
+        self._seeds_feed_mass_spin.setSuffix(" kg")
+        self._seeds_feed_mass_spin.setSpecialValueText("Continuous")
+        self._seeds_feed_mass_spin.setToolTip("Total mass of seeds to feed into the mill; 0 = continuous")
+        self._seeds_feed_mass_spin.setStyleSheet(self._get_spinbox_style())
+        form.addRow("Seeds feed mass:", self._seeds_feed_mass_spin)
+
         self._feed_spin = QDoubleSpinBox()
         self._feed_spin.setRange(10, 2000)
         self._feed_spin.setValue(500)
@@ -518,6 +528,7 @@ class MillingControlPanel(QFrame):
         # Recipe changes
         self._rpm_slider.valueChanged.connect(self._emit_recipe)
         # Note: _aperture_slider connected to _on_aperture_changed in _create_recipe_group
+        self._seeds_feed_mass_spin.valueChanged.connect(self._emit_recipe)
         self._feed_spin.valueChanged.connect(self._emit_recipe)
         self._duration_spin.valueChanged.connect(self._emit_recipe)
         self._target_mass_spin.valueChanged.connect(self._emit_recipe)
@@ -539,6 +550,7 @@ class MillingControlPanel(QFrame):
         return {
             "rotor_rpm": self._rpm_slider.value(),
             "screen_aperture_mm": self._aperture_slider.value() / 100,
+            "seeds_feed_mass_kg": self._seeds_feed_mass_spin.value(),
             "feed_rate_kg_per_hr": self._feed_spin.value(),
             "duration_s": self._duration_spin.value(),
             "termination_mode": term_mode,
@@ -559,6 +571,8 @@ class MillingControlPanel(QFrame):
             self._rpm_slider.setValue(int(recipe["rotor_rpm"]))
         if "screen_aperture_mm" in recipe:
             self._aperture_slider.setValue(int(recipe["screen_aperture_mm"] * 100))
+        if "seeds_feed_mass_kg" in recipe:
+            self._seeds_feed_mass_spin.setValue(recipe["seeds_feed_mass_kg"])
         if "feed_rate_kg_per_hr" in recipe:
             self._feed_spin.setValue(recipe["feed_rate_kg_per_hr"])
         if "duration_s" in recipe:

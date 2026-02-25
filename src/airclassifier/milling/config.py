@@ -198,12 +198,17 @@ class ScreenConfig:
 
 @dataclass
 class BreakageParams:
-    """Parameters for the breakage model (selection + breakage function).
+    """Parameters for hammer-mill impact breakage (selection + breakage function).
 
-    Uses a population-balance approach where particles are characterized
-    by size classes. The selection function gives the probability of
-    breakage per impact, and the breakage function describes the daughter
-    size distribution.
+    Implements high-fidelity hammer milling physics and kinetics for digital twin:
+    - Selection function S(d, E): probability of breakage per hammer impact,
+      driven by impact energy E (from hammer tip speed and particle mass) and
+      particle size d (larger particles break more readily).
+    - Breakage function B(d_daughter | d_parent): Gaudin–Schuhmann daughter size
+      distribution from impact comminution (single-impact size reduction).
+    - Impact energy is supplied by the impact kernel (hammer–particle collision;
+      tip speed and restitution determine E). Breakage is applied only to
+      impacted particles, so kinetics are fully coupled to hammer milling.
     """
 
     # Size classes for PSD (geometric progression)
@@ -298,6 +303,10 @@ class MillRecipe:
     feed_moisture_wb: float = 0.12               # Feed moisture (wet basis)
     feed_temperature_c: float = 60.0             # Feed temperature
     feed_d50_um: float = 3000.0                  # Feed median size [um] (whole seeds ~3mm)
+    # Mass of seeds (e.g. yellow peas) to feed into the mill for milling into powder [kg]
+    seeds_feed_mass_kg: float = 0.0             # Total seeds mass; 0 = unlimited (continuous)
+    # Internal: mass per particle for simulation (default ~150 mg per whole pea); not user-facing
+    feed_particle_mass_kg: float = 0.00015
 
     @property
     def rotor_omega(self) -> float:

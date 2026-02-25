@@ -2,11 +2,15 @@
 Breakage Model
 ==============
 
-Python wrapper for particle breakage (size reduction) physics.
-Implements selection + breakage function model for comminution.
+Hammer-mill breakage: selection + breakage function driven by impact energy.
+
+The BreakageModel applies impact comminution kinetics (selection probability
+from impact energy and particle size; Gaudin–Schuhmann daughter distribution).
+It is fed impact flags and impact energies from the impact solver (hammer–
+particle collisions), so breakage is coupled to hammer milling physics.
 
 The BreakageModel:
-    - Manages breakage parameters
+    - Manages breakage parameters (tuned for legume/pea milling)
     - Tracks size distribution evolution
     - Calls breakage kernel for Lagrangian particles
     - Provides population balance for PSD-based simulation
