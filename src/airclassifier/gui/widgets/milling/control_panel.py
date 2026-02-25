@@ -102,6 +102,17 @@ class MillingControlPanel(QFrame):
         header.addWidget(self._config_btn)
         layout.addLayout(header)
 
+        # Scroll area for recipe and log so all controls are reachable
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(12)
+
         # Simulation buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
@@ -127,6 +138,7 @@ class MillingControlPanel(QFrame):
                 color: {COLORS.TEXT_DISABLED};
             }}
         """)
+        scroll_layout.addLayout(btn_row)
         btn_row.addWidget(self._run_btn)
 
         self._stop_btn = QPushButton("Stop")
@@ -152,7 +164,6 @@ class MillingControlPanel(QFrame):
             }}
         """)
         btn_row.addWidget(self._stop_btn)
-        layout.addLayout(btn_row)
 
         # Progress bar
         self._progress = QProgressBar()
@@ -174,16 +185,16 @@ class MillingControlPanel(QFrame):
             }}
         """)
         self._progress.hide()
-        layout.addWidget(self._progress)
+        scroll_layout.addWidget(self._progress)
 
         # Recipe section
         recipe_group = self._create_recipe_group()
-        layout.addWidget(recipe_group)
+        scroll_layout.addWidget(recipe_group)
 
         # Log output
         log_label = QLabel("Log")
         log_label.setStyleSheet(f"font-size: 9pt; color: {COLORS.TEXT_MUTED};")
-        layout.addWidget(log_label)
+        scroll_layout.addWidget(log_label)
 
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
@@ -199,9 +210,11 @@ class MillingControlPanel(QFrame):
                 padding: 6px;
             }}
         """)
-        layout.addWidget(self._log_text)
+        scroll_layout.addWidget(self._log_text)
 
-        layout.addStretch()
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, 1)
 
     def _create_recipe_group(self) -> QGroupBox:
         """Create the recipe parameters group."""
@@ -305,10 +318,13 @@ class MillingControlPanel(QFrame):
         self._seeds_feed_mass_spin.setValue(0)
         self._seeds_feed_mass_spin.setDecimals(2)
         self._seeds_feed_mass_spin.setSuffix(" kg")
-        self._seeds_feed_mass_spin.setSpecialValueText("Continuous")
-        self._seeds_feed_mass_spin.setToolTip("Total mass of seeds to feed into the mill; 0 = continuous")
+        self._seeds_feed_mass_spin.setSpecialValueText("Continuous (0)")
+        self._seeds_feed_mass_spin.setToolTip("Total input mass of seeds to feed into the mill [kg]. Set 0 for continuous feeding at the feed rate below.")
         self._seeds_feed_mass_spin.setStyleSheet(self._get_spinbox_style())
-        form.addRow("Seeds feed mass:", self._seeds_feed_mass_spin)
+        form.addRow("Input mass (seeds):", self._seeds_feed_mass_spin)
+        seeds_hint = QLabel("0 = continuous; set e.g. 10 for 10 kg batch")
+        seeds_hint.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED};")
+        form.addRow("", seeds_hint)
 
         self._feed_spin = QDoubleSpinBox()
         self._feed_spin.setRange(10, 2000)

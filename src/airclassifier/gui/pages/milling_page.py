@@ -351,6 +351,15 @@ class MillingPage(QWidget):
         self._aperture_spin.setSuffix(" mm")
         f.addRow("Screen aperture:", self._aperture_spin)
 
+        self._seeds_feed_mass_spin = QDoubleSpinBox()
+        self._seeds_feed_mass_spin.setRange(0, 10000)
+        self._seeds_feed_mass_spin.setValue(0)
+        self._seeds_feed_mass_spin.setDecimals(2)
+        self._seeds_feed_mass_spin.setSuffix(" kg")
+        self._seeds_feed_mass_spin.setSpecialValueText("Continuous")
+        self._seeds_feed_mass_spin.setToolTip("Total input mass of seeds to feed; 0 = continuous")
+        f.addRow("Input mass (seeds):", self._seeds_feed_mass_spin)
+
         self._feed_spin = QDoubleSpinBox()
         self._feed_spin.setRange(10, 2000)
         self._feed_spin.setValue(500)
@@ -588,6 +597,7 @@ class MillingPage(QWidget):
             recipe_data = {
                 "rotor_rpm": self._rpm_spin.value(),
                 "screen_aperture_mm": self._aperture_spin.value(),
+                "seeds_feed_mass_kg": self._seeds_feed_mass_spin.value(),
                 "feed_rate_kg_per_hr": self._feed_spin.value(),
                 "duration_s": self._duration_spin.value(),
                 "termination_mode": term_mode,

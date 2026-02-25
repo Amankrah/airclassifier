@@ -41,6 +41,10 @@ class MillingConfigDialog(QDialog):
         sub.setStyleSheet(f"font-size: 9pt; color: {COLORS.TEXT_MUTED};")
         sub.setWordWrap(True)
         layout.addWidget(sub)
+        feed_note = QLabel("Scroll down for \"Feed & Discharge\" to set input mass (seeds) and feed rate.")
+        feed_note.setStyleSheet(f"font-size: 9pt; color: {COLORS.ACCENT};")
+        feed_note.setWordWrap(True)
+        layout.addWidget(feed_note)
 
         # Scrollable content
         scroll = QScrollArea()
@@ -224,7 +228,7 @@ class MillingConfigDialog(QDialog):
         clayout.addWidget(g)
 
         # --- Group 5: Feed & Discharge ---
-        g = QGroupBox("Feed && Discharge")
+        g = QGroupBox("Feed && Discharge (input mass, feed rate)")
         f = QFormLayout(g)
         f.setContentsMargins(*_M)
 
@@ -233,9 +237,9 @@ class MillingConfigDialog(QDialog):
         self.mill_seeds_feed_mass_spin.setValue(0)
         self.mill_seeds_feed_mass_spin.setDecimals(2)
         self.mill_seeds_feed_mass_spin.setSuffix("  kg")
-        self.mill_seeds_feed_mass_spin.setSpecialValueText("Continuous")
-        self.mill_seeds_feed_mass_spin.setToolTip("Total mass of seeds (yellow peas) to feed into the mill; 0 = continuous")
-        f.addRow("Seeds feed mass:", self.mill_seeds_feed_mass_spin)
+        self.mill_seeds_feed_mass_spin.setSpecialValueText("Continuous (0)")
+        self.mill_seeds_feed_mass_spin.setToolTip("Total input mass of seeds to feed into the mill [kg]; 0 = continuous")
+        f.addRow("Input mass (seeds):", self.mill_seeds_feed_mass_spin)
 
         self.mill_feed_rate_spin = QDoubleSpinBox()
         self.mill_feed_rate_spin.setRange(10, 2000)
