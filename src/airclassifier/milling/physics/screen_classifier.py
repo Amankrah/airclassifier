@@ -69,6 +69,7 @@ class ScreenClassifier:
     # Discharge buffer
     _discharged_sizes: List[float] = field(default_factory=list)
     _discharged_masses: List[float] = field(default_factory=list)
+    _discharged_residence_times: List[float] = field(default_factory=list)
 
     # Statistics
     _stats: ScreenStats = field(default_factory=ScreenStats)
@@ -87,6 +88,7 @@ class ScreenClassifier:
         velocities: np.ndarray,
         sizes: np.ndarray,
         masses: np.ndarray,
+        residence_times: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Test particles for screen passage.
 
@@ -95,6 +97,7 @@ class ScreenClassifier:
             velocities: Particle velocities [n, 3]
             sizes: Particle sizes [n]
             masses: Particle masses [n]
+            residence_times: Particle residence times [n] (optional)
 
         Returns:
             (retained_pos, retained_vel, retained_sizes, retained_masses, passage_flags)
@@ -111,6 +114,8 @@ class ScreenClassifier:
         passed_mask = passage_flags == 1
         self._discharged_sizes.extend(sizes[passed_mask].tolist())
         self._discharged_masses.extend(masses[passed_mask].tolist())
+        if residence_times is not None:
+            self._discharged_residence_times.extend(residence_times[passed_mask].tolist())
 
         # Return retained particles
         retained_mask = ~passed_mask
@@ -278,10 +283,21 @@ class ScreenClassifier:
 
         return float(d10), float(d50), float(d90)
 
+    def get_mean_residence_time(self) -> float:
+        """Compute mean residence time of discharged particles.
+
+        Returns:
+            Mean residence time [s], or 0.0 if no particles discharged.
+        """
+        if len(self._discharged_residence_times) == 0:
+            return 0.0
+        return float(np.mean(self._discharged_residence_times))
+
     def clear_discharge_buffer(self):
         """Clear the discharge buffer."""
         self._discharged_sizes.clear()
         self._discharged_masses.clear()
+        self._discharged_residence_times.clear()
 
     @classmethod
     def from_config(
