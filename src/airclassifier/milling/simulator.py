@@ -329,6 +329,10 @@ class HammerMillSimulator:
         """
         states = self.engine.history
         size_classes, mass_fractions, total_mass = self.engine.get_discharge_psd()
+        # Fallback: if discharge buffer is empty but we have step history, compute total
+        # discharged mass from per-step discharge rate (fixes GUI showing 0 kg when particles passed)
+        if total_mass == 0 and len(states) > 0:
+            total_mass = sum(s.discharge_rate_kg_per_s * dt for s in states)
         retained_size_classes, retained_fractions, retained_mass = self.engine.get_retained_psd()
         d10, d50, d90 = self.engine.screen_classifier.get_d_values()
 
