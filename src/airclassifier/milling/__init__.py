@@ -46,6 +46,8 @@ from .physics import (
     ImpactSolver,
     BreakageModel,
     ScreenClassifier,
+    ConvergenceDetector,
+    TerminationConfig,
 )
 
 __all__ = [
@@ -70,4 +72,7 @@ __all__ = [
     "ImpactSolver",
     "BreakageModel",
     "ScreenClassifier",
+    # Convergence
+    "ConvergenceDetector",
+    "TerminationConfig",
 ]

@@ -102,7 +102,10 @@ if WARP_AVAILABLE:
         rand_factor = 0.5 + float(state & wp.uint32(0x7FFFFFFF)) / float(0x7FFFFFFF)
         reduction_factor = reduction_factor * rand_factor
 
-        new_size = size * wp.clamp(reduction_factor, 0.3, 0.9)
+        # Clamp range tuned for legume flour milling (finer grinding)
+        # Lower bound 0.15 allows significant size reduction per impact
+        # Upper bound 0.65 prevents trivial breakage events
+        new_size = size * wp.clamp(reduction_factor, 0.15, 0.65)
         new_size = wp.max(new_size, min_size)
 
         # Update size
@@ -212,7 +215,8 @@ def breakage_step_np(
         reduction_factor = breakage_gamma / (breakage_gamma + 1.0)
         rand_factor = 0.5 + rng.random()
         reduction_factor = reduction_factor * rand_factor
-        reduction_factor = np.clip(reduction_factor, 0.3, 0.9)
+        # Clamp range tuned for legume flour milling (finer grinding)
+        reduction_factor = np.clip(reduction_factor, 0.15, 0.65)
 
         new_size = max(size * reduction_factor, min_size)
         new_sizes[i] = new_size

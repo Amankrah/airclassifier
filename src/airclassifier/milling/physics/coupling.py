@@ -27,6 +27,7 @@ import numpy as np
 from .impact import ImpactSolver, ImpactStats
 from .breakage import BreakageModel, BreakageStats
 from .screen_classifier import ScreenClassifier, ScreenStats
+from .convergence import ConvergenceDetector, TerminationConfig
 from ..kernels import transport_step_np, GRAVITY
 from ..config import MillConfig, MillRecipe, BreakageParams, ScreenConfig
 
@@ -94,6 +95,15 @@ class ParticleState:
 
 
 @dataclass
+class DischargeParticle:
+    """Particle flowing through the discharge chute (for visualization)."""
+    position: np.ndarray  # [3] x, y, z
+    velocity: np.ndarray  # [3] vx, vy, vz
+    size: float
+    age: float  # Time since discharge [s]
+
+
+@dataclass
 class CoupledMillingEngine:
     """Orchestrates the hammer mill physics simulation.
 
@@ -132,8 +142,19 @@ class CoupledMillingEngine:
     _last_discharge_mass: float = 0.0
     _last_feed_mass: float = 0.0
 
+    # Discharge particle visualization (particles flowing through outlet)
+    _discharge_particles: List[DischargeParticle] = field(default_factory=list)
+    _discharge_max_age: float = 0.5  # Remove after 0.5s (fallen through chute)
+    _discharge_chute_y: float = -0.25  # Y position of discharge outlet
+    _discharge_chute_z: float = -0.15  # Z position (below screen)
+    _max_discharge_vis: int = 200  # Max discharge particles to visualize
+
     # History
     history: List[MillingStepState] = field(default_factory=list)
+
+    # Convergence detection
+    convergence_detector: Optional[ConvergenceDetector] = None
+    termination_config: Optional[TerminationConfig] = None
 
     # Device
     device: str = "cpu"
@@ -205,6 +226,11 @@ class CoupledMillingEngine:
         self._feed_accumulator = 0.0
         self._last_discharge_mass = 0.0
         self._last_feed_mass = 0.0
+        self._discharge_particles.clear()  # Clear discharge visualization
+
+        # Reset convergence detector if configured
+        if self.convergence_detector is not None:
+            self.convergence_detector.reset()
 
         # Initialize particles
         if initial_holdup_kg > 0:
@@ -307,6 +333,8 @@ class CoupledMillingEngine:
         no_load_power = self.config.no_load_power_kw * 1000  # W
         total_power = (impact_power + no_load_power) / 1000  # kW
 
+        discharge_rate = discharge_mass / dt if dt > 0 else 0.0
+
         state = MillingStepState(
             time_s=self.time_s,
             rotor_theta_rad=self.rotor_theta,
@@ -315,7 +343,7 @@ class CoupledMillingEngine:
             num_discharged=num_discharged,
             holdup_kg=post_holdup,
             feed_rate_kg_per_s=feed_mass / dt if dt > 0 else 0.0,
-            discharge_rate_kg_per_s=discharge_mass / dt if dt > 0 else 0.0,
+            discharge_rate_kg_per_s=discharge_rate,
             num_impacts=self.impact_solver.stats.num_impacts,
             total_impact_energy_j=self.impact_solver.stats.total_impact_energy,
             mean_impact_energy_j=self.impact_solver.stats.mean_impact_energy,
@@ -330,7 +358,51 @@ class CoupledMillingEngine:
         )
 
         self.history.append(state)
+
+        # Update convergence detector if configured
+        if self.convergence_detector is not None:
+            self.convergence_detector.update(
+                time_s=self.time_s,
+                d50_m=d50,
+                discharge_rate_kg_per_s=discharge_rate,
+                power_kw=total_power,
+                dt=dt,
+                particle_count=self.particles.count,
+            )
+
+        # Update discharge visualization particles
+        self.update_discharge_visualization(dt)
+
         return state
+
+    def set_termination_config(self, config: TerminationConfig) -> None:
+        """Set termination configuration and create detector.
+
+        Args:
+            config: Termination configuration
+        """
+        self.termination_config = config
+        self.convergence_detector = config.create_detector()
+
+    def check_termination(self) -> Tuple[bool, str]:
+        """Check if simulation should terminate based on physics criteria.
+
+        Returns:
+            (should_stop, reason) tuple
+        """
+        if self.convergence_detector is None:
+            return False, ""
+        return self.convergence_detector.should_terminate()
+
+    def get_convergence_progress(self) -> float:
+        """Get progress percentage for physics-based termination modes.
+
+        Returns:
+            Progress as percentage (0-100), or 0 if not applicable.
+        """
+        if self.convergence_detector is not None:
+            return self.convergence_detector.progress_pct
+        return 0.0
 
     def _feed_step(self, dt: float) -> int:
         """Inject new particles from feed.
@@ -461,6 +533,10 @@ class CoupledMillingEngine:
         if self.particles.count == 0:
             return 0
 
+        # Get original positions/sizes before filtering for discharge viz
+        orig_positions = self.particles.positions.copy()
+        orig_sizes = self.particles.sizes.copy()
+
         ret_pos, ret_vel, ret_sizes, ret_masses, passage_flags = self.screen_classifier.step(
             positions=self.particles.positions,
             velocities=self.particles.velocities,
@@ -469,6 +545,36 @@ class CoupledMillingEngine:
         )
 
         num_discharged = int(passage_flags.sum())
+
+        # Create discharge visualization particles for passed particles
+        if num_discharged > 0:
+            passed_mask = passage_flags == 1
+            passed_pos = orig_positions[passed_mask]
+            passed_sizes = orig_sizes[passed_mask]
+
+            # Create discharge particles at screen exit (below chamber, in discharge zone)
+            rng = np.random.default_rng()
+            for i in range(min(num_discharged, self._max_discharge_vis - len(self._discharge_particles))):
+                # Position: x from original, y/z at discharge chute entrance
+                x = passed_pos[i, 0] if i < len(passed_pos) else 0.2
+                y = self._discharge_chute_y + rng.uniform(-0.02, 0.02)
+                z = self._discharge_chute_z + rng.uniform(-0.05, 0.05)
+
+                # Velocity: falling downward with some spread
+                vel = np.array([
+                    rng.uniform(-0.1, 0.1),
+                    rng.uniform(-1.5, -0.8),  # Falling
+                    rng.uniform(-0.2, 0.2),
+                ], dtype=np.float32)
+
+                size = passed_sizes[i] if i < len(passed_sizes) else 0.001
+
+                self._discharge_particles.append(DischargeParticle(
+                    position=np.array([x, y, z], dtype=np.float32),
+                    velocity=vel,
+                    size=float(size),
+                    age=0.0,
+                ))
 
         # Update particle state to retained only
         self.particles = ParticleState(
@@ -513,3 +619,64 @@ class CoupledMillingEngine:
         size_classes = self.breakage_model.get_size_classes()
         mass_fractions, total_mass = self.screen_classifier.get_discharge_psd(size_classes)
         return size_classes, mass_fractions, total_mass
+
+    def update_discharge_visualization(self, dt: float) -> None:
+        """Update discharge particle positions for visualization.
+
+        Applies gravity, updates positions, and removes aged particles.
+
+        Args:
+            dt: Timestep [s]
+        """
+        gravity_y = -9.81  # m/s^2
+
+        # Update each discharge particle
+        new_particles = []
+        for p in self._discharge_particles:
+            # Update velocity (gravity)
+            p.velocity[1] += gravity_y * dt
+
+            # Update position
+            p.position += p.velocity * dt
+
+            # Update age
+            p.age += dt
+
+            # Keep if not too old and not fallen too far
+            if p.age < self._discharge_max_age and p.position[1] > -0.6:
+                new_particles.append(p)
+
+        self._discharge_particles = new_particles
+
+    def get_all_visible_particles(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Get positions and sizes of all visible particles.
+
+        Combines chamber particles with discharge visualization particles.
+
+        Returns:
+            (positions [n, 3], sizes [n]) including both chamber and discharge
+        """
+        # Start with chamber particles
+        if self.particles.count > 0:
+            chamber_pos = self.particles.positions
+            chamber_sizes = self.particles.sizes
+        else:
+            chamber_pos = np.zeros((0, 3), dtype=np.float32)
+            chamber_sizes = np.zeros(0, dtype=np.float32)
+
+        # Add discharge particles
+        if self._discharge_particles:
+            discharge_pos = np.array([p.position for p in self._discharge_particles], dtype=np.float32)
+            discharge_sizes = np.array([p.size for p in self._discharge_particles], dtype=np.float32)
+
+            all_pos = np.vstack([chamber_pos, discharge_pos]) if chamber_pos.size > 0 else discharge_pos
+            all_sizes = np.concatenate([chamber_sizes, discharge_sizes]) if chamber_sizes.size > 0 else discharge_sizes
+        else:
+            all_pos = chamber_pos
+            all_sizes = chamber_sizes
+
+        return all_pos, all_sizes
+
+    def clear_discharge_visualization(self) -> None:
+        """Clear all discharge visualization particles."""
+        self._discharge_particles.clear()

@@ -1032,6 +1032,9 @@ class MainWindow(QMainWindow):
         self._pretreatment_params = params
         self._assembly_params = self._merge_assembly_params()
         self._set_modified(True)
+        # Sync settings into pretreatment page controls
+        if self.pretreatment_page is not None:
+            self.pretreatment_page.sync_settings_from_params(self._pretreatment_params)
         if self._current_mode == self.MODE_PRETREATMENT and self.pretreatment_page is not None:
             self.build_full_system()
         self.statusBar().showMessage("Pretreatment configuration applied", 3000)
@@ -1066,6 +1069,9 @@ class MainWindow(QMainWindow):
         self._milling_params = params
         self._assembly_params = self._merge_assembly_params()
         self._set_modified(True)
+        # Sync settings into milling page controls
+        if self.milling_page is not None:
+            self.milling_page.sync_settings_from_params(self._milling_params)
         if self._current_mode == self.MODE_MILLING and self.milling_page is not None:
             self.build_full_system()
         self.statusBar().showMessage("Milling configuration applied", 3000)
@@ -1093,8 +1099,14 @@ class MainWindow(QMainWindow):
         elif params.get("enable_classification", True):
             self.switch_mode(self.MODE_CLASSIFICATION)
 
-        # Sync params into classification page settings
+        # Sync params into all page settings
         self.classification_page.sync_settings_from_params(self._assembly_params)
+
+        if self.pretreatment_page is not None:
+            self.pretreatment_page.sync_settings_from_params(self._pretreatment_params)
+
+        if self.milling_page is not None:
+            self.milling_page.sync_settings_from_params(self._milling_params)
 
         # Build current system
         self.build_full_system()

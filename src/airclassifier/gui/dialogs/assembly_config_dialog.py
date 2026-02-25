@@ -169,7 +169,7 @@ class _FlowDiagram(QFrame):
                     "Cyclone overflow → Bag Filter → Clean Air",
                 ]
 
-        if not pretreatment_enabled and not classification_enabled:
+        if not pretreatment_enabled and not classification_enabled and not milling_enabled:
             lines = [
                 "No process stages enabled.",
                 "",
@@ -200,6 +200,8 @@ class AssemblyConfigDialog(QDialog):
 
         self._params = current_params or {}
         self._setup_ui()
+        self._connect_quick_settings()
+        self._update_stage_visibility()
         self._update_flow_diagram()
 
     def _setup_ui(self):
@@ -313,9 +315,11 @@ class AssemblyConfigDialog(QDialog):
 
         layout.addWidget(g)
 
-        # Classification mode (only visible if classification enabled)
-        g = QGroupBox("Classification Mode")
-        f = QFormLayout(g); f.setContentsMargins(*_M)
+        # ---- Classification-specific settings (visible only when classification selected) ----
+
+        # Classification mode
+        self._classification_mode_group = QGroupBox("Classification Mode")
+        f = QFormLayout(self._classification_mode_group); f.setContentsMargins(*_M)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([
@@ -324,11 +328,11 @@ class AssemblyConfigDialog(QDialog):
         ])
         self.mode_combo.currentIndexChanged.connect(self._update_flow_diagram)
         f.addRow("Mode:", self.mode_combo)
-        layout.addWidget(g)
+        layout.addWidget(self._classification_mode_group)
 
-        # Subsystems
-        g = QGroupBox("Subsystems")
-        f = QFormLayout(g); f.setContentsMargins(*_M)
+        # Subsystems (classification)
+        self._subsystems_group = QGroupBox("Subsystems")
+        f = QFormLayout(self._subsystems_group); f.setContentsMargins(*_M)
 
         self.chk_feed = QCheckBox("Feed System (Hopper → Airlock → Screw → Deagglomerator)")
         self.chk_feed.setChecked(True)
@@ -356,11 +360,11 @@ class AssemblyConfigDialog(QDialog):
         self.chk_coarse_collect.setChecked(True)
         f.addRow(self.chk_coarse_collect)
 
-        layout.addWidget(g)
+        layout.addWidget(self._subsystems_group)
 
-        # Design operating point
-        g = QGroupBox("Design Operating Point")
-        f = QFormLayout(g); f.setContentsMargins(*_M)
+        # Design operating point (classification)
+        self._operating_point_group = QGroupBox("Design Operating Point")
+        f = QFormLayout(self._operating_point_group); f.setContentsMargins(*_M)
 
         self.throughput_spin = QDoubleSpinBox()
         self.throughput_spin.setRange(10, 5000)
@@ -374,7 +378,92 @@ class AssemblyConfigDialog(QDialog):
         self.air_flow_h_spin.setSuffix("  m³/h")
         f.addRow("Design Air Flow:", self.air_flow_h_spin)
 
-        layout.addWidget(g)
+        layout.addWidget(self._operating_point_group)
+
+        # ---- RF Pretreatment quick settings (visible only when pretreatment selected) ----
+        self._pretreatment_quick_group = QGroupBox("RF Pretreatment Settings")
+        f = QFormLayout(self._pretreatment_quick_group); f.setContentsMargins(*_M)
+
+        self.pt_quick_material_combo = QComboBox()
+        self.pt_quick_material_combo.addItems(["yellow_pea", "faba_bean", "oat"])
+        f.addRow("Material preset:", self.pt_quick_material_combo)
+
+        self.pt_quick_moisture_spin = QDoubleSpinBox()
+        self.pt_quick_moisture_spin.setRange(0.01, 0.25)
+        self.pt_quick_moisture_spin.setValue(0.10)
+        self.pt_quick_moisture_spin.setDecimals(3)
+        f.addRow("Inlet moisture (wb):", self.pt_quick_moisture_spin)
+
+        self.pt_quick_target_spin = QDoubleSpinBox()
+        self.pt_quick_target_spin.setRange(0.01, 0.10)
+        self.pt_quick_target_spin.setValue(0.03)
+        self.pt_quick_target_spin.setDecimals(3)
+        f.addRow("Target moisture (wb):", self.pt_quick_target_spin)
+
+        self.pt_quick_speed_spin = QDoubleSpinBox()
+        self.pt_quick_speed_spin.setRange(0.1, 2.0)
+        self.pt_quick_speed_spin.setValue(0.50)
+        self.pt_quick_speed_spin.setDecimals(2)
+        self.pt_quick_speed_spin.setSuffix("  m/min")
+        f.addRow("Belt speed:", self.pt_quick_speed_spin)
+
+        self.pt_quick_gap_spin = QDoubleSpinBox()
+        self.pt_quick_gap_spin.setRange(20, 300)
+        self.pt_quick_gap_spin.setValue(80)
+        self.pt_quick_gap_spin.setSuffix("  mm")
+        f.addRow("Electrode gap:", self.pt_quick_gap_spin)
+
+        hint = QLabel("See RF Pretreatment tab for full recipe settings")
+        hint.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED};")
+        f.addRow("", hint)
+
+        layout.addWidget(self._pretreatment_quick_group)
+        self._pretreatment_quick_group.setVisible(False)
+
+        # ---- Milling quick settings (visible only when milling selected) ----
+        self._milling_quick_group = QGroupBox("Milling Settings")
+        f = QFormLayout(self._milling_quick_group); f.setContentsMargins(*_M)
+
+        self.mill_quick_rpm_spin = QDoubleSpinBox()
+        self.mill_quick_rpm_spin.setRange(500, 6000)
+        self.mill_quick_rpm_spin.setValue(3000)
+        self.mill_quick_rpm_spin.setDecimals(0)
+        self.mill_quick_rpm_spin.setSuffix("  rpm")
+        f.addRow("Rotor RPM:", self.mill_quick_rpm_spin)
+
+        self.mill_quick_screen_spin = QDoubleSpinBox()
+        self.mill_quick_screen_spin.setRange(0.3, 2.0)  # Food powder grade
+        self.mill_quick_screen_spin.setValue(0.5)  # 0.5 mm for protein separation
+        self.mill_quick_screen_spin.setDecimals(2)
+        self.mill_quick_screen_spin.setSingleStep(0.1)
+        self.mill_quick_screen_spin.setSuffix("  mm")
+        f.addRow("Screen aperture:", self.mill_quick_screen_spin)
+
+        self.mill_quick_feed_spin = QDoubleSpinBox()
+        self.mill_quick_feed_spin.setRange(10, 2000)
+        self.mill_quick_feed_spin.setValue(500)
+        self.mill_quick_feed_spin.setDecimals(0)
+        self.mill_quick_feed_spin.setSuffix("  kg/h")
+        f.addRow("Feed rate:", self.mill_quick_feed_spin)
+
+        self.mill_quick_hammers_spin = QSpinBox()
+        self.mill_quick_hammers_spin.setRange(4, 48)
+        self.mill_quick_hammers_spin.setValue(16)
+        self.mill_quick_hammers_spin.setReadOnly(True)
+        self.mill_quick_hammers_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        f.addRow("Total hammers:", self.mill_quick_hammers_spin)
+
+        hint = QLabel("See Milling tab for full geometry settings")
+        hint.setStyleSheet(f"font-size: 8pt; color: {COLORS.TEXT_MUTED};")
+        f.addRow("", hint)
+
+        layout.addWidget(self._milling_quick_group)
+        self._milling_quick_group.setVisible(False)
+
+        # Initially show classification settings (default selection is pretreatment,
+        # but we'll call _on_stage_changed to set correct visibility)
+        self._update_stage_visibility()
+
         return w
 
     # ================================================================
@@ -627,7 +716,65 @@ class AssemblyConfigDialog(QDialog):
     def _on_stage_changed(self, id_: int, checked: bool):
         """Toggle tab and flow diagram when stage selection changes."""
         if checked:
+            self._update_stage_visibility()
             self._update_flow_diagram()
+
+    def _update_stage_visibility(self):
+        """Show/hide stage-specific settings based on selected process stage."""
+        pretreatment_on = self.radio_pretreatment.isChecked()
+        milling_on = self.radio_milling.isChecked()
+        classification_on = self.radio_classification.isChecked()
+
+        # Classification-specific groups
+        self._classification_mode_group.setVisible(classification_on)
+        self._subsystems_group.setVisible(classification_on)
+        self._operating_point_group.setVisible(classification_on)
+
+        # RF Pretreatment quick settings
+        self._pretreatment_quick_group.setVisible(pretreatment_on)
+
+        # Milling quick settings
+        self._milling_quick_group.setVisible(milling_on)
+
+    def _connect_quick_settings(self):
+        """Connect quick settings to main settings for bidirectional sync."""
+        # RF Pretreatment: quick <-> main
+        self.pt_quick_material_combo.currentIndexChanged.connect(
+            lambda i: self.pt_material_combo.setCurrentIndex(i)
+        )
+        self.pt_material_combo.currentIndexChanged.connect(
+            lambda i: self.pt_quick_material_combo.setCurrentIndex(i)
+        )
+
+        self.pt_quick_moisture_spin.valueChanged.connect(self.pt_moisture_spin.setValue)
+        self.pt_moisture_spin.valueChanged.connect(self.pt_quick_moisture_spin.setValue)
+
+        self.pt_quick_target_spin.valueChanged.connect(self.pt_target_spin.setValue)
+        self.pt_target_spin.valueChanged.connect(self.pt_quick_target_spin.setValue)
+
+        self.pt_quick_speed_spin.valueChanged.connect(self.pt_speed_spin.setValue)
+        self.pt_speed_spin.valueChanged.connect(self.pt_quick_speed_spin.setValue)
+
+        self.pt_quick_gap_spin.valueChanged.connect(self.pt_gap_spin.setValue)
+        self.pt_gap_spin.valueChanged.connect(self.pt_quick_gap_spin.setValue)
+
+        # Milling: quick <-> main
+        self.mill_quick_rpm_spin.valueChanged.connect(self.mill_rotor_rpm_spin.setValue)
+        self.mill_rotor_rpm_spin.valueChanged.connect(self.mill_quick_rpm_spin.setValue)
+
+        self.mill_quick_screen_spin.valueChanged.connect(self.mill_screen_aperture_spin.setValue)
+        self.mill_screen_aperture_spin.valueChanged.connect(self.mill_quick_screen_spin.setValue)
+
+        self.mill_quick_feed_spin.valueChanged.connect(self.mill_feed_rate_spin.setValue)
+        self.mill_feed_rate_spin.valueChanged.connect(self.mill_quick_feed_spin.setValue)
+
+        # Total hammers = rows * per_row (read-only sync from main to quick)
+        def _update_total_hammers():
+            total = self.mill_hammer_rows_spin.value() * self.mill_hammers_per_row_spin.value()
+            self.mill_quick_hammers_spin.setValue(total)
+        self.mill_hammer_rows_spin.valueChanged.connect(lambda: _update_total_hammers())
+        self.mill_hammers_per_row_spin.valueChanged.connect(lambda: _update_total_hammers())
+        _update_total_hammers()
 
     def _update_flow_diagram(self):
         pretreatment_on = self.radio_pretreatment.isChecked()
@@ -655,6 +802,44 @@ class AssemblyConfigDialog(QDialog):
         layout = QVBoxLayout(w)
         layout.setSpacing(8)
         _M = (10, 14, 10, 10)
+
+        # Quick setup button for wizard
+        wizard_frame = QFrame()
+        wizard_frame.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #14532d, stop:1 #1a3d2e);
+                border: 1px solid #3dd68c;
+                border-radius: 8px;
+                padding: 8px;
+            }}
+        """)
+        wizard_layout = QHBoxLayout(wizard_frame)
+        wizard_layout.setContentsMargins(12, 8, 12, 8)
+
+        wizard_label = QLabel("Use the configuration wizard for guided setup with presets")
+        wizard_label.setStyleSheet("color: #3dd68c; font-size: 9pt;")
+        wizard_layout.addWidget(wizard_label, 1)
+
+        self._wizard_btn = QPushButton("Open Wizard...")
+        self._wizard_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #3dd68c;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 14px;
+                color: #141417;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: #4ade80;
+            }}
+        """)
+        self._wizard_btn.clicked.connect(self._open_milling_wizard)
+        wizard_layout.addWidget(self._wizard_btn)
+
+        layout.addWidget(wizard_frame)
+        layout.addSpacing(8)
 
         # --- Rotor & Drive ---
         g = QGroupBox("Rotor && Drive")
@@ -764,9 +949,10 @@ class AssemblyConfigDialog(QDialog):
         f.setContentsMargins(*_M)
 
         self.mill_screen_aperture_spin = QDoubleSpinBox()
-        self.mill_screen_aperture_spin.setRange(0.5, 10.0)
-        self.mill_screen_aperture_spin.setValue(1.5)
+        self.mill_screen_aperture_spin.setRange(0.3, 2.0)  # Food powder grade
+        self.mill_screen_aperture_spin.setValue(0.5)  # 0.5 mm for protein separation
         self.mill_screen_aperture_spin.setDecimals(2)
+        self.mill_screen_aperture_spin.setSingleStep(0.1)
         self.mill_screen_aperture_spin.setSuffix("  mm")
         f.addRow("Aperture:", self.mill_screen_aperture_spin)
 
@@ -1038,3 +1224,23 @@ class AssemblyConfigDialog(QDialog):
     def _on_apply_close(self):
         self.assembly_configured.emit(self.get_params())
         self.accept()
+
+    def _open_milling_wizard(self):
+        """Open the guided milling configuration wizard."""
+        try:
+            from .milling_wizard import MillingConfigWizard
+            wizard = MillingConfigWizard(self, self.get_params())
+            wizard.configuration_complete.connect(self._apply_wizard_config)
+            wizard.exec()
+        except ImportError:
+            QMessageBox.warning(
+                self,
+                "Wizard Unavailable",
+                "The milling configuration wizard is not available."
+            )
+
+    def _apply_wizard_config(self, params: Dict[str, Any]):
+        """Apply configuration from wizard."""
+        self.load_params(params)
+        # Select milling stage
+        self.radio_milling.setChecked(True)

@@ -21,6 +21,10 @@ from .coupling import (
     MillingStepState,
     ParticleState,
 )
+from .convergence import (
+    ConvergenceDetector,
+    TerminationConfig,
+)
 
 __all__ = [
     # Impact
@@ -36,4 +40,7 @@ __all__ = [
     "CoupledMillingEngine",
     "MillingStepState",
     "ParticleState",
+    # Convergence
+    "ConvergenceDetector",
+    "TerminationConfig",
 ]

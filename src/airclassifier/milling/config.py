@@ -50,10 +50,18 @@ class MillConfig:
     hammer_clearance_m: float = 0.008            # Gap between hammer tip and screen
 
     # --- Screen ---
+    # For protein-starch separation in legumes/pulses:
+    #   - Protein bodies: 5-15 µm (fine fraction after air classification)
+    #   - Starch granules: 20-40 µm (coarse fraction)
+    #   - Air classification cut point: ~22 µm
+    # Screen aperture determines product d50 (empirically ~12% of aperture):
+    #   - 0.3 mm → d50 ~36 µm (excellent protein separation)
+    #   - 0.5 mm → d50 ~60 µm (good for air classification)
+    #   - 0.8 mm → d50 ~96 µm (coarse, may need re-milling)
     screen_arc_angle_deg: float = 180.0          # Screen wraps bottom half
     screen_inner_radius_m: float = 0.188         # Inside radius of screen (tip + clearance)
     screen_thickness_m: float = 0.003            # Screen plate thickness
-    screen_aperture_mm: float = 1.5              # Hole size (defines max product size)
+    screen_aperture_mm: float = 0.5              # Hole size [mm] - 0.5mm optimal for protein separation
     screen_open_area: float = 0.40               # Open area fraction (0-1)
 
     # --- Housing ---
@@ -103,6 +111,31 @@ class MillConfig:
         tip_radius = self.rotor_diameter_m / 2.0 + self.hammer_length_m
         return self.screen_inner_radius_m - tip_radius
 
+    @property
+    def estimated_d50_um(self) -> float:
+        """Estimate product d50 [µm] based on screen aperture.
+
+        Based on empirical data: d50 ≈ 12% of screen aperture for legume flour.
+        Reference: Fine Grinding and Air Classification of Field Pea (ResearchGate)
+        """
+        return self.screen_aperture_mm * 1000 * 0.12  # 12% of aperture in µm
+
+    def get_separation_quality(self) -> str:
+        """Get protein separation quality assessment based on d50.
+
+        Returns:
+            Quality rating and recommendation string.
+        """
+        d50 = self.estimated_d50_um
+        if d50 <= 40:
+            return "Excellent - optimal for protein body liberation"
+        elif d50 <= 70:
+            return "Good - suitable for air classification"
+        elif d50 <= 100:
+            return "Moderate - may need secondary milling"
+        else:
+            return "Coarse - recommend finer screen or re-milling"
+
 
 @dataclass
 class ScreenConfig:
@@ -111,9 +144,14 @@ class ScreenConfig:
     The screen is the curved perforated plate at the bottom of the
     mill chamber. Particles smaller than the aperture can pass through;
     larger particles are retained for further breakage.
+
+    For protein-starch separation (legumes/pulses):
+        - 0.3 mm: d50 ~36 µm - Excellent protein liberation
+        - 0.5 mm: d50 ~60 µm - Good for air classification
+        - 0.8 mm: d50 ~96 µm - Coarse, may need re-milling
     """
 
-    aperture_mm: float = 1.5                     # Nominal hole diameter [mm]
+    aperture_mm: float = 0.5                     # Nominal hole diameter [mm] - optimal for protein separation
     open_area: float = 0.40                      # Open area fraction
     hole_shape: str = "round"                    # "round", "square", "slotted"
 
@@ -128,6 +166,14 @@ class ScreenConfig:
     def aperture_m(self) -> float:
         """Aperture size in meters."""
         return self.aperture_mm / 1000.0
+
+    @property
+    def estimated_d50_um(self) -> float:
+        """Estimate product d50 [µm] based on screen aperture.
+
+        Empirical relationship: d50 ≈ 12% of aperture for legume flour.
+        """
+        return self.aperture_mm * 1000 * 0.12
 
     def passage_probability(self, particle_size_m: float) -> float:
         """Compute probability of passage for a given particle size.
@@ -167,18 +213,20 @@ class BreakageParams:
 
     # Selection function: S(d) = k * (d / d_ref)^alpha
     # Probability of breakage per impact for size d
-    selection_rate_constant: float = 0.15        # k: base selection rate
-    selection_size_exponent: float = 1.2         # alpha: larger particles break more easily
-    selection_reference_size_um: float = 1000.0  # d_ref
+    # Tuned for legume flour milling (pea, faba bean) to achieve d50 ~60µm
+    selection_rate_constant: float = 0.40        # k: base selection rate (increased for fine flour)
+    selection_size_exponent: float = 1.3         # alpha: larger particles break more easily
+    selection_reference_size_um: float = 500.0   # d_ref: shifted for finer grinding
 
     # Breakage function: B(d_daughter | d_parent)
     # Cumulative mass fraction finer than d_daughter given breakage of d_parent
     # Uses Gaudin-Schuhmann: B = (d_daughter / d_parent)^gamma
-    breakage_distribution_exponent: float = 0.8  # gamma
+    # Lower gamma = smaller daughter particles (more aggressive grinding)
+    breakage_distribution_exponent: float = 0.55  # gamma: tuned for fine flour (d50 ~60µm)
 
     # Impact energy threshold
-    min_impact_energy_j: float = 0.001           # Below this, no breakage
-    energy_to_breakage_factor: float = 5.0       # Converts impact energy to selection probability
+    min_impact_energy_j: float = 0.0005          # Below this, no breakage (lowered for fine particles)
+    energy_to_breakage_factor: float = 8.0       # Converts impact energy to selection probability
 
     @property
     def size_classes_um(self) -> Tuple[float, ...]:
@@ -223,6 +271,11 @@ class MillRecipe:
 
     Defines the operating setpoints for a milling run. Analogous to
     the GP-15 Recipe for pretreatment.
+
+    Screen aperture guidelines for protein-starch separation:
+        - 0.3-0.4 mm: Fine grinding, excellent protein liberation
+        - 0.5 mm: Standard for air classification (d50 ~60 µm)
+        - 0.8+ mm: Coarse grinding, may need re-milling
     """
 
     name: str = "default"
@@ -230,7 +283,7 @@ class MillRecipe:
 
     # --- Operating setpoints ---
     rotor_rpm: float = 3000.0                    # Rotor speed setpoint
-    screen_aperture_mm: float = 1.5              # Screen aperture size
+    screen_aperture_mm: float = 0.5              # Screen aperture [mm] - optimal for protein separation
     feed_rate_kg_per_hr: float = 500.0           # Target feed rate
 
     # --- Run parameters ---

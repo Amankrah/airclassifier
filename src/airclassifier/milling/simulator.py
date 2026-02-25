@@ -32,6 +32,7 @@ from .physics import (
     CoupledMillingEngine,
     MillingStepState,
     ParticleState,
+    TerminationConfig,
 )
 
 
@@ -173,6 +174,30 @@ class HammerMillSimulator:
             State at end of step
         """
         return self.engine.step(dt)
+
+    def set_termination_config(self, config: "TerminationConfig") -> None:
+        """Set termination configuration for physics-based stopping.
+
+        Args:
+            config: Termination configuration
+        """
+        self.engine.set_termination_config(config)
+
+    def check_termination(self) -> tuple:
+        """Check if simulation should terminate based on physics criteria.
+
+        Returns:
+            (should_stop, reason) tuple
+        """
+        return self.engine.check_termination()
+
+    def get_convergence_progress(self) -> float:
+        """Get progress percentage for physics-based termination modes.
+
+        Returns:
+            Progress as percentage (0-100).
+        """
+        return self.engine.get_convergence_progress()
 
     def run(
         self,
@@ -376,6 +401,14 @@ class HammerMillSimulator:
             Array of [n] sizes
         """
         return self.engine.particles.sizes
+
+    def get_all_visible_particles(self) -> tuple:
+        """Get all visible particles including discharge flow.
+
+        Returns:
+            (positions [n, 3], sizes [n]) including chamber and discharge particles
+        """
+        return self.engine.get_all_visible_particles()
 
     @property
     def history(self) -> List[MillingStepState]:

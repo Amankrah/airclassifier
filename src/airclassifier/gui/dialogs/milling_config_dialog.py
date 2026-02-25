@@ -160,9 +160,10 @@ class MillingConfigDialog(QDialog):
         f.setContentsMargins(*_M)
 
         self.mill_screen_aperture_spin = QDoubleSpinBox()
-        self.mill_screen_aperture_spin.setRange(0.5, 10.0)
-        self.mill_screen_aperture_spin.setValue(1.5)
+        self.mill_screen_aperture_spin.setRange(0.3, 2.0)  # Food powder grade
+        self.mill_screen_aperture_spin.setValue(0.5)  # 0.5 mm for protein separation
         self.mill_screen_aperture_spin.setDecimals(2)
+        self.mill_screen_aperture_spin.setSingleStep(0.1)
         self.mill_screen_aperture_spin.setSuffix("  mm")
         f.addRow("Aperture:", self.mill_screen_aperture_spin)
 

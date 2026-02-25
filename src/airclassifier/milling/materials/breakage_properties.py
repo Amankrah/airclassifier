@@ -75,43 +75,69 @@ class MaterialBreakageProperties:
 
 
 # Pre-defined material breakage properties
+# Tuned for fine flour production (d50 ~60µm) for protein-starch separation
 MATERIAL_LIBRARY: Dict[str, MaterialBreakageProperties] = {
     "yellow_pea": MaterialBreakageProperties(
         name="yellow_pea",
         breakage_params=BreakageParams(
-            selection_rate_constant=0.12,
-            selection_size_exponent=1.1,
-            breakage_distribution_exponent=0.85,
+            selection_rate_constant=0.42,           # Higher = more breakage per impact
+            selection_size_exponent=1.3,
+            selection_reference_size_um=500.0,      # Reference shifted for finer grinding
+            breakage_distribution_exponent=0.52,    # Lower = smaller daughter particles
+            min_impact_energy_j=0.0005,
+            energy_to_breakage_factor=8.0,
         ),
-        hardness_factor=0.9,
+        hardness_factor=0.85,                       # Peas are relatively soft
         moisture_sensitivity=0.15,
     ),
     "chickpea": MaterialBreakageProperties(
         name="chickpea",
         breakage_params=BreakageParams(
-            selection_rate_constant=0.10,
-            selection_size_exponent=1.0,
-            breakage_distribution_exponent=0.80,
+            selection_rate_constant=0.38,
+            selection_size_exponent=1.25,
+            selection_reference_size_um=500.0,
+            breakage_distribution_exponent=0.55,
+            min_impact_energy_j=0.0006,
+            energy_to_breakage_factor=7.0,
         ),
-        hardness_factor=1.1,
+        hardness_factor=1.0,                        # Chickpeas slightly harder
         moisture_sensitivity=0.12,
     ),
     "lentil": MaterialBreakageProperties(
         name="lentil",
         breakage_params=BreakageParams(
-            selection_rate_constant=0.14,
-            selection_size_exponent=1.2,
-            breakage_distribution_exponent=0.90,
+            selection_rate_constant=0.45,           # Lentils break easily
+            selection_size_exponent=1.35,
+            selection_reference_size_um=500.0,
+            breakage_distribution_exponent=0.50,
+            min_impact_energy_j=0.0004,
+            energy_to_breakage_factor=9.0,
         ),
-        hardness_factor=0.85,
+        hardness_factor=0.80,
         moisture_sensitivity=0.10,
+    ),
+    "faba_bean": MaterialBreakageProperties(
+        name="faba_bean",
+        breakage_params=BreakageParams(
+            selection_rate_constant=0.40,
+            selection_size_exponent=1.3,
+            selection_reference_size_um=500.0,
+            breakage_distribution_exponent=0.53,
+            min_impact_energy_j=0.0005,
+            energy_to_breakage_factor=8.0,
+        ),
+        hardness_factor=0.88,
+        moisture_sensitivity=0.14,
     ),
     "wheat": MaterialBreakageProperties(
         name="wheat",
         breakage_params=BreakageParams(
-            selection_rate_constant=0.13,
-            selection_size_exponent=1.15,
-            breakage_distribution_exponent=0.82,
+            selection_rate_constant=0.35,
+            selection_size_exponent=1.2,
+            selection_reference_size_um=600.0,
+            breakage_distribution_exponent=0.58,
+            min_impact_energy_j=0.0006,
+            energy_to_breakage_factor=6.0,
         ),
         hardness_factor=1.0,
         moisture_sensitivity=0.18,

@@ -2519,6 +2519,48 @@ class PretreatmentPage(QWidget):
     #  Cleanup
     # ──────────────────────────────────────────────────────────────
 
+    def sync_settings_from_params(self, params: Dict[str, Any]):
+        """Sync control panel settings from assembly/wizard params.
+
+        This method updates the simulation page's recipe controls to match
+        the configuration from the assembly dialog or wizard.
+
+        Args:
+            params: Dictionary with pretreatment configuration parameters.
+        """
+        # Material preset
+        if "pt_material" in params and hasattr(self, "_material_combo"):
+            idx = self._material_combo.findText(params["pt_material"])
+            if idx >= 0:
+                self._material_combo.setCurrentIndex(idx)
+
+        # Material properties
+        if "pt_inlet_moisture" in params and hasattr(self, "_moisture_spin"):
+            self._moisture_spin.setValue(params["pt_inlet_moisture"])
+
+        if "pt_bed_depth_mm" in params and hasattr(self, "_bed_depth_spin"):
+            self._bed_depth_spin.setValue(params["pt_bed_depth_mm"])
+
+        # Recipe (GP-15 HMI settings)
+        if "pt_electrode_gap_mm" in params and hasattr(self, "_gap_spin"):
+            self._gap_spin.setValue(params["pt_electrode_gap_mm"])
+
+        if "pt_belt_speed" in params and hasattr(self, "_speed_spin"):
+            self._speed_spin.setValue(params["pt_belt_speed"])
+
+        if "pt_extraction_fan_hz" in params and hasattr(self, "_fan_spin"):
+            self._fan_spin.setValue(params["pt_extraction_fan_hz"])
+
+        if "pt_mrh_amps" in params and hasattr(self, "_mrh_spin"):
+            self._mrh_spin.setValue(params["pt_mrh_amps"])
+
+        # Simulation settings
+        if "pt_duration_s" in params and hasattr(self, "_duration_spin"):
+            self._duration_spin.setValue(params["pt_duration_s"])
+
+        if "pt_oscillator_efficiency" in params and hasattr(self, "_eff_spin"):
+            self._eff_spin.setValue(params["pt_oscillator_efficiency"])
+
     def cleanup(self):
         """Stop simulation and clean up resources."""
         self._running = False
