@@ -68,12 +68,29 @@ try:
 except ImportError:
     _HAS_MATPLOTLIB = False
 
-try:
-    import pyvista as pv
-    from pyvistaqt import QtInteractor
-    _HAS_PYVISTA = True
-except ImportError:
-    _HAS_PYVISTA = False
+# Lazy PyVista import so GUI startup doesn't load VTK (avoids ld.so crashes on some systems)
+pv = None
+QtInteractor = None
+_HAS_PYVISTA = False
+
+
+def _ensure_pyvista() -> bool:
+    """Import PyVista/pyvistaqt on first use. Returns True if available."""
+    global pv, QtInteractor, _HAS_PYVISTA
+    if _HAS_PYVISTA and pv is not None:
+        return True
+    if getattr(_ensure_pyvista, "_tried", False):
+        return _HAS_PYVISTA
+    _ensure_pyvista._tried = True  # type: ignore[attr-defined]
+    try:
+        import pyvista as _pv
+        from pyvistaqt import QtInteractor as _QI
+        pv = _pv
+        QtInteractor = _QI
+        _HAS_PYVISTA = True
+    except ImportError:
+        pass
+    return _HAS_PYVISTA
 
 
 def _rgba_to_hex(rgba) -> str:
@@ -265,6 +282,7 @@ class MillingPage(QWidget):
         """)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
+        _ensure_pyvista()
 
         if _HAS_PYVISTA:
             self._plotter = QtInteractor(container)
