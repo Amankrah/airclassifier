@@ -55,6 +55,7 @@ try:
         MillingControlPanel,
         MillingKPIDashboard,
     )
+    from ..widgets.milling.results_page import MillingResultsPage
     _HAS_NEW_WIDGETS = True
 except ImportError:
     _HAS_NEW_WIDGETS = False
@@ -160,6 +161,16 @@ class MillingPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        # Stacked widget to switch between simulation and results views
+        self._main_stack = QStackedWidget()
+        root.addWidget(self._main_stack, 1)
+
+        # Page 0: Simulation view
+        sim_page = QWidget()
+        sim_layout = QVBoxLayout(sim_page)
+        sim_layout.setContentsMargins(0, 0, 0, 0)
+        sim_layout.setSpacing(0)
+
         # Main content area
         main_content = QWidget()
         main_layout = QHBoxLayout(main_content)
@@ -181,7 +192,7 @@ class MillingPage(QWidget):
             ctrl_widget = self._build_legacy_control_panel()
             main_layout.addWidget(ctrl_widget)
 
-        root.addWidget(main_content, 1)
+        sim_layout.addWidget(main_content, 1)
 
         # KPI Dashboard (below viewport)
         if _HAS_NEW_WIDGETS:
@@ -216,7 +227,7 @@ class MillingPage(QWidget):
             self._view_results_btn.clicked.connect(self._toggle_results)
             dashboard_layout.addWidget(self._view_results_btn)
 
-            root.addWidget(dashboard_container)
+            sim_layout.addWidget(dashboard_container)
 
         # Timeline widget
         if _HAS_NEW_WIDGETS:
@@ -224,9 +235,18 @@ class MillingPage(QWidget):
             self._timeline.play_clicked.connect(self._on_run)
             self._timeline.stop_clicked.connect(self._on_stop)
             self._timeline.seek.connect(self._on_seek)
-            root.addWidget(self._timeline)
+            sim_layout.addWidget(self._timeline)
 
-        # Results overlay (slide-in panel)
+        self._main_stack.addWidget(sim_page)
+
+        # Page 1: Full-page results view
+        if _HAS_NEW_WIDGETS:
+            self._results_page = MillingResultsPage()
+            self._results_page.back_clicked.connect(self._show_simulation_view)
+            self._results_page.export_clicked.connect(self._show_export_dialog)
+            self._main_stack.addWidget(self._results_page)
+
+        # Keep overlay for backwards compatibility (but prefer full page)
         if _HAS_NEW_WIDGETS:
             self._results_overlay = ResultsOverlay(self)
             self._results_overlay.export_clicked.connect(self._show_export_dialog)
@@ -482,9 +502,14 @@ class MillingPage(QWidget):
             )
 
     def _toggle_results(self):
-        """Toggle the results overlay panel."""
-        if _HAS_NEW_WIDGETS and hasattr(self, "_results_overlay"):
-            self._results_overlay.toggle()
+        """Show the full-page results view."""
+        if _HAS_NEW_WIDGETS and hasattr(self, "_results_page"):
+            self._main_stack.setCurrentIndex(1)
+
+    def _show_simulation_view(self):
+        """Return to the simulation view from results."""
+        if hasattr(self, "_main_stack"):
+            self._main_stack.setCurrentIndex(0)
 
     def _show_config_wizard(self):
         """Show the milling configuration wizard."""
@@ -645,6 +670,10 @@ class MillingPage(QWidget):
         steps_per_frame = [5, 10]
         transient_steps = int(0.5 / dt)
         current_step = [0]
+        # Visual rotation tracking to avoid stroboscopic effect
+        # At high RPM, physics theta wraps multiple times per frame
+        # Track cumulative visual angle separately for smooth animation
+        visual_theta = [0.0]
 
         def _step_batch():
             if not self._running or self._sim is None:
@@ -702,10 +731,16 @@ class MillingPage(QWidget):
                     self._timeline.set_waveform_data(d50_values[-100:])
 
             # Animation updates
-            rotor_theta = self._sim.get_rotor_angle()
+            # Use visual_theta for smooth animation instead of physics angle
+            # At high RPM (3000 RPM = 314 rad/s), physics angle wraps ~2π per frame
+            # causing stroboscopic effect (appears frozen). Use slower visual rate.
+            # Target: 2 visual revolutions per second for clear motion
+            batch_time = done * dt
+            visual_omega = 2.0 * 2.0 * math.pi  # 2 rev/s = 4π rad/s
+            visual_theta[0] += visual_omega * batch_time
 
-            cos_t = np.cos(rotor_theta)
-            sin_t = np.sin(rotor_theta)
+            cos_t = np.cos(visual_theta[0])
+            sin_t = np.sin(visual_theta[0])
             for name in self._rotor_animated:
                 if name in self._mesh_actors and name in self._original_verts:
                     ov = self._original_verts[name]
@@ -714,7 +749,7 @@ class MillingPage(QWidget):
                     nv[:, 2] = sin_t * ov[:, 1] + cos_t * ov[:, 2]
                     self._mesh_actors[name].points = nv
 
-            motor_theta = rotor_theta * self._pulley_ratio
+            motor_theta = visual_theta[0] * self._pulley_ratio
             cos_m = np.cos(motor_theta)
             sin_m = np.sin(motor_theta)
             for name in self._motor_animated:
@@ -728,7 +763,7 @@ class MillingPage(QWidget):
                     self._mesh_actors[name].points = nv
 
             if self._belt_marker_cloud is not None and self._belt_path_yz is not None:
-                belt_phase = rotor_theta * self._belt_pitch_r
+                belt_phase = visual_theta[0] * self._belt_pitch_r
                 self._belt_marker_cloud.points = self._sample_belt_markers(belt_phase)
 
             if self._particle_cloud is not None and self._particle_buf is not None:
@@ -837,7 +872,9 @@ class MillingPage(QWidget):
         if hasattr(self, "_view_results_btn"):
             self._view_results_btn.setEnabled(True)
 
-        # Update results overlay
+        # Update results views
+        if _HAS_NEW_WIDGETS and hasattr(self, "_results_page"):
+            self._results_page.update_results(self._results)
         if _HAS_NEW_WIDGETS and hasattr(self, "_results_overlay"):
             self._results_overlay.update_results(self._results)
 
