@@ -52,20 +52,20 @@ class _KPIRow(QFrame):
         self._throughput_card = self._create_kpi("Throughput", "kg/h", COLORS.KPI_THROUGHPUT)
         layout.addWidget(self._throughput_card["frame"])
 
-        self._d50_card = self._create_kpi("d50", "µm", COLORS.KPI_SIZE)
+        self._d50_card = self._create_kpi("Flour d50", "\u00b5m", COLORS.KPI_SIZE)
         layout.addWidget(self._d50_card["frame"])
 
-        self._d10_card = self._create_kpi("d10", "µm", COLORS.TEXT_SECONDARY)
-        layout.addWidget(self._d10_card["frame"])
-
-        self._d90_card = self._create_kpi("d90", "µm", COLORS.WARNING)
-        layout.addWidget(self._d90_card["frame"])
+        self._seed_d50_card = self._create_kpi("Seed d50", "\u00b5m", COLORS.WARNING)
+        layout.addWidget(self._seed_d50_card["frame"])
 
         self._power_card = self._create_kpi("Power", "kW", COLORS.KPI_POWER)
         layout.addWidget(self._power_card["frame"])
 
         self._energy_card = self._create_kpi("Specific Energy", "kWh/t", COLORS.KPI_EFFICIENCY)
         layout.addWidget(self._energy_card["frame"])
+
+        self._yield_card = self._create_kpi("Yield", "%", COLORS.KPI_THROUGHPUT)
+        layout.addWidget(self._yield_card["frame"])
 
     def _create_kpi(self, title: str, unit: str, color: str) -> Dict:
         """Create a compact KPI display."""
@@ -100,10 +100,16 @@ class _KPIRow(QFrame):
         if outlet:
             self._throughput_card["value"].setText(f"{outlet.throughput_kg_per_hr:.0f}")
             self._d50_card["value"].setText(f"{outlet.d50_um:.0f}")
-            self._d10_card["value"].setText(f"{outlet.d10_um:.0f}")
-            self._d90_card["value"].setText(f"{outlet.d90_um:.0f}")
             self._power_card["value"].setText(f"{outlet.power_kw:.1f}")
             self._energy_card["value"].setText(f"{outlet.specific_energy_kwh_per_t:.1f}")
+        if result_obj:
+            if hasattr(result_obj, "retained_d50_um") and result_obj.retained_d50_um > 0:
+                self._seed_d50_card["value"].setText(f"{result_obj.retained_d50_um:.0f}")
+            # Yield = discharge mass / total fed mass
+            fed = getattr(result_obj, "total_mass_fed_kg", 0)
+            discharged = getattr(result_obj, "psd_total_mass_kg", 0)
+            if fed > 0:
+                self._yield_card["value"].setText(f"{discharged / fed * 100:.1f}")
 
 
 class _PSDPanel(QFrame):
@@ -132,10 +138,10 @@ class _PSDPanel(QFrame):
         title.setStyleSheet(f"color: {COLORS.TEXT_PRIMARY}; font-size: 12pt; font-weight: 600;")
         header.addWidget(title)
         header.addStretch()
-        self._psd_discharge_btn = QRadioButton("Discharge (fine)")
+        self._psd_discharge_btn = QRadioButton("Flour (discharged)")
         self._psd_discharge_btn.setChecked(True)
         self._psd_discharge_btn.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 9pt;")
-        self._psd_retained_btn = QRadioButton("Retained (in mill)")
+        self._psd_retained_btn = QRadioButton("Seeds (retained)")
         self._psd_retained_btn.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 9pt;")
         self._psd_discharge_btn.toggled.connect(self._on_psd_mode_toggled)
         self._psd_retained_btn.toggled.connect(self._on_psd_mode_toggled)
@@ -342,9 +348,33 @@ class _AnalyticsPanel(QFrame):
         header.addStretch()
         layout.addLayout(header)
 
-        # Three-column layout
+        # Four-column layout: Flour Product | Retained Seeds | Breakage | Energy
         columns = QHBoxLayout()
-        columns.setSpacing(16)
+        columns.setSpacing(12)
+
+        # Flour Product Column (discharged through screen)
+        flour_col = self._create_analytics_column("Flour Product", COLORS.KPI_THROUGHPUT, [
+            ("d10", "flour_d10"),
+            ("d50", "flour_d50"),
+            ("d90", "flour_d90"),
+            ("Mass Discharged", "flour_mass"),
+            ("Particles Passed", "flour_count"),
+            ("Passage Rate", "passage_rate"),
+        ])
+        columns.addWidget(flour_col["frame"])
+        self._flour_stats = flour_col["stats"]
+
+        # Retained Seeds Column (still in mill chamber)
+        retained_col = self._create_analytics_column("Retained Seeds", COLORS.WARNING, [
+            ("d10", "seed_d10"),
+            ("d50", "seed_d50"),
+            ("d90", "seed_d90"),
+            ("Holdup Mass", "seed_mass"),
+            ("Particles in Mill", "seed_count"),
+            ("Mean Residence", "seed_residence"),
+        ])
+        columns.addWidget(retained_col["frame"])
+        self._retained_stats = retained_col["stats"]
 
         # Breakage Column
         breakage_col = self._create_analytics_column("Breakage", COLORS.MILLING_PRIMARY, [
@@ -352,21 +382,11 @@ class _AnalyticsPanel(QFrame):
             ("Breakage Events", "breakage_events"),
             ("Breakage Rate", "breakage_rate"),
             ("Avg Size Reduction", "size_reduction"),
+            ("Total Fed", "total_fed"),
+            ("Screen Aperture", "aperture"),
         ])
         columns.addWidget(breakage_col["frame"])
         self._breakage_stats = breakage_col["stats"]
-
-        # Screen Column (flow: passed vs retained)
-        screen_col = self._create_analytics_column("Screen & Flow", COLORS.KPI_THROUGHPUT, [
-            ("Particles Passed", "passed"),
-            ("Particles Retained", "retained"),
-            ("Holdup (kg)", "holdup"),
-            ("Passage Rate", "passage_rate"),
-            ("Screen Aperture", "aperture"),
-            ("Total Fed", "total_fed"),
-        ])
-        columns.addWidget(screen_col["frame"])
-        self._screen_stats = screen_col["stats"]
 
         # Energy Column
         energy_col = self._create_analytics_column("Energy Efficiency", COLORS.KPI_POWER, [
@@ -374,6 +394,7 @@ class _AnalyticsPanel(QFrame):
             ("Peak Power", "peak_power"),
             ("Mean Power", "mean_power"),
             ("Load Factor", "load_factor"),
+            ("Specific Energy", "specific_energy"),
         ])
         columns.addWidget(energy_col["frame"])
         self._energy_stats = energy_col["stats"]
@@ -424,10 +445,45 @@ class _AnalyticsPanel(QFrame):
         result_obj = result.get("result")
         outlet = result.get("outlet")
 
-        if result_obj and hasattr(result_obj, "history") and result_obj.history:
+        if not result_obj:
+            return
+
+        # --- Flour Product (discharged through screen) ---
+        if hasattr(result_obj, "d10_um"):
+            self._flour_stats["flour_d10"].setText(f"{result_obj.d10_um:.0f} \u00b5m")
+        if hasattr(result_obj, "d50_um"):
+            self._flour_stats["flour_d50"].setText(f"{result_obj.d50_um:.0f} \u00b5m")
+        if hasattr(result_obj, "d90_um"):
+            self._flour_stats["flour_d90"].setText(f"{result_obj.d90_um:.0f} \u00b5m")
+        if hasattr(result_obj, "psd_total_mass_kg"):
+            self._flour_stats["flour_mass"].setText(f"{result_obj.psd_total_mass_kg:.2f} kg")
+        if hasattr(result_obj, "total_particles_passed"):
+            self._flour_stats["flour_count"].setText(f"{result_obj.total_particles_passed:,}")
+
+        # --- Retained Seeds (still in mill chamber) ---
+        if hasattr(result_obj, "retained_d10_um"):
+            self._retained_stats["seed_d10"].setText(f"{result_obj.retained_d10_um:.0f} \u00b5m")
+        if hasattr(result_obj, "retained_d50_um"):
+            self._retained_stats["seed_d50"].setText(f"{result_obj.retained_d50_um:.0f} \u00b5m")
+        if hasattr(result_obj, "retained_d90_um"):
+            self._retained_stats["seed_d90"].setText(f"{result_obj.retained_d90_um:.0f} \u00b5m")
+        if hasattr(result_obj, "holdup_kg_final"):
+            self._retained_stats["seed_mass"].setText(f"{result_obj.holdup_kg_final:.2f} kg")
+        if hasattr(result_obj, "total_particles_retained"):
+            self._retained_stats["seed_count"].setText(f"{result_obj.total_particles_retained:,}")
+        if outlet and hasattr(outlet, "mean_residence_time_s"):
+            self._retained_stats["seed_residence"].setText(f"{outlet.mean_residence_time_s:.1f} s")
+
+        if hasattr(result_obj, "history") and result_obj.history:
             history = result_obj.history
 
-            # Breakage stats
+            # Passage rate for flour column
+            total_passed = sum(s.num_passed_screen for s in history)
+            total_fed = sum(s.num_fed for s in history)
+            passage_rate = (total_passed / total_fed * 100) if total_fed > 0 else 0
+            self._flour_stats["passage_rate"].setText(f"{passage_rate:.1f}%")
+
+            # --- Breakage stats ---
             total_impacts = sum(s.num_impacts for s in history)
             total_breakage = sum(s.num_breakage_events for s in history)
             breakage_rate = (total_breakage / total_impacts * 100) if total_impacts > 0 else 0
@@ -435,27 +491,14 @@ class _AnalyticsPanel(QFrame):
             self._breakage_stats["impacts"].setText(f"{total_impacts:,}")
             self._breakage_stats["breakage_events"].setText(f"{total_breakage:,}")
             self._breakage_stats["breakage_rate"].setText(f"{breakage_rate:.1f}%")
+            self._breakage_stats["total_fed"].setText(f"{total_fed:,}")
 
             reductions = [s.mean_size_reduction for s in history if s.mean_size_reduction < 1.0]
             if reductions:
                 avg_reduction = np.mean(reductions)
                 self._breakage_stats["size_reduction"].setText(f"{avg_reduction:.2f}x")
 
-            # Screen and flow stats
-            total_passed = sum(s.num_passed_screen for s in history)
-            total_fed = sum(s.num_fed for s in history)
-            passage_rate = (total_passed / total_fed * 100) if total_fed > 0 else 0
-            last = history[-1]
-            particles_retained = last.num_particles
-            holdup_kg = last.holdup_kg
-
-            self._screen_stats["passed"].setText(f"{total_passed:,}")
-            self._screen_stats["retained"].setText(f"{particles_retained:,}")
-            self._screen_stats["holdup"].setText(f"{holdup_kg:.2f}")
-            self._screen_stats["passage_rate"].setText(f"{passage_rate:.1f}%")
-            self._screen_stats["total_fed"].setText(f"{total_fed:,}")
-
-            # Energy stats
+            # --- Energy stats ---
             duration = history[-1].time_s if history else 0
             power_values = [s.power_kw for s in history]
             if power_values:
@@ -469,11 +512,15 @@ class _AnalyticsPanel(QFrame):
                 self._energy_stats["mean_power"].setText(f"{mean_power:.1f} kW")
                 self._energy_stats["load_factor"].setText(f"{load_factor:.1f}%")
 
+        if hasattr(result_obj, "specific_energy_kwh_per_t"):
+            self._energy_stats["specific_energy"].setText(
+                f"{result_obj.specific_energy_kwh_per_t:.1f} kWh/t")
+
         # Screen aperture from config
-        if result_obj and hasattr(result_obj, "config"):
+        if hasattr(result_obj, "config"):
             aperture = getattr(result_obj.config, "screen_aperture_mm", None)
             if aperture:
-                self._screen_stats["aperture"].setText(f"{aperture:.2f} mm")
+                self._breakage_stats["aperture"].setText(f"{aperture:.2f} mm")
 
 
 class _ProcessSummaryPanel(QFrame):
@@ -512,13 +559,13 @@ class _ProcessSummaryPanel(QFrame):
 
         row_data = [
             ("Duration", "duration", 0, 0),
-            ("Total Mass Processed", "total_mass", 0, 1),
-            ("Particles Passed (fine)", "particles_passed", 1, 0),
-            ("Discharge Mass (fine)", "discharge_mass", 1, 1),
-            ("Particles in Chamber", "particles_retained", 2, 0),
-            ("Holdup (stuck in mill)", "holdup_kg", 2, 1),
-            ("Mean Residence Time", "residence", 3, 0),
-            ("Screen Efficiency", "efficiency", 3, 1),
+            ("Total Mass Fed", "total_mass", 0, 1),
+            ("Flour Mass (discharged)", "discharge_mass", 1, 0),
+            ("Flour d50", "flour_d50", 1, 1),
+            ("Seed Mass (retained)", "holdup_kg", 2, 0),
+            ("Seed d50", "seed_d50", 2, 1),
+            ("Screen Efficiency", "efficiency", 3, 0),
+            ("Mean Residence Time", "residence", 3, 1),
         ]
 
         for label, key, row, col in row_data:
@@ -576,16 +623,21 @@ class _ProcessSummaryPanel(QFrame):
                 self._stats["duration"].setText("--")
                 self._stats["efficiency"].setText("--")
 
-            if hasattr(result_obj, "psd_total_mass_kg"):
-                self._stats["total_mass"].setText(f"{result_obj.psd_total_mass_kg:.2f} kg")
-            if hasattr(result_obj, "total_particles_passed"):
-                self._stats["particles_passed"].setText(f"{result_obj.total_particles_passed:,}")
+            # Total mass fed
+            if hasattr(result_obj, "total_mass_fed_kg"):
+                self._stats["total_mass"].setText(f"{result_obj.total_mass_fed_kg:.2f} kg")
+
+            # Flour (discharged) mass and d50
             if hasattr(result_obj, "psd_total_mass_kg"):
                 self._stats["discharge_mass"].setText(f"{result_obj.psd_total_mass_kg:.2f} kg")
-            if hasattr(result_obj, "total_particles_retained"):
-                self._stats["particles_retained"].setText(f"{result_obj.total_particles_retained:,}")
+            if hasattr(result_obj, "d50_um"):
+                self._stats["flour_d50"].setText(f"{result_obj.d50_um:.0f} \u00b5m")
+
+            # Seed (retained) mass and d50
             if hasattr(result_obj, "holdup_kg_final"):
                 self._stats["holdup_kg"].setText(f"{result_obj.holdup_kg_final:.2f} kg")
+            if hasattr(result_obj, "retained_d50_um") and result_obj.retained_d50_um > 0:
+                self._stats["seed_d50"].setText(f"{result_obj.retained_d50_um:.0f} \u00b5m")
 
 
 class MillingResultsPage(QWidget):

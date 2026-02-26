@@ -61,6 +61,7 @@ class MillingStepState:
     # Breakage stats
     num_breakage_events: int = 0
     mean_size_reduction: float = 1.0
+    num_fragments_created: int = 0
 
     # Screen stats
     num_passed_screen: int = 0
@@ -358,6 +359,7 @@ class CoupledMillingEngine:
             mean_impact_energy_j=self.impact_solver.stats.mean_impact_energy,
             num_breakage_events=self.breakage_model.stats.num_breakage_events,
             mean_size_reduction=self.breakage_model.stats.size_reduction_ratio,
+            num_fragments_created=self.breakage_model.stats.num_fragments_created,
             num_passed_screen=self.screen_classifier.stats.num_passed,
             screen_passage_rate=self.screen_classifier.stats.passage_rate,
             d10_m=d10,
@@ -531,13 +533,19 @@ class CoupledMillingEngine:
     ) -> np.ndarray:
         """Apply breakage to impacted particles.
 
+        If multi-fragment breakage is enabled, secondary fragments are generated
+        and appended to the particle arrays (up to max_particle_count).
+
         Returns:
             break_flags
         """
         if self.particles.count == 0:
             return np.array([], dtype=np.int32)
 
-        new_sizes, new_masses, break_flags = self.breakage_model.step_lagrangian(
+        (
+            new_sizes, new_masses, break_flags,
+            frag_sizes, frag_masses, parent_indices, num_frags,
+        ) = self.breakage_model.step_lagrangian(
             sizes=self.particles.sizes,
             masses=self.particles.masses,
             impact_flags=impact_flags,
@@ -548,6 +556,52 @@ class CoupledMillingEngine:
         self.particles.masses = new_masses
         # Track per-particle breakage count
         self.particles.break_count = self.particles.break_count.astype(np.int32) + break_flags.astype(np.int32)
+
+        # --- Append secondary fragments ---
+        if frag_sizes is not None and num_frags > 0:
+            max_cap = self.breakage_model.params.max_particle_count
+            capacity_left = max_cap - self.particles.count
+
+            if capacity_left > 0:
+                n_add = min(num_frags, capacity_left)
+
+                # If we must truncate, redistribute dropped fragment mass to primaries
+                if n_add < num_frags:
+                    dropped_mass = frag_masses[n_add:].sum()
+                    # Distribute dropped mass back to their parent primaries
+                    for j in range(n_add, num_frags):
+                        pidx = parent_indices[j]
+                        self.particles.masses[pidx] += frag_masses[j]
+
+                frag_sizes = frag_sizes[:n_add]
+                frag_masses = frag_masses[:n_add]
+                parent_indices = parent_indices[:n_add]
+
+                # Fragment positions/velocities: copy from parent + noise
+                rng = np.random.default_rng()
+                p_cfg = self.breakage_model.params
+                pos_noise = p_cfg.fragment_position_noise_m
+                vel_noise = p_cfg.fragment_velocity_noise_m_per_s
+
+                frag_pos = self.particles.positions[parent_indices].copy()
+                frag_pos += rng.normal(0, pos_noise, frag_pos.shape).astype(np.float32)
+
+                frag_vel = self.particles.velocities[parent_indices].copy()
+                frag_vel += rng.normal(0, vel_noise, frag_vel.shape).astype(np.float32)
+
+                frag_res = np.zeros(n_add, dtype=np.float32)
+                frag_break = np.ones(n_add, dtype=np.int32)  # born from breakage
+
+                # Append to particle state
+                self.particles = ParticleState(
+                    positions=np.vstack([self.particles.positions, frag_pos]),
+                    velocities=np.vstack([self.particles.velocities, frag_vel]),
+                    sizes=np.concatenate([self.particles.sizes, frag_sizes.astype(np.float32)]),
+                    masses=np.concatenate([self.particles.masses, frag_masses.astype(np.float32)]),
+                    residence_times=np.concatenate([self.particles.residence_times, frag_res]),
+                    break_count=np.concatenate([self.particles.break_count, frag_break]),
+                )
+
         return break_flags
 
     def _screen_step(self) -> int:

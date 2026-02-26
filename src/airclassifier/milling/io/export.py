@@ -47,6 +47,7 @@ def export_history_csv(
         "mean_impact_energy_j",
         "num_breakage_events",
         "mean_size_reduction",
+        "num_fragments_created",
         "num_passed_screen",
         "screen_passage_rate",
         "d10_m",

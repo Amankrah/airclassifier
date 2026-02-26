@@ -27,6 +27,7 @@ import numpy as np
 from ..kernels import (
     breakage_step_np,
     breakage_psd_np,
+    generate_fragments_np,
     WARP_AVAILABLE,
 )
 if WARP_AVAILABLE:
@@ -43,6 +44,7 @@ class BreakageStats:
     num_breakage_events: int = 0
     total_mass_broken: float = 0.0
     size_reduction_ratio: float = 1.0
+    num_fragments_created: int = 0
 
 
 @dataclass
@@ -79,25 +81,68 @@ class BreakageModel:
         masses: np.ndarray,
         impact_flags: np.ndarray,
         impact_energies: np.ndarray,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Apply breakage to Lagrangian particles.
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
+               Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], int]:
+        """Apply breakage to Lagrangian particles with optional multi-fragment generation.
 
         Args:
-            sizes: Particle sizes [n] (modified in place)
-            masses: Particle masses [n] (modified in place)
+            sizes: Particle sizes [n]
+            masses: Particle masses [n]
             impact_flags: Which particles were impacted [n]
             impact_energies: Impact energies [n]
 
         Returns:
-            (new_sizes, new_masses, break_flags)
+            (new_sizes, new_masses, break_flags,
+             frag_sizes, frag_masses, parent_indices, num_fragments_created)
+            When enable_multi_fragment is False, fragment arrays are None and count is 0.
         """
-        n = len(sizes)
         p = self.params
 
+        # Save originals before kernel (needed for mass-conserving fragmentation)
+        original_sizes = sizes.copy()
+        original_masses = masses.copy()
+
+        # Run existing breakage kernel (produces primary daughters)
         if self.device == "cuda" and WARP_AVAILABLE:
-            return self._step_warp(sizes, masses, impact_flags, impact_energies)
+            new_sizes, new_masses, break_flags = self._step_warp(
+                sizes, masses, impact_flags, impact_energies,
+            )
         else:
-            return self._step_np(sizes, masses, impact_flags, impact_energies)
+            new_sizes, new_masses, break_flags = self._step_np(
+                sizes, masses, impact_flags, impact_energies,
+            )
+
+        # Multi-fragment post-processing
+        frag_sizes = None
+        frag_masses = None
+        parent_indices = None
+        num_frags = 0
+
+        if p.enable_multi_fragment and int(break_flags.sum()) > 0:
+            (
+                new_sizes, new_masses,
+                frag_sizes, frag_masses,
+                parent_indices, num_frags,
+            ) = generate_fragments_np(
+                parent_sizes=original_sizes,
+                parent_masses=original_masses,
+                primary_sizes=new_sizes,
+                primary_masses=new_masses,
+                break_flags=break_flags,
+                impact_energies=impact_energies,
+                gamma=p.breakage_distribution_exponent,
+                min_size=p.d_min_um * 1e-6,
+                max_fragments=p.max_fragments_per_event,
+                frag_count_coeff=p.fragment_count_coefficient,
+                frag_count_size_exp=p.fragment_count_size_exp,
+                frag_count_energy_exp=p.fragment_count_energy_exp,
+                energy_ref=p.min_impact_energy_j,
+                rng=self._rng,
+            )
+            self._stats.num_fragments_created = num_frags
+
+        return (new_sizes, new_masses, break_flags,
+                frag_sizes, frag_masses, parent_indices, num_frags)
 
     def _step_np(
         self,

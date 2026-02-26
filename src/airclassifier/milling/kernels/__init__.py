@@ -22,6 +22,7 @@ from .impact import impact_detection_np
 from .breakage import (
     breakage_step_np,
     breakage_psd_np,
+    generate_fragments_np,
 )
 from .screen import (
     screen_passage_np,
@@ -62,6 +63,7 @@ __all__ = [
     "breakage_step_np",
     "breakage_step_warp",
     "breakage_psd_np",
+    "generate_fragments_np",
     # Screen
     "screen_passage_np",
     "screen_passage_warp",

@@ -58,15 +58,21 @@ class MillingResult:
     total_particles_retained: int = 0
     holdup_kg_final: float = 0.0
     total_particles_fed: int = 0
+    total_mass_fed_kg: float = 0.0
 
     # Breakage tracking
     total_breakage_events: int = 0
     total_impacts: int = 0
 
-    # Summary statistics
+    # Summary statistics — flour (discharged through screen)
     d10_um: float = 0.0
     d50_um: float = 0.0
     d90_um: float = 0.0
+
+    # Retained seed d-values
+    retained_d10_um: float = 0.0
+    retained_d50_um: float = 0.0
+    retained_d90_um: float = 0.0
     throughput_kg_per_hr: float = 0.0
     mean_residence_time_s: float = 0.0
     specific_energy_kwh_per_t: float = 0.0
@@ -239,12 +245,31 @@ class HammerMillSimulator:
 
         # Extract PSD (discharged)
         size_classes, mass_fractions, total_mass = self.engine.get_discharge_psd()
+        # Prefer mass-balance total (see build_result_from_engine comment)
+        if len(states) > 0:
+            mass_balance_total = sum(s.discharge_rate_kg_per_s * dt for s in states)
+            total_mass = max(total_mass, mass_balance_total)
 
         # Extract retained PSD (still in chamber)
         _, retained_fractions, retained_mass = self.engine.get_retained_psd()
 
         # Compute summary statistics
         d10, d50, d90 = self.engine.screen_classifier.get_d_values()
+
+        # Compute retained seed d-values
+        ret_sizes = self.engine.particles.sizes
+        ret_masses = self.engine.particles.masses
+        if len(ret_sizes) > 0 and ret_masses.sum() > 0:
+            idx = np.argsort(ret_sizes)
+            s_sorted = ret_sizes[idx]
+            m_sorted = ret_masses[idx]
+            cum = np.cumsum(m_sorted)
+            cum /= cum[-1]
+            ret_d10 = float(np.interp(0.10, cum, s_sorted)) * 1e6
+            ret_d50 = float(np.interp(0.50, cum, s_sorted)) * 1e6
+            ret_d90 = float(np.interp(0.90, cum, s_sorted)) * 1e6
+        else:
+            ret_d10 = ret_d50 = ret_d90 = 0.0
 
         # Compute averages from history
         if len(states) > 0:
@@ -284,6 +309,7 @@ class HammerMillSimulator:
 
         total_passed = sum(s.num_passed_screen for s in states)
         total_fed = sum(s.num_fed for s in states)
+        total_mass_fed_kg = sum(s.feed_rate_kg_per_s * dt for s in states) if len(states) > 0 else 0.0
         total_breakage = sum(s.num_breakage_events for s in states)
         total_impacts_sum = sum(s.num_impacts for s in states)
         last_state = states[-1] if states else None
@@ -302,11 +328,15 @@ class HammerMillSimulator:
             total_particles_retained=retained_count,
             holdup_kg_final=holdup_final,
             total_particles_fed=total_fed,
+            total_mass_fed_kg=total_mass_fed_kg,
             total_breakage_events=total_breakage,
             total_impacts=total_impacts_sum,
             d10_um=d10 * 1e6,
             d50_um=d50 * 1e6,
             d90_um=d90 * 1e6,
+            retained_d10_um=ret_d10,
+            retained_d50_um=ret_d50,
+            retained_d90_um=ret_d90,
             throughput_kg_per_hr=throughput,
             mean_residence_time_s=mean_residence,
             specific_energy_kwh_per_t=specific_energy,
@@ -329,12 +359,30 @@ class HammerMillSimulator:
         """
         states = self.engine.history
         size_classes, mass_fractions, total_mass = self.engine.get_discharge_psd()
-        # Fallback: if discharge buffer is empty but we have step history, compute total
-        # discharged mass from per-step discharge rate (fixes GUI showing 0 kg when particles passed)
-        if total_mass == 0 and len(states) > 0:
-            total_mass = sum(s.discharge_rate_kg_per_s * dt for s in states)
+        # The Lagrangian breakage model does not conserve individual particle mass
+        # (each break shrinks the tracked particle, "losing" mass to untracked fines).
+        # The mass-balance discharge rate (pre_holdup + feed - post_holdup) is physically
+        # correct, so always prefer it over the particle-level buffer sum.
+        if len(states) > 0:
+            mass_balance_total = sum(s.discharge_rate_kg_per_s * dt for s in states)
+            total_mass = max(total_mass, mass_balance_total)
         retained_size_classes, retained_fractions, retained_mass = self.engine.get_retained_psd()
         d10, d50, d90 = self.engine.screen_classifier.get_d_values()
+
+        # Compute retained seed d-values from current particle state
+        ret_sizes = self.engine.particles.sizes
+        ret_masses = self.engine.particles.masses
+        if len(ret_sizes) > 0 and ret_masses.sum() > 0:
+            idx = np.argsort(ret_sizes)
+            s_sorted = ret_sizes[idx]
+            m_sorted = ret_masses[idx]
+            cum = np.cumsum(m_sorted)
+            cum /= cum[-1]
+            ret_d10 = float(np.interp(0.10, cum, s_sorted)) * 1e6
+            ret_d50 = float(np.interp(0.50, cum, s_sorted)) * 1e6
+            ret_d90 = float(np.interp(0.90, cum, s_sorted)) * 1e6
+        else:
+            ret_d10 = ret_d50 = ret_d90 = 0.0
 
         if len(states) > 0:
             powers = [s.power_kw for s in states]
@@ -343,6 +391,7 @@ class HammerMillSimulator:
             discharge_rates = [s.discharge_rate_kg_per_s * 3600 for s in states]
             throughput = float(np.mean(discharge_rates))
             total_fed = sum(s.num_fed for s in states)
+            total_mass_fed_kg = sum(s.feed_rate_kg_per_s * dt for s in states)
             total_discharged = sum(s.num_discharged for s in states)
             mean_residence = (
                 duration_s * (1 - total_discharged / max(total_fed, 1))
@@ -361,6 +410,7 @@ class HammerMillSimulator:
         else:
             mean_power = max_power = throughput = mean_residence = specific_energy = 0.0
             total_passed = total_fed = total_breakage = total_impacts_sum = 0
+            total_mass_fed_kg = 0.0
             holdup_final = 0.0
             retained_count = 0
 
@@ -376,11 +426,15 @@ class HammerMillSimulator:
             total_particles_retained=retained_count,
             holdup_kg_final=holdup_final,
             total_particles_fed=total_fed,
+            total_mass_fed_kg=total_mass_fed_kg,
             total_breakage_events=total_breakage,
             total_impacts=total_impacts_sum,
             d10_um=d10 * 1e6,
             d50_um=d50 * 1e6,
             d90_um=d90 * 1e6,
+            retained_d10_um=ret_d10,
+            retained_d50_um=ret_d50,
+            retained_d90_um=ret_d90,
             throughput_kg_per_hr=throughput,
             mean_residence_time_s=mean_residence,
             specific_energy_kwh_per_t=specific_energy,

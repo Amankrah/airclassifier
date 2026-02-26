@@ -234,6 +234,157 @@ def breakage_step_np(
     return new_sizes, new_masses, break_flags
 
 
+# ---------------------------------------------------------------------------
+#  Multi-fragment post-processing (mass-conserving)
+# ---------------------------------------------------------------------------
+
+def generate_fragments_np(
+    parent_sizes: np.ndarray,
+    parent_masses: np.ndarray,
+    primary_sizes: np.ndarray,
+    primary_masses: np.ndarray,
+    break_flags: np.ndarray,
+    impact_energies: np.ndarray,
+    gamma: float,
+    min_size: float,
+    max_fragments: int,
+    frag_count_coeff: float,
+    frag_count_size_exp: float,
+    frag_count_energy_exp: float,
+    energy_ref: float,
+    rng: Optional[np.random.Generator] = None,
+) -> Tuple[
+    np.ndarray, np.ndarray,   # adjusted primary sizes & masses
+    np.ndarray, np.ndarray,   # secondary fragment sizes & masses
+    np.ndarray,               # parent_indices (index into broken particles)
+    int,                      # num_fragments_created
+]:
+    """Generate secondary fragments and re-normalise for exact mass conservation.
+
+    After the breakage kernel produces a single primary daughter per broken
+    particle, this function:
+      1. Determines fragment count N from size-reduction ratio and impact energy.
+      2. Samples N-1 secondary daughter sizes from a Gaudin-Schuhmann
+         inverse distribution.
+      3. Re-normalises all N fragment masses so they sum to the parent mass
+         (volume-weighted: m_i = m_parent * d_i^3 / sum(d_j^3)).
+
+    The primary daughter size/mass arrays are **modified in place** to reflect
+    the re-normalised mass.  Secondary fragment arrays are returned separately
+    for the caller to append to particle state.
+
+    Args:
+        parent_sizes: Original sizes before kernel [n]
+        parent_masses: Original masses before kernel [n]
+        primary_sizes: Sizes after kernel (primary daughters) [n]
+        primary_masses: Masses after kernel (unused; overwritten) [n]
+        break_flags: Breakage indicators from kernel [n]
+        impact_energies: Impact energies [n]
+        gamma: Breakage distribution exponent (Gaudin-Schuhmann)
+        min_size: Minimum particle size [m]
+        max_fragments: Maximum total fragments per event (N_max)
+        frag_count_coeff: C_n coefficient for fragment count
+        frag_count_size_exp: alpha_n exponent on size ratio
+        frag_count_energy_exp: beta_n exponent on energy ratio
+        energy_ref: Reference energy for fragment count scaling [J]
+        rng: NumPy random generator
+
+    Returns:
+        adjusted_primary_sizes: Primary sizes (unchanged)
+        adjusted_primary_masses: Primary masses (re-normalised in place)
+        frag_sizes: Secondary fragment sizes [M]
+        frag_masses: Secondary fragment masses [M]
+        parent_indices: Index of each fragment's parent in the *full* array [M]
+        num_fragments_created: Total secondary fragments generated
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    broken_idx = np.where(break_flags == 1)[0]
+    n_broken = len(broken_idx)
+
+    if n_broken == 0:
+        empty = np.zeros(0, dtype=np.float64)
+        empty_idx = np.zeros(0, dtype=np.int64)
+        return (
+            primary_sizes, primary_masses,
+            empty, empty,
+            empty_idx, 0,
+        )
+
+    # Pre-allocate generous upper bound (each broken particle ≤ max_fragments-1 secondaries)
+    max_secondary = n_broken * (max_fragments - 1)
+    frag_sizes_buf = np.empty(max_secondary, dtype=np.float64)
+    frag_masses_buf = np.empty(max_secondary, dtype=np.float64)
+    parent_idx_buf = np.empty(max_secondary, dtype=np.int64)
+    frag_cursor = 0
+
+    inv_gamma = 1.0 / gamma if gamma > 0 else 1.0
+
+    for k in range(n_broken):
+        idx = broken_idx[k]
+        d_parent = parent_sizes[idx]
+        m_parent = parent_masses[idx]
+        d_primary = primary_sizes[idx]
+        E = impact_energies[idx]
+
+        # --- Skip fragmentation for very small parents ---
+        if d_parent < 2.0 * min_size or d_primary <= min_size:
+            # Just ensure mass conservation for the single primary
+            primary_masses[idx] = m_parent
+            continue
+
+        # --- Fragment count ---
+        # N = clamp(floor(C_n * (d_parent/d_primary)^0.5 * (E/E_ref)^0.3), 2, N_max)
+        size_ratio = d_parent / d_primary if d_primary > 0 else 1.0
+        energy_ratio = E / energy_ref if energy_ref > 0 else 1.0
+        N_float = frag_count_coeff * (size_ratio ** frag_count_size_exp) * (energy_ratio ** frag_count_energy_exp)
+        N = max(2, min(max_fragments, int(N_float)))
+
+        # --- Sample secondary sizes from Gaudin-Schuhmann inverse ---
+        # d_i = d_parent * u^(1/gamma),  u ~ Uniform(0,1)
+        # Clamp to [min_size, d_primary]
+        n_secondary = N - 1
+        u = rng.uniform(0.0, 1.0, n_secondary)
+        sec_sizes = d_parent * np.power(u, inv_gamma)
+        sec_sizes = np.clip(sec_sizes, min_size, d_primary)
+
+        # --- Mass conservation: volume-weighted re-normalisation ---
+        # all volumes: primary + secondaries
+        all_d = np.empty(N, dtype=np.float64)
+        all_d[0] = d_primary
+        all_d[1:] = sec_sizes
+
+        all_v = all_d ** 3
+        v_sum = all_v.sum()
+        if v_sum <= 0:
+            primary_masses[idx] = m_parent
+            continue
+
+        all_m = m_parent * (all_v / v_sum)
+
+        # Write back re-normalised primary mass
+        primary_masses[idx] = all_m[0]
+
+        # Store secondary fragments
+        end = frag_cursor + n_secondary
+        frag_sizes_buf[frag_cursor:end] = sec_sizes
+        frag_masses_buf[frag_cursor:end] = all_m[1:]
+        parent_idx_buf[frag_cursor:end] = idx
+        frag_cursor = end
+
+    # Trim buffers to actual count
+    frag_sizes = frag_sizes_buf[:frag_cursor].copy()
+    frag_masses = frag_masses_buf[:frag_cursor].copy()
+    parent_indices = parent_idx_buf[:frag_cursor].copy()
+
+    return (
+        primary_sizes, primary_masses,
+        frag_sizes, frag_masses,
+        parent_indices, frag_cursor,
+    )
+
+
 # Population balance on PSD bins
 def breakage_psd_np(
     psd_masses: np.ndarray,

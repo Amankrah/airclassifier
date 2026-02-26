@@ -233,6 +233,19 @@ class BreakageParams:
     min_impact_energy_j: float = 0.0005          # Below this, no breakage (lowered for fine particles)
     energy_to_breakage_factor: float = 8.0       # Converts impact energy to selection probability
 
+    # Multi-fragment breakage (mass-conserving fragmentation)
+    # When enabled, each breakage event produces 2-N fragments whose masses
+    # sum exactly to the parent mass. The existing kernel computes the primary
+    # daughter; secondary fragments are generated as a CPU post-processing step.
+    enable_multi_fragment: bool = True
+    max_fragments_per_event: int = 6             # N_max: hard cap on total fragments per event
+    fragment_count_coefficient: float = 2.0      # C_n: base coefficient for fragment count
+    fragment_count_size_exp: float = 0.5         # alpha_n: size-ratio exponent for fragment count
+    fragment_count_energy_exp: float = 0.3       # beta_n: energy exponent for fragment count
+    fragment_position_noise_m: float = 0.001     # Spatial jitter for secondary fragments [m]
+    fragment_velocity_noise_m_per_s: float = 0.5 # Velocity jitter for secondary fragments [m/s]
+    max_particle_count: int = 50_000             # Safety cap on total particles in simulation
+
     @property
     def size_classes_um(self) -> Tuple[float, ...]:
         """Size class boundaries in micrometers (geometric progression)."""
