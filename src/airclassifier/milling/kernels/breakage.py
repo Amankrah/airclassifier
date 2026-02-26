@@ -53,11 +53,23 @@ if WARP_AVAILABLE:
         energy_scale: float,
         breakage_gamma: float,
         min_size: float,
+        # Size-dependent regime parameters
+        coarse_threshold: float,
+        fine_threshold: float,
+        gamma_coarse: float,
+        gamma_fine: float,
+        clamp_lo_coarse: float,
+        clamp_hi_coarse: float,
+        clamp_lo_medium: float,
+        clamp_hi_medium: float,
+        clamp_lo_fine: float,
+        clamp_hi_fine: float,
     ):
         """Apply breakage to impacted particles.
 
         For each particle with an impact, determine if breakage occurs
         (stochastic selection) and if so, reduce the particle size.
+        Uses size-dependent breakage regimes (coarse/medium/fine).
         """
         tid = wp.tid()
 
@@ -95,12 +107,21 @@ if WARP_AVAILABLE:
         # --- Breakage occurs! ---
         break_flags[tid] = 1
 
-        # Daughter size: use breakage distribution
-        # For simplicity, reduce size by a factor based on gamma
-        # More sophisticated: sample from distribution
-        # B(d_daughter | d_parent) ~ (d_daughter/d_parent)^gamma
+        # Select regime based on particle size
+        gamma = breakage_gamma  # default: medium
+        clamp_lo = clamp_lo_medium
+        clamp_hi = clamp_hi_medium
+        if size > coarse_threshold:
+            gamma = gamma_coarse
+            clamp_lo = clamp_lo_coarse
+            clamp_hi = clamp_hi_coarse
+        elif size < fine_threshold:
+            gamma = gamma_fine
+            clamp_lo = clamp_lo_fine
+            clamp_hi = clamp_hi_fine
+
         # Mean daughter size ~ d_parent * (gamma / (gamma + 1))
-        reduction_factor = breakage_gamma / (breakage_gamma + 1.0)
+        reduction_factor = gamma / (gamma + 1.0)
 
         # Add some randomness to reduction
         state = state * wp.uint32(1103515245) + wp.uint32(12345)
@@ -108,10 +129,8 @@ if WARP_AVAILABLE:
         rand_factor = 0.5 + float(state & wp.uint32(0x7FFFFFFF)) / float(0x7FFFFFFF)
         reduction_factor = reduction_factor * rand_factor
 
-        # Clamp range tuned for legume flour milling (finer grinding)
-        # Lower bound 0.15 allows significant size reduction per impact
-        # Upper bound 0.65 prevents trivial breakage events
-        new_size = size * wp.clamp(reduction_factor, 0.15, 0.65)
+        # Size-dependent clamp
+        new_size = size * wp.clamp(reduction_factor, clamp_lo, clamp_hi)
         new_size = wp.max(new_size, min_size)
 
         # Update size
@@ -137,6 +156,17 @@ def breakage_step_warp(
     energy_scale: float = 5.0,
     breakage_gamma: float = 0.8,
     min_size: float = 1e-5,
+    # Size-dependent regime parameters
+    coarse_threshold: float = 1.0e-3,
+    fine_threshold: float = 1.0e-4,
+    gamma_coarse: float = 1.2,
+    gamma_fine: float = 0.35,
+    clamp_lo_coarse: float = 0.40,
+    clamp_hi_coarse: float = 0.70,
+    clamp_lo_medium: float = 0.20,
+    clamp_hi_medium: float = 0.55,
+    clamp_lo_fine: float = 0.15,
+    clamp_hi_fine: float = 0.45,
 ):
     """Launch breakage kernel.
 
@@ -152,8 +182,18 @@ def breakage_step_warp(
         reference_size: Reference size for selection [m]
         min_energy: Minimum energy for breakage [J]
         energy_scale: Energy scaling factor
-        breakage_gamma: Breakage distribution exponent
+        breakage_gamma: Breakage distribution exponent (medium regime)
         min_size: Minimum particle size [m]
+        coarse_threshold: Coarse/medium boundary [m]
+        fine_threshold: Medium/fine boundary [m]
+        gamma_coarse: Coarse regime Gaudin-Schuhmann exponent
+        gamma_fine: Fine regime Gaudin-Schuhmann exponent
+        clamp_lo_coarse: Coarse regime min reduction factor
+        clamp_hi_coarse: Coarse regime max reduction factor
+        clamp_lo_medium: Medium regime min reduction factor
+        clamp_hi_medium: Medium regime max reduction factor
+        clamp_lo_fine: Fine regime min reduction factor
+        clamp_hi_fine: Fine regime max reduction factor
     """
     n = sizes.shape[0]
     wp.launch(
@@ -163,6 +203,11 @@ def breakage_step_warp(
             sizes, masses, impact_flags, impact_energies, break_flags,
             rand_states, selection_k, selection_alpha, reference_size,
             min_energy, energy_scale, breakage_gamma, min_size,
+            coarse_threshold, fine_threshold,
+            gamma_coarse, gamma_fine,
+            clamp_lo_coarse, clamp_hi_coarse,
+            clamp_lo_medium, clamp_hi_medium,
+            clamp_lo_fine, clamp_hi_fine,
         ],
     )
 
@@ -181,6 +226,17 @@ def breakage_step_np(
     breakage_gamma: float = 0.8,
     min_size: float = 1e-5,
     rng: Optional[np.random.Generator] = None,
+    # Size-dependent regime parameters
+    coarse_threshold: float = 1.0e-3,
+    fine_threshold: float = 1.0e-4,
+    gamma_coarse: float = 1.2,
+    gamma_fine: float = 0.35,
+    clamp_lo_coarse: float = 0.40,
+    clamp_hi_coarse: float = 0.70,
+    clamp_lo_medium: float = 0.20,
+    clamp_hi_medium: float = 0.55,
+    clamp_lo_fine: float = 0.15,
+    clamp_hi_fine: float = 0.45,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """NumPy implementation of breakage step.
 
@@ -217,12 +273,22 @@ def breakage_step_np(
         # Breakage!
         break_flags[i] = 1
 
-        # Daughter size
-        reduction_factor = breakage_gamma / (breakage_gamma + 1.0)
+        # Select regime based on particle size
+        if size > coarse_threshold:
+            gamma = gamma_coarse
+            cl, ch = clamp_lo_coarse, clamp_hi_coarse
+        elif size < fine_threshold:
+            gamma = gamma_fine
+            cl, ch = clamp_lo_fine, clamp_hi_fine
+        else:
+            gamma = breakage_gamma
+            cl, ch = clamp_lo_medium, clamp_hi_medium
+
+        # Daughter size from Gaudin-Schuhmann mean
+        reduction_factor = gamma / (gamma + 1.0)
         rand_factor = 0.5 + rng.random()
         reduction_factor = reduction_factor * rand_factor
-        # Clamp range tuned for legume flour milling (finer grinding)
-        reduction_factor = np.clip(reduction_factor, 0.15, 0.65)
+        reduction_factor = np.clip(reduction_factor, cl, ch)
 
         new_size = max(size * reduction_factor, min_size)
         new_sizes[i] = new_size
@@ -253,6 +319,11 @@ def generate_fragments_np(
     frag_count_energy_exp: float,
     energy_ref: float,
     rng: Optional[np.random.Generator] = None,
+    # Size-dependent regime parameters
+    coarse_threshold: float = 1.0e-3,
+    fine_threshold: float = 1.0e-4,
+    gamma_coarse: float = 1.2,
+    gamma_fine: float = 0.35,
 ) -> Tuple[
     np.ndarray, np.ndarray,   # adjusted primary sizes & masses
     np.ndarray, np.ndarray,   # secondary fragment sizes & masses
@@ -265,7 +336,7 @@ def generate_fragments_np(
     particle, this function:
       1. Determines fragment count N from size-reduction ratio and impact energy.
       2. Samples N-1 secondary daughter sizes from a Gaudin-Schuhmann
-         inverse distribution.
+         inverse distribution using size-dependent gamma.
       3. Re-normalises all N fragment masses so they sum to the parent mass
          (volume-weighted: m_i = m_parent * d_i^3 / sum(d_j^3)).
 
@@ -280,7 +351,7 @@ def generate_fragments_np(
         primary_masses: Masses after kernel (unused; overwritten) [n]
         break_flags: Breakage indicators from kernel [n]
         impact_energies: Impact energies [n]
-        gamma: Breakage distribution exponent (Gaudin-Schuhmann)
+        gamma: Breakage distribution exponent (medium regime, Gaudin-Schuhmann)
         min_size: Minimum particle size [m]
         max_fragments: Maximum total fragments per event (N_max)
         frag_count_coeff: C_n coefficient for fragment count
@@ -288,6 +359,10 @@ def generate_fragments_np(
         frag_count_energy_exp: beta_n exponent on energy ratio
         energy_ref: Reference energy for fragment count scaling [J]
         rng: NumPy random generator
+        coarse_threshold: Coarse/medium boundary [m]
+        fine_threshold: Medium/fine boundary [m]
+        gamma_coarse: Coarse regime Gaudin-Schuhmann exponent
+        gamma_fine: Fine regime Gaudin-Schuhmann exponent
 
     Returns:
         adjusted_primary_sizes: Primary sizes (unchanged)
@@ -312,14 +387,12 @@ def generate_fragments_np(
             empty_idx, 0,
         )
 
-    # Pre-allocate generous upper bound (each broken particle ≤ max_fragments-1 secondaries)
+    # Pre-allocate generous upper bound (each broken particle <= max_fragments-1 secondaries)
     max_secondary = n_broken * (max_fragments - 1)
     frag_sizes_buf = np.empty(max_secondary, dtype=np.float64)
     frag_masses_buf = np.empty(max_secondary, dtype=np.float64)
     parent_idx_buf = np.empty(max_secondary, dtype=np.int64)
     frag_cursor = 0
-
-    inv_gamma = 1.0 / gamma if gamma > 0 else 1.0
 
     for k in range(n_broken):
         idx = broken_idx[k]
@@ -333,6 +406,15 @@ def generate_fragments_np(
             # Just ensure mass conservation for the single primary
             primary_masses[idx] = m_parent
             continue
+
+        # --- Per-particle gamma based on parent size regime ---
+        if d_parent > coarse_threshold:
+            eff_gamma = gamma_coarse
+        elif d_parent < fine_threshold:
+            eff_gamma = gamma_fine
+        else:
+            eff_gamma = gamma  # medium
+        inv_gamma = 1.0 / eff_gamma if eff_gamma > 0 else 1.0
 
         # --- Fragment count ---
         # N = clamp(floor(C_n * (d_parent/d_primary)^0.5 * (E/E_ref)^0.3), 2, N_max)
@@ -394,11 +476,16 @@ def breakage_psd_np(
     selection_alpha: float = 1.2,
     breakage_gamma: float = 0.8,
     dt: float = 0.001,
+    # Size-dependent regime parameters
+    coarse_threshold: float = 1.0e-3,
+    fine_threshold: float = 1.0e-4,
+    gamma_coarse: float = 1.2,
+    gamma_fine: float = 0.35,
 ) -> np.ndarray:
     """Apply breakage to a particle size distribution (population balance).
 
     This operates on mass fractions in size classes rather than
-    individual particles.
+    individual particles. Uses size-dependent gamma per parent class.
 
     Args:
         psd_masses: Mass in each size class [n_classes]
@@ -406,8 +493,12 @@ def breakage_psd_np(
         total_impact_energy: Total impact energy this timestep
         selection_k: Selection rate constant
         selection_alpha: Size exponent
-        breakage_gamma: Breakage distribution exponent
+        breakage_gamma: Breakage distribution exponent (medium regime)
         dt: Timestep
+        coarse_threshold: Coarse/medium boundary [m]
+        fine_threshold: Medium/fine boundary [m]
+        gamma_coarse: Coarse regime Gaudin-Schuhmann exponent
+        gamma_fine: Fine regime Gaudin-Schuhmann exponent
 
     Returns:
         New PSD masses [n_classes]
@@ -421,11 +512,18 @@ def breakage_psd_np(
     B = np.zeros((n, n))
     for j in range(n):
         d_parent = size_classes[j]
+        # Select gamma based on parent size regime
+        if d_parent > coarse_threshold:
+            g = gamma_coarse
+        elif d_parent < fine_threshold:
+            g = gamma_fine
+        else:
+            g = breakage_gamma  # medium
         for i in range(j + 1):  # i <= j (smaller or equal)
             d_daughter = size_classes[i]
             # Cumulative breakage function
             ratio = d_daughter / d_parent
-            B[i, j] = ratio ** breakage_gamma
+            B[i, j] = ratio ** g
 
     # Normalize columns (mass conservation)
     for j in range(n):

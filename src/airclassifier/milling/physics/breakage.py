@@ -138,6 +138,10 @@ class BreakageModel:
                 frag_count_energy_exp=p.fragment_count_energy_exp,
                 energy_ref=p.min_impact_energy_j,
                 rng=self._rng,
+                coarse_threshold=p.regime_coarse_threshold_m,
+                fine_threshold=p.regime_fine_threshold_m,
+                gamma_coarse=p.gamma_coarse,
+                gamma_fine=p.gamma_fine,
             )
             self._stats.num_fragments_created = num_frags
 
@@ -167,6 +171,16 @@ class BreakageModel:
             breakage_gamma=p.breakage_distribution_exponent,
             min_size=p.d_min_um * 1e-6,
             rng=self._rng,
+            coarse_threshold=p.regime_coarse_threshold_m,
+            fine_threshold=p.regime_fine_threshold_m,
+            gamma_coarse=p.gamma_coarse,
+            gamma_fine=p.gamma_fine,
+            clamp_lo_coarse=p.clamp_lo_coarse,
+            clamp_hi_coarse=p.clamp_hi_coarse,
+            clamp_lo_medium=p.clamp_lo_medium,
+            clamp_hi_medium=p.clamp_hi_medium,
+            clamp_lo_fine=p.clamp_lo_fine,
+            clamp_hi_fine=p.clamp_hi_fine,
         )
 
         self._update_stats(sizes, new_sizes, masses, break_flags)
@@ -211,6 +225,16 @@ class BreakageModel:
             energy_scale=p.energy_to_breakage_factor,
             breakage_gamma=p.breakage_distribution_exponent,
             min_size=p.d_min_um * 1e-6,
+            coarse_threshold=p.regime_coarse_threshold_m,
+            fine_threshold=p.regime_fine_threshold_m,
+            gamma_coarse=p.gamma_coarse,
+            gamma_fine=p.gamma_fine,
+            clamp_lo_coarse=p.clamp_lo_coarse,
+            clamp_hi_coarse=p.clamp_hi_coarse,
+            clamp_lo_medium=p.clamp_lo_medium,
+            clamp_hi_medium=p.clamp_hi_medium,
+            clamp_lo_fine=p.clamp_lo_fine,
+            clamp_hi_fine=p.clamp_hi_fine,
         )
 
         # Copy back
@@ -252,6 +276,10 @@ class BreakageModel:
             selection_alpha=p.selection_size_exponent,
             breakage_gamma=p.breakage_distribution_exponent,
             dt=dt,
+            coarse_threshold=p.regime_coarse_threshold_m,
+            fine_threshold=p.regime_fine_threshold_m,
+            gamma_coarse=p.gamma_coarse,
+            gamma_fine=p.gamma_fine,
         )
 
     def _update_stats(

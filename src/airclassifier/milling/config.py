@@ -227,7 +227,33 @@ class BreakageParams:
     # Cumulative mass fraction finer than d_daughter given breakage of d_parent
     # Uses Gaudin-Schuhmann: B = (d_daughter / d_parent)^gamma
     # Lower gamma = smaller daughter particles (more aggressive grinding)
-    breakage_distribution_exponent: float = 0.55  # gamma: tuned for fine flour (d50 ~60µm)
+    breakage_distribution_exponent: float = 0.55  # gamma for medium regime (100µm–1mm)
+
+    # --- Size-dependent breakage regimes ---
+    # Real legume comminution has three distinct stages:
+    #   Coarse (d > 1mm): Seed coat rupture, cotyledon fracture -> large chunks
+    #   Medium (100µm < d < 1mm): Chunk grinding -> coarse flour
+    #   Fine (d < 100µm): Cell wall disruption -> fine flour + protein liberation
+    # Each regime has its own Gaudin-Schuhmann gamma and reduction-factor clamp.
+
+    # Regime boundaries [m]
+    regime_coarse_threshold_m: float = 1.0e-3    # Above = coarse (seed fracture)
+    regime_fine_threshold_m: float = 1.0e-4      # Below = fine (attrition)
+
+    # Coarse regime (d > 1mm): conservative fracture into large chunks
+    gamma_coarse: float = 1.2                    # High gamma -> large daughter chunks
+    clamp_lo_coarse: float = 0.40                # Min reduction factor
+    clamp_hi_coarse: float = 0.70                # Max reduction factor
+
+    # Medium regime (100µm–1mm): standard Gaudin-Schuhmann grinding
+    # gamma = breakage_distribution_exponent (above) for backwards compat
+    clamp_lo_medium: float = 0.20
+    clamp_hi_medium: float = 0.55
+
+    # Fine regime (d < 100µm): slow attrition / protein body liberation
+    gamma_fine: float = 0.35                     # Low gamma -> fine daughters
+    clamp_lo_fine: float = 0.15
+    clamp_hi_fine: float = 0.45
 
     # Impact energy threshold
     min_impact_energy_j: float = 0.0005          # Below this, no breakage (lowered for fine particles)
@@ -256,6 +282,11 @@ class BreakageParams:
     def size_classes_m(self) -> Tuple[float, ...]:
         """Size class boundaries in meters."""
         return tuple(d * 1e-6 for d in self.size_classes_um)
+
+    @property
+    def gamma_medium(self) -> float:
+        """Medium regime gamma (alias for breakage_distribution_exponent)."""
+        return self.breakage_distribution_exponent
 
     def selection_probability(self, d_um: float, impact_energy_j: float = 0.01) -> float:
         """Compute selection probability for a particle size.

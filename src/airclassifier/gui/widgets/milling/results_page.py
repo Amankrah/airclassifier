@@ -380,6 +380,7 @@ class _AnalyticsPanel(QFrame):
         breakage_col = self._create_analytics_column("Breakage", COLORS.MILLING_PRIMARY, [
             ("Total Impacts", "impacts"),
             ("Breakage Events", "breakage_events"),
+            ("Fragments Created", "fragments_created"),
             ("Breakage Rate", "breakage_rate"),
             ("Avg Size Reduction", "size_reduction"),
             ("Total Fed", "total_fed"),
@@ -488,8 +489,11 @@ class _AnalyticsPanel(QFrame):
             total_breakage = sum(s.num_breakage_events for s in history)
             breakage_rate = (total_breakage / total_impacts * 100) if total_impacts > 0 else 0
 
+            total_fragments = sum(s.num_fragments_created for s in history)
+
             self._breakage_stats["impacts"].setText(f"{total_impacts:,}")
             self._breakage_stats["breakage_events"].setText(f"{total_breakage:,}")
+            self._breakage_stats["fragments_created"].setText(f"{total_fragments:,}")
             self._breakage_stats["breakage_rate"].setText(f"{breakage_rate:.1f}%")
             self._breakage_stats["total_fed"].setText(f"{total_fed:,}")
 
@@ -517,7 +521,7 @@ class _AnalyticsPanel(QFrame):
                 f"{result_obj.specific_energy_kwh_per_t:.1f} kWh/t")
 
         # Screen aperture from config
-        if hasattr(result_obj, "config"):
+        if getattr(result_obj, "config", None) is not None:
             aperture = getattr(result_obj.config, "screen_aperture_mm", None)
             if aperture:
                 self._breakage_stats["aperture"].setText(f"{aperture:.2f} mm")

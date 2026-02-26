@@ -40,6 +40,9 @@ from .physics import (
 class MillingResult:
     """Results from a milling simulation run."""
 
+    # Machine config (for GUI display of aperture, RPM, etc.)
+    config: Optional[MillConfig] = None
+
     # Time series
     history: List[MillingStepState] = field(default_factory=list)
 
@@ -317,6 +320,7 @@ class HammerMillSimulator:
         retained_count = last_state.num_particles if last_state else 0
 
         result = MillingResult(
+            config=self.config,
             history=states,
             psd_size_classes_m=size_classes,
             psd_mass_fractions=mass_fractions,
@@ -415,6 +419,7 @@ class HammerMillSimulator:
             retained_count = 0
 
         result = MillingResult(
+            config=self.config,
             history=states,
             psd_size_classes_m=size_classes,
             psd_mass_fractions=mass_fractions,

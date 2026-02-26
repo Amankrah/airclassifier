@@ -110,6 +110,17 @@ class MaterialBreakageProperties:
             selection_size_exponent=base.selection_size_exponent,
             selection_reference_size_um=base.selection_reference_size_um,
             breakage_distribution_exponent=base.breakage_distribution_exponent,
+            # Size-dependent regime params (pass through from base)
+            regime_coarse_threshold_m=base.regime_coarse_threshold_m,
+            regime_fine_threshold_m=base.regime_fine_threshold_m,
+            gamma_coarse=base.gamma_coarse,
+            clamp_lo_coarse=base.clamp_lo_coarse,
+            clamp_hi_coarse=base.clamp_hi_coarse,
+            clamp_lo_medium=base.clamp_lo_medium,
+            clamp_hi_medium=base.clamp_hi_medium,
+            gamma_fine=base.gamma_fine,
+            clamp_lo_fine=base.clamp_lo_fine,
+            clamp_hi_fine=base.clamp_hi_fine,
             min_impact_energy_j=base.min_impact_energy_j / combined_factor,
             energy_to_breakage_factor=base.energy_to_breakage_factor,
         )
