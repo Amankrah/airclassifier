@@ -24,13 +24,15 @@ class MillConfig:
     """Hammer mill machine parameters.
 
     Describes a horizontal-shaft hammer mill (pin mill / impact mill)
-    for dry fractionation lines. Material from the pretreatment stage
-    enters, is impacted by rotating hammers against the screen/housing,
-    breaks, and exits through the screen apertures.
+    for dry fractionation lines. For yellow pea flour for air classification:
+    rotor speeds 3,000–7,200 rpm (BAKERpedia); tip speed ~102 m/s with 0.84 mm
+    screen gives median ~98 µm, low starch damage (ResearchGate). Goal: break
+    cotyledon to release starch granules (15–40 µm) from protein matrix (1–10 µm).
     """
 
     # --- Rotor / Drive ---
-    rotor_rpm: float = 3000.0                    # Typical: 2000-4000 rpm
+    # Yellow pea: 3,000 rpm standard; 6,000–7,200 rpm for very fine flour / protein enrichment (BAKERpedia)
+    rotor_rpm: float = 3000.0                    # Typical: 3,000–7,200 rpm for pea flour
     rotor_diameter_m: float = 0.20               # Rotor hub outer diameter
     rotor_length_m: float = 0.30                 # Rotor active length (along shaft)
     shaft_diameter_m: float = 0.05               # Main shaft diameter
@@ -50,15 +52,13 @@ class MillConfig:
     hammer_clearance_m: float = 0.008            # Gap between hammer tip and screen
 
     # --- Screen ---
-    # Yellow pea flour for protein separation (NIH / rotor beater mill):
-    #   - 0.75 mm screen → D50 ~23.7 µm (d10 ~6.4 µm, d90 ~114 µm) — fine flour
-    #   - 2.0 mm screen → D50 ~31.1 µm (d10 ~8.8 µm, d90 ~296 µm) — large particle flour
-    # Composition by size: 1–10 µm protein bodies, 10–55 µm starch/cell fragments, 55–470 µm cotyledon.
-    # Default 0.75 mm targets D50 in 23.7–31.1 µm range for protein separation.
+    # Yellow pea flour for air classification: small screens 0.84–2 mm (ResearchGate).
+    # Tip speed ~102 m/s + 0.84 mm screen → median ~98 µm, low starch damage.
+    # NIH: 0.75 mm → D50 ~23.7 µm; 2.0 mm → D50 ~31.1 µm. Dehulled peas improve yield/protein.
     screen_arc_angle_deg: float = 180.0          # Screen wraps bottom half
     screen_inner_radius_m: float = 0.188         # Inside radius of screen (tip + clearance)
     screen_thickness_m: float = 0.003            # Screen plate thickness
-    screen_aperture_mm: float = 0.75            # Hole size [mm] — 0.75 mm → D50 ~24 µm (NIH)
+    screen_aperture_mm: float = 0.75              # Hole size [mm]; 0.75–0.84 mm fine, up to 2 mm
     screen_open_area: float = 0.40               # Open area fraction (0-1)
 
     # --- Housing ---
@@ -88,8 +88,7 @@ class MillConfig:
 
     @property
     def hammer_tip_speed(self) -> float:
-        """Hammer tip linear velocity [m/s]."""
-        # Tip radius = rotor radius + hammer length
+        """Hammer tip linear velocity [m/s]. Research: ~102 m/s for fine pea flour (0.84 mm screen, D50 ~98 µm)."""
         tip_radius = self.rotor_diameter_m / 2.0 + self.hammer_length_m
         return tip_radius * self.rotor_angular_velocity
 
@@ -110,28 +109,30 @@ class MillConfig:
 
     @property
     def estimated_d50_um(self) -> float:
-        """Estimate product D50 [µm] from screen aperture (yellow pea, rotor beater mill).
+        """Estimate product D50 [µm] from screen aperture (yellow pea).
 
-        NIH data: 0.75 mm screen → D50 ~23.7 µm; 2.0 mm → D50 ~31.1 µm.
-        Linear fit: D50_µm ≈ 17.4 + 6.84 * aperture_mm (interpolates between these).
+        NIH: 0.75 mm → D50 ~23.7 µm; 2.0 mm → ~31.1 µm. Fit: D50_µm ≈ 17.4 + 6.84 * aperture_mm.
+        ResearchGate: tip speed ~102 m/s + 0.84 mm screen → median ~98 µm (low starch damage).
         """
         return 17.4 + 6.84 * self.screen_aperture_mm
 
     def get_separation_quality(self) -> str:
         """Get protein separation quality assessment based on D50.
 
-        Thresholds aligned with yellow pea flour (NIH): D50 23.7–31.1 µm for
-        fine-to-medium grinds; 1–10 µm protein bodies, 10–55 µm starch/cell fragments.
+        Goal: release starch granules (15–40 µm) from protein matrix (1–10 µm).
+        Fine flour improves air classification efficiency (BAKERpedia, ResearchGate).
         """
         d50 = self.estimated_d50_um
         if d50 <= 31:
             return "Excellent - D50 in 24–31 µm range for protein separation"
         elif d50 <= 55:
             return "Good - suitable for starch/protein fractionation"
+        elif d50 <= 98:
+            return "Moderate - tip speed ~102 m/s + 0.84 mm screen can reach ~98 µm (ResearchGate)"
         elif d50 <= 114:
-            return "Moderate - consider finer screen (e.g. 0.75 mm) for protein separation"
+            return "Moderate - consider finer screen (0.75–0.84 mm) or higher rpm"
         else:
-            return "Coarse - recommend 0.75–2.0 mm screen for protein separation"
+            return "Coarse - use 0.84–2 mm screen, 3,000–7,200 rpm for pea flour"
 
 
 @dataclass
@@ -235,10 +236,10 @@ class BreakageParams:
     clamp_lo_medium: float = 0.10
     clamp_hi_medium: float = 0.26
 
-    # Fine regime (d < 100 µm): target 24–43 µm discharge
+    # Fine regime (d < 100 µm): target 24–43 µm discharge; lower clamps → more fines per break
     gamma_fine: float = 0.14
-    clamp_lo_fine: float = 0.05
-    clamp_hi_fine: float = 0.22
+    clamp_lo_fine: float = 0.04
+    clamp_hi_fine: float = 0.18
 
     # Impact energy
     min_impact_energy_j: float = 0.00015         # Low so more impacts lead to breakage
@@ -303,19 +304,18 @@ class BreakageParams:
 class MillRecipe:
     """Hammer mill operating recipe.
 
-    Defines the operating setpoints for a milling run. Analogous to
-    the GP-15 Recipe for pretreatment.
-
-    Yellow pea flour for protein separation (NIH): 0.75 mm → D50 ~23.7 µm,
-    2.0 mm → D50 ~31.1 µm. Default 0.75 mm targets fine flour (protein separation).
+    Defines the operating setpoints for a milling run. For yellow pea flour
+    (air classification): rotor 3,000–7,200 rpm (BAKERpedia); tip speed ~102 m/s
+    with 0.84 mm screen → median ~98 µm, low starch damage (ResearchGate). Screen
+    0.84–2 mm for fine grinding; dehulled peas recommended.
     """
 
     name: str = "default"
     recipe_number: int = 0                       # Recipe slot number
 
     # --- Operating setpoints ---
-    rotor_rpm: float = 3000.0                    # Rotor speed setpoint
-    screen_aperture_mm: float = 0.75             # Screen aperture [mm] — 0.75 mm → D50 ~24 µm (NIH)
+    rotor_rpm: float = 3000.0                    # 3,000–7,200 rpm; higher for finer flour / protein enrichment
+    screen_aperture_mm: float = 0.75             # 0.84–2 mm for pea flour; 0.75 mm → D50 ~24 µm (NIH), 0.84 mm → ~98 µm
     feed_rate_kg_per_hr: float = 500.0           # Target feed rate
 
     # --- Run parameters ---

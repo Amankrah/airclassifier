@@ -120,7 +120,7 @@ class RecipeStore:
         return store
 
 
-# Default recipes (yellow pea flour, NIH: 0.75 mm → D50 ~23.7 µm, 2 mm → D50 ~31.1 µm)
+# Default recipes: yellow pea flour. NIH 0.75 mm → D50 ~24 µm; ResearchGate 0.84 mm + tip ~102 m/s → ~98 µm
 DEFAULT_RECIPES = {
     1: MillRecipe(
         name="Fine Flour (protein separation)",
@@ -130,15 +130,22 @@ DEFAULT_RECIPES = {
         feed_rate_kg_per_hr=400,
     ),
     2: MillRecipe(
-        name="Medium Flour",
+        name="Fine Flour (0.84 mm, ~98 µm)",
         recipe_number=2,
+        rotor_rpm=5400,            # ~102 m/s tip speed for 0.18 m tip radius; low starch damage (ResearchGate)
+        screen_aperture_mm=0.84,
+        feed_rate_kg_per_hr=400,
+    ),
+    3: MillRecipe(
+        name="Medium Flour",
+        recipe_number=3,
         rotor_rpm=3000,
         screen_aperture_mm=1.0,
         feed_rate_kg_per_hr=500,
     ),
-    3: MillRecipe(
+    4: MillRecipe(
         name="Large particle flour",
-        recipe_number=3,
+        recipe_number=4,
         rotor_rpm=2500,
         screen_aperture_mm=2.0,     # NIH: D50 ~31.1 µm (d10 ~8.8, d90 ~296 µm)
         feed_rate_kg_per_hr=600,

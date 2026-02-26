@@ -39,6 +39,12 @@ for yellow pea protein separation, NIH):
    They are in **meters**. So discharge D50 in µm = state.d50_m * 1e6.
    At start of run the discharge buffer is empty (cleared in initialize());
    as particles pass, the buffer accumulates and D50 converges toward steady state.
+
+To get more fines (lower D50):
+- Run longer (e.g. 5–15 s): more breakage cycles before discharge.
+- Screen: size_ratio_threshold (ScreenConfig) controls retention; lower = only finer particles pass easily.
+- Breakage: fine-regime clamp_lo_fine / clamp_hi_fine and gamma_fine control daughter sizes in the fine range.
+- RPM: higher rotor speed (e.g. 6,000–7,200) increases impact energy and breakage rate.
 """
 
 from __future__ import annotations

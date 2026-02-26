@@ -48,11 +48,13 @@ if WARP_AVAILABLE:
         aperture: float,
         open_area: float,
         passage_factor: float,
+        size_ratio_threshold: float,
     ):
         """Test particles for screen passage.
 
         For each particle in the screen zone, determine if it passes
         through based on size, aperture, and stochastic factors.
+        size_ratio_threshold: below d/aperture passage is max; above, quadratic taper (retain coarse for breakage).
         """
         tid = wp.tid()
 
@@ -96,18 +98,18 @@ if WARP_AVAILABLE:
         if size > aperture:
             return  # Too large to pass
 
-        # Passage probability
-        # Depends on:
-        # 1. Open area (fraction of screen that is holes)
-        # 2. Size ratio (smaller particles pass more easily)
-        # 3. Velocity (faster particles may bounce off instead of passing)
+        # Passage probability (match NumPy: below threshold = full; above = quadratic taper)
         size_ratio = size / aperture
-        if size_ratio < 0.8:
+        span = 1.0 - size_ratio_threshold
+        if span < 0.01:
+            span = 0.01
+        if size_ratio <= size_ratio_threshold:
             size_prob = 1.0
         else:
-            # Decreasing probability as size approaches aperture
-            t = (size_ratio - 0.8) / 0.2
+            t = (size_ratio - size_ratio_threshold) / span
             size_prob = 1.0 - t * t
+            if size_prob < 0.0:
+                size_prob = 0.0
 
         # Velocity factor (very fast particles may not have time to pass)
         speed = wp.length(vel)
@@ -145,24 +147,12 @@ def screen_passage_warp(
     aperture: float,
     open_area: float = 0.4,
     passage_factor: float = 1.0,
+    size_ratio_threshold: float = 0.06,
 ):
     """Launch screen passage kernel.
 
     Args:
-        positions: Particle positions [n, 3]
-        velocities: Particle velocities [n, 3]
-        sizes: Particle sizes [n]
-        masses: Particle masses [n]
-        passage_flags: Output passage indicators [n]
-        rand_states: Random states [n]
-        screen_radius: Screen inner radius [m]
-        screen_start_angle: Screen start angle [rad]
-        screen_arc_angle: Screen arc extent [rad]
-        screen_x_start: Screen X start position [m]
-        screen_x_end: Screen X end position [m]
-        aperture: Screen aperture size [m]
-        open_area: Screen open area fraction
-        passage_factor: Tuning factor for passage rate
+        size_ratio_threshold: Below d/aperture passage is max; above, quadratic taper (retain coarse for breakage).
     """
     n = positions.shape[0]
     wp.launch(
@@ -172,6 +162,7 @@ def screen_passage_warp(
             positions, velocities, sizes, masses, passage_flags, rand_states,
             screen_radius, screen_start_angle, screen_arc_angle,
             screen_x_start, screen_x_end, aperture, open_area, passage_factor,
+            size_ratio_threshold,
         ],
     )
 

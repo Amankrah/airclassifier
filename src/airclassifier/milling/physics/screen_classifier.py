@@ -174,7 +174,7 @@ class ScreenClassifier:
             self._wp_rand_states = wp.array(rand_seeds, dtype=wp.uint32, device="cuda")
             self._wp_passage_flags = wp.zeros(n, dtype=int, device="cuda")
 
-        # Launch kernel
+        # Launch kernel (size_ratio_threshold: only particles well below aperture pass easily)
         screen_passage_warp(
             positions=wp_pos,
             velocities=wp_vel,
@@ -190,6 +190,7 @@ class ScreenClassifier:
             aperture=self.config.aperture_m,
             open_area=self.config.open_area,
             passage_factor=self.config.passage_probability_factor,
+            size_ratio_threshold=self.config.size_ratio_threshold,
         )
 
         return self._wp_passage_flags.numpy()
