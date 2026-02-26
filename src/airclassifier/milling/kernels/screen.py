@@ -192,7 +192,7 @@ def screen_passage_np(
     passage_factor: float = 1.0,
     rng: Optional[np.random.Generator] = None,
 ) -> np.ndarray:
-    """NumPy implementation of screen passage test.
+    """Vectorized NumPy implementation of screen passage test.
 
     Returns:
         passage_flags: Array of passage indicators [n]
@@ -202,54 +202,52 @@ def screen_passage_np(
 
     n = len(positions)
     passage_flags = np.zeros(n, dtype=np.int32)
+    if n == 0:
+        return passage_flags
+
     screen_tolerance = 0.03
     screen_end_angle = screen_start_angle + screen_arc_angle
 
-    for i in range(n):
-        if masses[i] <= 0.0:
-            continue
+    active = masses > 0.0
 
-        pos = positions[i]
-        vel = velocities[i]
-        size = sizes[i]
+    # X bounds
+    x_ok = (positions[:, 0] >= screen_x_start) & (positions[:, 0] <= screen_x_end)
 
-        # X bounds
-        if pos[0] < screen_x_start or pos[0] > screen_x_end:
-            continue
+    # Radial check
+    r = np.sqrt(positions[:, 1] ** 2 + positions[:, 2] ** 2)
+    r_ok = np.abs(r - screen_radius) <= screen_tolerance
 
-        # Radial check
-        r = math.sqrt(pos[1] ** 2 + pos[2] ** 2)
-        if abs(r - screen_radius) > screen_tolerance:
-            continue
+    # Angular check
+    angle = np.arctan2(positions[:, 2], positions[:, 1])
+    angle = np.where(angle < 0, angle + 2.0 * math.pi, angle)
+    a_ok = (angle >= screen_start_angle) & (angle <= screen_end_angle)
 
-        # Angular check
-        angle = math.atan2(pos[2], pos[1])
-        if angle < 0:
-            angle += 2 * math.pi
+    # Size check
+    size_ok = sizes <= aperture
 
-        if angle < screen_start_angle or angle > screen_end_angle:
-            continue
+    # Combined: particle is in screen zone and small enough
+    in_zone = active & x_ok & r_ok & a_ok & size_ok
+    n_candidates = int(in_zone.sum())
+    if n_candidates == 0:
+        return passage_flags
 
-        # Size check
-        if size > aperture:
-            continue
+    # Passage probability (only for candidates)
+    size_ratio = sizes[in_zone] / aperture
+    size_prob = np.where(
+        size_ratio < 0.8,
+        1.0,
+        1.0 - ((size_ratio - 0.8) / 0.2) ** 2,
+    )
 
-        # Passage probability
-        size_ratio = size / aperture
-        if size_ratio < 0.8:
-            size_prob = 1.0
-        else:
-            t = (size_ratio - 0.8) / 0.2
-            size_prob = 1.0 - t * t
+    speed = np.linalg.norm(velocities[in_zone], axis=1)
+    vel_prob = np.minimum(1.0, 5.0 / np.maximum(speed, 0.1))
 
-        speed = np.linalg.norm(vel)
-        vel_prob = min(1.0, 5.0 / max(speed, 0.1))
+    prob = np.clip(open_area * size_prob * vel_prob * passage_factor, 0.0, 1.0)
 
-        passage_prob = open_area * size_prob * vel_prob * passage_factor
-        passage_prob = np.clip(passage_prob, 0, 1)
-
-        if rng.random() < passage_prob:
-            passage_flags[i] = 1
+    # Stochastic test
+    passed = rng.random(n_candidates) < prob
+    candidate_idx = np.where(in_zone)[0]
+    passage_flags[candidate_idx[passed]] = 1
 
     return passage_flags
 

@@ -224,7 +224,7 @@ def impact_detection_np(
     restitution: float = 0.3,
     dt: float = 0.001,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """NumPy implementation of impact detection.
+    """Vectorized NumPy implementation of impact detection.
 
     Returns:
         (impact_flags, impact_energies, new_velocities)
@@ -234,81 +234,81 @@ def impact_detection_np(
     impact_energies = np.zeros(n, dtype=np.float32)
     new_velocities = velocities.copy()
 
+    if n == 0:
+        return impact_flags, impact_energies, new_velocities
+
     inner_radius = hammer_tip_radius - 0.03
     outer_radius = hammer_tip_radius + 0.02
     angular_spacing = 2.0 * math.pi / hammers_per_row
     hammer_angular_extent = 0.15
 
-    for i in range(n):
-        if masses[i] <= 0.0:
-            continue
+    # --- Radial filter ---
+    r_particle = np.sqrt(positions[:, 1] ** 2 + positions[:, 2] ** 2)
+    radial_ok = (
+        (masses > 0.0)
+        & (r_particle >= inner_radius)
+        & (r_particle <= outer_radius)
+    )
 
-        pos = positions[i]
-        vel = velocities[i]
-        mass = masses[i]
+    # --- Row check (vectorized against all hammer rows) ---
+    row_positions = row_start_x + np.arange(hammer_rows) * row_spacing  # [R]
+    x_dists = np.abs(positions[:, 0, None] - row_positions[None, :])    # [N, R]
+    row_ok = np.any(x_dists < hammer_width * 0.6, axis=1)              # [N]
 
-        # Radial check
-        r_particle = math.sqrt(pos[1] ** 2 + pos[2] ** 2)
-        if r_particle < inner_radius or r_particle > outer_radius:
-            continue
+    # --- Angular check (vectorized against all hammers) ---
+    particle_angle = np.arctan2(positions[:, 2], positions[:, 1])       # [N]
+    hammer_angles = rotor_theta + np.arange(hammers_per_row) * angular_spacing  # [H]
+    # Normalize to [-pi, pi]
+    hammer_angles = (hammer_angles + math.pi) % (2.0 * math.pi) - math.pi
+    angle_diffs = np.abs(particle_angle[:, None] - hammer_angles[None, :])  # [N, H]
+    angle_diffs = np.minimum(angle_diffs, 2.0 * math.pi - angle_diffs)
+    hammer_ok = np.any(angle_diffs < hammer_angular_extent, axis=1)    # [N]
 
-        particle_angle = math.atan2(pos[2], pos[1])
+    # --- Combined hit mask ---
+    hit = radial_ok & row_ok & hammer_ok
+    if not hit.any():
+        return impact_flags, impact_energies, new_velocities
 
-        # Row check
-        hit_row = False
-        for row in range(hammer_rows):
-            row_x = row_start_x + row * row_spacing
-            if abs(pos[0] - row_x) < hammer_width * 0.6:
-                hit_row = True
-                break
+    impact_flags[hit] = 1
 
-        if not hit_row:
-            continue
+    # --- Compute impact physics for hit particles ---
+    h_idx = np.where(hit)[0]
+    h_pos = positions[h_idx]
+    h_vel = velocities[h_idx]
+    h_mass = masses[h_idx]
+    h_r = r_particle[h_idx]
+    h_angle = particle_angle[h_idx]
 
-        # Angular check
-        hit_hammer = False
-        for h in range(hammers_per_row):
-            hammer_angle = rotor_theta + h * angular_spacing
-            # Normalize
-            while hammer_angle > math.pi:
-                hammer_angle -= 2 * math.pi
-            while hammer_angle < -math.pi:
-                hammer_angle += 2 * math.pi
+    # Hammer velocity (tangential at particle angle)
+    hammer_speed = rotor_omega * hammer_tip_radius
+    h_hammer_vel = np.zeros_like(h_pos)
+    h_hammer_vel[:, 1] = -hammer_speed * np.sin(h_angle)
+    h_hammer_vel[:, 2] = hammer_speed * np.cos(h_angle)
 
-            angle_diff = abs(particle_angle - hammer_angle)
-            if angle_diff > math.pi:
-                angle_diff = 2 * math.pi - angle_diff
+    # Relative velocity and energy
+    rel_vel = h_vel - h_hammer_vel
+    rel_speed = np.linalg.norm(rel_vel, axis=1)
+    impact_energies[h_idx] = 0.5 * h_mass * rel_speed ** 2
 
-            if angle_diff < hammer_angular_extent:
-                hit_hammer = True
-                break
+    # Velocity update for particles with rel_speed > 0.1
+    fast = rel_speed > 0.1
+    if fast.any():
+        fi = h_idx[fast]
+        f_pos = h_pos[fast]
+        f_r = h_r[fast]
+        f_rel = rel_vel[fast]
+        f_hvel = h_hammer_vel[fast]
 
-        if not hit_hammer:
-            continue
+        # Normal direction (radially outward from shaft)
+        n_vec = np.zeros_like(f_pos)
+        n_vec[:, 1] = f_pos[:, 1] / f_r
+        n_vec[:, 2] = f_pos[:, 2] / f_r
 
-        # Impact!
-        impact_flags[i] = 1
+        # Radial component of relative velocity
+        v_n = np.sum(f_rel * n_vec, axis=1)
 
-        # Hammer velocity
-        hammer_speed = rotor_omega * hammer_tip_radius
-        hammer_vel = np.array([
-            0.0,
-            -hammer_speed * math.sin(particle_angle),
-            hammer_speed * math.cos(particle_angle),
-        ])
-
-        # Relative velocity
-        rel_vel = vel - hammer_vel
-        rel_speed = np.linalg.norm(rel_vel)
-
-        # Impact energy
-        impact_energies[i] = 0.5 * mass * rel_speed ** 2
-
-        # Velocity update
-        if rel_speed > 0.1:
-            n_vec = np.array([0.0, pos[1] / r_particle, pos[2] / r_particle])
-            v_n = np.dot(rel_vel, n_vec)
-            new_rel_vel = rel_vel - n_vec * (v_n * (1.0 + restitution))
-            new_velocities[i] = new_rel_vel + hammer_vel * 0.5
+        # Reflect and apply restitution
+        new_rel = f_rel - n_vec * (v_n * (1.0 + restitution))[:, None]
+        new_velocities[fi] = new_rel + f_hvel * 0.5
 
     return impact_flags, impact_energies, new_velocities

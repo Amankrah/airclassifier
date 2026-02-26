@@ -120,27 +120,27 @@ class RecipeStore:
         return store
 
 
-# Default recipes for common operations
+# Default recipes (yellow pea flour, NIH: 0.75 mm → D50 ~23.7 µm, 2 mm → D50 ~31.1 µm)
 DEFAULT_RECIPES = {
     1: MillRecipe(
-        name="Fine Flour",
+        name="Fine Flour (protein separation)",
         recipe_number=1,
         rotor_rpm=3500,
-        screen_aperture_mm=1.0,
+        screen_aperture_mm=0.75,   # NIH: D50 ~23.7 µm (d10 ~6.4, d90 ~114 µm)
         feed_rate_kg_per_hr=400,
     ),
     2: MillRecipe(
         name="Medium Flour",
         recipe_number=2,
         rotor_rpm=3000,
-        screen_aperture_mm=1.5,
+        screen_aperture_mm=1.0,
         feed_rate_kg_per_hr=500,
     ),
     3: MillRecipe(
-        name="Coarse Flour",
+        name="Large particle flour",
         recipe_number=3,
         rotor_rpm=2500,
-        screen_aperture_mm=2.0,
+        screen_aperture_mm=2.0,     # NIH: D50 ~31.1 µm (d10 ~8.8, d90 ~296 µm)
         feed_rate_kg_per_hr=600,
     ),
 }

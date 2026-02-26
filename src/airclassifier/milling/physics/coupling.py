@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -28,10 +28,12 @@ from .impact import ImpactSolver, ImpactStats
 from .breakage import BreakageModel, BreakageStats
 from .screen_classifier import ScreenClassifier, ScreenStats
 from .convergence import ConvergenceDetector, TerminationConfig
-from ..kernels import transport_step_np, GRAVITY
+from ..kernels import transport_step_np, transport_step_warp, GRAVITY, WARP_AVAILABLE
 from ..config import MillConfig, MillRecipe, BreakageParams, ScreenConfig
 
 from typing import TYPE_CHECKING
+if WARP_AVAILABLE:
+    import warp as wp
 if TYPE_CHECKING:
     from airclassifier.pretreatment.physics.coupling import OutletState
 
@@ -163,6 +165,14 @@ class CoupledMillingEngine:
 
     # Device
     device: str = "cpu"
+
+    # Warp arrays for transport (when device=cuda); resized when particle count changes
+    _wp_positions: Optional[Any] = None
+    _wp_velocities: Optional[Any] = None
+    _wp_sizes: Optional[Any] = None
+    _wp_masses: Optional[Any] = None
+    _wp_residence_times: Optional[Any] = None
+    _wp_n: int = 0
 
     def __post_init__(self):
         """Initialize physics solvers."""
@@ -486,25 +496,71 @@ class CoupledMillingEngine:
         return num_new
 
     def _transport_step(self, dt: float):
-        """Advect particles in chamber."""
+        """Advect particles in chamber. Uses Warp GPU kernel when device=cuda."""
         if self.particles.count == 0:
             return
 
-        new_pos, new_vel, new_res = transport_step_np(
-            positions=self.particles.positions,
-            velocities=self.particles.velocities,
-            sizes=self.particles.sizes,
-            masses=self.particles.masses,
-            residence_times=self.particles.residence_times,
-            chamber_radius=self.chamber_radius,
-            chamber_length=self.chamber_length,
-            rotor_omega=self.recipe.rotor_omega,
-            dt=dt,
+        use_warp = (
+            self.device == "cuda"
+            and WARP_AVAILABLE
+            and transport_step_warp is not None
         )
+        if use_warp:
+            n = self.particles.count
+            if self._wp_n != n or self._wp_positions is None:
+                self._wp_n = n
+                self._wp_positions = wp.array(
+                    self.particles.positions, dtype=wp.vec3, device="cuda"
+                )
+                self._wp_velocities = wp.array(
+                    self.particles.velocities, dtype=wp.vec3, device="cuda"
+                )
+                self._wp_sizes = wp.array(
+                    self.particles.sizes, dtype=float, device="cuda"
+                )
+                self._wp_masses = wp.array(
+                    self.particles.masses, dtype=float, device="cuda"
+                )
+                self._wp_residence_times = wp.array(
+                    self.particles.residence_times, dtype=float, device="cuda"
+                )
+            else:
+                wp.copy(self._wp_positions, wp.array(self.particles.positions, dtype=wp.vec3, device="cuda"))
+                wp.copy(self._wp_velocities, wp.array(self.particles.velocities, dtype=wp.vec3, device="cuda"))
+                wp.copy(self._wp_sizes, wp.array(self.particles.sizes, dtype=float, device="cuda"))
+                wp.copy(self._wp_masses, wp.array(self.particles.masses, dtype=float, device="cuda"))
+                wp.copy(self._wp_residence_times, wp.array(self.particles.residence_times, dtype=float, device="cuda"))
 
-        self.particles.positions = new_pos
-        self.particles.velocities = new_vel
-        self.particles.residence_times = new_res
+            transport_step_warp(
+                positions=self._wp_positions,
+                velocities=self._wp_velocities,
+                sizes=self._wp_sizes,
+                masses=self._wp_masses,
+                residence_times=self._wp_residence_times,
+                chamber_radius=self.chamber_radius,
+                chamber_length=self.chamber_length,
+                rotor_omega=self.recipe.rotor_omega,
+                dt=dt,
+            )
+
+            self.particles.positions = self._wp_positions.numpy()
+            self.particles.velocities = self._wp_velocities.numpy()
+            self.particles.residence_times = self._wp_residence_times.numpy()
+        else:
+            new_pos, new_vel, new_res = transport_step_np(
+                positions=self.particles.positions,
+                velocities=self.particles.velocities,
+                sizes=self.particles.sizes,
+                masses=self.particles.masses,
+                residence_times=self.particles.residence_times,
+                chamber_radius=self.chamber_radius,
+                chamber_length=self.chamber_length,
+                rotor_omega=self.recipe.rotor_omega,
+                dt=dt,
+            )
+            self.particles.positions = new_pos
+            self.particles.velocities = new_vel
+            self.particles.residence_times = new_res
 
     def _impact_step(self, dt: float) -> Tuple[np.ndarray, np.ndarray]:
         """Detect and resolve impacts.
@@ -627,32 +683,47 @@ class CoupledMillingEngine:
         num_discharged = int(passage_flags.sum())
 
         # Create discharge visualization particles for passed particles
+        # Particles exit from their actual screen-surface position (digital twin realism)
         if num_discharged > 0:
             passed_mask = passage_flags == 1
             passed_pos = orig_positions[passed_mask]
             passed_sizes = orig_sizes[passed_mask]
 
-            # Create discharge particles at screen exit (below chamber, in discharge zone)
             rng = np.random.default_rng()
-            for i in range(min(num_discharged, self._max_discharge_vis - len(self._discharge_particles))):
-                # Position: x from original, y/z at discharge chute entrance
-                x = passed_pos[i, 0] if i < len(passed_pos) else 0.2
-                y = self._discharge_chute_y + rng.uniform(-0.02, 0.02)
-                z = self._discharge_chute_z + rng.uniform(-0.05, 0.05)
+            capacity = self._max_discharge_vis - len(self._discharge_particles)
+            for i in range(min(num_discharged, capacity)):
+                if i >= len(passed_pos):
+                    break
 
-                # Velocity: falling downward with some spread
+                pos = passed_pos[i]
+                x = pos[0]
+
+                # Start at actual screen position, shifted just outside the screen
+                r_yz = math.sqrt(pos[1] ** 2 + pos[2] ** 2)
+                if r_yz > 0.01:
+                    # Push 3cm past screen surface (particle exits through screen holes)
+                    exit_scale = (r_yz + 0.03) / r_yz
+                    y = pos[1] * exit_scale
+                    z = pos[2] * exit_scale
+                else:
+                    y = self._discharge_chute_y
+                    z = self._discharge_chute_z
+
+                # Velocity: radially outward from screen + gravity bias
+                r_hat_y = pos[1] / max(r_yz, 0.01)
+                r_hat_z = pos[2] / max(r_yz, 0.01)
                 vel = np.array([
                     rng.uniform(-0.1, 0.1),
-                    rng.uniform(-1.5, -0.8),  # Falling
-                    rng.uniform(-0.2, 0.2),
+                    r_hat_y * 0.5 + rng.uniform(-0.3, 0.0),
+                    r_hat_z * 0.5 + rng.uniform(-0.1, 0.1),
                 ], dtype=np.float32)
 
-                size = passed_sizes[i] if i < len(passed_sizes) else 0.001
+                size = float(passed_sizes[i])
 
                 self._discharge_particles.append(DischargeParticle(
                     position=np.array([x, y, z], dtype=np.float32),
                     velocity=vel,
-                    size=float(size),
+                    size=size,
                     age=0.0,
                 ))
 

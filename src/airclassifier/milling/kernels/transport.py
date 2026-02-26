@@ -200,84 +200,86 @@ def transport_step_np(
     gravity: float = GRAVITY,
     drag_coeff: float = 0.44,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """NumPy implementation of transport step.
+    """Vectorized NumPy implementation of transport step.
 
     Returns:
         (new_positions, new_velocities, new_residence_times)
     """
     n = len(positions)
-    new_pos = positions.copy()
-    new_vel = velocities.copy()
+    if n == 0:
+        return positions.copy(), velocities.copy(), residence_times.copy()
+
+    active = masses > 0.0
+
+    # --- Gravity (Y-component only) ---
+    f_gravity = np.zeros_like(positions)
+    f_gravity[active, 1] = -masses[active] * gravity
+
+    # --- Air drag ---
+    speed = np.linalg.norm(velocities, axis=1)  # [n]
+    area = np.pi * sizes * sizes * 0.25          # [n]
+    drag_mask = active & (speed > 1e-6)
+    drag_mag = np.zeros(n)
+    drag_mag[drag_mask] = (
+        0.5 * AIR_DENSITY * drag_coeff * area[drag_mask] * speed[drag_mask] ** 2
+    )
+    f_drag = np.zeros_like(velocities)
+    f_drag[drag_mask] = (
+        -velocities[drag_mask] * (drag_mag[drag_mask] / speed[drag_mask])[:, None]
+    )
+
+    # --- Centrifugal throw ---
+    r_yz = np.sqrt(positions[:, 1] ** 2 + positions[:, 2] ** 2)
+    cent_mask = active & (r_yz > 0.05)
+    r_hat = np.zeros_like(positions)
+    r_hat[cent_mask, 1] = positions[cent_mask, 1] / r_yz[cent_mask]
+    r_hat[cent_mask, 2] = positions[cent_mask, 2] / r_yz[cent_mask]
+    proximity = np.maximum(0.0, 1.0 - r_yz / chamber_radius)
+    cent_accel = rotor_omega ** 2 * r_yz * proximity * 0.1
+    f_cent = r_hat * (masses * cent_accel)[:, None]
+
+    # --- Total force → acceleration → Euler integration ---
+    accel = np.zeros_like(positions)
+    accel[active] = (
+        (f_gravity[active] + f_drag[active] + f_cent[active])
+        / masses[active, None]
+    )
+    new_vel = velocities + accel * dt
+    new_pos = positions + new_vel * dt
+
+    # --- X boundary clamp ---
+    x_lo = new_pos[:, 0] < 0
+    x_hi = new_pos[:, 0] > chamber_length
+    new_pos[x_lo, 0] = 0.0
+    new_vel[x_lo, 0] *= -0.3
+    new_pos[x_hi, 0] = chamber_length
+    new_vel[x_hi, 0] *= -0.3
+
+    # --- Radial boundary ---
+    r = np.sqrt(new_pos[:, 1] ** 2 + new_pos[:, 2] ** 2)
+    outside = r > chamber_radius
+    safe_r = np.maximum(r, 1e-10)
+    scale = np.where(outside, chamber_radius / safe_r, 1.0)
+    new_pos[:, 1] *= scale
+    new_pos[:, 2] *= scale
+
+    # Reflect radial velocity for particles that were outside
+    reflect = outside & (safe_r > 1e-6)
+    if reflect.any():
+        r_hat_r = np.zeros_like(new_pos)
+        r_hat_r[reflect, 1] = new_pos[reflect, 1] / (safe_r[reflect] * scale[reflect])
+        r_hat_r[reflect, 2] = new_pos[reflect, 2] / (safe_r[reflect] * scale[reflect])
+        # Dot product of velocity with radial unit vector
+        v_radial = np.sum(new_vel[reflect] * r_hat_r[reflect], axis=1)
+        # Only reflect outward-moving particles
+        outward = v_radial > 0
+        idx = np.where(reflect)[0][outward]
+        if len(idx) > 0:
+            v_rad_out = v_radial[outward]
+            new_vel[idx] -= r_hat_r[idx] * (v_rad_out * 1.3)[:, None]
+
+    # --- Residence time ---
     new_res = residence_times.copy()
-
-    for i in range(n):
-        if masses[i] <= 0.0:
-            continue
-
-        pos = positions[i]
-        vel = velocities[i]
-        mass = masses[i]
-        size = sizes[i]
-
-        # Gravity
-        f_gravity = np.array([0.0, -mass * gravity, 0.0])
-
-        # Air drag
-        speed = np.linalg.norm(vel)
-        if speed > 1e-6:
-            area = math.pi * size * size * 0.25
-            drag_mag = 0.5 * AIR_DENSITY * drag_coeff * area * speed * speed
-            f_drag = -vel * (drag_mag / speed)
-        else:
-            f_drag = np.zeros(3)
-
-        # Centrifugal throw
-        r_yz = math.sqrt(pos[1] ** 2 + pos[2] ** 2)
-        if r_yz > 0.05:
-            r_hat = np.array([0.0, pos[1] / r_yz, pos[2] / r_yz])
-            proximity_factor = max(0.0, 1.0 - r_yz / chamber_radius)
-            centrifugal_accel = rotor_omega ** 2 * r_yz * proximity_factor * 0.1
-            f_centrifugal = r_hat * (mass * centrifugal_accel)
-        else:
-            f_centrifugal = np.zeros(3)
-
-        # Total force and acceleration
-        f_total = f_gravity + f_drag + f_centrifugal
-        accel = f_total / mass
-
-        # Update
-        new_vel[i] = vel + accel * dt
-        new_pos[i] = pos + new_vel[i] * dt
-
-        # Boundaries
-        x, y, z = new_pos[i]
-        vx, vy, vz = new_vel[i]
-
-        # X bounds
-        if x < 0:
-            x = 0
-            vx = -vx * 0.3
-        elif x > chamber_length:
-            x = chamber_length
-            vx = -vx * 0.3
-
-        # Radial bound
-        r = math.sqrt(y ** 2 + z ** 2)
-        if r > chamber_radius:
-            scale = chamber_radius / r
-            y *= scale
-            z *= scale
-            # Reflect
-            if r > 1e-6:
-                r_hat = np.array([0.0, y / r, z / r])
-                v = np.array([vx, vy, vz])
-                v_radial = np.dot(v, r_hat)
-                if v_radial > 0:
-                    v = v - r_hat * (v_radial * 1.3)
-                    vx, vy, vz = v
-
-        new_pos[i] = [x, y, z]
-        new_vel[i] = [vx, vy, vz]
-        new_res[i] += dt
+    new_res[active] += dt
 
     return new_pos, new_vel, new_res

@@ -238,7 +238,7 @@ def breakage_step_np(
     clamp_lo_fine: float = 0.15,
     clamp_hi_fine: float = 0.45,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """NumPy implementation of breakage step.
+    """Vectorized NumPy implementation of breakage step.
 
     Returns:
         (new_sizes, new_masses, break_flags)
@@ -251,51 +251,51 @@ def breakage_step_np(
     new_masses = masses.copy()
     break_flags = np.zeros(n, dtype=np.int32)
 
-    for i in range(n):
-        if impact_flags[i] == 0:
-            continue
+    if n == 0:
+        return new_sizes, new_masses, break_flags
 
-        size = sizes[i]
-        mass = masses[i]
-        energy = impact_energies[i]
+    # --- Candidate filter ---
+    active = (impact_flags == 1) & (masses > 0.0) & (sizes >= min_size)
+    n_active = int(active.sum())
+    if n_active == 0:
+        return new_sizes, new_masses, break_flags
 
-        if mass <= 0.0 or size < min_size:
-            continue
+    # --- Selection probability (vectorized) ---
+    size_factor = np.power(sizes[active] / reference_size, selection_alpha)
+    energy_factor = np.minimum(1.0, impact_energies[active] / min_energy * energy_scale)
+    selection_prob = np.minimum(1.0, selection_k * size_factor * energy_factor)
 
-        # Selection probability
-        size_factor = (size / reference_size) ** selection_alpha
-        energy_factor = min(1.0, energy / min_energy * energy_scale)
-        selection_prob = min(1.0, selection_k * size_factor * energy_factor)
+    # Stochastic selection
+    selected_local = rng.random(n_active) < selection_prob
+    active_idx = np.where(active)[0]
+    sel_idx = active_idx[selected_local]
 
-        if rng.random() > selection_prob:
-            continue
+    if len(sel_idx) == 0:
+        return new_sizes, new_masses, break_flags
 
-        # Breakage!
-        break_flags[i] = 1
+    break_flags[sel_idx] = 1
 
-        # Select regime based on particle size
-        if size > coarse_threshold:
-            gamma = gamma_coarse
-            cl, ch = clamp_lo_coarse, clamp_hi_coarse
-        elif size < fine_threshold:
-            gamma = gamma_fine
-            cl, ch = clamp_lo_fine, clamp_hi_fine
-        else:
-            gamma = breakage_gamma
-            cl, ch = clamp_lo_medium, clamp_hi_medium
+    # --- Regime selection (vectorized) ---
+    sel_sizes = sizes[sel_idx]
+    coarse = sel_sizes > coarse_threshold
+    fine = sel_sizes < fine_threshold
+    medium = ~coarse & ~fine
 
-        # Daughter size from Gaudin-Schuhmann mean
-        reduction_factor = gamma / (gamma + 1.0)
-        rand_factor = 0.5 + rng.random()
-        reduction_factor = reduction_factor * rand_factor
-        reduction_factor = np.clip(reduction_factor, cl, ch)
+    gamma = np.where(coarse, gamma_coarse, np.where(fine, gamma_fine, breakage_gamma))
+    cl = np.where(coarse, clamp_lo_coarse, np.where(fine, clamp_lo_fine, clamp_lo_medium))
+    ch = np.where(coarse, clamp_hi_coarse, np.where(fine, clamp_hi_fine, clamp_hi_medium))
 
-        new_size = max(size * reduction_factor, min_size)
-        new_sizes[i] = new_size
+    # --- Daughter size from Gaudin-Schuhmann mean ---
+    reduction = gamma / (gamma + 1.0)
+    rand_factor = 0.5 + rng.random(len(sel_idx))
+    reduction = np.clip(reduction * rand_factor, cl, ch)
 
-        # Update mass
-        size_ratio = new_size / size
-        new_masses[i] = mass * size_ratio ** 3
+    new_size = np.maximum(sel_sizes * reduction, min_size)
+    new_sizes[sel_idx] = new_size
+
+    # Update mass (proportional to d^3)
+    size_ratio = new_size / sel_sizes
+    new_masses[sel_idx] = masses[sel_idx] * size_ratio ** 3
 
     return new_sizes, new_masses, break_flags
 

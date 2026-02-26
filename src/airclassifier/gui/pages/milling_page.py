@@ -715,6 +715,14 @@ class MillingPage(QWidget):
 
             ramp = min(current_step[0] / max(transient_steps, 1), 1.0)
             batch = int(steps_per_frame[0] + ramp * (steps_per_frame[1] - steps_per_frame[0]))
+            # Fewer steps per frame when many particles so physics stays within frame budget (~16 ms)
+            n_particles = self._sim.engine.particles.count if self._sim and self._sim.engine else 0
+            if n_particles > 2000:
+                batch = min(batch, 1)
+            elif n_particles > 500:
+                batch = min(batch, 2)
+            elif n_particles > 200:
+                batch = min(batch, 4)
             batch = min(batch, n_steps - current_step[0])
 
             done = 0

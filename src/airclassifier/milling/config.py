@@ -50,18 +50,15 @@ class MillConfig:
     hammer_clearance_m: float = 0.008            # Gap between hammer tip and screen
 
     # --- Screen ---
-    # For protein-starch separation in legumes/pulses:
-    #   - Protein bodies: 5-15 µm (fine fraction after air classification)
-    #   - Starch granules: 20-40 µm (coarse fraction)
-    #   - Air classification cut point: ~22 µm
-    # Screen aperture determines product d50 (empirically ~12% of aperture):
-    #   - 0.3 mm → d50 ~36 µm (excellent protein separation)
-    #   - 0.5 mm → d50 ~60 µm (good for air classification)
-    #   - 0.8 mm → d50 ~96 µm (coarse, may need re-milling)
+    # Yellow pea flour for protein separation (NIH / rotor beater mill):
+    #   - 0.75 mm screen → D50 ~23.7 µm (d10 ~6.4 µm, d90 ~114 µm) — fine flour
+    #   - 2.0 mm screen → D50 ~31.1 µm (d10 ~8.8 µm, d90 ~296 µm) — large particle flour
+    # Composition by size: 1–10 µm protein bodies, 10–55 µm starch/cell fragments, 55–470 µm cotyledon.
+    # Default 0.75 mm targets D50 in 23.7–31.1 µm range for protein separation.
     screen_arc_angle_deg: float = 180.0          # Screen wraps bottom half
     screen_inner_radius_m: float = 0.188         # Inside radius of screen (tip + clearance)
     screen_thickness_m: float = 0.003            # Screen plate thickness
-    screen_aperture_mm: float = 0.5              # Hole size [mm] - 0.5mm optimal for protein separation
+    screen_aperture_mm: float = 0.75            # Hole size [mm] — 0.75 mm → D50 ~24 µm (NIH)
     screen_open_area: float = 0.40               # Open area fraction (0-1)
 
     # --- Housing ---
@@ -113,28 +110,28 @@ class MillConfig:
 
     @property
     def estimated_d50_um(self) -> float:
-        """Estimate product d50 [µm] based on screen aperture.
+        """Estimate product D50 [µm] from screen aperture (yellow pea, rotor beater mill).
 
-        Based on empirical data: d50 ≈ 12% of screen aperture for legume flour.
-        Reference: Fine Grinding and Air Classification of Field Pea (ResearchGate)
+        NIH data: 0.75 mm screen → D50 ~23.7 µm; 2.0 mm → D50 ~31.1 µm.
+        Linear fit: D50_µm ≈ 17.4 + 6.84 * aperture_mm (interpolates between these).
         """
-        return self.screen_aperture_mm * 1000 * 0.12  # 12% of aperture in µm
+        return 17.4 + 6.84 * self.screen_aperture_mm
 
     def get_separation_quality(self) -> str:
-        """Get protein separation quality assessment based on d50.
+        """Get protein separation quality assessment based on D50.
 
-        Returns:
-            Quality rating and recommendation string.
+        Thresholds aligned with yellow pea flour (NIH): D50 23.7–31.1 µm for
+        fine-to-medium grinds; 1–10 µm protein bodies, 10–55 µm starch/cell fragments.
         """
         d50 = self.estimated_d50_um
-        if d50 <= 40:
-            return "Excellent - optimal for protein body liberation"
-        elif d50 <= 70:
-            return "Good - suitable for air classification"
-        elif d50 <= 100:
-            return "Moderate - may need secondary milling"
+        if d50 <= 31:
+            return "Excellent - D50 in 24–31 µm range for protein separation"
+        elif d50 <= 55:
+            return "Good - suitable for starch/protein fractionation"
+        elif d50 <= 114:
+            return "Moderate - consider finer screen (e.g. 0.75 mm) for protein separation"
         else:
-            return "Coarse - recommend finer screen or re-milling"
+            return "Coarse - recommend 0.75–2.0 mm screen for protein separation"
 
 
 @dataclass
@@ -145,13 +142,11 @@ class ScreenConfig:
     mill chamber. Particles smaller than the aperture can pass through;
     larger particles are retained for further breakage.
 
-    For protein-starch separation (legumes/pulses):
-        - 0.3 mm: d50 ~36 µm - Excellent protein liberation
-        - 0.5 mm: d50 ~60 µm - Good for air classification
-        - 0.8 mm: d50 ~96 µm - Coarse, may need re-milling
+    Yellow pea flour (NIH): 0.75 mm → D50 ~23.7 µm; 2.0 mm → D50 ~31.1 µm.
+    Default 0.75 mm targets protein separation (fine flour).
     """
 
-    aperture_mm: float = 0.5                     # Nominal hole diameter [mm] - optimal for protein separation
+    aperture_mm: float = 0.75                   # Nominal hole diameter [mm] — 0.75 mm → D50 ~24 µm (NIH)
     open_area: float = 0.40                      # Open area fraction
     hole_shape: str = "round"                    # "round", "square", "slotted"
 
@@ -169,11 +164,11 @@ class ScreenConfig:
 
     @property
     def estimated_d50_um(self) -> float:
-        """Estimate product d50 [µm] based on screen aperture.
+        """Estimate product D50 [µm] from screen aperture (yellow pea, NIH).
 
-        Empirical relationship: d50 ≈ 12% of aperture for legume flour.
+        D50_µm ≈ 17.4 + 6.84 * aperture_mm (0.75 mm → ~23.7 µm, 2 mm → ~31.1 µm).
         """
-        return self.aperture_mm * 1000 * 0.12
+        return 17.4 + 6.84 * self.aperture_mm
 
     def passage_probability(self, particle_size_m: float) -> float:
         """Compute probability of passage for a given particle size.
@@ -212,51 +207,42 @@ class BreakageParams:
     """
 
     # Size classes for PSD (geometric progression)
+    # Yellow pea: 1–10 µm protein bodies, 10–55 µm starch/cell, 55–470 µm cotyledon (NIH).
     num_size_classes: int = 20
-    d_min_um: float = 10.0                       # Smallest size class [um]
+    d_min_um: float = 5.0                        # Smallest size [µm] — allow protein-body range (1–10 µm)
     d_max_um: float = 5000.0                     # Largest size class [um]
 
     # Selection function: S(d) = k * (d / d_ref)^alpha
-    # Probability of breakage per impact for size d
-    # Tuned for legume flour milling (pea, faba bean) to achieve d50 ~60µm
-    selection_rate_constant: float = 0.40        # k: base selection rate (increased for fine flour)
+    # Tuned for yellow pea flour D50 23.7–31.1 µm (NIH: 0.75 mm → ~23.7 µm, 2 mm → ~31.1 µm).
+    selection_rate_constant: float = 0.48      # k: higher for finer product (protein separation)
     selection_size_exponent: float = 1.3         # alpha: larger particles break more easily
-    selection_reference_size_um: float = 500.0   # d_ref: shifted for finer grinding
+    selection_reference_size_um: float = 300.0   # d_ref: lower so 100–500 µm break more readily
 
-    # Breakage function: B(d_daughter | d_parent)
-    # Cumulative mass fraction finer than d_daughter given breakage of d_parent
-    # Uses Gaudin-Schuhmann: B = (d_daughter / d_parent)^gamma
-    # Lower gamma = smaller daughter particles (more aggressive grinding)
-    breakage_distribution_exponent: float = 0.55  # gamma for medium regime (100µm–1mm)
+    # Breakage function: Gaudin–Schuhmann B = (d_daughter/d_parent)^gamma
+    breakage_distribution_exponent: float = 0.52  # gamma medium regime — slightly lower for finer flour
 
-    # --- Size-dependent breakage regimes ---
-    # Real legume comminution has three distinct stages:
-    #   Coarse (d > 1mm): Seed coat rupture, cotyledon fracture -> large chunks
-    #   Medium (100µm < d < 1mm): Chunk grinding -> coarse flour
-    #   Fine (d < 100µm): Cell wall disruption -> fine flour + protein liberation
-    # Each regime has its own Gaudin-Schuhmann gamma and reduction-factor clamp.
+    # --- Size-dependent breakage regimes (legume comminution) ---
+    # Coarse (d > 1 mm): seed fracture. Medium (100 µm–1 mm): chunk grinding.
+    # Fine (d < 100 µm): cell wall disruption, protein liberation (NIH).
+    regime_coarse_threshold_m: float = 1.0e-3    # Above = coarse
+    regime_fine_threshold_m: float = 1.0e-4      # Below = fine (100 µm)
 
-    # Regime boundaries [m]
-    regime_coarse_threshold_m: float = 1.0e-3    # Above = coarse (seed fracture)
-    regime_fine_threshold_m: float = 1.0e-4      # Below = fine (attrition)
+    # Coarse regime
+    gamma_coarse: float = 1.2
+    clamp_lo_coarse: float = 0.40
+    clamp_hi_coarse: float = 0.70
 
-    # Coarse regime (d > 1mm): conservative fracture into large chunks
-    gamma_coarse: float = 1.2                    # High gamma -> large daughter chunks
-    clamp_lo_coarse: float = 0.40                # Min reduction factor
-    clamp_hi_coarse: float = 0.70                # Max reduction factor
+    # Medium regime (100 µm–1 mm)
+    clamp_lo_medium: float = 0.18
+    clamp_hi_medium: float = 0.52
 
-    # Medium regime (100µm–1mm): standard Gaudin-Schuhmann grinding
-    # gamma = breakage_distribution_exponent (above) for backwards compat
-    clamp_lo_medium: float = 0.20
-    clamp_hi_medium: float = 0.55
+    # Fine regime (d < 100 µm): protein body / starch liberation
+    gamma_fine: float = 0.32                     # Slightly lower for finer daughters
+    clamp_lo_fine: float = 0.12                  # Allow aggressive reduction toward 5–10 µm
+    clamp_hi_fine: float = 0.42
 
-    # Fine regime (d < 100µm): slow attrition / protein body liberation
-    gamma_fine: float = 0.35                     # Low gamma -> fine daughters
-    clamp_lo_fine: float = 0.15
-    clamp_hi_fine: float = 0.45
-
-    # Impact energy threshold
-    min_impact_energy_j: float = 0.0005          # Below this, no breakage (lowered for fine particles)
+    # Impact energy
+    min_impact_energy_j: float = 0.0004          # Low threshold so fine particles can break
     energy_to_breakage_factor: float = 8.0       # Converts impact energy to selection probability
 
     # Multi-fragment breakage (mass-conserving fragmentation)
@@ -321,10 +307,8 @@ class MillRecipe:
     Defines the operating setpoints for a milling run. Analogous to
     the GP-15 Recipe for pretreatment.
 
-    Screen aperture guidelines for protein-starch separation:
-        - 0.3-0.4 mm: Fine grinding, excellent protein liberation
-        - 0.5 mm: Standard for air classification (d50 ~60 µm)
-        - 0.8+ mm: Coarse grinding, may need re-milling
+    Yellow pea flour for protein separation (NIH): 0.75 mm → D50 ~23.7 µm,
+    2.0 mm → D50 ~31.1 µm. Default 0.75 mm targets fine flour (protein separation).
     """
 
     name: str = "default"
@@ -332,7 +316,7 @@ class MillRecipe:
 
     # --- Operating setpoints ---
     rotor_rpm: float = 3000.0                    # Rotor speed setpoint
-    screen_aperture_mm: float = 0.5              # Screen aperture [mm] - optimal for protein separation
+    screen_aperture_mm: float = 0.75             # Screen aperture [mm] — 0.75 mm → D50 ~24 µm (NIH)
     feed_rate_kg_per_hr: float = 500.0           # Target feed rate
 
     # --- Run parameters ---

@@ -56,7 +56,7 @@ class ScreenParams:
     center_z_m: float = 0.0                       # Z position (rotor centerline)
 
     # --- Aperture (for physics, not geometry) ---
-    aperture_mm: float = 1.5                      # Hole diameter
+    aperture_mm: float = 0.75                    # Hole diameter [mm] — NIH: 0.75 mm → D50 ~24 µm
     open_area: float = 0.40                       # Open area fraction
 
     # --- Support ribs ---

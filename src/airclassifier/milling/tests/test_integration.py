@@ -13,12 +13,12 @@ class TestMillConfig:
     """Tests for MillConfig and related config classes."""
 
     def test_mill_config_defaults(self):
-        """Test MillConfig has reasonable defaults."""
+        """Test MillConfig has reasonable defaults (NIH: 0.75 mm → D50 ~24 µm)."""
         from ..config import MillConfig
 
         config = MillConfig()
         assert config.rotor_rpm == 3000.0
-        assert config.screen_aperture_mm == 1.5
+        assert config.screen_aperture_mm == 0.75
         assert config.hammer_rows >= 1
         assert config.hammers_per_row >= 1
 
