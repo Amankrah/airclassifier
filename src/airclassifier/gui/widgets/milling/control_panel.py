@@ -290,21 +290,21 @@ class MillingControlPanel(QFrame):
         aperture_label.setStyleSheet(f"color: {COLORS.TEXT_SECONDARY}; font-size: 9pt;")
         aperture_header.addWidget(aperture_label)
 
-        self._aperture_value = QLabel("0.50 mm")
+        self._aperture_value = QLabel("0.75 mm")
         self._aperture_value.setStyleSheet(f"color: {COLORS.TEXT_PRIMARY}; font-weight: 600;")
         aperture_header.addWidget(self._aperture_value)
         aperture_header.addStretch()
         aperture_row.addLayout(aperture_header)
 
         self._aperture_slider = QSlider(Qt.Orientation.Horizontal)
-        self._aperture_slider.setRange(30, 200)  # 0.3-2.0 mm for food powder
-        self._aperture_slider.setValue(50)  # 0.5 mm default for protein separation
+        self._aperture_slider.setRange(30, 200)  # 0.3-2.0 mm (NIH: 0.75→D50 ~24 µm, 2→~31 µm)
+        self._aperture_slider.setValue(75)  # 0.75 mm default (NIH, protein separation)
         self._aperture_slider.setStyleSheet(self._rpm_slider.styleSheet())
         self._aperture_slider.valueChanged.connect(self._on_aperture_changed)
         aperture_row.addWidget(self._aperture_slider)
 
-        # Estimated d50 and quality hint
-        self._d50_hint = QLabel("d50 ~60 µm • Good for air classification")
+        # Estimated D50 and quality hint (NIH: 0.75 mm → ~23.7 µm, 2 mm → ~31.1 µm)
+        self._d50_hint = QLabel("D50 ~23 µm • Excellent for protein separation")
         self._d50_hint.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 8pt; font-style: italic;")
         aperture_row.addWidget(self._d50_hint)
         layout.addLayout(aperture_row)
@@ -416,10 +416,10 @@ class MillingControlPanel(QFrame):
         self._target_mass_label.hide()
         self._target_mass_spin.hide()
 
-        # Target d50 (for target d50 mode)
+        # Target d50 (for target d50 mode) — yellow pea: 23.7–31.1 µm (NIH)
         self._target_d50_spin = QDoubleSpinBox()
-        self._target_d50_spin.setRange(50, 2000)
-        self._target_d50_spin.setValue(500)
+        self._target_d50_spin.setRange(15, 500)
+        self._target_d50_spin.setValue(25)
         self._target_d50_spin.setSuffix(" µm")
         self._target_d50_spin.setStyleSheet(self._get_spinbox_style())
         self._target_d50_label = QLabel("Target d50:")
@@ -487,28 +487,27 @@ class MillingControlPanel(QFrame):
         self._emit_recipe()
 
     def _on_aperture_changed(self, value: int):
-        """Handle aperture slider change - update d50 estimate and quality hint."""
+        """Handle aperture slider change - update D50 estimate (NIH: 0.75→~24 µm, 2→~31 µm)."""
         aperture_mm = value / 100.0
         self._aperture_value.setText(f"{aperture_mm:.2f} mm")
 
-        # Estimate d50 (empirically ~12% of aperture for legume flour)
-        d50_um = aperture_mm * 1000 * 0.12
+        # NIH: 0.75 mm → D50 ~23.7 µm, 2.0 mm → D50 ~31.1 µm (yellow pea, rotor beater mill)
+        d50_um = 17.4 + 6.84 * aperture_mm
 
-        # Determine quality for protein-starch separation
-        if d50_um <= 40:
-            quality = "Excellent for protein liberation"
+        if d50_um <= 31:
+            quality = "Excellent for protein separation"
             color = COLORS.SUCCESS
-        elif d50_um <= 70:
-            quality = "Good for air classification"
+        elif d50_um <= 55:
+            quality = "Good for starch/protein fractionation"
             color = COLORS.ACCENT
-        elif d50_um <= 100:
-            quality = "Moderate - may need re-milling"
+        elif d50_um <= 114:
+            quality = "Moderate - consider 0.75 mm for protein separation"
             color = COLORS.WARNING
         else:
-            quality = "Coarse - recommend finer screen"
+            quality = "Coarse - recommend 0.75–2.0 mm for protein separation"
             color = COLORS.DANGER
 
-        self._d50_hint.setText(f"d50 ~{d50_um:.0f} µm • {quality}")
+        self._d50_hint.setText(f"D50 ~{d50_um:.0f} µm • {quality}")
         self._d50_hint.setStyleSheet(f"color: {color}; font-size: 8pt; font-style: italic;")
 
         self._emit_recipe()

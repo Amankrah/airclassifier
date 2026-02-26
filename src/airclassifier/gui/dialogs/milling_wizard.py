@@ -50,12 +50,8 @@ class MachinePreset:
 
 
 # Predefined machine presets
-# Screen apertures optimized for legume flour milling (pea, faba bean)
-# for protein-starch separation via air classification:
-#   - Protein bodies: 5-15 µm (target fine fraction)
-#   - Starch granules: 20-40 µm (coarse fraction)
-#   - Air classification cut point: ~22 µm
-#   - Target d50: < 60 µm for effective separation
+# Yellow pea flour for protein separation (NIH): 0.75 mm → D50 ~23.7 µm, 2.0 mm → D50 ~31.1 µm.
+# Default 0.75 mm targets fine flour (D50 23.7–31.1 µm) for protein separation.
 PRESETS = {
     MachineScale.LAB: MachinePreset(
         name="Lab Scale",
@@ -68,7 +64,7 @@ PRESETS = {
         screen_inner_radius_m=0.095,
         housing_inner_radius_m=0.10,
         default_rpm=4500,
-        default_screen_mm=0.5,  # Fine screen for protein separation
+        default_screen_mm=0.75,  # NIH: D50 ~24 µm (protein separation)
     ),
     MachineScale.PILOT: MachinePreset(
         name="Pilot Scale",
@@ -81,7 +77,7 @@ PRESETS = {
         screen_inner_radius_m=0.188,
         housing_inner_radius_m=0.20,
         default_rpm=3000,
-        default_screen_mm=0.5,  # Fine screen for protein separation
+        default_screen_mm=0.75,  # NIH: D50 ~24 µm (protein separation)
     ),
     MachineScale.PRODUCTION: MachinePreset(
         name="Production Scale",
@@ -94,7 +90,7 @@ PRESETS = {
         screen_inner_radius_m=0.380,
         housing_inner_radius_m=0.40,
         default_rpm=2000,
-        default_screen_mm=0.8,  # Fine screen for protein separation
+        default_screen_mm=0.75,  # NIH: D50 ~24 µm (protein separation)
     ),
 }
 
@@ -525,7 +521,7 @@ class ScreenConfigPage(_WizardPage):
         aperture_layout = QVBoxLayout(aperture_frame)
         aperture_layout.setSpacing(12)
 
-        self._aperture_value = QLabel("0.50 mm")
+        self._aperture_value = QLabel("0.75 mm")
         self._aperture_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._aperture_value.setStyleSheet(f"""
             font-size: 32pt;
@@ -534,14 +530,14 @@ class ScreenConfigPage(_WizardPage):
         """)
         aperture_layout.addWidget(self._aperture_value)
 
-        aperture_label = QLabel("Screen Aperture (food powder grade)")
+        aperture_label = QLabel("Screen Aperture (yellow pea flour, protein separation)")
         aperture_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         aperture_label.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 10pt;")
         aperture_layout.addWidget(aperture_label)
 
         self._aperture_slider = QSlider(Qt.Orientation.Horizontal)
-        self._aperture_slider.setRange(30, 200)  # 0.3-2.0 mm for food powder
-        self._aperture_slider.setValue(50)  # 0.5 mm default for protein separation
+        self._aperture_slider.setRange(30, 200)  # 0.3-2.0 mm (NIH: 0.75→D50 ~24 µm, 2→~31 µm)
+        self._aperture_slider.setValue(75)  # 0.75 mm default (NIH, protein separation)
         self._aperture_slider.setStyleSheet(f"""
             QSlider::groove:horizontal {{
                 background: {COLORS.BG_DARKEST};
@@ -563,8 +559,8 @@ class ScreenConfigPage(_WizardPage):
         self._aperture_slider.valueChanged.connect(self._on_aperture_changed)
         aperture_layout.addWidget(self._aperture_slider)
 
-        # Expected d50 hint
-        self._d50_hint = QLabel("Expected d50: ~45 um")
+        # Expected D50 hint (NIH: 0.75 mm → ~23.7 µm, 2 mm → ~31.1 µm)
+        self._d50_hint = QLabel("Expected D50: ~23 µm (excellent for protein separation)")
         self._d50_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._d50_hint.setStyleSheet(f"color: {COLORS.KPI_SIZE}; font-size: 11pt; font-weight: 600;")
         aperture_layout.addWidget(self._d50_hint)
@@ -610,19 +606,16 @@ class ScreenConfigPage(_WizardPage):
         mm = value / 100
         self._aperture_value.setText(f"{mm:.2f} mm")
 
-        # Estimate d50 for legume flour (hammer mill empirical correlation)
-        # Research shows d50 ≈ 10-15% of screen aperture for pea flour
-        # (e.g., 0.84mm screen → d50 ~98µm per ResearchGate studies)
-        d50_est = mm * 1000 * 0.12  # ~12% of aperture in µm
-
-        # Context: protein bodies 5-15µm, starch granules 20-40µm
-        # Air classification cut point typically ~22µm
-        if d50_est < 30:
-            hint = f"d50: ~{d50_est:.0f} µm (excellent protein separation)"
-        elif d50_est < 60:
-            hint = f"d50: ~{d50_est:.0f} µm (good for air classification)"
+        # NIH: 0.75 mm → D50 ~23.7 µm, 2.0 mm → D50 ~31.1 µm (yellow pea, rotor beater mill)
+        d50_est = 17.4 + 6.84 * mm
+        if d50_est <= 31:
+            hint = f"D50: ~{d50_est:.0f} µm (excellent for protein separation)"
+        elif d50_est <= 55:
+            hint = f"D50: ~{d50_est:.0f} µm (good for starch/protein fractionation)"
+        elif d50_est <= 114:
+            hint = f"D50: ~{d50_est:.0f} µm (moderate - consider 0.75 mm for protein separation)"
         else:
-            hint = f"d50: ~{d50_est:.0f} µm (coarse - may need re-milling)"
+            hint = f"D50: ~{d50_est:.0f} µm (coarse - recommend 0.75–2.0 mm for protein separation)"
         self._d50_hint.setText(hint)
 
     def get_data(self) -> Dict[str, Any]:
@@ -900,7 +893,7 @@ class MillingConfigWizard(QDialog):
             "mill_motor_power_kw": config.get("motor_power_kw", 22.0),
             "mill_hammer_rows": config.get("hammer_rows", 4),
             "mill_hammers_per_row": config.get("hammers_per_row", 4),
-            "mill_screen_aperture_mm": config.get("screen_aperture_mm", 1.5),
+            "mill_screen_aperture_mm": config.get("screen_aperture_mm", 0.75),
             "mill_feed_rate_kg_per_hr": config.get("feed_rate_kg_per_hr", 500),
         }
 

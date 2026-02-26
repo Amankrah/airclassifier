@@ -234,9 +234,10 @@ class TestPhysics:
         impact_flags = np.array([1, 1, 0, 0, 0], dtype=np.int32)
         impact_energies = np.array([0.1, 0.05, 0, 0, 0], dtype=np.float32)
 
-        new_sizes, new_masses, break_flags = model.step_lagrangian(
+        out = model.step_lagrangian(
             sizes, masses, impact_flags, impact_energies
         )
+        new_sizes, new_masses, break_flags = out[0], out[1], out[2]
 
         assert len(new_sizes) == 5
         assert model.stats is not None
@@ -324,6 +325,46 @@ class TestSimulator:
         assert outlet is not None
         # Outlet state should have PSD info
         assert hasattr(outlet, "d50_um")
+
+    def test_discharge_d50_and_screen_aperture(self):
+        """Discharge product D50 and all discharged sizes must be <= screen aperture (m).
+
+        Algorithm requirement: only particles with size <= aperture [m] can pass
+        the screen, so discharge D50 (and every discharged size) must be <= aperture_m.
+        """
+        from ..simulator import HammerMillSimulator
+        from ..config import MillConfig, MillRecipe
+
+        config = MillConfig()
+        recipe = MillRecipe(
+            screen_aperture_mm=0.75,
+            feed_rate_kg_per_hr=150,
+            rotor_rpm=3000,
+        )
+        sim = HammerMillSimulator(config=config)
+        sim.load_recipe(recipe)
+        sim.initialize(initial_holdup_kg=0.002)
+        sim.run(duration_s=2.0, dt=0.002)
+
+        sc = sim.engine.screen_classifier
+        aperture_m = sc.config.aperture_m  # 0.75 mm -> 0.00075 m
+        assert aperture_m > 0
+
+        # All discharged sizes must be <= aperture (enforced by screen passage)
+        discharged_sizes = sc._discharged_sizes
+        if len(discharged_sizes) > 0:
+            for s in discharged_sizes:
+                assert s <= aperture_m * 1.001, (
+                    f"Discharged size {s:.2e} m > aperture_m {aperture_m:.2e} m"
+                )
+            d10, d50, d90 = sc.get_d_values()
+            assert d50 >= 0 and d50 <= aperture_m * 1.001
+            assert d10 <= d50 <= d90
+        # State D50 (from history) is discharge product in meters
+        if sim.engine.history:
+            last = sim.engine.history[-1]
+            if last.d50_m > 0:
+                assert last.d50_m <= aperture_m * 1.001
 
 
 if __name__ == "__main__":

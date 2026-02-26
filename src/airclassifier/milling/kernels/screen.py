@@ -190,6 +190,7 @@ def screen_passage_np(
     aperture: float,
     open_area: float = 0.4,
     passage_factor: float = 1.0,
+    size_ratio_threshold: float = 0.35,
     rng: Optional[np.random.Generator] = None,
 ) -> np.ndarray:
     """Vectorized NumPy implementation of screen passage test.
@@ -231,12 +232,13 @@ def screen_passage_np(
     if n_candidates == 0:
         return passage_flags
 
-    # Passage probability (only for candidates)
+    # Passage probability (only for candidates). Below threshold = full prob; above = taper (retain coarse for breakage).
     size_ratio = sizes[in_zone] / aperture
+    span = max(0.2, 1.0 - size_ratio_threshold)
     size_prob = np.where(
-        size_ratio < 0.8,
+        size_ratio <= size_ratio_threshold,
         1.0,
-        1.0 - ((size_ratio - 0.8) / 0.2) ** 2,
+        np.maximum(0.0, 1.0 - ((size_ratio - size_ratio_threshold) / span) ** 2),
     )
 
     speed = np.linalg.norm(velocities[in_zone], axis=1)

@@ -186,6 +186,11 @@ def transport_step_warp(
     )
 
 
+# Safe bounds to prevent overflow/NaN in NumPy path (chamber typically ~0.2–0.4 m)
+_MAX_POS_R = 10.0   # max radial distance [m] before clamping
+_MAX_VEL = 500.0   # max velocity magnitude [m/s] before clamping
+
+
 # NumPy fallback for CPU
 def transport_step_np(
     positions: np.ndarray,
@@ -209,32 +214,47 @@ def transport_step_np(
     if n == 0:
         return positions.copy(), velocities.copy(), residence_times.copy()
 
+    # Sanitize inputs to avoid overflow/NaN (can occur from bad state or GPU sync)
+    positions = np.nan_to_num(positions, nan=0.0, posinf=_MAX_POS_R, neginf=-_MAX_POS_R)
+    velocities = np.nan_to_num(velocities, nan=0.0, posinf=_MAX_VEL, neginf=-_MAX_VEL)
+    positions = np.clip(positions, [-_MAX_POS_R, -_MAX_POS_R, -_MAX_POS_R], [_MAX_POS_R, _MAX_POS_R, _MAX_POS_R])
+    vel_norm = np.linalg.norm(velocities, axis=1)
+    vel_clip = vel_norm > _MAX_VEL
+    if vel_clip.any():
+        scale = _MAX_VEL / np.where(vel_clip, vel_norm, 1.0)
+        velocities = np.where(vel_clip[:, None], velocities * scale[:, None], velocities)
+
     active = masses > 0.0
 
     # --- Gravity (Y-component only) ---
     f_gravity = np.zeros_like(positions)
     f_gravity[active, 1] = -masses[active] * gravity
 
-    # --- Air drag ---
-    speed = np.linalg.norm(velocities, axis=1)  # [n]
-    area = np.pi * sizes * sizes * 0.25          # [n]
+    # --- Air drag (safe speed to avoid div-by-zero and overflow) ---
+    speed = np.linalg.norm(velocities, axis=1)
+    speed = np.clip(speed, 1e-6, _MAX_VEL)
+    area = np.pi * sizes * sizes * 0.25
     drag_mask = active & (speed > 1e-6)
-    drag_mag = np.zeros(n)
+    drag_mag = np.zeros(n, dtype=positions.dtype)
     drag_mag[drag_mask] = (
         0.5 * AIR_DENSITY * drag_coeff * area[drag_mask] * speed[drag_mask] ** 2
     )
     f_drag = np.zeros_like(velocities)
+    inv_speed = np.where(drag_mask, 1.0 / speed, 1.0)
     f_drag[drag_mask] = (
-        -velocities[drag_mask] * (drag_mag[drag_mask] / speed[drag_mask])[:, None]
+        -velocities[drag_mask] * (drag_mag[drag_mask] * inv_speed[drag_mask])[:, None]
     )
 
-    # --- Centrifugal throw ---
-    r_yz = np.sqrt(positions[:, 1] ** 2 + positions[:, 2] ** 2)
+    # --- Centrifugal throw (safe r_yz to avoid overflow in sqrt) ---
+    yz_sq = positions[:, 1] ** 2 + positions[:, 2] ** 2
+    yz_sq = np.minimum(yz_sq, _MAX_POS_R * _MAX_POS_R)
+    r_yz = np.sqrt(yz_sq)
     cent_mask = active & (r_yz > 0.05)
     r_hat = np.zeros_like(positions)
-    r_hat[cent_mask, 1] = positions[cent_mask, 1] / r_yz[cent_mask]
-    r_hat[cent_mask, 2] = positions[cent_mask, 2] / r_yz[cent_mask]
-    proximity = np.maximum(0.0, 1.0 - r_yz / chamber_radius)
+    r_yz_safe = np.where(r_yz > 1e-10, r_yz, 1e-10)
+    r_hat[cent_mask, 1] = positions[cent_mask, 1] / r_yz_safe[cent_mask]
+    r_hat[cent_mask, 2] = positions[cent_mask, 2] / r_yz_safe[cent_mask]
+    proximity = np.maximum(0.0, 1.0 - r_yz / np.maximum(chamber_radius, 1e-10))
     cent_accel = rotor_omega ** 2 * r_yz * proximity * 0.1
     f_cent = r_hat * (masses * cent_accel)[:, None]
 
@@ -247,6 +267,11 @@ def transport_step_np(
     new_vel = velocities + accel * dt
     new_pos = positions + new_vel * dt
 
+    # Sanitize after integration to prevent overflow propagation
+    new_pos = np.nan_to_num(new_pos, nan=0.0, posinf=chamber_length, neginf=0.0)
+    new_vel = np.nan_to_num(new_vel, nan=0.0, posinf=_MAX_VEL, neginf=-_MAX_VEL)
+    new_pos = np.clip(new_pos, [-_MAX_POS_R, -_MAX_POS_R, -_MAX_POS_R], [_MAX_POS_R, _MAX_POS_R, _MAX_POS_R])
+
     # --- X boundary clamp ---
     x_lo = new_pos[:, 0] < 0
     x_hi = new_pos[:, 0] > chamber_length
@@ -255,8 +280,10 @@ def transport_step_np(
     new_pos[x_hi, 0] = chamber_length
     new_vel[x_hi, 0] *= -0.3
 
-    # --- Radial boundary ---
-    r = np.sqrt(new_pos[:, 1] ** 2 + new_pos[:, 2] ** 2)
+    # --- Radial boundary (safe r to avoid overflow in sqrt) ---
+    yz_sq_new = new_pos[:, 1] ** 2 + new_pos[:, 2] ** 2
+    yz_sq_new = np.minimum(yz_sq_new, _MAX_POS_R * _MAX_POS_R)
+    r = np.sqrt(yz_sq_new)
     outside = r > chamber_radius
     safe_r = np.maximum(r, 1e-10)
     scale = np.where(outside, chamber_radius / safe_r, 1.0)
@@ -264,11 +291,13 @@ def transport_step_np(
     new_pos[:, 2] *= scale
 
     # Reflect radial velocity for particles that were outside
+    # Denom: after scaling, radial distance is chamber_radius for outside particles, so use it directly
     reflect = outside & (safe_r > 1e-6)
     if reflect.any():
         r_hat_r = np.zeros_like(new_pos)
-        r_hat_r[reflect, 1] = new_pos[reflect, 1] / (safe_r[reflect] * scale[reflect])
-        r_hat_r[reflect, 2] = new_pos[reflect, 2] / (safe_r[reflect] * scale[reflect])
+        denom = np.where(reflect, np.maximum(safe_r * scale, 1e-10), 1.0)
+        r_hat_r[reflect, 1] = new_pos[reflect, 1] / denom[reflect]
+        r_hat_r[reflect, 2] = new_pos[reflect, 2] / denom[reflect]
         # Dot product of velocity with radial unit vector
         v_radial = np.sum(new_vel[reflect] * r_hat_r[reflect], axis=1)
         # Only reflect outward-moving particles

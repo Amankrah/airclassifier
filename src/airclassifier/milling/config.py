@@ -150,9 +150,10 @@ class ScreenConfig:
     open_area: float = 0.40                      # Open area fraction
     hole_shape: str = "round"                    # "round", "square", "slotted"
 
-    # Passage model parameters
+    # Passage model parameters (for protein separation: favor fine particles passing)
     passage_probability_factor: float = 1.0      # Tuning factor for passage rate
-    size_ratio_threshold: float = 0.8            # d_particle/d_aperture below which passage is likely
+    # Below this ratio (d/aperture), passage prob is max; above, it tapers. Lower = finer discharge D50 (protein separation).
+    size_ratio_threshold: float = 0.06           # 0.06 → particles < ~45 µm pass easily (0.75 mm); coarser retained for breakage
 
     # Screen wear
     wear_factor: float = 1.0                     # 1.0 = new, increases with wear
@@ -213,37 +214,35 @@ class BreakageParams:
     d_max_um: float = 5000.0                     # Largest size class [um]
 
     # Selection function: S(d) = k * (d / d_ref)^alpha
-    # Tuned for yellow pea flour D50 23.7–31.1 µm (NIH: 0.75 mm → ~23.7 µm, 2 mm → ~31.1 µm).
-    selection_rate_constant: float = 0.48      # k: higher for finer product (protein separation)
-    selection_size_exponent: float = 1.3         # alpha: larger particles break more easily
-    selection_reference_size_um: float = 300.0   # d_ref: lower so 100–500 µm break more readily
+    # Tuned so discharge D50 reaches 24–43 µm (NIH protein separation). Run 5–10 s for steady state.
+    selection_rate_constant: float = 1.0        # k: cap 1.0 — most impacted particles break
+    selection_size_exponent: float = 1.4          # alpha: larger particles break more easily
+    selection_reference_size_um: float = 100.0   # d_ref: 100 µm+ break readily
 
-    # Breakage function: Gaudin–Schuhmann B = (d_daughter/d_parent)^gamma
-    breakage_distribution_exponent: float = 0.52  # gamma medium regime — slightly lower for finer flour
+    # Breakage function: Gaudin–Schuhmann; lower gamma → smaller daughters per break.
+    breakage_distribution_exponent: float = 0.26  # gamma medium — very aggressive for fine flour
 
     # --- Size-dependent breakage regimes (legume comminution) ---
-    # Coarse (d > 1 mm): seed fracture. Medium (100 µm–1 mm): chunk grinding.
-    # Fine (d < 100 µm): cell wall disruption, protein liberation (NIH).
     regime_coarse_threshold_m: float = 1.0e-3    # Above = coarse
     regime_fine_threshold_m: float = 1.0e-4      # Below = fine (100 µm)
 
-    # Coarse regime
-    gamma_coarse: float = 1.2
-    clamp_lo_coarse: float = 0.40
-    clamp_hi_coarse: float = 0.70
+    # Coarse regime (d > 1 mm)
+    gamma_coarse: float = 1.0
+    clamp_lo_coarse: float = 0.30
+    clamp_hi_coarse: float = 0.60
 
-    # Medium regime (100 µm–1 mm)
-    clamp_lo_medium: float = 0.18
-    clamp_hi_medium: float = 0.52
+    # Medium regime (100 µm–1 mm): strong size reduction
+    clamp_lo_medium: float = 0.10
+    clamp_hi_medium: float = 0.26
 
-    # Fine regime (d < 100 µm): protein body / starch liberation
-    gamma_fine: float = 0.32                     # Slightly lower for finer daughters
-    clamp_lo_fine: float = 0.12                  # Allow aggressive reduction toward 5–10 µm
-    clamp_hi_fine: float = 0.42
+    # Fine regime (d < 100 µm): target 24–43 µm discharge
+    gamma_fine: float = 0.14
+    clamp_lo_fine: float = 0.05
+    clamp_hi_fine: float = 0.22
 
     # Impact energy
-    min_impact_energy_j: float = 0.0004          # Low threshold so fine particles can break
-    energy_to_breakage_factor: float = 8.0       # Converts impact energy to selection probability
+    min_impact_energy_j: float = 0.00015         # Low so more impacts lead to breakage
+    energy_to_breakage_factor: float = 14.0      # Strong coupling from impact energy to selection
 
     # Multi-fragment breakage (mass-conserving fragmentation)
     # When enabled, each breakage event produces 2-N fragments whose masses

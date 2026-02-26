@@ -148,6 +148,7 @@ class ScreenClassifier:
             aperture=self.config.aperture_m,
             open_area=self.config.open_area,
             passage_factor=self.config.passage_probability_factor,
+            size_ratio_threshold=self.config.size_ratio_threshold,
             rng=self._rng,
         )
 
@@ -252,7 +253,10 @@ class ScreenClassifier:
         return mass_fractions, float(total_mass)
 
     def get_d_values(self) -> Tuple[float, float, float]:
-        """Compute d10, d50, d90 of discharged material.
+        """Compute d10, d50, d90 of discharged material (cumulative this run).
+
+        Discharge buffer contains only particles that passed the screen; their
+        size is in meters and is guaranteed <= config.aperture_m.
 
         Returns:
             (d10, d50, d90) in meters
@@ -260,7 +264,7 @@ class ScreenClassifier:
         if len(self._discharged_sizes) == 0:
             return 0.0, 0.0, 0.0
 
-        sizes = np.array(self._discharged_sizes)
+        sizes = np.array(self._discharged_sizes)  # [m]
         masses = np.array(self._discharged_masses)
 
         # Sort by size

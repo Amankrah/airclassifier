@@ -14,6 +14,31 @@ Step sequence per timestep:
     5. SCREEN — Test passage through screen
     6. DISCHARGE — Move passed particles to outlet
     7. RECORD — Log state and KPIs
+
+Requirements for milled flour D50 (discharge product)
+----------------------------------------------------
+To achieve discharge product with D50 in the target range (e.g. 23.7–31.1 µm
+for yellow pea protein separation, NIH):
+
+1. **Screen aperture (m)**  
+   Only particles with size <= aperture [m] can pass. Recipe screen_aperture_mm
+   is converted to meters (aperture_m) in the screen classifier. 0.75 mm → 0.00075 m.
+
+2. **Breakage**  
+   Seeds (e.g. feed_d50_um ~3000 µm) must be reduced by repeated impacts:
+   - Particles must enter the hammer zone (transport + impact) to get impact_flags=1.
+   - Selection and breakage function (BreakageParams) must produce fines;
+     d_min_um allows particles down to 5 µm; fine-regime gamma/clamps control
+     how small daughters get per breakage event.
+   - Run long enough (or sufficient residence time) so that a significant mass
+     reaches sizes well below the aperture (10–100 µm).
+
+3. **Discharge D50 reported in state**  
+   state.d10_m, state.d50_m, state.d90_m are the cumulative **discharge product**
+   PSD (median size by mass of all particles that have passed the screen this run).
+   They are in **meters**. So discharge D50 in µm = state.d50_m * 1e6.
+   At start of run the discharge buffer is empty (cleared in initialize());
+   as particles pass, the buffer accumulates and D50 converges toward steady state.
 """
 
 from __future__ import annotations
@@ -345,8 +370,16 @@ class CoupledMillingEngine:
         discharge_mass = pre_holdup + (num_fed * self._feed_particle_mass) - post_holdup
         feed_mass = num_fed * self._feed_particle_mass
 
-        # Get PSD stats
+        # Get PSD stats (cumulative discharge product; sizes in meters)
         d10, d50, d90 = self.screen_classifier.get_d_values()
+        aperture_m = self.screen_classifier.config.aperture_m
+        # Sanity: discharge D50 cannot exceed screen aperture (only size <= aperture can pass)
+        if d50 > 0 and aperture_m > 0 and d50 > aperture_m * 1.01:
+            import warnings
+            warnings.warn(
+                f"Milling: discharge d50_m ({d50:.2e} m) > aperture_m ({aperture_m:.2e} m); "
+                "check units (aperture must be in meters)."
+            )
 
         # Compute power
         impact_power = self.impact_solver.compute_power_draw(dt)

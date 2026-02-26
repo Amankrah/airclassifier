@@ -344,8 +344,8 @@ class MillingPage(QWidget):
         f.addRow("Rotor RPM:", self._rpm_spin)
 
         self._aperture_spin = QDoubleSpinBox()
-        self._aperture_spin.setRange(0.3, 2.0)  # Food powder grade
-        self._aperture_spin.setValue(0.5)  # 0.5 mm for protein separation
+        self._aperture_spin.setRange(0.3, 2.0)  # NIH: 0.75 mm → D50 ~24 µm, 2 mm → ~31 µm
+        self._aperture_spin.setValue(0.75)  # 0.75 mm default (NIH, protein separation)
         self._aperture_spin.setDecimals(2)
         self._aperture_spin.setSingleStep(0.1)
         self._aperture_spin.setSuffix(" mm")
@@ -396,10 +396,10 @@ class MillingPage(QWidget):
         self._target_mass_row[0].setVisible(False)
         self._target_mass_row[1].setVisible(False)
 
-        # Target d50 (for target d50 mode)
+        # Target d50 (for target d50 mode) — yellow pea flour: 23.7–31.1 µm (NIH)
         self._target_d50_spin = QDoubleSpinBox()
-        self._target_d50_spin.setRange(50, 2000)
-        self._target_d50_spin.setValue(500)
+        self._target_d50_spin.setRange(15, 500)
+        self._target_d50_spin.setValue(25)
         self._target_d50_spin.setSuffix(" µm")
         self._target_d50_row = (QLabel("Target d50:"), self._target_d50_spin)
         f.addRow(self._target_d50_row[0], self._target_d50_row[1])
@@ -635,7 +635,7 @@ class MillingPage(QWidget):
             hammer_width_m=p.get("mill_hammer_width_m", 0.05),
             hammer_thickness_m=p.get("mill_hammer_thickness_m", 0.008),
             hammer_clearance_m=p.get("mill_hammer_clearance_m", 0.008),
-            screen_aperture_mm=p.get("mill_screen_aperture_mm", recipe_data.get("screen_aperture_mm", 1.5)),
+            screen_aperture_mm=p.get("mill_screen_aperture_mm", recipe_data.get("screen_aperture_mm", 0.75)),
             screen_open_area=p.get("mill_screen_open_area", 0.40),
             screen_inner_radius_m=p.get("mill_screen_inner_radius_m", 0.188),
             screen_thickness_m=p.get("mill_screen_thickness_m", 0.003),
@@ -670,7 +670,7 @@ class MillingPage(QWidget):
             mode=term_mode,
             run_duration_s=recipe_data.get("duration_s", 60),
             target_mass_kg=recipe_data.get("target_mass_kg", 1.0),
-            target_d50_um=recipe_data.get("target_d50_um", 500),
+            target_d50_um=recipe_data.get("target_d50_um", 25),
             min_run_time_s=recipe_data.get("min_run_time_s", 5.0),
             max_run_time_s=recipe_data.get("max_run_time_s", 300),
         )
@@ -945,7 +945,7 @@ class MillingPage(QWidget):
                 hammer_width_m=assembly_params.get("mill_hammer_width_m", 0.05),
                 hammer_thickness_m=assembly_params.get("mill_hammer_thickness_m", 0.008),
                 hammer_clearance_m=assembly_params.get("mill_hammer_clearance_m", 0.008),
-                screen_aperture_mm=assembly_params.get("mill_screen_aperture_mm", 1.5),
+                screen_aperture_mm=assembly_params.get("mill_screen_aperture_mm", 0.75),
                 screen_open_area=assembly_params.get("mill_screen_open_area", 0.40),
                 screen_inner_radius_m=assembly_params.get("mill_screen_inner_radius_m", 0.188),
                 screen_thickness_m=assembly_params.get("mill_screen_thickness_m", 0.003),
