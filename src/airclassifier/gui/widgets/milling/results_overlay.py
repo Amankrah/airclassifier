@@ -567,8 +567,10 @@ class ResultsAnalyticsTab(QWidget):
 
             # Screen stats
             total_passed = sum(s.num_passed_screen for s in history)
-            total_fed = sum(s.num_fed for s in history)
-            passage_rate = (total_passed / total_fed * 100) if total_fed > 0 else 0
+            # Mass-based passage rate (yield): discharged mass / fed mass
+            total_fed_mass = sum(s.feed_rate_kg_per_s for s in history) * (history[-1].time_s / len(history)) if history else 0
+            total_discharge_mass = sum(s.discharge_rate_kg_per_s for s in history) * (history[-1].time_s / len(history)) if history else 0
+            passage_rate = (total_discharge_mass / total_fed_mass * 100) if total_fed_mass > 0 else 0
 
             last_state = history[-1]
             self._particles_passed_label["value"].setText(f"{total_passed:,}")

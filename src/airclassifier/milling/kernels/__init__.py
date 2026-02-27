@@ -28,6 +28,7 @@ from .screen import (
     screen_passage_np,
     apply_screen_discharge,
 )
+from .reagglomeration import reagglomeration_step_np
 
 # Warp imports (optional)
 try:
@@ -68,4 +69,6 @@ __all__ = [
     "screen_passage_np",
     "screen_passage_warp",
     "apply_screen_discharge",
+    # Reagglomeration
+    "reagglomeration_step_np",
 ]

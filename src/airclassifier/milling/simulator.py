@@ -284,17 +284,16 @@ class HammerMillSimulator:
             discharge_rates = [s.discharge_rate_kg_per_s * 3600 for s in states]  # kg/hr
             throughput = np.mean(discharge_rates)
 
-            # Residence time (mean of particles that passed)
-            # Approximate from feed/discharge balance
-            if len(states) > 1:
-                total_fed = sum(s.num_fed for s in states)
-                total_discharged = sum(s.num_discharged for s in states)
-                if total_fed > 0:
-                    mean_residence = duration_s * (1 - total_discharged / max(total_fed, 1))
+            # Residence time: use actual tracked residence times from screen classifier
+            mean_residence = self.engine.screen_classifier.get_mean_residence_time()
+            if mean_residence <= 0.0 and len(states) > 1:
+                # Fallback: approximate from mass balance (discharge_mass / feed_mass × duration)
+                total_mass_fed = sum(s.feed_rate_kg_per_s for s in states) * (duration_s / len(states))
+                total_mass_out = sum(s.discharge_rate_kg_per_s for s in states) * (duration_s / len(states))
+                if total_mass_fed > 0:
+                    mean_residence = duration_s * max(0.0, 1.0 - total_mass_out / total_mass_fed)
                 else:
                     mean_residence = 0.0
-            else:
-                mean_residence = 0.0
 
             # Specific energy
             total_energy_kwh = sum(s.power_kw * dt / 3600 for s in states)
@@ -396,12 +395,11 @@ class HammerMillSimulator:
             throughput = float(np.mean(discharge_rates))
             total_fed = sum(s.num_fed for s in states)
             total_mass_fed_kg = sum(s.feed_rate_kg_per_s * dt for s in states)
-            total_discharged = sum(s.num_discharged for s in states)
-            mean_residence = (
-                duration_s * (1 - total_discharged / max(total_fed, 1))
-                if total_fed > 0 and len(states) > 1
-                else 0.0
-            )
+            mean_residence = self.engine.screen_classifier.get_mean_residence_time()
+            if mean_residence <= 0.0 and total_fed > 0 and len(states) > 1:
+                # Fallback: mass-based approximation
+                total_mass_out = sum(s.discharge_rate_kg_per_s * dt for s in states)
+                mean_residence = duration_s * max(0.0, 1.0 - total_mass_out / max(total_mass_fed_kg, 1e-9))
             total_energy_kwh = sum(s.power_kw * dt / 3600 for s in states)
             total_throughput_t = total_mass / 1000
             specific_energy = total_energy_kwh / total_throughput_t if total_throughput_t > 0 else 0.0

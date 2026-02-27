@@ -13,12 +13,15 @@ Physics:
     - Impact velocity depends on relative velocity (particle vs hammer tip)
     - Energy transfer follows coefficient of restitution model
     - Impact energy is tracked for breakage calculations
+    - Size-dependent impact efficiency: fine particles follow the airflow
+      around the hammer (air entrainment / cushioning) and receive reduced
+      effective impact energy.  η = min(1, (d / d_crit)^n).
 """
 
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 
@@ -49,11 +52,14 @@ if WARP_AVAILABLE:
         row_spacing: float,
         restitution: float,
         dt: float,
+        efficiency_d_crit: float,
+        efficiency_exponent: float,
     ):
         """Detect and resolve hammer-particle impacts.
 
         For each particle, check if it's within the hammer sweep zone.
-        If so, compute impact velocity and energy.
+        If so, compute impact velocity and energy, scaled by size-dependent
+        impact efficiency (fine particles are entrained in air, not impacted).
         """
         tid = wp.tid()
 
@@ -138,21 +144,29 @@ if WARP_AVAILABLE:
         rel_vel = vel - hammer_vel
         rel_speed = wp.length(rel_vel)
 
-        # Impact energy (kinetic energy in relative frame)
-        impact_energy = 0.5 * mass * rel_speed * rel_speed
+        # --- Size-dependent impact efficiency ---
+        # Fine particles follow air around the hammer: η = min(1, (d/d_crit)^n)
+        # This models air entrainment, cushioning, and reduced collision efficiency.
+        eta = 1.0
+        if efficiency_d_crit > 0.0 and size < efficiency_d_crit:
+            ratio = size / efficiency_d_crit
+            eta = wp.pow(ratio, efficiency_exponent)
+
+        # Impact energy scaled by efficiency
+        impact_energy = 0.5 * mass * rel_speed * rel_speed * eta
         impact_energies[tid] = impact_energy
 
         # Velocity update (simplified impact model)
-        # New velocity reflects off hammer surface with restitution
+        # Deflection is also reduced for fine particles (they pass through more)
         if rel_speed > 0.1:
             # Normal direction (radially outward from shaft)
             n = wp.vec3(0.0, pos[1] / r_particle, pos[2] / r_particle)
             # Velocity component normal to hammer surface
             v_n = wp.dot(rel_vel, n)
-            # Reflect and apply restitution
-            new_rel_vel = rel_vel - n * (v_n * (1.0 + restitution))
-            # Add hammer velocity back
-            new_vel = new_rel_vel + hammer_vel * 0.5  # Partial momentum transfer
+            # Reflect and apply restitution, scaled by efficiency
+            new_rel_vel = rel_vel - n * (v_n * (1.0 + restitution) * eta)
+            # Add hammer velocity back (partial momentum transfer)
+            new_vel = new_rel_vel + hammer_vel * (0.5 * eta)
             velocities[tid] = new_vel
 
 
@@ -173,6 +187,8 @@ def impact_detection_warp(
     row_spacing: float,
     restitution: float = 0.3,
     dt: float = 0.001,
+    efficiency_d_crit: float = 80e-6,
+    efficiency_exponent: float = 2.0,
 ):
     """Launch impact detection kernel.
 
@@ -193,6 +209,8 @@ def impact_detection_warp(
         row_spacing: Spacing between rows
         restitution: Coefficient of restitution
         dt: Timestep [s]
+        efficiency_d_crit: Size below which impact efficiency drops [m]
+        efficiency_exponent: Exponent for efficiency taper
     """
     n = positions.shape[0]
     wp.launch(
@@ -203,6 +221,7 @@ def impact_detection_warp(
             rotor_theta, rotor_omega, hammer_tip_radius, hammer_width,
             hammer_rows, hammers_per_row, row_start_x, row_spacing,
             restitution, dt,
+            efficiency_d_crit, efficiency_exponent,
         ],
     )
 
@@ -223,6 +242,8 @@ def impact_detection_np(
     row_spacing: float,
     restitution: float = 0.3,
     dt: float = 0.001,
+    efficiency_d_crit: float = 80e-6,
+    efficiency_exponent: float = 2.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Vectorized NumPy implementation of impact detection.
 
@@ -276,6 +297,7 @@ def impact_detection_np(
     h_pos = positions[h_idx]
     h_vel = velocities[h_idx]
     h_mass = masses[h_idx]
+    h_sizes = sizes[h_idx]
     h_r = r_particle[h_idx]
     h_angle = particle_angle[h_idx]
 
@@ -285,10 +307,21 @@ def impact_detection_np(
     h_hammer_vel[:, 1] = -hammer_speed * np.sin(h_angle)
     h_hammer_vel[:, 2] = hammer_speed * np.cos(h_angle)
 
-    # Relative velocity and energy
+    # Relative velocity and raw kinetic energy
     rel_vel = h_vel - h_hammer_vel
     rel_speed = np.linalg.norm(rel_vel, axis=1)
-    impact_energies[h_idx] = 0.5 * h_mass * rel_speed ** 2
+
+    # --- Size-dependent impact efficiency ---
+    # Fine particles follow air around the hammer: η = min(1, (d/d_crit)^n)
+    eta = np.ones(len(h_idx), dtype=np.float64)
+    if efficiency_d_crit > 0.0:
+        below = h_sizes < efficiency_d_crit
+        if below.any():
+            ratio = h_sizes[below] / efficiency_d_crit
+            eta[below] = np.power(ratio, efficiency_exponent)
+
+    # Impact energy scaled by efficiency
+    impact_energies[h_idx] = (0.5 * h_mass * rel_speed ** 2 * eta).astype(np.float32)
 
     # Velocity update for particles with rel_speed > 0.1
     fast = rel_speed > 0.1
@@ -298,6 +331,7 @@ def impact_detection_np(
         f_r = h_r[fast]
         f_rel = rel_vel[fast]
         f_hvel = h_hammer_vel[fast]
+        f_eta = eta[fast]
 
         # Normal direction (radially outward from shaft)
         n_vec = np.zeros_like(f_pos)
@@ -307,8 +341,8 @@ def impact_detection_np(
         # Radial component of relative velocity
         v_n = np.sum(f_rel * n_vec, axis=1)
 
-        # Reflect and apply restitution
-        new_rel = f_rel - n_vec * (v_n * (1.0 + restitution))[:, None]
-        new_velocities[fi] = new_rel + f_hvel * 0.5
+        # Reflect and apply restitution, scaled by efficiency
+        new_rel = f_rel - n_vec * (v_n * (1.0 + restitution) * f_eta)[:, None]
+        new_velocities[fi] = new_rel + f_hvel * (0.5 * f_eta)[:, None]
 
     return impact_flags, impact_energies, new_velocities

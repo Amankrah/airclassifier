@@ -478,10 +478,10 @@ class _AnalyticsPanel(QFrame):
         if hasattr(result_obj, "history") and result_obj.history:
             history = result_obj.history
 
-            # Passage rate for flour column
-            total_passed = sum(s.num_passed_screen for s in history)
-            total_fed = sum(s.num_fed for s in history)
-            passage_rate = (total_passed / total_fed * 100) if total_fed > 0 else 0
+            # Passage rate (mass-based yield: discharged mass / fed mass)
+            total_fed_mass = sum(s.feed_rate_kg_per_s for s in history) * (history[-1].time_s / len(history)) if history else 0
+            total_discharge_mass = sum(s.discharge_rate_kg_per_s for s in history) * (history[-1].time_s / len(history)) if history else 0
+            passage_rate = (total_discharge_mass / total_fed_mass * 100) if total_fed_mass > 0 else 0
             self._flour_stats["passage_rate"].setText(f"{passage_rate:.1f}%")
 
             # --- Breakage stats ---
@@ -490,6 +490,7 @@ class _AnalyticsPanel(QFrame):
             breakage_rate = (total_breakage / total_impacts * 100) if total_impacts > 0 else 0
 
             total_fragments = sum(s.num_fragments_created for s in history)
+            total_fed = sum(s.num_fed for s in history)
 
             self._breakage_stats["impacts"].setText(f"{total_impacts:,}")
             self._breakage_stats["breakage_events"].setText(f"{total_breakage:,}")

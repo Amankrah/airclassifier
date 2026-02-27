@@ -60,6 +60,7 @@ from .breakage import BreakageModel, BreakageStats
 from .screen_classifier import ScreenClassifier, ScreenStats
 from .convergence import ConvergenceDetector, TerminationConfig
 from ..kernels import transport_step_np, transport_step_warp, GRAVITY, WARP_AVAILABLE
+from ..kernels import reagglomeration_step_np
 from ..config import MillConfig, MillRecipe, BreakageParams, ScreenConfig
 
 from typing import TYPE_CHECKING
@@ -111,6 +112,12 @@ class MillingStepState:
 
     # Power
     power_kw: float = 0.0
+
+    # Thermal model
+    product_temperature_c: float = 25.0
+
+    # Reagglomeration
+    num_reagglomerations: int = 0
 
 
 @dataclass
@@ -198,6 +205,12 @@ class CoupledMillingEngine:
     convergence_detector: Optional[ConvergenceDetector] = None
     termination_config: Optional[TerminationConfig] = None
 
+    # Thermal state
+    _product_temperature_c: float = 25.0
+
+    # Reagglomeration RNG (persistent for reproducibility)
+    _reagglom_rng: Optional[np.random.Generator] = None
+
     # Device
     device: str = "cpu"
 
@@ -229,6 +242,10 @@ class CoupledMillingEngine:
         # Update chamber geometry from config
         self.chamber_radius = self.config.housing_inner_radius_m
         self.chamber_length = self.config.housing_length_m
+
+        # Reagglomeration RNG
+        if self._reagglom_rng is None:
+            self._reagglom_rng = np.random.default_rng()
 
     def load_recipe(self, recipe: MillRecipe):
         """Load a milling recipe.
@@ -280,6 +297,7 @@ class CoupledMillingEngine:
         self._last_discharge_mass = 0.0
         self._last_feed_mass = 0.0
         self._discharge_particles.clear()  # Clear discharge visualization
+        self._product_temperature_c = self._inlet_temperature_c
 
         # Reset convergence detector if configured
         if self.convergence_detector is not None:
@@ -363,8 +381,28 @@ class CoupledMillingEngine:
         # --- 3. IMPACT ---
         impact_flags, impact_energies = self._impact_step(dt)
 
+        # --- 3.5 TEMPERATURE-ADJUSTED BREAKAGE ---
+        # Above onset temperature, starch softens and absorbs energy without
+        # fracturing.  Reduce effective breakage energy so D50 floor rises
+        # with temperature (a key real-world grinding limit).
+        breakage_energies = impact_energies
+        params = self.breakage_model.params
+        t_onset = getattr(params, "t_breakage_onset_c", 50.0)
+        t_slope = getattr(params, "t_breakage_slope", 0.008)
+        if self._product_temperature_c > t_onset and len(impact_energies) > 0:
+            penalty = 1.0 - t_slope * (self._product_temperature_c - t_onset)
+            penalty = max(penalty, 0.1)  # never fully zero-out breakage
+            breakage_energies = impact_energies * penalty
+
         # --- 4. BREAKAGE ---
-        break_flags = self._breakage_step(impact_flags, impact_energies)
+        break_flags = self._breakage_step(impact_flags, breakage_energies)
+
+        # --- 4.5 REAGGLOMERATION ---
+        num_reagglom = self._reagglomeration_step()
+
+        # --- 4.6 THERMAL MODEL ---
+        # Use raw impact energies (not temperature-reduced) for heating
+        self._thermal_step(impact_energies, dt)
 
         # --- 5. SCREEN ---
         num_discharged = self._screen_step(dt)
@@ -426,6 +464,8 @@ class CoupledMillingEngine:
             d50_recent_m=d50_recent,
             d90_recent_m=d90_recent,
             power_kw=total_power,
+            product_temperature_c=self._product_temperature_c,
+            num_reagglomerations=num_reagglom,
         )
 
         self.history.append(state)
@@ -709,6 +749,103 @@ class CoupledMillingEngine:
                 )
 
         return break_flags
+
+    def _reagglomeration_step(self) -> int:
+        """Apply reagglomeration to fine particles.
+
+        Fine particles (< threshold) stick together via van der Waals,
+        electrostatic, and moisture-bridge forces.  This raises the
+        effective D50 floor — a key real-world grinding limit.
+
+        Returns:
+            Number of merge events this step.
+        """
+        params = self.breakage_model.params
+        if not getattr(params, "reagglom_enabled", False):
+            return 0
+        if self.particles.count < 2:
+            return 0
+
+        threshold_m = getattr(params, "reagglom_threshold_um", 50.0) * 1e-6
+        rate = getattr(params, "reagglom_rate", 0.02)
+        max_merges = getattr(params, "reagglom_max_merges_per_step", 50)
+        moisture_sens = getattr(params, "reagglom_moisture_sensitivity", 2.0)
+
+        sizes, masses, num_merges = reagglomeration_step_np(
+            sizes=self.particles.sizes,
+            masses=self.particles.masses,
+            threshold_m=threshold_m,
+            rate=rate,
+            max_merges=max_merges,
+            moisture_wb=self._inlet_moisture_wb,
+            moisture_sensitivity=moisture_sens,
+            product_temperature_c=self._product_temperature_c,
+            rng=self._reagglom_rng,
+        )
+
+        self.particles.sizes = sizes
+        self.particles.masses = masses
+
+        # Remove dead particles (mass=0 from merges) to keep arrays compact
+        if num_merges > 0:
+            alive = masses > 0.0
+            self.particles = ParticleState(
+                positions=self.particles.positions[alive],
+                velocities=self.particles.velocities[alive],
+                sizes=self.particles.sizes[alive],
+                masses=self.particles.masses[alive],
+                residence_times=self.particles.residence_times[alive],
+                break_count=self.particles.break_count[alive],
+            )
+
+        return num_merges
+
+    def _thermal_step(self, impact_energies: np.ndarray, dt: float):
+        """Update product temperature from impact heating and convective cooling.
+
+        Energy balance per step:
+            Q_in  = eta_thermal * P_total * dt            [J]
+            Q_out = h * A * (T_product - T_air) * dt      [J]
+            dT    = (Q_in - Q_out) / (m * Cp)
+
+        P_total includes no-load power (windage, friction, bearing losses)
+        which is a constant heat source regardless of particle fineness.
+        In real mills this prevents temperature from dropping when the
+        product becomes fine — the rotor still dissipates kW of mechanical
+        energy into heat.
+        """
+        params = self.breakage_model.params
+        if not getattr(params, "thermal_enabled", False):
+            return
+
+        holdup_kg = self.particles.total_mass
+        if holdup_kg < 1e-6:
+            return
+
+        # Parameters (fallbacks must match config.py defaults)
+        cp = getattr(params, "cp_product_j_per_kg_k", 1800.0)
+        eta = getattr(params, "eta_thermal", 0.35)
+        h_conv = getattr(params, "h_conv_w_per_m2_k", 150.0)
+        a_cool = getattr(params, "a_cooling_m2", 0.25)
+        t_air = getattr(params, "t_air_c", 25.0)
+
+        # Heat input: total mill power = particle impacts + no-load (windage/friction)
+        # No-load power is the constant baseline — it keeps the mill warm even
+        # when all particles are fine and individual impact energies are negligible.
+        impact_power_w = float(impact_energies.sum()) / dt if (len(impact_energies) > 0 and dt > 0) else 0.0
+        no_load_power_w = self.config.no_load_power_kw * 1000.0
+        total_power_w = impact_power_w + no_load_power_w
+        q_in = eta * total_power_w * dt  # [J]
+
+        # Convective cooling (lumped: product→housing→ambient + airflow)
+        q_out = h_conv * a_cool * (self._product_temperature_c - t_air) * dt
+
+        # Temperature change from heating and cooling
+        d_temp = (q_in - q_out) / (holdup_kg * cp)
+        self._product_temperature_c += d_temp
+
+        # Clamp to physical range
+        self._product_temperature_c = max(t_air, min(self._product_temperature_c, 150.0))
 
     def _screen_step(self, dt: float) -> int:
         """Test screen passage and discharge.

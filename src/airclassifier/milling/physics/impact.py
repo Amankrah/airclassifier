@@ -62,6 +62,10 @@ class ImpactSolver:
     # Physics parameters
     restitution: float = 0.3
 
+    # Size-dependent impact efficiency (air entrainment)
+    efficiency_d_crit: float = 80e-6     # Transition size [m]
+    efficiency_exponent: float = 2.0     # Sharpness of the transition
+
     # State
     _rotor_theta: float = 0.0
     _rotor_omega: float = 0.0
@@ -135,6 +139,8 @@ class ImpactSolver:
             row_spacing=self.row_spacing,
             restitution=self.restitution,
             dt=dt,
+            efficiency_d_crit=self.efficiency_d_crit,
+            efficiency_exponent=self.efficiency_exponent,
         )
 
         # Update stats
@@ -182,6 +188,8 @@ class ImpactSolver:
             row_spacing=self.row_spacing,
             restitution=self.restitution,
             dt=dt,
+            efficiency_d_crit=self.efficiency_d_crit,
+            efficiency_exponent=self.efficiency_exponent,
         )
 
         # Copy back to CPU
@@ -247,6 +255,12 @@ class ImpactSolver:
         usable_length = config.rotor_length_m - 2 * margin
         spacing = usable_length / max(config.hammer_rows - 1, 1)
 
+        # Read impact efficiency from breakage params (they live there for config cohesion)
+        from ..config import BreakageParams
+        bp = BreakageParams()
+        eff_d_crit = getattr(bp, "impact_efficiency_d_crit_um", 80.0) * 1e-6
+        eff_exp = getattr(bp, "impact_efficiency_exponent", 2.0)
+
         return cls(
             hammer_tip_radius=tip_radius,
             hammer_width=config.hammer_width_m,
@@ -255,5 +269,7 @@ class ImpactSolver:
             row_start_x=margin + 0.05,
             row_spacing=spacing,
             restitution=0.3,
+            efficiency_d_crit=eff_d_crit,
+            efficiency_exponent=eff_exp,
             device=device,
         )

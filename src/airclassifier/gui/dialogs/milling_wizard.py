@@ -606,16 +606,18 @@ class ScreenConfigPage(_WizardPage):
         mm = value / 100
         self._aperture_value.setText(f"{mm:.2f} mm")
 
-        # NIH: 0.75 mm → D50 ~23.7 µm, 2.0 mm → D50 ~31.1 µm (yellow pea, rotor beater mill)
-        d50_est = 17.4 + 6.84 * mm
-        if d50_est <= 31:
-            hint = f"D50: ~{d50_est:.0f} µm (excellent for protein separation)"
-        elif d50_est <= 55:
+        # Grinding-floor model: single-pass hammer mill aerodynamic limit
+        typical_tip_speed = 63.0  # ~6000 RPM, 0.20 m radius
+        grinding_floor = max(40.0, 80.0 - 0.22 * typical_tip_speed)
+        d50_est = grinding_floor + 18.0 * mm ** 0.7
+        if d50_est <= 45:
+            hint = f"D50: ~{d50_est:.0f} µm (near grinding limit, good for protein separation)"
+        elif d50_est <= 70:
             hint = f"D50: ~{d50_est:.0f} µm (good for starch/protein fractionation)"
-        elif d50_est <= 114:
-            hint = f"D50: ~{d50_est:.0f} µm (moderate - consider 0.75 mm for protein separation)"
+        elif d50_est <= 100:
+            hint = f"D50: ~{d50_est:.0f} µm (moderate - consider finer screen or higher RPM)"
         else:
-            hint = f"D50: ~{d50_est:.0f} µm (coarse - recommend 0.75–2.0 mm for protein separation)"
+            hint = f"D50: ~{d50_est:.0f} µm (coarse - use 0.3–0.84 mm screen, 5000–7200 RPM)"
         self._d50_hint.setText(hint)
 
     def get_data(self) -> Dict[str, Any]:

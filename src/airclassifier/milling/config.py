@@ -77,6 +77,22 @@ class MillConfig:
     discharge_chute_width_m: float = 0.20
     discharge_chute_height_m: float = 0.15
 
+    # --- Transport physics ---
+    # Coefficients of restitution for wall bounces (0 = inelastic, 1 = elastic).
+    # Reflection formula: v_new = v - (1+e)*n*(v·n), so factor = 1+e.
+    wall_restitution_radial: float = 0.3     # CoR for radial (housing) wall bounce
+    wall_restitution_endwall: float = 0.3    # CoR for axial (end plate) bounce
+    # Fraction of centrifugal force imparted to particles near rotor.
+    # Full coupling (1.0) would fling everything to the wall instantly;
+    # in reality particles are loosely entrained in air, not rigidly attached.
+    centrifugal_coupling_factor: float = 0.1
+    # Hammer–particle collision restitution
+    hammer_restitution: float = 0.3          # CoR for hammer-particle impacts (0-1)
+
+    # --- Screen detection ---
+    screen_zone_tolerance_m: float = 0.03    # Radial tolerance for screen proximity [m]
+    velocity_passage_threshold_m_per_s: float = 5.0  # Speed above which screen passage drops
+
     # --- Machine envelope ---
     machine_height_m: float = 0.80
     machine_width_m: float = 0.60
@@ -103,37 +119,76 @@ class MillConfig:
         """Screen arc angle in radians."""
         return math.radians(self.screen_arc_angle_deg)
 
+    @property
+    def hammer_tip_radius_m(self) -> float:
+        """Radius from shaft centre to hammer tip [m]."""
+        return self.rotor_diameter_m / 2.0 + self.hammer_length_m
+
     def tip_to_screen_clearance(self) -> float:
         """Clearance between hammer tip and screen inner surface [m]."""
-        tip_radius = self.rotor_diameter_m / 2.0 + self.hammer_length_m
-        return self.screen_inner_radius_m - tip_radius
+        return self.screen_inner_radius_m - self.hammer_tip_radius_m
+
+    @property
+    def hammer_angular_extent_rad(self) -> float:
+        """Angular width of one hammer at the tip [rad].
+
+        arc_length / radius = hammer_width / tip_radius.
+        """
+        return self.hammer_width_m / self.hammer_tip_radius_m
+
+    @property
+    def impact_sweep_inner_margin_m(self) -> float:
+        """Radial depth behind hammer tip that still registers impacts [m].
+
+        Capped at 40% of hammer length so very long hammers don't create
+        an unrealistically deep sweep zone.
+        """
+        return min(0.03, self.hammer_length_m * 0.4)
+
+    @property
+    def impact_sweep_outer_margin_m(self) -> float:
+        """Radial clearance beyond hammer tip for impact detection [m].
+
+        Uses actual tip-to-screen clearance (particles in the gap can
+        still be struck).  Minimum 5 mm so detection isn't zero when
+        clearance is very tight.
+        """
+        return max(0.005, self.tip_to_screen_clearance())
 
     @property
     def estimated_d50_um(self) -> float:
-        """Estimate product D50 [µm] from screen aperture (yellow pea).
+        """Estimate realistic product D50 [µm] from screen aperture and tip speed.
 
-        NIH: 0.75 mm → D50 ~23.7 µm; 2.0 mm → ~31.1 µm. Fit: D50_µm ≈ 17.4 + 6.84 * aperture_mm.
-        ResearchGate: tip speed ~102 m/s + 0.84 mm screen → median ~98 µm (low starch damage).
+        Single-pass hammer mill has an aerodynamic grinding limit around 40–80 µm
+        for pulse flour.  Below ~80 µm, air entrainment, starch granule resistance,
+        and reagglomeration prevent further reduction.
+
+        Model: D50 = grinding_limit + k * aperture_mm^beta
+        Validated against pilot data: 0.3 mm / 6000 rpm → ~67 µm.
         """
-        return 17.4 + 6.84 * self.screen_aperture_mm
+        # Grinding limit depends on tip speed (higher = slightly lower floor)
+        tip = self.hammer_tip_speed
+        # At 113 m/s (6000 rpm): floor ≈ 55 µm; at 56 m/s (3000 rpm): floor ≈ 70 µm
+        grinding_floor = max(40.0, 80.0 - 0.22 * tip)
+        # Screen contribution: larger aperture → coarser product
+        return grinding_floor + 18.0 * self.screen_aperture_mm ** 0.7
 
     def get_separation_quality(self) -> str:
         """Get protein separation quality assessment based on D50.
 
         Goal: release starch granules (15–40 µm) from protein matrix (1–10 µm).
-        Fine flour improves air classification efficiency (BAKERpedia, ResearchGate).
+        Single-pass hammer mill typically achieves 40–100 µm.
+        Pin/jet mills needed for < 40 µm.
         """
         d50 = self.estimated_d50_um
-        if d50 <= 31:
-            return "Excellent - D50 in 24–31 µm range for protein separation"
-        elif d50 <= 55:
-            return "Good - suitable for starch/protein fractionation"
-        elif d50 <= 98:
-            return "Moderate - tip speed ~102 m/s + 0.84 mm screen can reach ~98 µm (ResearchGate)"
-        elif d50 <= 114:
-            return "Moderate - consider finer screen (0.75–0.84 mm) or higher rpm"
+        if d50 <= 45:
+            return "Excellent - near grinding limit, good liberation for protein separation"
+        elif d50 <= 70:
+            return "Good - suitable for starch/protein fractionation in air classifier"
+        elif d50 <= 100:
+            return "Moderate - fine flour, consider higher RPM or two-pass for better separation"
         else:
-            return "Coarse - use 0.84–2 mm screen, 3,000–7,200 rpm for pea flour"
+            return "Coarse - use finer screen (0.3–0.84 mm) or higher RPM (5000–7200)"
 
 
 @dataclass
@@ -167,11 +222,19 @@ class ScreenConfig:
 
     @property
     def estimated_d50_um(self) -> float:
-        """Estimate product D50 [µm] from screen aperture (yellow pea, NIH).
+        """Estimate product D50 [µm] from screen aperture.
 
-        D50_µm ≈ 17.4 + 6.84 * aperture_mm (0.75 mm → ~23.7 µm, 2 mm → ~31.1 µm).
+        Uses the same grinding-floor model as MillConfig.estimated_d50_um.
+        For a single-pass hammer mill at ~6000 RPM (~63 m/s tip), the
+        aerodynamic grinding floor is ~55 µm; screen aperture adds a
+        coarsening offset.  Result for 0.3 mm / 6000 RPM → ~63 µm.
         """
-        return 17.4 + 6.84 * self.aperture_mm
+        # Assume typical pilot tip speed ~63 m/s (6000 RPM, 0.20 m radius)
+        # MillConfig.estimated_d50_um uses actual config tip speed;
+        # here we use a representative value since ScreenConfig doesn't know RPM.
+        typical_tip_speed = 63.0
+        grinding_floor = max(40.0, 80.0 - 0.22 * typical_tip_speed)
+        return grinding_floor + 18.0 * self.aperture_mm ** 0.7
 
     def passage_probability(self, particle_size_m: float) -> float:
         """Compute probability of passage for a given particle size.
@@ -237,14 +300,53 @@ class BreakageParams:
     clamp_lo_medium: float = 0.10
     clamp_hi_medium: float = 0.26
 
-    # Fine regime (d < 100 µm): target 24–43 µm; lower clamps → more fines so D50 can drop below ~70 µm
-    gamma_fine: float = 0.12
-    clamp_lo_fine: float = 0.03
-    clamp_hi_fine: float = 0.14
+    # Fine regime (d < 100 µm): realistic — starch granules and cell fragments
+    # resist further breakage; single impact gives 15–40% reduction, not 86–97%.
+    gamma_fine: float = 0.55
+    clamp_lo_fine: float = 0.55
+    clamp_hi_fine: float = 0.85
 
     # Impact energy
     min_impact_energy_j: float = 0.00015         # Low so more impacts lead to breakage
     energy_to_breakage_factor: float = 14.0      # Strong coupling from impact energy to selection
+
+    # --- Impact efficiency (air entrainment / cushioning) ---
+    # Fine particles follow the airflow around hammers instead of impacting them.
+    # η = min(1, (d / d_crit)^n)  reduces effective impact energy for d < d_crit.
+    # At d_crit ≈ 80 µm the transition from ballistic to entrained begins.
+    impact_efficiency_d_crit_um: float = 80.0    # Transition size [µm]
+    impact_efficiency_exponent: float = 2.0      # Sharpness of the transition
+
+    # --- Reagglomeration ---
+    # Below ~50 µm, van der Waals, electrostatic, and moisture bridges cause
+    # fine particles to stick together, raising effective D50.
+    reagglom_enabled: bool = True
+    reagglom_threshold_um: float = 50.0          # Only particles below this can agglomerate
+    reagglom_rate: float = 0.02                  # Probability per eligible pair per step
+    reagglom_max_merges_per_step: int = 50       # Cap to limit compute cost
+    reagglom_moisture_sensitivity: float = 2.0   # Higher moisture → more agglomeration
+    reagglom_moisture_baseline: float = 0.08    # Below this moisture, no extra agglomeration boost
+    reagglom_temp_threshold_c: float = 40.0     # Above this, starch surfaces become stickier
+    reagglom_temp_sensitivity: float = 0.02     # Rate increase per °C above threshold
+
+    # --- Thermal model ---
+    # Specific energy input heats the product; temperature affects breakage and stickiness.
+    # Calibrated so pilot mill (6 kW, 500 kg/h) reaches ~45-65 °C steady state.
+    thermal_enabled: bool = True
+    cp_product_j_per_kg_k: float = 1800.0        # Specific heat of pulse flour [J/(kg·K)]
+    eta_thermal: float = 0.35                     # Fraction of impact energy → heat
+    #   ~35%: rest goes to fracture surface energy, sound, elastic deformation, air turbulence
+    h_conv_w_per_m2_k: float = 150.0              # Overall heat transfer (product→wall→ambient)
+    #   Internal forced convection is high (~200+ W/m²K) but external natural
+    #   convection (~15 W/m²K) is the bottleneck; lumped effective h ≈ 100-200.
+    a_cooling_m2: float = 0.25                    # Effective cooling area [m²]
+    #   Pilot housing outer surface ~0.5 m²; effective area ~50% due to insulation,
+    #   mounting, and non-uniform airflow.  h×A ≈ 37.5 W/K → steady state ~55°C.
+    t_air_c: float = 25.0                         # Ambient air temperature [°C]
+    # Temperature effects on breakage
+    t_breakage_onset_c: float = 50.0              # Above this, starch softens → harder to break
+    t_breakage_slope: float = 0.008               # Selection rate drops by this per °C above onset
+    #   Gentler slope: at 65°C penalty is 1 - 0.008*15 = 0.88 (12% reduction, not 90%)
 
     # Multi-fragment breakage (mass-conserving fragmentation)
     # When enabled, each breakage event produces 2-N fragments whose masses

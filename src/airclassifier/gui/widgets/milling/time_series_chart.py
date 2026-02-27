@@ -135,6 +135,7 @@ class TimeSeriesChart(QWidget):
     - Passed & Breakage (#/step)
     - Throughput (kg/h)
     - Power (kW)
+    - Temperature (°C)
     """
 
     cursor_moved = Signal(float, dict)
@@ -173,6 +174,7 @@ class TimeSeriesChart(QWidget):
         self._chart_per_step = _SingleScaleChart("Passed & Breakage", "#/step")
         self._chart_throughput = _SingleScaleChart("Throughput", "kg/h")
         self._chart_power = _SingleScaleChart("Power", "kW")
+        self._chart_temperature = _SingleScaleChart("Temperature", "°C")
 
         grid.addWidget(_wrap_scroll(self._chart_d50), 0, 0)
         grid.addWidget(_wrap_scroll(self._chart_holdup), 0, 1)
@@ -180,6 +182,7 @@ class TimeSeriesChart(QWidget):
         grid.addWidget(_wrap_scroll(self._chart_per_step), 1, 0)
         grid.addWidget(_wrap_scroll(self._chart_throughput), 1, 1)
         grid.addWidget(_wrap_scroll(self._chart_power), 1, 2)
+        grid.addWidget(_wrap_scroll(self._chart_temperature), 2, 0)
 
         layout.addLayout(grid)
 
@@ -200,6 +203,7 @@ class TimeSeriesChart(QWidget):
         breakage_values = [float(s.num_breakage_events) for s in sampled]
         throughput_values = [s.discharge_rate_kg_per_s * 3600 for s in sampled]
         power_values = [s.power_kw for s in sampled]
+        temp_values = [getattr(s, "product_temperature_c", 25.0) for s in sampled]
 
         self._series["d50"] = SeriesConfig("d50", d50_values, COLORS.KPI_SIZE, "µm", True, "left")
         self._series["holdup"] = SeriesConfig("Holdup", holdup_values, COLORS.MILLING_PRIMARY, "kg", True, "left")
@@ -208,6 +212,7 @@ class TimeSeriesChart(QWidget):
         self._series["breakage"] = SeriesConfig("Breakage", breakage_values, COLORS.WARNING, "#/step", True, "left")
         self._series["throughput"] = SeriesConfig("Throughput", throughput_values, COLORS.KPI_THROUGHPUT, "kg/h", True, "left")
         self._series["power"] = SeriesConfig("Power", power_values, COLORS.KPI_POWER, "kW", True, "left")
+        self._series["temperature"] = SeriesConfig("Temperature", temp_values, COLORS.KPI_TEMPERATURE, "°C", True, "left")
 
         self._chart_d50.set_data(self._time_values, {"d50": self._series["d50"]})
         self._chart_holdup.set_data(self._time_values, {"holdup": self._series["holdup"]})
@@ -218,6 +223,7 @@ class TimeSeriesChart(QWidget):
         })
         self._chart_throughput.set_data(self._time_values, {"throughput": self._series["throughput"]})
         self._chart_power.set_data(self._time_values, {"power": self._series["power"]})
+        self._chart_temperature.set_data(self._time_values, {"temperature": self._series["temperature"]})
 
     def clear(self) -> None:
         self._time_values = []
@@ -228,6 +234,7 @@ class TimeSeriesChart(QWidget):
         self._chart_per_step.clear()
         self._chart_throughput.clear()
         self._chart_power.clear()
+        self._chart_temperature.clear()
 
 
 class _TimeSeriesCanvas(QWidget):

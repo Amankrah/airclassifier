@@ -92,6 +92,19 @@ class MillingKPIDashboard(QFrame):
         self._power_card.clicked.connect(lambda: self.card_clicked.emit("power"))
         layout.addWidget(self._power_card)
 
+        # Temperature
+        self._temp_card = AnimatedKPICard(
+            title="Temperature",
+            unit="°C",
+            semantic_color=COLORS.KPI_TEMPERATURE,
+            precision=1,
+            show_sparkline=True,
+            show_delta=True,
+        )
+        self._temp_card.setToolTip("Product temperature in mill chamber (impact heating vs convective cooling)")
+        self._temp_card.clicked.connect(lambda: self.card_clicked.emit("temperature"))
+        layout.addWidget(self._temp_card)
+
         # Power gauge (optional compact view)
         self._power_gauge = RadialGaugeWidget(
             min_value=0,
@@ -110,6 +123,7 @@ class MillingKPIDashboard(QFrame):
         throughput: Optional[float] = None,
         d50: Optional[float] = None,
         power: Optional[float] = None,
+        temperature: Optional[float] = None,
         animate: bool = True,
     ):
         """Update KPI values.
@@ -118,6 +132,7 @@ class MillingKPIDashboard(QFrame):
             throughput: Throughput in kg/h
             d50: d50 in micrometers
             power: Power in kW
+            temperature: Product temperature in °C
             animate: Whether to animate value changes
         """
         if throughput is not None:
@@ -129,6 +144,9 @@ class MillingKPIDashboard(QFrame):
         if power is not None:
             self._power_card.set_value(power, animate=animate)
             self._power_gauge.set_value(power, animate=animate)
+
+        if temperature is not None:
+            self._temp_card.set_value(temperature, animate=animate)
 
     def update_from_state(self, state: Any, animate: bool = True):
         """Update from a MillingStepState object.
@@ -147,14 +165,16 @@ class MillingKPIDashboard(QFrame):
         else:
             d50 = state.d50_m * 1e6 if hasattr(state, "d50_m") else None
         power = state.power_kw if hasattr(state, "power_kw") else None
+        temperature = getattr(state, "product_temperature_c", None)
 
-        self.update_kpis(throughput=throughput, d50=d50, power=power, animate=animate)
+        self.update_kpis(throughput=throughput, d50=d50, power=power, temperature=temperature, animate=animate)
 
     def clear(self):
         """Reset all cards."""
         self._throughput_card.clear()
         self._d50_card.clear()
         self._power_card.clear()
+        self._temp_card.clear()
         self._power_gauge.set_value(0, animate=False)
 
     def show_gauge(self, show: bool = True):
