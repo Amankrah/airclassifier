@@ -99,7 +99,9 @@ if WARP_AVAILABLE:
         if size > aperture:
             return  # Too large to pass
 
-        # Passage probability (match NumPy: below threshold = full; above = quadratic taper)
+        # Passage probability: below threshold = full; above = steep (1-t)^4 taper.
+        # Steeper than quadratic: near-aperture particles are strongly retained for
+        # further breakage, matching real hammer-mill screen selectivity.
         size_ratio = size / aperture
         span = 1.0 - size_ratio_threshold
         if span < 0.01:
@@ -108,9 +110,10 @@ if WARP_AVAILABLE:
             size_prob = 1.0
         else:
             t = (size_ratio - size_ratio_threshold) / span
-            size_prob = 1.0 - t * t
-            if size_prob < 0.0:
-                size_prob = 0.0
+            one_minus_t = 1.0 - t
+            if one_minus_t < 0.0:
+                one_minus_t = 0.0
+            size_prob = one_minus_t * one_minus_t * one_minus_t * one_minus_t
 
         # Velocity factor (very fast particles may not have time to pass)
         speed = wp.length(vel)
@@ -229,13 +232,15 @@ def screen_passage_np(
     if n_candidates == 0:
         return passage_flags
 
-    # Passage probability (only for candidates). Below threshold = full prob; above = taper (retain coarse for breakage).
+    # Passage probability (only for candidates). Below threshold = full prob;
+    # above = steep (1-t)^4 taper (retain coarse for further breakage).
     size_ratio = sizes[in_zone] / aperture
     span = max(0.01, 1.0 - size_ratio_threshold)
+    t = np.clip((size_ratio - size_ratio_threshold) / span, 0.0, 1.0)
     size_prob = np.where(
         size_ratio <= size_ratio_threshold,
         1.0,
-        np.maximum(0.0, 1.0 - ((size_ratio - size_ratio_threshold) / span) ** 2),
+        (1.0 - t) ** 4,
     )
 
     speed = np.linalg.norm(velocities[in_zone], axis=1)

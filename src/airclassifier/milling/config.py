@@ -60,7 +60,7 @@ class MillConfig:
     screen_thickness_m: float = 0.003            # Screen plate thickness
     screen_aperture_mm: float = 0.75              # Hole size [mm]; 0.75–0.84 mm fine, up to 2 mm
     screen_open_area: float = 0.40               # Open area fraction (0-1)
-    screen_size_ratio_threshold: float = 0.06     # Passage: below d/aperture = full; above = taper (retain coarse for breakage)
+    screen_size_ratio_threshold: float = 0.15     # Passage: below d/aperture = full; above = (1-t)^4 taper
 
     # --- Housing ---
     housing_inner_radius_m: float = 0.20         # Casing inner radius
@@ -91,7 +91,7 @@ class MillConfig:
 
     # --- Screen detection ---
     screen_zone_tolerance_m: float = 0.03    # Radial tolerance for screen proximity [m]
-    velocity_passage_threshold_m_per_s: float = 5.0  # Speed above which screen passage drops
+    velocity_passage_threshold_m_per_s: float = 80.0  # Speed above which screen passage drops (centrifugal force assists passage)
 
     # --- Machine envelope ---
     machine_height_m: float = 0.80
@@ -207,9 +207,9 @@ class ScreenConfig:
     hole_shape: str = "round"                    # "round", "square", "slotted"
 
     # Passage model parameters (for protein separation: favor fine particles passing)
-    passage_probability_factor: float = 1.0      # Tuning factor for passage rate
-    # Below this ratio (d/aperture), passage prob is max; above, it tapers. Lower = finer discharge D50 (protein separation).
-    size_ratio_threshold: float = 0.06           # 0.06 → particles < ~45 µm pass easily (0.75 mm); coarser retained for breakage
+    passage_probability_factor: float = 0.1       # ~50 real screen encounters/s vs 500 timesteps/s
+    # Below this ratio (d/aperture), passage prob is max; above, steep (1-t)^4 taper.
+    size_ratio_threshold: float = 0.15           # 0.15 → particles < ~112 µm pass easily (0.75 mm); coarser retained for breakage
 
     # Screen wear
     wear_factor: float = 1.0                     # 1.0 = new, increases with wear
@@ -259,9 +259,10 @@ class ScreenConfig:
             # High probability of passage for small particles
             return self.passage_probability_factor * self.open_area
         else:
-            # Decreasing probability as size approaches aperture
+            # Steep (1-t)^4 taper: near-aperture particles retained for further breakage
             t = (ratio - self.size_ratio_threshold) / (1.0 - self.size_ratio_threshold)
-            return self.passage_probability_factor * self.open_area * (1.0 - t * t)
+            t = min(1.0, max(0.0, t))
+            return self.passage_probability_factor * self.open_area * (1.0 - t) ** 4
 
 
 @dataclass
@@ -287,12 +288,12 @@ class BreakageParams:
 
     # Selection function: S(d) = k * (d / d_ref)^alpha
     # Tuned so discharge D50 reaches 24–43 µm (NIH protein separation). Run 5–10 s for steady state.
-    selection_rate_constant: float = 1.0        # k: cap 1.0 — most impacted particles break
+    selection_rate_constant: float = 0.6        # k: 60% base — not every impact breaks the particle
     selection_size_exponent: float = 1.4          # alpha: larger particles break more easily
-    selection_reference_size_um: float = 100.0   # d_ref: 100 µm+ break readily
+    selection_reference_size_um: float = 300.0   # d_ref: particles ≥300 µm break readily; smaller resist (NIH-calibrated)
 
     # Breakage function: Gaudin–Schuhmann; lower gamma → smaller daughters per break.
-    breakage_distribution_exponent: float = 0.26  # gamma medium — very aggressive for fine flour
+    breakage_distribution_exponent: float = 0.65  # gamma medium — 2.5× reduction per impact (realistic for hammer mill)
 
     # --- Size-dependent breakage regimes (legume comminution) ---
     regime_coarse_threshold_m: float = 1.0e-3    # Above = coarse
@@ -303,9 +304,9 @@ class BreakageParams:
     clamp_lo_coarse: float = 0.30
     clamp_hi_coarse: float = 0.60
 
-    # Medium regime (100 µm–1 mm): strong size reduction
-    clamp_lo_medium: float = 0.10
-    clamp_hi_medium: float = 0.26
+    # Medium regime (100 µm–1 mm): moderate size reduction per impact (1.8-3.3× ratio)
+    clamp_lo_medium: float = 0.30
+    clamp_hi_medium: float = 0.55
 
     # Fine regime (d < 100 µm): realistic — starch granules and cell fragments
     # resist further breakage; single impact gives 15–40% reduction, not 86–97%.
@@ -315,7 +316,7 @@ class BreakageParams:
 
     # Impact energy
     min_impact_energy_j: float = 0.00015         # Low so more impacts lead to breakage
-    energy_to_breakage_factor: float = 14.0      # Strong coupling from impact energy to selection
+    energy_to_breakage_factor: float = 8.0       # Moderate coupling from impact energy to selection
 
     # --- Impact efficiency (air entrainment / cushioning) ---
     # Fine particles follow the airflow around hammers instead of impacting them.
@@ -366,7 +367,7 @@ class BreakageParams:
     # sum exactly to the parent mass. The existing kernel computes the primary
     # daughter; secondary fragments are generated as a CPU post-processing step.
     enable_multi_fragment: bool = True
-    max_fragments_per_event: int = 6             # N_max: hard cap on total fragments per event
+    max_fragments_per_event: int = 4             # N_max: hard cap on total fragments per event
     fragment_count_coefficient: float = 2.0      # C_n: base coefficient for fragment count
     fragment_count_size_exp: float = 0.5         # alpha_n: size-ratio exponent for fragment count
     fragment_count_energy_exp: float = 0.3       # beta_n: energy exponent for fragment count
