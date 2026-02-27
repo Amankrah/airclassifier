@@ -130,22 +130,30 @@ DEFAULT_RECIPES = {
         feed_rate_kg_per_hr=400,
     ),
     2: MillRecipe(
-        name="Fine Flour (0.84 mm, ~98 µm)",
+        name="Fine flour",
         recipe_number=2,
+        rotor_rpm=3500,
+        screen_aperture_mm=0.75,
+        feed_rate_kg_per_hr=400,
+        run_duration_s=10.0,       # Longer run for more fines / steady-state D50
+    ),
+    3: MillRecipe(
+        name="Fine Flour (0.84 mm, ~98 µm)",
+        recipe_number=3,
         rotor_rpm=5400,            # ~102 m/s tip speed for 0.18 m tip radius; low starch damage (ResearchGate)
         screen_aperture_mm=0.84,
         feed_rate_kg_per_hr=400,
     ),
-    3: MillRecipe(
+    4: MillRecipe(
         name="Medium Flour",
-        recipe_number=3,
+        recipe_number=4,
         rotor_rpm=3000,
         screen_aperture_mm=1.0,
         feed_rate_kg_per_hr=500,
     ),
-    4: MillRecipe(
+    5: MillRecipe(
         name="Large particle flour",
-        recipe_number=4,
+        recipe_number=5,
         rotor_rpm=2500,
         screen_aperture_mm=2.0,     # NIH: D50 ~31.1 µm (d10 ~8.8, d90 ~296 µm)
         feed_rate_kg_per_hr=600,

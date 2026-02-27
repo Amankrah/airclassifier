@@ -963,6 +963,16 @@ class AssemblyConfigDialog(QDialog):
         self.mill_screen_open_area_spin.setSingleStep(0.05)
         f.addRow("Open area fraction:", self.mill_screen_open_area_spin)
 
+        self.mill_screen_size_ratio_threshold_spin = QDoubleSpinBox()
+        self.mill_screen_size_ratio_threshold_spin.setRange(0.02, 0.50)
+        self.mill_screen_size_ratio_threshold_spin.setValue(0.06)
+        self.mill_screen_size_ratio_threshold_spin.setDecimals(3)
+        self.mill_screen_size_ratio_threshold_spin.setSingleStep(0.01)
+        self.mill_screen_size_ratio_threshold_spin.setToolTip(
+            "Passage: below this ratio (size/aperture) = full; above = taper. Lower = finer discharge."
+        )
+        f.addRow("Size ratio threshold:", self.mill_screen_size_ratio_threshold_spin)
+
         self.mill_screen_inner_radius_spin = QDoubleSpinBox()
         self.mill_screen_inner_radius_spin.setRange(0.05, 0.50)
         self.mill_screen_inner_radius_spin.setValue(0.188)
@@ -1107,6 +1117,7 @@ class AssemblyConfigDialog(QDialog):
             # Milling — Screen
             "mill_screen_aperture_mm": self.mill_screen_aperture_spin.value(),
             "mill_screen_open_area": self.mill_screen_open_area_spin.value(),
+            "mill_screen_size_ratio_threshold": self.mill_screen_size_ratio_threshold_spin.value(),
             "mill_screen_inner_radius_m": self.mill_screen_inner_radius_spin.value(),
             "mill_screen_thickness_m": self.mill_screen_thickness_spin.value(),
             # Milling — Housing
@@ -1183,6 +1194,7 @@ class AssemblyConfigDialog(QDialog):
             "mill_hammer_clearance_m": self.mill_hammer_clearance_spin,
             "mill_screen_aperture_mm": self.mill_screen_aperture_spin,
             "mill_screen_open_area": self.mill_screen_open_area_spin,
+            "mill_screen_size_ratio_threshold": self.mill_screen_size_ratio_threshold_spin,
             "mill_screen_inner_radius_m": self.mill_screen_inner_radius_spin,
             "mill_screen_thickness_m": self.mill_screen_thickness_spin,
             "mill_housing_inner_radius_m": self.mill_housing_inner_radius_spin,

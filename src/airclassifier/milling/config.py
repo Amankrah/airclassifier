@@ -60,6 +60,7 @@ class MillConfig:
     screen_thickness_m: float = 0.003            # Screen plate thickness
     screen_aperture_mm: float = 0.75              # Hole size [mm]; 0.75–0.84 mm fine, up to 2 mm
     screen_open_area: float = 0.40               # Open area fraction (0-1)
+    screen_size_ratio_threshold: float = 0.06     # Passage: below d/aperture = full; above = taper (retain coarse for breakage)
 
     # --- Housing ---
     housing_inner_radius_m: float = 0.20         # Casing inner radius
@@ -236,10 +237,10 @@ class BreakageParams:
     clamp_lo_medium: float = 0.10
     clamp_hi_medium: float = 0.26
 
-    # Fine regime (d < 100 µm): target 24–43 µm discharge; lower clamps → more fines per break
-    gamma_fine: float = 0.14
-    clamp_lo_fine: float = 0.04
-    clamp_hi_fine: float = 0.18
+    # Fine regime (d < 100 µm): target 24–43 µm; lower clamps → more fines so D50 can drop below ~70 µm
+    gamma_fine: float = 0.12
+    clamp_lo_fine: float = 0.03
+    clamp_hi_fine: float = 0.14
 
     # Impact energy
     min_impact_energy_j: float = 0.00015         # Low so more impacts lead to breakage

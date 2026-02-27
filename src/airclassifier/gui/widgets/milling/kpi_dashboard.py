@@ -68,14 +68,15 @@ class MillingKPIDashboard(QFrame):
         self._throughput_card.clicked.connect(lambda: self.card_clicked.emit("throughput"))
         layout.addWidget(self._throughput_card)
 
-        # d50
+        # d50 (live shows recent 1s when available so value can drop as product gets finer)
         self._d50_card = AnimatedKPICard(
-            title="d50",
-            unit="um",
+            title="d50 (1s)",
+            unit="µm",
             semantic_color=COLORS.KPI_SIZE,
             show_sparkline=True,
             show_delta=True,
         )
+        self._d50_card.setToolTip("Median size of discharge in last 1 s (current product). Cumulative in results.")
         self._d50_card.clicked.connect(lambda: self.card_clicked.emit("d50"))
         layout.addWidget(self._d50_card)
 
@@ -132,15 +133,19 @@ class MillingKPIDashboard(QFrame):
     def update_from_state(self, state: Any, animate: bool = True):
         """Update from a MillingStepState object.
 
-        Args:
-            state: MillingStepState with discharge_rate_kg_per_s, d50_m, power_kw
-            animate: Whether to animate changes
+        Uses d50_recent_m (last 1 s) when available so the live value reflects
+        current product and can decrease as milling gets finer; otherwise uses cumulative d50_m.
         """
         if state is None:
             return
 
         throughput = state.discharge_rate_kg_per_s * 3600 if hasattr(state, "discharge_rate_kg_per_s") else None
-        d50 = state.d50_m * 1e6 if hasattr(state, "d50_m") else None
+        # Prefer recent-window D50 so user sees if current discharge is getting finer
+        d50_recent_m = getattr(state, "d50_recent_m", 0.0)
+        if d50_recent_m > 0:
+            d50 = d50_recent_m * 1e6
+        else:
+            d50 = state.d50_m * 1e6 if hasattr(state, "d50_m") else None
         power = state.power_kw if hasattr(state, "power_kw") else None
 
         self.update_kpis(throughput=throughput, d50=d50, power=power, animate=animate)

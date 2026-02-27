@@ -66,10 +66,11 @@ class ScreenClassifier:
     # Random state
     _rng: Optional[np.random.Generator] = None
 
-    # Discharge buffer
+    # Discharge buffer (sizes/masses in m/kg; times = sim time when particle passed)
     _discharged_sizes: List[float] = field(default_factory=list)
     _discharged_masses: List[float] = field(default_factory=list)
     _discharged_residence_times: List[float] = field(default_factory=list)
+    _discharged_times: List[float] = field(default_factory=list)  # simulation time_s when passed
 
     # Statistics
     _stats: ScreenStats = field(default_factory=ScreenStats)
@@ -89,6 +90,7 @@ class ScreenClassifier:
         sizes: np.ndarray,
         masses: np.ndarray,
         residence_times: Optional[np.ndarray] = None,
+        discharge_time_s: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Test particles for screen passage.
 
@@ -98,6 +100,7 @@ class ScreenClassifier:
             sizes: Particle sizes [n]
             masses: Particle masses [n]
             residence_times: Particle residence times [n] (optional)
+            discharge_time_s: Simulation time when this step's discharge occurs (for recent-window D50)
 
         Returns:
             (retained_pos, retained_vel, retained_sizes, retained_masses, passage_flags)
@@ -112,10 +115,13 @@ class ScreenClassifier:
 
         # Add discharged to buffer
         passed_mask = passage_flags == 1
+        n_passed = int(passed_mask.sum())
         self._discharged_sizes.extend(sizes[passed_mask].tolist())
         self._discharged_masses.extend(masses[passed_mask].tolist())
         if residence_times is not None:
             self._discharged_residence_times.extend(residence_times[passed_mask].tolist())
+        if discharge_time_s is not None and n_passed > 0:
+            self._discharged_times.extend([discharge_time_s] * n_passed)
 
         # Return retained particles
         retained_mask = ~passed_mask
@@ -288,6 +294,38 @@ class ScreenClassifier:
 
         return float(d10), float(d50), float(d90)
 
+    def get_d_values_recent(
+        self,
+        current_time_s: float,
+        time_window_s: float = 1.0,
+    ) -> Tuple[float, float, float]:
+        """D10, D50, D90 of discharge in the last time_window_s (instantaneous trend).
+
+        Use this to see if *current* product is getting finer; cumulative D50 can
+        appear stuck because early coarse mass dominates.
+        """
+        if not self._discharged_times or time_window_s <= 0:
+            return 0.0, 0.0, 0.0
+        cutoff = current_time_s - time_window_s
+        mask = np.array(self._discharged_times) >= cutoff
+        n = int(mask.sum())
+        if n == 0:
+            return 0.0, 0.0, 0.0
+        sizes = np.array(self._discharged_sizes)[mask]
+        masses = np.array(self._discharged_masses)[mask]
+        idx = np.argsort(sizes)
+        sizes = sizes[idx]
+        masses = masses[idx]
+        cumsum = np.cumsum(masses)
+        total = cumsum[-1]
+        if total <= 0:
+            return 0.0, 0.0, 0.0
+        cumsum /= total
+        d10 = float(np.interp(0.10, cumsum, sizes))
+        d50 = float(np.interp(0.50, cumsum, sizes))
+        d90 = float(np.interp(0.90, cumsum, sizes))
+        return d10, d50, d90
+
     def get_mean_residence_time(self) -> float:
         """Compute mean residence time of discharged particles.
 
@@ -303,6 +341,7 @@ class ScreenClassifier:
         self._discharged_sizes.clear()
         self._discharged_masses.clear()
         self._discharged_residence_times.clear()
+        self._discharged_times.clear()
 
     @classmethod
     def from_config(
@@ -322,9 +361,13 @@ class ScreenClassifier:
             Configured ScreenClassifier
         """
         if screen_config is None:
+            size_ratio_threshold = getattr(
+                config, "screen_size_ratio_threshold", 0.06
+            )
             screen_config = ScreenConfig(
                 aperture_mm=config.screen_aperture_mm,
                 open_area=config.screen_open_area,
+                size_ratio_threshold=size_ratio_threshold,
             )
 
         return cls(

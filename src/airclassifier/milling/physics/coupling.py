@@ -100,10 +100,14 @@ class MillingStepState:
     num_passed_screen: int = 0
     screen_passage_rate: float = 0.0
 
-    # PSD (d10, d50, d90 in meters)
+    # PSD (d10, d50, d90 in meters) — cumulative discharge this run
     d10_m: float = 0.0
     d50_m: float = 0.0
     d90_m: float = 0.0
+    # Recent-window PSD (e.g. last 1 s) so live display shows if current product is getting finer
+    d10_recent_m: float = 0.0
+    d50_recent_m: float = 0.0
+    d90_recent_m: float = 0.0
 
     # Power
     power_kw: float = 0.0
@@ -363,7 +367,7 @@ class CoupledMillingEngine:
         break_flags = self._breakage_step(impact_flags, impact_energies)
 
         # --- 5. SCREEN ---
-        num_discharged = self._screen_step()
+        num_discharged = self._screen_step(dt)
 
         # --- 6. DISCHARGE ---
         # (handled in screen step)
@@ -378,6 +382,10 @@ class CoupledMillingEngine:
 
         # Get PSD stats (cumulative discharge product; sizes in meters)
         d10, d50, d90 = self.screen_classifier.get_d_values()
+        # Recent-window (last 1 s) so UI can show if current product is getting finer
+        d10_recent, d50_recent, d90_recent = self.screen_classifier.get_d_values_recent(
+            self.time_s, time_window_s=1.0
+        )
         aperture_m = self.screen_classifier.config.aperture_m
         # Sanity: discharge D50 cannot exceed screen aperture (only size <= aperture can pass)
         if d50 > 0 and aperture_m > 0 and d50 > aperture_m * 1.01:
@@ -414,6 +422,9 @@ class CoupledMillingEngine:
             d10_m=d10,
             d50_m=d50,
             d90_m=d90,
+            d10_recent_m=d10_recent,
+            d50_recent_m=d50_recent,
+            d90_recent_m=d90_recent,
             power_kw=total_power,
         )
 
@@ -699,8 +710,11 @@ class CoupledMillingEngine:
 
         return break_flags
 
-    def _screen_step(self) -> int:
+    def _screen_step(self, dt: float) -> int:
         """Test screen passage and discharge.
+
+        Args:
+            dt: Timestep [s] (used for discharge_time_s for recent-window D50).
 
         Returns:
             Number of particles discharged
@@ -717,6 +731,8 @@ class CoupledMillingEngine:
             velocities=self.particles.velocities,
             sizes=self.particles.sizes,
             masses=self.particles.masses,
+            residence_times=getattr(self.particles, "residence_times", None),
+            discharge_time_s=self.time_s + dt,
         )
 
         num_discharged = int(passage_flags.sum())

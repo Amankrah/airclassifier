@@ -8,7 +8,7 @@ grouped recipe controls and status display.
 
 from __future__ import annotations
 
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -21,6 +21,11 @@ from PySide6.QtWidgets import (
 )
 
 from ...theme import COLORS, ANIMATIONS
+
+try:
+    from airclassifier.milling.control.recipe import DEFAULT_RECIPES
+except ImportError:
+    DEFAULT_RECIPES = {}
 
 
 class MillingControlPanel(QFrame):
@@ -240,6 +245,38 @@ class MillingControlPanel(QFrame):
         layout.setContentsMargins(12, 16, 12, 12)
         layout.setSpacing(12)
 
+        # Recipe preset dropdown
+        preset_row = QFormLayout()
+        self._preset_combo = QComboBox()
+        self._preset_combo.addItem("Manual (current)")
+        self._preset_recipes: List[Dict[str, Any]] = []
+        for _k in sorted(DEFAULT_RECIPES.keys()):
+            r = DEFAULT_RECIPES[_k]
+            self._preset_combo.addItem(r.name)
+            self._preset_recipes.append({
+                "rotor_rpm": int(r.rotor_rpm),
+                "screen_aperture_mm": r.screen_aperture_mm,
+                "feed_rate_kg_per_hr": r.feed_rate_kg_per_hr,
+                "duration_s": r.run_duration_s,
+            })
+        self._preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        preset_row.addRow("Preset:", self._preset_combo)
+        layout.addLayout(preset_row)
+
+        # Build preset combo stylesheet (same as term_mode_combo later)
+        self._preset_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {COLORS.BG_DARKEST};
+                border: 1px solid {COLORS.BORDER_SUBTLE};
+                border-radius: 4px;
+                padding: 4px 24px 4px 8px;
+                color: {COLORS.TEXT_PRIMARY};
+                min-height: 24px;
+            }}
+            QComboBox:hover {{ border-color: {COLORS.MILLING_PRIMARY}; background: {COLORS.BG_SURFACE}; }}
+            QComboBox:focus {{ border-color: {COLORS.MILLING_PRIMARY}; }}
+        """)
+
         # RPM with slider
         rpm_row = QVBoxLayout()
         rpm_header = QHBoxLayout()
@@ -452,6 +489,17 @@ class MillingControlPanel(QFrame):
         layout.addLayout(form)
 
         return group
+
+    def _on_preset_changed(self, index: int):
+        """Load preset recipe when user selects a preset (index 0 = Manual)."""
+        if index <= 0 or index - 1 >= len(self._preset_recipes):
+            return
+        preset = self._preset_recipes[index - 1].copy()
+        # Preset has duration_s; get_recipe uses duration_s for time-based mode
+        self._preset_combo.blockSignals(True)
+        self.set_recipe(preset)
+        self._preset_combo.blockSignals(False)
+        self._emit_recipe()
 
     def _on_term_mode_changed(self, index: int):
         """Handle termination mode selection change."""
