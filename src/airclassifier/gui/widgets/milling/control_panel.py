@@ -314,9 +314,7 @@ class MillingControlPanel(QFrame):
                 border-radius: 3px;
             }}
         """)
-        self._rpm_slider.valueChanged.connect(
-            lambda v: self._rpm_value.setText(str(v))
-        )
+        self._rpm_slider.valueChanged.connect(self._on_rpm_changed)
         rpm_row.addWidget(self._rpm_slider)
         layout.addLayout(rpm_row)
 
@@ -534,28 +532,41 @@ class MillingControlPanel(QFrame):
 
         self._emit_recipe()
 
+    def _on_rpm_changed(self, value: int):
+        """Handle RPM slider change — update label and refresh D50 estimate."""
+        self._rpm_value.setText(str(value))
+        # D50 depends on tip speed, so re-evaluate when RPM changes
+        self._on_aperture_changed(self._aperture_slider.value())
+
+    def _get_hammer_tip_speed(self) -> float:
+        """Compute hammer tip speed from current RPM and default geometry."""
+        import math
+        rpm = self._rpm_slider.value()
+        # Default MillConfig geometry: rotor_diameter=0.20, hammer_length=0.08
+        tip_radius = 0.10 + 0.08  # rotor_radius + hammer_length
+        return tip_radius * rpm * 2.0 * math.pi / 60.0
+
     def _on_aperture_changed(self, value: int):
-        """Handle aperture slider change - update D50 estimate with grinding-floor model."""
+        """Handle aperture slider change - update D50 estimate using config model."""
+        from airclassifier.milling.config import ScreenConfig
         aperture_mm = value / 100.0
         self._aperture_value.setText(f"{aperture_mm:.2f} mm")
 
-        # Grinding-floor model: single-pass hammer mill aerodynamic limit ~55 µm at 6000 RPM
-        # Matches MillConfig/ScreenConfig.estimated_d50_um
-        typical_tip_speed = 63.0  # ~6000 RPM, 0.20 m radius
-        grinding_floor = max(40.0, 80.0 - 0.22 * typical_tip_speed)
-        d50_um = grinding_floor + 18.0 * aperture_mm ** 0.7
+        # Use the canonical D50 model with actual tip speed from RPM slider
+        sc = ScreenConfig(aperture_mm=aperture_mm)
+        d50_um = sc.estimated_d50_um_at_tip_speed(self._get_hammer_tip_speed())
 
-        if d50_um <= 45:
-            quality = "Near grinding limit, good for protein separation"
+        if d50_um <= 25:
+            quality = "Excellent for protein separation"
             color = COLORS.SUCCESS
-        elif d50_um <= 70:
+        elif d50_um <= 35:
             quality = "Good for starch/protein fractionation"
             color = COLORS.ACCENT
-        elif d50_um <= 100:
+        elif d50_um <= 50:
             quality = "Moderate - consider finer screen or higher RPM"
             color = COLORS.WARNING
         else:
-            quality = "Coarse - use 0.3–0.84 mm screen, 5000–7200 RPM"
+            quality = "Coarse - use 0.3-0.84 mm screen, 5000-7200 RPM"
             color = COLORS.DANGER
 
         self._d50_hint.setText(f"D50 ~{d50_um:.0f} µm • {quality}")

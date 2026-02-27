@@ -53,12 +53,16 @@ class ScreenClassifier:
     # Screen configuration
     config: ScreenConfig = field(default_factory=ScreenConfig)
 
-    # Screen geometry (from housing/screen geometry)
-    screen_radius: float = 0.21
+    # Screen geometry (from housing/screen geometry; defaults match MillConfig)
+    screen_radius: float = 0.188         # screen_inner_radius_m from config
     screen_start_angle: float = math.pi  # Start at -Y (bottom)
     screen_arc_angle: float = math.pi    # 180 degrees
     screen_x_start: float = 0.05
     screen_x_end: float = 0.35
+
+    # Detection parameters (from MillConfig)
+    screen_tolerance: float = 0.03       # Radial tolerance for proximity [m]
+    velocity_threshold: float = 5.0      # Speed above which passage drops [m/s]
 
     # Device
     device: str = "cpu"
@@ -156,6 +160,8 @@ class ScreenClassifier:
             passage_factor=self.config.passage_probability_factor,
             size_ratio_threshold=self.config.size_ratio_threshold,
             rng=self._rng,
+            screen_tolerance=self.screen_tolerance,
+            velocity_threshold=self.velocity_threshold,
         )
 
     def _test_passage_warp(
@@ -197,6 +203,8 @@ class ScreenClassifier:
             open_area=self.config.open_area,
             passage_factor=self.config.passage_probability_factor,
             size_ratio_threshold=self.config.size_ratio_threshold,
+            screen_tolerance=self.screen_tolerance,
+            velocity_threshold=self.velocity_threshold,
         )
 
         return self._wp_passage_flags.numpy()
@@ -370,12 +378,16 @@ class ScreenClassifier:
                 size_ratio_threshold=size_ratio_threshold,
             )
 
+        # X extent: screen starts at end-plate margin and spans rotor length
+        margin = 0.04  # Same end-plate margin as impact solver
         return cls(
             config=screen_config,
             screen_radius=config.screen_inner_radius_m,
             screen_start_angle=math.pi,
             screen_arc_angle=math.radians(config.screen_arc_angle_deg),
-            screen_x_start=0.05,
-            screen_x_end=0.05 + config.rotor_length_m,
+            screen_x_start=margin,
+            screen_x_end=margin + config.rotor_length_m,
+            screen_tolerance=config.screen_zone_tolerance_m,
+            velocity_threshold=config.velocity_passage_threshold_m_per_s,
             device=device,
         )

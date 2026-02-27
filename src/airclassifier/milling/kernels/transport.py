@@ -52,6 +52,10 @@ if WARP_AVAILABLE:
         dt: float,
         gravity: float,
         drag_coeff: float,
+        wall_restitution_radial: float,
+        wall_restitution_endwall: float,
+        centrifugal_coupling: float,
+        shaft_radius: float,
     ):
         """Advect particles in the mill chamber.
 
@@ -89,12 +93,12 @@ if WARP_AVAILABLE:
         # Particles near the rotor get thrown outward
         # Radial distance from shaft (Y-Z plane)
         r_yz = wp.sqrt(pos[1] * pos[1] + pos[2] * pos[2])
-        if r_yz > 0.05:  # Only if not at shaft center
+        if r_yz > shaft_radius:  # Only if outside shaft exclusion zone
             # Radial unit vector
             r_hat = wp.vec3(0.0, pos[1] / r_yz, pos[2] / r_yz)
             # Centrifugal acceleration ~ omega^2 * r (scaled by proximity to rotor)
             proximity_factor = wp.max(0.0, 1.0 - r_yz / chamber_radius)
-            centrifugal_accel = rotor_omega * rotor_omega * r_yz * proximity_factor * 0.1
+            centrifugal_accel = rotor_omega * rotor_omega * r_yz * proximity_factor * centrifugal_coupling
             f_centrifugal = r_hat * (mass * centrifugal_accel)
         else:
             f_centrifugal = wp.vec3(0.0, 0.0, 0.0)
@@ -115,29 +119,30 @@ if WARP_AVAILABLE:
         y = new_pos[1]
         z = new_pos[2]
 
-        # X bounds (along rotor)
+        # X bounds (along rotor) — reflect with endwall restitution
+        # Formula: v_new = -(e) * v_old, implemented as v *= -(e)
         x_min = 0.0
         x_max = chamber_length
         if x < x_min:
             x = x_min
-            new_vel = wp.vec3(-new_vel[0] * 0.3, new_vel[1], new_vel[2])
+            new_vel = wp.vec3(-new_vel[0] * wall_restitution_endwall, new_vel[1], new_vel[2])
         elif x > x_max:
             x = x_max
-            new_vel = wp.vec3(-new_vel[0] * 0.3, new_vel[1], new_vel[2])
+            new_vel = wp.vec3(-new_vel[0] * wall_restitution_endwall, new_vel[1], new_vel[2])
 
-        # Radial bound (Y-Z plane)
+        # Radial bound (Y-Z plane) — reflect with (1+e) restitution model
         r = wp.sqrt(y * y + z * z)
         if r > chamber_radius:
             # Push back to boundary
             scale = chamber_radius / r
             y = y * scale
             z = z * scale
-            # Reflect radial velocity
+            # Reflect radial velocity: v_new = v - (1+e)*n*(v·n)
             if r > 1e-6:
                 r_hat = wp.vec3(0.0, y / r, z / r)
                 v_radial = wp.dot(new_vel, r_hat)
                 if v_radial > 0.0:
-                    new_vel = new_vel - r_hat * (v_radial * 1.3)  # Bounce
+                    new_vel = new_vel - r_hat * (v_radial * (1.0 + wall_restitution_radial))
 
         new_pos = wp.vec3(x, y, z)
 
@@ -159,6 +164,10 @@ def transport_step_warp(
     dt: float,
     gravity: float = GRAVITY,
     drag_coeff: float = 0.44,
+    wall_restitution_radial: float = 0.3,
+    wall_restitution_endwall: float = 0.3,
+    centrifugal_coupling: float = 0.1,
+    shaft_radius: float = 0.025,
 ):
     """Launch the transport step kernel.
 
@@ -174,6 +183,10 @@ def transport_step_warp(
         dt: Timestep [s]
         gravity: Gravitational acceleration [m/s^2]
         drag_coeff: Drag coefficient
+        wall_restitution_radial: CoR for radial wall bounce (0-1)
+        wall_restitution_endwall: CoR for endwall bounce (0-1)
+        centrifugal_coupling: Fraction of centrifugal force felt by particles
+        shaft_radius: Shaft exclusion radius [m]
     """
     n = positions.shape[0]
     wp.launch(
@@ -182,6 +195,8 @@ def transport_step_warp(
         inputs=[
             positions, velocities, sizes, masses, residence_times,
             chamber_radius, chamber_length, rotor_omega, dt, gravity, drag_coeff,
+            wall_restitution_radial, wall_restitution_endwall,
+            centrifugal_coupling, shaft_radius,
         ],
     )
 
@@ -204,6 +219,10 @@ def transport_step_np(
     dt: float,
     gravity: float = GRAVITY,
     drag_coeff: float = 0.44,
+    wall_restitution_radial: float = 0.3,
+    wall_restitution_endwall: float = 0.3,
+    centrifugal_coupling: float = 0.1,
+    shaft_radius: float = 0.025,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Vectorized NumPy implementation of transport step.
 
@@ -249,13 +268,13 @@ def transport_step_np(
     yz_sq = positions[:, 1] ** 2 + positions[:, 2] ** 2
     yz_sq = np.minimum(yz_sq, _MAX_POS_R * _MAX_POS_R)
     r_yz = np.sqrt(yz_sq)
-    cent_mask = active & (r_yz > 0.05)
+    cent_mask = active & (r_yz > shaft_radius)
     r_hat = np.zeros_like(positions)
     r_yz_safe = np.where(r_yz > 1e-10, r_yz, 1e-10)
     r_hat[cent_mask, 1] = positions[cent_mask, 1] / r_yz_safe[cent_mask]
     r_hat[cent_mask, 2] = positions[cent_mask, 2] / r_yz_safe[cent_mask]
     proximity = np.maximum(0.0, 1.0 - r_yz / np.maximum(chamber_radius, 1e-10))
-    cent_accel = rotor_omega ** 2 * r_yz * proximity * 0.1
+    cent_accel = rotor_omega ** 2 * r_yz * proximity * centrifugal_coupling
     f_cent = r_hat * (masses * cent_accel)[:, None]
 
     # --- Total force → acceleration → Euler integration ---
@@ -276,9 +295,9 @@ def transport_step_np(
     x_lo = new_pos[:, 0] < 0
     x_hi = new_pos[:, 0] > chamber_length
     new_pos[x_lo, 0] = 0.0
-    new_vel[x_lo, 0] *= -0.3
+    new_vel[x_lo, 0] *= -wall_restitution_endwall
     new_pos[x_hi, 0] = chamber_length
-    new_vel[x_hi, 0] *= -0.3
+    new_vel[x_hi, 0] *= -wall_restitution_endwall
 
     # --- Radial boundary (safe r to avoid overflow in sqrt) ---
     yz_sq_new = new_pos[:, 1] ** 2 + new_pos[:, 2] ** 2
@@ -305,7 +324,7 @@ def transport_step_np(
         idx = np.where(reflect)[0][outward]
         if len(idx) > 0:
             v_rad_out = v_radial[outward]
-            new_vel[idx] -= r_hat_r[idx] * (v_rad_out * 1.3)[:, None]
+            new_vel[idx] -= r_hat_r[idx] * (v_rad_out * (1.0 + wall_restitution_radial))[:, None]
 
     # --- Residence time ---
     new_res = residence_times.copy()

@@ -51,13 +51,14 @@ class ImpactSolver:
     against particles in the mill chamber.
     """
 
-    # Hammer configuration
-    hammer_tip_radius: float = 0.16
+    # Hammer configuration — defaults match MillConfig defaults:
+    # tip_radius = rotor_diameter/2 + hammer_length = 0.10 + 0.08 = 0.18
+    hammer_tip_radius: float = 0.18
     hammer_width: float = 0.05
     hammer_rows: int = 4
     hammers_per_row: int = 4
-    row_start_x: float = 0.08
-    row_spacing: float = 0.06
+    row_start_x: float = 0.04            # End-plate margin
+    row_spacing: float = 0.0733          # (0.30 - 0.08) / 3
 
     # Physics parameters
     restitution: float = 0.3
@@ -65,6 +66,11 @@ class ImpactSolver:
     # Size-dependent impact efficiency (air entrainment)
     efficiency_d_crit: float = 80e-6     # Transition size [m]
     efficiency_exponent: float = 2.0     # Sharpness of the transition
+
+    # Sweep zone geometry (derived from config in from_config())
+    sweep_inner_margin: float = 0.03     # Depth behind tip [m]
+    sweep_outer_margin: float = 0.008    # Clearance beyond tip [m]
+    hammer_angular_extent: float = 0.278 # Angular width at tip [rad] (0.05/0.18)
 
     # State
     _rotor_theta: float = 0.0
@@ -141,6 +147,9 @@ class ImpactSolver:
             dt=dt,
             efficiency_d_crit=self.efficiency_d_crit,
             efficiency_exponent=self.efficiency_exponent,
+            sweep_inner_margin=self.sweep_inner_margin,
+            sweep_outer_margin=self.sweep_outer_margin,
+            hammer_angular_extent=self.hammer_angular_extent,
         )
 
         # Update stats
@@ -190,6 +199,9 @@ class ImpactSolver:
             dt=dt,
             efficiency_d_crit=self.efficiency_d_crit,
             efficiency_exponent=self.efficiency_exponent,
+            sweep_inner_margin=self.sweep_inner_margin,
+            sweep_outer_margin=self.sweep_outer_margin,
+            hammer_angular_extent=self.hammer_angular_extent,
         )
 
         # Copy back to CPU
@@ -235,41 +247,53 @@ class ImpactSolver:
         return 0.0
 
     @classmethod
-    def from_config(cls, config: "MillConfig", device: str = "cpu") -> "ImpactSolver":
+    def from_config(
+        cls,
+        config: "MillConfig",
+        device: str = "cpu",
+        breakage_params: Optional["BreakageParams"] = None,
+    ) -> "ImpactSolver":
         """Create ImpactSolver from mill configuration.
+
+        All geometry is derived from config — no hardcoded magic numbers.
 
         Args:
             config: Mill configuration
             device: "cpu" or "cuda"
+            breakage_params: Breakage parameters (for impact efficiency).
+                If None, uses BreakageParams defaults.
 
         Returns:
             Configured ImpactSolver
         """
-        from ..config import MillConfig
+        from ..config import BreakageParams
 
-        # Compute hammer tip radius
-        tip_radius = config.rotor_diameter_m / 2.0 + config.hammer_length_m
+        bp = breakage_params if breakage_params is not None else BreakageParams()
 
-        # Compute row spacing
-        margin = 0.04
+        # Geometry derived from config
+        tip_radius = config.hammer_tip_radius_m
+
+        # Row spacing: evenly distribute hammer rows along usable rotor length
+        margin = 0.04  # End-plate clearance
         usable_length = config.rotor_length_m - 2 * margin
         spacing = usable_length / max(config.hammer_rows - 1, 1)
 
-        # Read impact efficiency from breakage params (they live there for config cohesion)
-        from ..config import BreakageParams
-        bp = BreakageParams()
-        eff_d_crit = getattr(bp, "impact_efficiency_d_crit_um", 80.0) * 1e-6
-        eff_exp = getattr(bp, "impact_efficiency_exponent", 2.0)
+        # Impact efficiency from breakage params
+        eff_d_crit = bp.impact_efficiency_d_crit_um * 1e-6
+        eff_exp = bp.impact_efficiency_exponent
 
         return cls(
             hammer_tip_radius=tip_radius,
             hammer_width=config.hammer_width_m,
             hammer_rows=config.hammer_rows,
             hammers_per_row=config.hammers_per_row,
-            row_start_x=margin + 0.05,
+            row_start_x=margin,
             row_spacing=spacing,
-            restitution=0.3,
+            restitution=config.hammer_restitution,
             efficiency_d_crit=eff_d_crit,
             efficiency_exponent=eff_exp,
+            sweep_inner_margin=config.impact_sweep_inner_margin_m,
+            sweep_outer_margin=config.impact_sweep_outer_margin_m,
+            hammer_angular_extent=config.hammer_angular_extent_rad,
             device=device,
         )

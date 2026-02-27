@@ -49,6 +49,8 @@ if WARP_AVAILABLE:
         open_area: float,
         passage_factor: float,
         size_ratio_threshold: float,
+        screen_tolerance: float,
+        velocity_threshold: float,
     ):
         """Test particles for screen passage.
 
@@ -78,7 +80,6 @@ if WARP_AVAILABLE:
 
         # Radial position (screen is at fixed radius)
         r = wp.sqrt(pos[1] * pos[1] + pos[2] * pos[2])
-        screen_tolerance = 0.03  # 3cm tolerance around screen radius
         if wp.abs(r - screen_radius) > screen_tolerance:
             return
 
@@ -113,8 +114,8 @@ if WARP_AVAILABLE:
 
         # Velocity factor (very fast particles may not have time to pass)
         speed = wp.length(vel)
-        if speed > 5.0:  # m/s threshold
-            vel_prob = 5.0 / speed
+        if speed > velocity_threshold:
+            vel_prob = velocity_threshold / speed
         else:
             vel_prob = 1.0
 
@@ -148,11 +149,15 @@ def screen_passage_warp(
     open_area: float = 0.4,
     passage_factor: float = 1.0,
     size_ratio_threshold: float = 0.06,
+    screen_tolerance: float = 0.03,
+    velocity_threshold: float = 5.0,
 ):
     """Launch screen passage kernel.
 
     Args:
         size_ratio_threshold: Below d/aperture passage is max; above, quadratic taper (retain coarse for breakage).
+        screen_tolerance: Radial tolerance for screen proximity detection [m].
+        velocity_threshold: Speed above which passage probability drops [m/s].
     """
     n = positions.shape[0]
     wp.launch(
@@ -162,7 +167,7 @@ def screen_passage_warp(
             positions, velocities, sizes, masses, passage_flags, rand_states,
             screen_radius, screen_start_angle, screen_arc_angle,
             screen_x_start, screen_x_end, aperture, open_area, passage_factor,
-            size_ratio_threshold,
+            size_ratio_threshold, screen_tolerance, velocity_threshold,
         ],
     )
 
@@ -183,6 +188,8 @@ def screen_passage_np(
     passage_factor: float = 1.0,
     size_ratio_threshold: float = 0.06,
     rng: Optional[np.random.Generator] = None,
+    screen_tolerance: float = 0.03,
+    velocity_threshold: float = 5.0,
 ) -> np.ndarray:
     """Vectorized NumPy implementation of screen passage test.
 
@@ -197,7 +204,6 @@ def screen_passage_np(
     if n == 0:
         return passage_flags
 
-    screen_tolerance = 0.03
     screen_end_angle = screen_start_angle + screen_arc_angle
 
     active = masses > 0.0
@@ -233,7 +239,7 @@ def screen_passage_np(
     )
 
     speed = np.linalg.norm(velocities[in_zone], axis=1)
-    vel_prob = np.minimum(1.0, 5.0 / np.maximum(speed, 0.1))
+    vel_prob = np.minimum(1.0, velocity_threshold / np.maximum(speed, 0.1))
 
     prob = np.clip(open_area * size_prob * vel_prob * passage_factor, 0.0, 1.0)
 

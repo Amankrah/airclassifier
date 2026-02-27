@@ -31,6 +31,9 @@ def reagglomeration_step_np(
     moisture_sensitivity: float = 2.0,
     product_temperature_c: float = 25.0,
     rng: Optional[np.random.Generator] = None,
+    moisture_baseline: float = 0.08,
+    temp_threshold_c: float = 40.0,
+    temp_sensitivity: float = 0.02,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """Apply stochastic pair-merge reagglomeration to fine particles.
 
@@ -52,8 +55,10 @@ def reagglomeration_step_np(
         moisture_wb: Product moisture (wet basis).  Higher → stickier.
         moisture_sensitivity: Exponent amplifying moisture effect.
         product_temperature_c: Product temperature [°C].
-            Above 40 °C starch surfaces become stickier.
         rng: NumPy random generator.
+        moisture_baseline: Below this moisture, no extra agglomeration boost.
+        temp_threshold_c: Above this temperature, starch surfaces get stickier [°C].
+        temp_sensitivity: Rate increase per °C above temp_threshold_c.
 
     Returns:
         (sizes, masses, num_merges)  — arrays are modified in place.
@@ -77,10 +82,10 @@ def reagglomeration_step_np(
     d_ref = threshold_m * 0.5
 
     # Moisture factor: higher moisture → more agglomeration
-    moisture_factor = 1.0 + moisture_sensitivity * max(0.0, moisture_wb - 0.08)
+    moisture_factor = 1.0 + moisture_sensitivity * max(0.0, moisture_wb - moisture_baseline)
 
-    # Temperature factor: above 40 °C starch surfaces become stickier
-    temp_factor = 1.0 + 0.02 * max(0.0, product_temperature_c - 40.0)
+    # Temperature factor: above threshold, starch surfaces become stickier
+    temp_factor = 1.0 + temp_sensitivity * max(0.0, product_temperature_c - temp_threshold_c)
 
     num_merges = 0
     for k in range(n_pairs):

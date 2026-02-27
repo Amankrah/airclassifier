@@ -173,8 +173,8 @@ class CoupledMillingEngine:
     time_s: float = 0.0
     rotor_theta: float = 0.0
 
-    # Chamber geometry
-    chamber_radius: float = 0.22
+    # Chamber geometry (defaults match MillConfig; overridden in __post_init__)
+    chamber_radius: float = 0.20
     chamber_length: float = 0.40
 
     # Feed state
@@ -224,13 +224,18 @@ class CoupledMillingEngine:
 
     def __post_init__(self):
         """Initialize physics solvers."""
-        if self.impact_solver is None:
-            self.impact_solver = ImpactSolver.from_config(self.config, self.device)
-
+        # Breakage model first — ImpactSolver needs its params for efficiency
         if self.breakage_model is None:
             self.breakage_model = BreakageModel(
                 params=BreakageParams(),
                 device=self.device,
+            )
+
+        if self.impact_solver is None:
+            self.impact_solver = ImpactSolver.from_config(
+                self.config,
+                device=self.device,
+                breakage_params=self.breakage_model.params,
             )
 
         if self.screen_classifier is None:
@@ -631,6 +636,10 @@ class CoupledMillingEngine:
                 chamber_length=self.chamber_length,
                 rotor_omega=self.recipe.rotor_omega,
                 dt=dt,
+                wall_restitution_radial=self.config.wall_restitution_radial,
+                wall_restitution_endwall=self.config.wall_restitution_endwall,
+                centrifugal_coupling=self.config.centrifugal_coupling_factor,
+                shaft_radius=self.config.shaft_diameter_m / 2.0,
             )
 
             self.particles.positions = self._wp_positions.numpy()
@@ -647,6 +656,10 @@ class CoupledMillingEngine:
                 chamber_length=self.chamber_length,
                 rotor_omega=self.recipe.rotor_omega,
                 dt=dt,
+                wall_restitution_radial=self.config.wall_restitution_radial,
+                wall_restitution_endwall=self.config.wall_restitution_endwall,
+                centrifugal_coupling=self.config.centrifugal_coupling_factor,
+                shaft_radius=self.config.shaft_diameter_m / 2.0,
             )
             self.particles.positions = new_pos
             self.particles.velocities = new_vel
@@ -766,10 +779,10 @@ class CoupledMillingEngine:
         if self.particles.count < 2:
             return 0
 
-        threshold_m = getattr(params, "reagglom_threshold_um", 50.0) * 1e-6
-        rate = getattr(params, "reagglom_rate", 0.02)
-        max_merges = getattr(params, "reagglom_max_merges_per_step", 50)
-        moisture_sens = getattr(params, "reagglom_moisture_sensitivity", 2.0)
+        threshold_m = params.reagglom_threshold_um * 1e-6
+        rate = params.reagglom_rate
+        max_merges = params.reagglom_max_merges_per_step
+        moisture_sens = params.reagglom_moisture_sensitivity
 
         sizes, masses, num_merges = reagglomeration_step_np(
             sizes=self.particles.sizes,
@@ -781,6 +794,9 @@ class CoupledMillingEngine:
             moisture_sensitivity=moisture_sens,
             product_temperature_c=self._product_temperature_c,
             rng=self._reagglom_rng,
+            moisture_baseline=params.reagglom_moisture_baseline,
+            temp_threshold_c=params.reagglom_temp_threshold_c,
+            temp_sensitivity=params.reagglom_temp_sensitivity,
         )
 
         self.particles.sizes = sizes

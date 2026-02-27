@@ -54,6 +54,9 @@ if WARP_AVAILABLE:
         dt: float,
         efficiency_d_crit: float,
         efficiency_exponent: float,
+        sweep_inner_margin: float,
+        sweep_outer_margin: float,
+        hammer_angular_extent: float,
     ):
         """Detect and resolve hammer-particle impacts.
 
@@ -79,8 +82,10 @@ if WARP_AVAILABLE:
         particle_angle = wp.atan2(pos[2], pos[1])
 
         # Check if particle is in hammer zone (radially)
-        inner_radius = hammer_tip_radius - 0.03  # Inner sweep zone
-        outer_radius = hammer_tip_radius + 0.02  # Outer sweep zone (clearance)
+        # inner_margin: depth behind tip (relates to hammer length)
+        # outer_margin: clearance beyond tip (relates to tip-to-screen gap)
+        inner_radius = hammer_tip_radius - sweep_inner_margin
+        outer_radius = hammer_tip_radius + sweep_outer_margin
 
         if r_particle < inner_radius or r_particle > outer_radius:
             impact_flags[tid] = 0
@@ -119,7 +124,7 @@ if WARP_AVAILABLE:
                 angle_diff = 2.0 * 3.14159 - angle_diff
 
             # Check if particle is within hammer angular extent
-            hammer_angular_extent = 0.15  # ~8.6 degrees
+            # (derived from hammer_width / tip_radius in config)
             if angle_diff < hammer_angular_extent:
                 hit_hammer = True
                 break
@@ -189,6 +194,9 @@ def impact_detection_warp(
     dt: float = 0.001,
     efficiency_d_crit: float = 80e-6,
     efficiency_exponent: float = 2.0,
+    sweep_inner_margin: float = 0.03,
+    sweep_outer_margin: float = 0.008,
+    hammer_angular_extent: float = 0.278,
 ):
     """Launch impact detection kernel.
 
@@ -211,6 +219,9 @@ def impact_detection_warp(
         dt: Timestep [s]
         efficiency_d_crit: Size below which impact efficiency drops [m]
         efficiency_exponent: Exponent for efficiency taper
+        sweep_inner_margin: Radial depth behind tip for impact detection [m]
+        sweep_outer_margin: Radial clearance beyond tip [m]
+        hammer_angular_extent: Angular width of hammer at tip [rad]
     """
     n = positions.shape[0]
     wp.launch(
@@ -222,6 +233,7 @@ def impact_detection_warp(
             hammer_rows, hammers_per_row, row_start_x, row_spacing,
             restitution, dt,
             efficiency_d_crit, efficiency_exponent,
+            sweep_inner_margin, sweep_outer_margin, hammer_angular_extent,
         ],
     )
 
@@ -244,6 +256,9 @@ def impact_detection_np(
     dt: float = 0.001,
     efficiency_d_crit: float = 80e-6,
     efficiency_exponent: float = 2.0,
+    sweep_inner_margin: float = 0.03,
+    sweep_outer_margin: float = 0.008,
+    hammer_angular_extent: float = 0.278,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Vectorized NumPy implementation of impact detection.
 
@@ -258,10 +273,9 @@ def impact_detection_np(
     if n == 0:
         return impact_flags, impact_energies, new_velocities
 
-    inner_radius = hammer_tip_radius - 0.03
-    outer_radius = hammer_tip_radius + 0.02
+    inner_radius = hammer_tip_radius - sweep_inner_margin
+    outer_radius = hammer_tip_radius + sweep_outer_margin
     angular_spacing = 2.0 * math.pi / hammers_per_row
-    hammer_angular_extent = 0.15
 
     # --- Radial filter ---
     r_particle = np.sqrt(positions[:, 1] ** 2 + positions[:, 2] ** 2)

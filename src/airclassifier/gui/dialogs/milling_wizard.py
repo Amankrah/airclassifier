@@ -463,8 +463,11 @@ class RotorConfigPage(_WizardPage):
         import math
         rpm = self._rpm_slider.value()
         diameter = self._diameter_spin.value()
-        tip_speed = (rpm / 60) * math.pi * diameter
-        self._tip_speed_label.setText(f"Tip speed: {tip_speed:.1f} m/s")
+        # Hammer tip speed = omega * (rotor_radius + hammer_length)
+        hammer_length = 0.08  # MillConfig default
+        tip_radius = diameter / 2.0 + hammer_length
+        tip_speed = tip_radius * rpm * 2.0 * math.pi / 60.0
+        self._tip_speed_label.setText(f"Hammer tip speed: {tip_speed:.1f} m/s")
 
     def _update_hammer_count(self):
         total = self._rows_spin.value() * self._per_row_spin.value()
@@ -486,7 +489,14 @@ class ScreenConfigPage(_WizardPage):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._tip_speed: float = 56.5  # Default: 3000 RPM, 0.18 m tip radius
         self._setup_ui()
+
+    def set_tip_speed(self, tip_speed: float):
+        """Update the hammer tip speed for D50 estimation."""
+        self._tip_speed = tip_speed
+        # Re-calculate D50 hint with new tip speed
+        self._on_aperture_changed(self._aperture_slider.value())
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -603,21 +613,21 @@ class ScreenConfigPage(_WizardPage):
         layout.addStretch()
 
     def _on_aperture_changed(self, value: int):
+        from airclassifier.milling.config import ScreenConfig
         mm = value / 100
         self._aperture_value.setText(f"{mm:.2f} mm")
 
-        # Grinding-floor model: single-pass hammer mill aerodynamic limit
-        typical_tip_speed = 63.0  # ~6000 RPM, 0.20 m radius
-        grinding_floor = max(40.0, 80.0 - 0.22 * typical_tip_speed)
-        d50_est = grinding_floor + 18.0 * mm ** 0.7
-        if d50_est <= 45:
-            hint = f"D50: ~{d50_est:.0f} µm (near grinding limit, good for protein separation)"
-        elif d50_est <= 70:
+        # Use the canonical D50 model with actual tip speed from rotor page
+        sc = ScreenConfig(aperture_mm=mm)
+        d50_est = sc.estimated_d50_um_at_tip_speed(self._tip_speed)
+        if d50_est <= 25:
+            hint = f"D50: ~{d50_est:.0f} µm (excellent for protein separation)"
+        elif d50_est <= 35:
             hint = f"D50: ~{d50_est:.0f} µm (good for starch/protein fractionation)"
-        elif d50_est <= 100:
+        elif d50_est <= 50:
             hint = f"D50: ~{d50_est:.0f} µm (moderate - consider finer screen or higher RPM)"
         else:
-            hint = f"D50: ~{d50_est:.0f} µm (coarse - use 0.3–0.84 mm screen, 5000–7200 RPM)"
+            hint = f"D50: ~{d50_est:.0f} µm (coarse - use 0.3-0.84 mm screen, 5000-7200 RPM)"
         self._d50_hint.setText(hint)
 
     def get_data(self) -> Dict[str, Any]:
@@ -843,6 +853,16 @@ class MillingConfigWizard(QDialog):
         if self._current_page < 2:
             self._current_page += 1
             self._stack.setCurrentIndex(self._current_page)
+            # When entering screen page, pass actual tip speed from rotor page
+            if self._current_page == 2:
+                rotor_data = self._rotor_page.get_data()
+                import math
+                rpm = rotor_data["rotor_rpm"]
+                diameter = rotor_data["rotor_diameter_m"]
+                hammer_length = 0.08  # Default; could be made configurable
+                tip_radius = diameter / 2.0 + hammer_length
+                tip_speed = tip_radius * rpm * 2.0 * math.pi / 60.0
+                self._screen_page.set_tip_speed(tip_speed)
             self._update_navigation()
         else:
             self._finish()

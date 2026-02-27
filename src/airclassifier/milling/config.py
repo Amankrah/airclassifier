@@ -157,38 +157,37 @@ class MillConfig:
 
     @property
     def estimated_d50_um(self) -> float:
-        """Estimate realistic product D50 [µm] from screen aperture and tip speed.
+        """Estimate discharged product D50 [µm] from screen aperture and tip speed.
 
-        Single-pass hammer mill has an aerodynamic grinding limit around 40–80 µm
-        for pulse flour.  Below ~80 µm, air entrainment, starch granule resistance,
-        and reagglomeration prevent further reduction.
+        The screen acts as a classifier: it selectively passes fines while
+        retaining coarse particles for further breakage.  The discharged D50
+        is therefore much finer than the internal mill PSD.
 
-        Model: D50 = grinding_limit + k * aperture_mm^beta
-        Validated against pilot data: 0.3 mm / 6000 rpm → ~67 µm.
+        Model calibrated to NIH yellow-pea data (dehulled):
+            0.75 mm screen, ~102 m/s tip → D50 = 23.7 µm
+            2.0  mm screen, ~102 m/s tip → D50 = 31.1 µm
+
+        D50 = max(10, 43 - 0.27 * v_tip) + 9.2 * aperture_mm^0.7
         """
-        # Grinding limit depends on tip speed (higher = slightly lower floor)
         tip = self.hammer_tip_speed
-        # At 113 m/s (6000 rpm): floor ≈ 55 µm; at 56 m/s (3000 rpm): floor ≈ 70 µm
-        grinding_floor = max(40.0, 80.0 - 0.22 * tip)
-        # Screen contribution: larger aperture → coarser product
-        return grinding_floor + 18.0 * self.screen_aperture_mm ** 0.7
+        grinding_floor = max(10.0, 43.0 - 0.27 * tip)
+        return grinding_floor + 9.2 * self.screen_aperture_mm ** 0.7
 
     def get_separation_quality(self) -> str:
         """Get protein separation quality assessment based on D50.
 
-        Goal: release starch granules (15–40 µm) from protein matrix (1–10 µm).
-        Single-pass hammer mill typically achieves 40–100 µm.
-        Pin/jet mills needed for < 40 µm.
+        Goal: release starch granules (15-40 µm) from protein matrix (1-10 µm).
+        NIH: 0.75 mm screen → D50 ~24 µm (excellent for air classification).
         """
         d50 = self.estimated_d50_um
-        if d50 <= 45:
-            return "Excellent - near grinding limit, good liberation for protein separation"
-        elif d50 <= 70:
+        if d50 <= 25:
+            return "Excellent - fine flour, excellent starch/protein liberation"
+        elif d50 <= 35:
             return "Good - suitable for starch/protein fractionation in air classifier"
-        elif d50 <= 100:
-            return "Moderate - fine flour, consider higher RPM or two-pass for better separation"
+        elif d50 <= 50:
+            return "Moderate - consider higher RPM or finer screen for better separation"
         else:
-            return "Coarse - use finer screen (0.3–0.84 mm) or higher RPM (5000–7200)"
+            return "Coarse - use finer screen (0.3-0.84 mm) or higher RPM (5000-7200)"
 
 
 @dataclass
@@ -224,17 +223,25 @@ class ScreenConfig:
     def estimated_d50_um(self) -> float:
         """Estimate product D50 [µm] from screen aperture.
 
-        Uses the same grinding-floor model as MillConfig.estimated_d50_um.
-        For a single-pass hammer mill at ~6000 RPM (~63 m/s tip), the
-        aerodynamic grinding floor is ~55 µm; screen aperture adds a
-        coarsening offset.  Result for 0.3 mm / 6000 RPM → ~63 µm.
+        Uses the same NIH-calibrated model as MillConfig.estimated_d50_um.
+        When RPM is unknown, assumes default 3000 RPM with standard geometry
+        (tip_radius 0.18 m → tip_speed ~56.5 m/s).
+
+        For RPM-aware estimates, use MillConfig.estimated_d50_um instead.
         """
-        # Assume typical pilot tip speed ~63 m/s (6000 RPM, 0.20 m radius)
-        # MillConfig.estimated_d50_um uses actual config tip speed;
-        # here we use a representative value since ScreenConfig doesn't know RPM.
-        typical_tip_speed = 63.0
-        grinding_floor = max(40.0, 80.0 - 0.22 * typical_tip_speed)
-        return grinding_floor + 18.0 * self.aperture_mm ** 0.7
+        # Default: 3000 RPM, tip_radius 0.18 m → omega = 314.2, v_tip = 56.5 m/s
+        typical_tip_speed = 56.5
+        grinding_floor = max(10.0, 43.0 - 0.27 * typical_tip_speed)
+        return grinding_floor + 9.2 * self.aperture_mm ** 0.7
+
+    def estimated_d50_um_at_tip_speed(self, tip_speed: float) -> float:
+        """Estimate product D50 [µm] given a specific hammer tip speed.
+
+        Args:
+            tip_speed: Hammer tip linear velocity [m/s]
+        """
+        grinding_floor = max(10.0, 43.0 - 0.27 * tip_speed)
+        return grinding_floor + 9.2 * self.aperture_mm ** 0.7
 
     def passage_probability(self, particle_size_m: float) -> float:
         """Compute probability of passage for a given particle size.
