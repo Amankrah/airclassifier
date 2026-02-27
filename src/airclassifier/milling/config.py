@@ -354,6 +354,12 @@ class BreakageParams:
     t_breakage_onset_c: float = 50.0              # Above this, starch softens → harder to break
     t_breakage_slope: float = 0.008               # Selection rate drops by this per °C above onset
     #   Gentler slope: at 65°C penalty is 1 - 0.008*15 = 0.88 (12% reduction, not 90%)
+    # Mill housing thermal mass — steel rotor, housing, and screen act as a thermal
+    # flywheel that prevents rapid product temperature swings.  Without this, the tiny
+    # particle holdup (~10 g initially) has almost zero thermal inertia and temperature
+    # oscillates wildly.
+    housing_thermal_mass_kg: float = 50.0          # Effective thermal mass of mill structure [kg]
+    cp_housing_j_per_kg_k: float = 500.0           # Specific heat of steel [J/(kg·K)]
 
     # Multi-fragment breakage (mass-conserving fragmentation)
     # When enabled, each breakage event produces 2-N fragments whose masses
@@ -429,8 +435,7 @@ class MillRecipe:
     feed_rate_kg_per_hr: float = 500.0           # Target feed rate
 
     # --- Run parameters ---
-    run_mass_kg: float = 0.0                     # Total mass for run (0 = continuous)
-    run_duration_s: float = 60.0                 # Duration if run_mass_kg = 0
+    run_duration_s: float = 60.0                 # Duration (0 = continuous)
 
     # --- Control parameters ---
     power_limit_kw: float = 20.0                 # Max power before feed cutback

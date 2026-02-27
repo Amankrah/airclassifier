@@ -623,7 +623,10 @@ class MillingPage(QWidget):
 
         p = self._last_params
         config = MillConfig(
-            rotor_rpm=p.get("mill_rotor_rpm", recipe_data.get("rotor_rpm", 3000)),
+            # Operational params: control panel (recipe_data) overrides wizard (p)
+            # so the user's most recent slider/spinbox change is always respected.
+            # Geometry params: wizard (p) only — not adjustable on control panel.
+            rotor_rpm=recipe_data.get("rotor_rpm", p.get("mill_rotor_rpm", 3000)),
             rotor_diameter_m=p.get("mill_rotor_diameter_m", 0.20),
             rotor_length_m=p.get("mill_rotor_length_m", 0.30),
             shaft_diameter_m=p.get("mill_shaft_diameter_m", 0.05),
@@ -635,7 +638,7 @@ class MillingPage(QWidget):
             hammer_width_m=p.get("mill_hammer_width_m", 0.05),
             hammer_thickness_m=p.get("mill_hammer_thickness_m", 0.008),
             hammer_clearance_m=p.get("mill_hammer_clearance_m", 0.008),
-            screen_aperture_mm=p.get("mill_screen_aperture_mm", recipe_data.get("screen_aperture_mm", 0.75)),
+            screen_aperture_mm=recipe_data.get("screen_aperture_mm", p.get("mill_screen_aperture_mm", 0.75)),
             screen_open_area=p.get("mill_screen_open_area", 0.40),
             screen_size_ratio_threshold=p.get("mill_screen_size_ratio_threshold", 0.06),
             screen_inner_radius_m=p.get("mill_screen_inner_radius_m", 0.188),
@@ -643,7 +646,7 @@ class MillingPage(QWidget):
             housing_inner_radius_m=p.get("mill_housing_inner_radius_m", 0.20),
             housing_length_m=p.get("mill_housing_length_m", 0.40),
             housing_wall_thickness_m=p.get("mill_housing_wall_thickness_m", 0.008),
-            feed_rate_kg_per_hr=p.get("mill_feed_rate_kg_per_hr", recipe_data.get("feed_rate_kg_per_hr", 500)),
+            feed_rate_kg_per_hr=recipe_data.get("feed_rate_kg_per_hr", p.get("mill_feed_rate_kg_per_hr", 500)),
             feed_chute_width_m=p.get("mill_feed_chute_width_m", 0.15),
             feed_chute_height_m=p.get("mill_feed_chute_height_m", 0.12),
             discharge_chute_width_m=p.get("mill_discharge_chute_width_m", 0.20),

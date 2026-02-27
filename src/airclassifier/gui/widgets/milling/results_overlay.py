@@ -250,8 +250,13 @@ class ResultsSummaryTab(QWidget):
                 duration = result_obj.history[-1].time_s if result_obj.history else 0
                 self._duration_label.setText(f"{duration:.1f} s")
 
-                # Total mass
-                total_mass = sum(s.discharge_rate_kg_per_s for s in result_obj.history) * 0.001  # dt approximation
+                # Total mass (integrate discharge rate over actual timesteps)
+                history = result_obj.history
+                if len(history) >= 2:
+                    dt_actual = history[1].time_s - history[0].time_s
+                else:
+                    dt_actual = 0.002  # fallback
+                total_mass = sum(s.discharge_rate_kg_per_s * dt_actual for s in history)
                 if hasattr(result_obj, "psd_total_mass_kg"):
                     total_mass = result_obj.psd_total_mass_kg
                 self._total_mass_label.setText(f"{total_mass:.2f} kg")

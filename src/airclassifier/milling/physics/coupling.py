@@ -244,8 +244,9 @@ class CoupledMillingEngine:
                 device=self.device,
             )
 
-        # Update chamber geometry from config
-        self.chamber_radius = self.config.housing_inner_radius_m
+        # Use screen inner radius as effective chamber boundary —
+        # particles bounce off the screen, not the housing wall.
+        self.chamber_radius = self.config.screen_inner_radius_m
         self.chamber_length = self.config.housing_length_m
 
         # Reagglomeration RNG
@@ -378,7 +379,7 @@ class CoupledMillingEngine:
         pre_holdup = self.particles.total_mass
 
         # --- 1. FEED ---
-        num_fed = self._feed_step(dt)
+        num_fed, feed_mass = self._feed_step(dt)
 
         # --- 2. TRANSPORT ---
         self._transport_step(dt)
@@ -419,9 +420,8 @@ class CoupledMillingEngine:
         self.time_s += dt
         post_holdup = self.particles.total_mass
 
-        # Compute rates
-        discharge_mass = pre_holdup + (num_fed * self._feed_particle_mass) - post_holdup
-        feed_mass = num_fed * self._feed_particle_mass
+        # Compute rates — use actual fed mass (not base × count) for correct balance
+        discharge_mass = pre_holdup + feed_mass - post_holdup
 
         # Get PSD stats (cumulative discharge product; sizes in meters)
         d10, d50, d90 = self.screen_classifier.get_d_values()
@@ -520,15 +520,15 @@ class CoupledMillingEngine:
             return self.convergence_detector.progress_pct
         return 0.0
 
-    def _feed_step(self, dt: float) -> int:
+    def _feed_step(self, dt: float) -> tuple:
         """Inject new particles from feed.
 
         Returns:
-            Number of particles fed
+            (num_fed, actual_mass_kg): particle count and their total actual mass
         """
         # When seeds feed mass is set, do not exceed it (batch mode)
         if self._seeds_feed_mass_kg > 0 and self._total_fed_mass_kg >= self._seeds_feed_mass_kg:
-            return 0
+            return 0, 0.0
 
         # Accumulate feed mass
         self._feed_accumulator += self._feed_rate_kg_per_s * dt
@@ -536,7 +536,7 @@ class CoupledMillingEngine:
         # Convert to particles
         num_new = int(self._feed_accumulator / self._feed_particle_mass)
         if num_new <= 0:
-            return 0
+            return 0, 0.0
 
         # Cap by remaining seeds mass when configured
         if self._seeds_feed_mass_kg > 0:
@@ -544,10 +544,9 @@ class CoupledMillingEngine:
             max_new = int(remaining_kg / self._feed_particle_mass)
             num_new = min(num_new, max_new)
             if num_new <= 0:
-                return 0
+                return 0, 0.0
 
         self._feed_accumulator -= num_new * self._feed_particle_mass
-        self._total_fed_mass_kg += num_new * self._feed_particle_mass
 
         # Create new particles at feed inlet
         rng = np.random.default_rng()
@@ -567,12 +566,16 @@ class CoupledMillingEngine:
         new_vel = np.zeros((num_new, 3), dtype=np.float32)
         new_vel[:, 1] = -1.0  # Falling
 
-        # Sizes
+        # Sizes (±20% variation around feed D50)
         new_sizes = (self._feed_particle_size * rng.uniform(0.8, 1.2, num_new)).astype(np.float32)
 
-        # Masses
+        # Masses — scale with size^3 (volume-proportional)
         size_ratio = new_sizes / self._feed_particle_size
         new_masses = (self._feed_particle_mass * size_ratio ** 3).astype(np.float32)
+
+        # Track ACTUAL mass fed (not base mass) for accurate mass balance
+        actual_mass = float(new_masses.sum())
+        self._total_fed_mass_kg += actual_mass
 
         # Residence times
         new_res = np.zeros(num_new, dtype=np.float32)
@@ -588,7 +591,7 @@ class CoupledMillingEngine:
             break_count=np.concatenate([self.particles.break_count, new_break]) if self.particles.count > 0 else new_break,
         )
 
-        return num_new
+        return num_new, actual_mass
 
     def _transport_step(self, dt: float):
         """Advect particles in chamber. Uses Warp GPU kernel when device=cuda."""
@@ -822,13 +825,16 @@ class CoupledMillingEngine:
         Energy balance per step:
             Q_in  = eta_thermal * P_total * dt            [J]
             Q_out = h * A * (T_product - T_air) * dt      [J]
-            dT    = (Q_in - Q_out) / (m * Cp)
+            dT    = (Q_in - Q_out) / C_total
+
+        where C_total = m_product * Cp_product + m_housing * Cp_housing.
+
+        The mill housing, rotor, and screen (~50 kg steel) act as a thermal
+        flywheel.  Without this, the tiny initial particle holdup (~10 g) has
+        almost zero thermal inertia, causing unrealistic temperature swings.
 
         P_total includes no-load power (windage, friction, bearing losses)
         which is a constant heat source regardless of particle fineness.
-        In real mills this prevents temperature from dropping when the
-        product becomes fine — the rotor still dissipates kW of mechanical
-        energy into heat.
         """
         params = self.breakage_model.params
         if not getattr(params, "thermal_enabled", False):
@@ -844,6 +850,8 @@ class CoupledMillingEngine:
         h_conv = getattr(params, "h_conv_w_per_m2_k", 150.0)
         a_cool = getattr(params, "a_cooling_m2", 0.25)
         t_air = getattr(params, "t_air_c", 25.0)
+        housing_mass = getattr(params, "housing_thermal_mass_kg", 50.0)
+        cp_housing = getattr(params, "cp_housing_j_per_kg_k", 500.0)
 
         # Heat input: total mill power = particle impacts + no-load (windage/friction)
         # No-load power is the constant baseline — it keeps the mill warm even
@@ -856,8 +864,11 @@ class CoupledMillingEngine:
         # Convective cooling (lumped: product→housing→ambient + airflow)
         q_out = h_conv * a_cool * (self._product_temperature_c - t_air) * dt
 
+        # Effective thermal capacity: product flour + mill structure (steel)
+        thermal_capacity = holdup_kg * cp + housing_mass * cp_housing  # [J/°C]
+
         # Temperature change from heating and cooling
-        d_temp = (q_in - q_out) / (holdup_kg * cp)
+        d_temp = (q_in - q_out) / thermal_capacity
         self._product_temperature_c += d_temp
 
         # Clamp to physical range
