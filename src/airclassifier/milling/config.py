@@ -91,7 +91,7 @@ class MillConfig:
 
     # --- Screen detection ---
     screen_zone_tolerance_m: float = 0.03    # Radial tolerance for screen proximity [m]
-    velocity_passage_threshold_m_per_s: float = 200.0  # Effectively disabled: centrifugal force dominates screen passage
+    velocity_passage_threshold_m_per_s: float = 5.0    # Speed above which passage probability drops [m/s]
 
     # --- Machine envelope ---
     machine_height_m: float = 0.80
@@ -287,10 +287,10 @@ class BreakageParams:
     d_max_um: float = 5000.0                     # Largest size class [um]
 
     # Selection function: S(d) = k * (d / d_ref)^alpha
-    # Low k because most hammer impacts are glancing blows; only well-aligned strikes
-    # cause fracture.  At ~90 impacts/particle/s, k=0.03 gives ~3 effective breaks/s
-    # for d_ref-sized particles, matching real hammer mill cascade rates.
-    selection_rate_constant: float = 0.03       # k: 3% base — most impacts are glancing blows
+    # Calibrated so discharge D50 ≈ 24 µm at 0.75 mm / 6000 RPM (NIH yellow pea data).
+    # At ~90 impacts/particle/s, k=0.6 grinds to dust quickly; D50 is then set by
+    # screen selectivity (passage_probability_factor × velocity factor × (1-t)^4 taper).
+    selection_rate_constant: float = 0.6        # k: 60% base — efficient hammer-particle collisions
     selection_size_exponent: float = 1.4          # alpha: larger particles break more easily
     selection_reference_size_um: float = 300.0   # d_ref: particles ≥300 µm break readily; smaller resist
 
