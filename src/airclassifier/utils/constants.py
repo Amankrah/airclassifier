@@ -4,8 +4,6 @@ Physical constants and standard properties for cyclone air classifier simulation
 All values are in SI units unless otherwise noted.
 """
 
-import warp as wp
-
 # =============================================================================
 # FUNDAMENTAL CONSTANTS
 # =============================================================================
@@ -16,7 +14,39 @@ HALF_PI = 1.5707963267948966
 
 # Gravitational acceleration [m/s²]
 GRAVITY = 9.80665
-GRAVITY_VEC = wp.vec3(0.0, -9.80665, 0.0)  # Pointing downward (y-axis)
+
+# Warp-specific constants are loaded lazily to avoid PyInstaller issues
+_GRAVITY_VEC = None
+
+
+def get_gravity_vec():
+    """Get gravity vector as warp vec3 (lazy loaded)."""
+    global _GRAVITY_VEC
+    if _GRAVITY_VEC is None:
+        import warp as wp
+        _GRAVITY_VEC = wp.vec3(0.0, -9.80665, 0.0)
+    return _GRAVITY_VEC
+
+
+# For backward compatibility, provide a property-like access
+class _LazyWarpConstants:
+    """Lazy loader for warp-dependent constants."""
+
+    @property
+    def GRAVITY_VEC(self):
+        return get_gravity_vec()
+
+
+# This allows `from constants import GRAVITY_VEC` to still work at runtime
+# but defers the actual warp import until the value is accessed
+def __getattr__(name):
+    if name == "GRAVITY_VEC":
+        return get_gravity_vec()
+    # Handle WP_* warp constants
+    if name in ("WP_PI", "WP_TWO_PI", "WP_GRAVITY", "WP_AIR_DENSITY",
+                "WP_AIR_VISCOSITY", "WP_EPSILON"):
+        return _get_wp_constant(name)
+    raise AttributeError(f"module 'airclassifier.utils.constants' has no attribute '{name}'")
 
 # =============================================================================
 # AIR PROPERTIES AT STANDARD CONDITIONS (20°C, 1 atm)
@@ -281,11 +311,19 @@ class NumericalConstants:
 # =============================================================================
 # WARP-COMPATIBLE CONSTANTS (for use in kernels)
 # =============================================================================
+# These are lazy-loaded to avoid PyInstaller issues with Warp JIT compilation
 
-# These can be used directly in Warp kernels
-WP_PI = wp.constant(PI)
-WP_TWO_PI = wp.constant(TWO_PI)
-WP_GRAVITY = wp.constant(GRAVITY)
-WP_AIR_DENSITY = wp.constant(AirProperties.DENSITY)
-WP_AIR_VISCOSITY = wp.constant(AirProperties.DYNAMIC_VISCOSITY)
-WP_EPSILON = wp.constant(NumericalConstants.EPSILON)
+_wp_constants = {}
+
+
+def _get_wp_constant(name):
+    """Lazy-load warp constants."""
+    if name not in _wp_constants:
+        import warp as wp
+        _wp_constants["WP_PI"] = wp.constant(PI)
+        _wp_constants["WP_TWO_PI"] = wp.constant(TWO_PI)
+        _wp_constants["WP_GRAVITY"] = wp.constant(GRAVITY)
+        _wp_constants["WP_AIR_DENSITY"] = wp.constant(AirProperties.DENSITY)
+        _wp_constants["WP_AIR_VISCOSITY"] = wp.constant(AirProperties.DYNAMIC_VISCOSITY)
+        _wp_constants["WP_EPSILON"] = wp.constant(NumericalConstants.EPSILON)
+    return _wp_constants[name]

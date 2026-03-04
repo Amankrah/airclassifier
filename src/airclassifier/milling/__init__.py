@@ -22,6 +22,13 @@ Public API:
     - MillingResult
 """
 
+# =============================================================================
+# LAZY IMPORTS - Deferred to avoid Warp JIT issues in PyInstaller bundles
+# =============================================================================
+# The physics module imports NVIDIA Warp which requires source code access.
+# By deferring imports, the GUI can start without loading simulation code.
+
+# Config imports are safe (no warp dependency)
 from .config import (
     MillConfig,
     ScreenConfig,
@@ -29,26 +36,53 @@ from .config import (
     MillRecipe,
     MillingOutletState,
 )
-from .simulator import (
-    HammerMillSimulator,
-    MillingResult,
-    run_milling_simulation,
-)
-from .geometry import (
-    create_hammer_mill_machine,
-    build_hammer_mill_meshes,
-    HammerMillMachineAssembly,
-    COMPONENT_COLORS,
-)
-from .physics import (
-    CoupledMillingEngine,
-    MillingStepState,
-    ImpactSolver,
-    BreakageModel,
-    ScreenClassifier,
-    ConvergenceDetector,
-    TerminationConfig,
-)
+
+
+def __getattr__(name):
+    """Lazy import handler for module-level attributes."""
+    # Simulator imports (depends on physics -> warp)
+    if name in ("HammerMillSimulator", "MillingResult", "run_milling_simulation"):
+        from .simulator import HammerMillSimulator, MillingResult, run_milling_simulation
+        return {
+            "HammerMillSimulator": HammerMillSimulator,
+            "MillingResult": MillingResult,
+            "run_milling_simulation": run_milling_simulation,
+        }[name]
+
+    # Geometry imports (depends on warp)
+    if name in ("create_hammer_mill_machine", "build_hammer_mill_meshes",
+                "HammerMillMachineAssembly", "COMPONENT_COLORS"):
+        from .geometry import (
+            create_hammer_mill_machine, build_hammer_mill_meshes,
+            HammerMillMachineAssembly, COMPONENT_COLORS,
+        )
+        return {
+            "create_hammer_mill_machine": create_hammer_mill_machine,
+            "build_hammer_mill_meshes": build_hammer_mill_meshes,
+            "HammerMillMachineAssembly": HammerMillMachineAssembly,
+            "COMPONENT_COLORS": COMPONENT_COLORS,
+        }[name]
+
+    # Physics imports (depends on warp)
+    if name in ("CoupledMillingEngine", "MillingStepState", "ImpactSolver",
+                "BreakageModel", "ScreenClassifier", "ConvergenceDetector",
+                "TerminationConfig"):
+        from .physics import (
+            CoupledMillingEngine, MillingStepState, ImpactSolver,
+            BreakageModel, ScreenClassifier, ConvergenceDetector, TerminationConfig,
+        )
+        return {
+            "CoupledMillingEngine": CoupledMillingEngine,
+            "MillingStepState": MillingStepState,
+            "ImpactSolver": ImpactSolver,
+            "BreakageModel": BreakageModel,
+            "ScreenClassifier": ScreenClassifier,
+            "ConvergenceDetector": ConvergenceDetector,
+            "TerminationConfig": TerminationConfig,
+        }[name]
+
+    raise AttributeError(f"module 'airclassifier.milling' has no attribute '{name}'")
+
 
 __all__ = [
     # Main simulator

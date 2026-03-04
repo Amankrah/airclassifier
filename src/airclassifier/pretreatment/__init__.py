@@ -41,28 +41,70 @@ Modules:
     optimizer   Recipe optimization and sensitivity sweeps
 """
 
-from .calibration import CalibrationOptimizer, CalibrationResult, load_plc_data
+# =============================================================================
+# LAZY IMPORTS - Deferred to avoid Warp JIT issues in PyInstaller bundles
+# =============================================================================
+# Many submodules import NVIDIA Warp which requires source code access.
+# By deferring imports, the GUI can start without loading simulation code.
+
+# Safe imports (no warp dependency)
 from .config import MachineConfig, MaterialProperties, Recipe
-from .control import GP15Controller, RecipeStore
-from .desirability import DesirabilityProfile, DesirabilityResult, score_desirability
-from .kernels.transport import (
-    ConveyorDriveController,
-    ConveyorDriveState,
-)
 from .materials import get_material_preset
-from .optimizer import (
-    DifferentiableOptimizer,
-    OptimizationResult,
-    optimize_recipe,
-    sensitivity_sweep,
-)
-from .physics.coupling import (
-    CoupledSimulator,
-    OutletState,
-    PretreatmentResult,
-    StepState,
-)
-from .simulator import GP15Simulator
+
+
+def __getattr__(name):
+    """Lazy import handler for module-level attributes."""
+    # Calibration
+    if name in ("CalibrationOptimizer", "CalibrationResult", "load_plc_data"):
+        from .calibration import CalibrationOptimizer, CalibrationResult, load_plc_data
+        return {"CalibrationOptimizer": CalibrationOptimizer,
+                "CalibrationResult": CalibrationResult,
+                "load_plc_data": load_plc_data}[name]
+
+    # Control
+    if name in ("GP15Controller", "RecipeStore"):
+        from .control import GP15Controller, RecipeStore
+        return {"GP15Controller": GP15Controller, "RecipeStore": RecipeStore}[name]
+
+    # Desirability
+    if name in ("DesirabilityProfile", "DesirabilityResult", "score_desirability"):
+        from .desirability import DesirabilityProfile, DesirabilityResult, score_desirability
+        return {"DesirabilityProfile": DesirabilityProfile,
+                "DesirabilityResult": DesirabilityResult,
+                "score_desirability": score_desirability}[name]
+
+    # Conveyor (kernels - has warp)
+    if name in ("ConveyorDriveController", "ConveyorDriveState"):
+        from .kernels.transport import ConveyorDriveController, ConveyorDriveState
+        return {"ConveyorDriveController": ConveyorDriveController,
+                "ConveyorDriveState": ConveyorDriveState}[name]
+
+    # Optimizer
+    if name in ("DifferentiableOptimizer", "OptimizationResult",
+                "optimize_recipe", "sensitivity_sweep"):
+        from .optimizer import (DifferentiableOptimizer, OptimizationResult,
+                                optimize_recipe, sensitivity_sweep)
+        return {"DifferentiableOptimizer": DifferentiableOptimizer,
+                "OptimizationResult": OptimizationResult,
+                "optimize_recipe": optimize_recipe,
+                "sensitivity_sweep": sensitivity_sweep}[name]
+
+    # Physics (coupling - has warp)
+    if name in ("CoupledSimulator", "OutletState", "PretreatmentResult", "StepState"):
+        from .physics.coupling import (CoupledSimulator, OutletState,
+                                       PretreatmentResult, StepState)
+        return {"CoupledSimulator": CoupledSimulator,
+                "OutletState": OutletState,
+                "PretreatmentResult": PretreatmentResult,
+                "StepState": StepState}[name]
+
+    # Simulator
+    if name == "GP15Simulator":
+        from .simulator import GP15Simulator
+        return GP15Simulator
+
+    raise AttributeError(f"module 'airclassifier.pretreatment' has no attribute '{name}'")
+
 
 __all__ = [
     # ── Public API ─────────────────────────────────────────────────
