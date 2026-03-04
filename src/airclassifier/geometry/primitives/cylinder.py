@@ -6,11 +6,25 @@ for cylindrical sections of the cyclone.
 """
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, TYPE_CHECKING
 import numpy as np
-import warp as wp
 
 from ...utils.constants import PI, TWO_PI
+
+# Lazy warp import to avoid issues with PyInstaller bundling
+# Warp requires source code access for JIT compilation
+_wp = None
+
+def _get_warp():
+    """Lazy load warp module."""
+    global _wp
+    if _wp is None:
+        import warp as wp
+        _wp = wp
+    return _wp
+
+if TYPE_CHECKING:
+    import warp as wp
 
 
 @dataclass
@@ -209,7 +223,7 @@ class Cylinder:
 
         return self._vertices, self._indices, self._normals
 
-    def to_warp_mesh(self, device: str = "cuda") -> wp.Mesh:
+    def to_warp_mesh(self, device: str = "cuda"):
         """
         Create a Warp mesh from the cylinder geometry.
 
@@ -219,6 +233,7 @@ class Cylinder:
         Returns:
             wp.Mesh object
         """
+        wp = _get_warp()
         if self._vertices is None:
             self.generate_mesh()
 
@@ -262,77 +277,93 @@ class Cylinder:
 # =============================================================================
 # WARP SDF FUNCTIONS FOR CYLINDER
 # =============================================================================
+# NOTE: These functions are created lazily to avoid PyInstaller issues
+# with Warp JIT compilation at import time.
 
-@wp.func
-def cylinder_sdf(
-    p: wp.vec3,
-    center: wp.vec3,
-    radius: float,
-    height: float
-) -> float:
-    """
-    Signed distance function for a Y-axis aligned cylinder.
-
-    Args:
-        p: Query point
-        center: Center of cylinder base
-        radius: Cylinder radius
-        height: Cylinder height
-
-    Returns:
-        Signed distance (negative inside, positive outside)
-    """
-    # Vector from base center to point
-    d = wp.vec3(p[0] - center[0], 0.0, p[2] - center[2])
-
-    # Radial distance from axis
-    r_dist = wp.length(d) - radius
-
-    # Axial distance from cylinder bounds
-    y_local = p[1] - center[1]
-    y_dist = wp.max(-y_local, y_local - height)
-
-    # Combine radial and axial distances
-    if r_dist > 0.0 and y_dist > 0.0:
-        # Outside both radially and axially (corner case)
-        return wp.sqrt(r_dist * r_dist + y_dist * y_dist)
-    else:
-        # Inside at least one dimension
-        return wp.max(r_dist, y_dist)
+_cylinder_sdf = None
+_cylinder_sdf_hollow = None
 
 
-@wp.func
-def cylinder_sdf_hollow(
-    p: wp.vec3,
-    center: wp.vec3,
-    outer_radius: float,
-    inner_radius: float,
-    height: float
-) -> float:
-    """
-    Signed distance function for a hollow Y-axis aligned cylinder (tube).
+def get_cylinder_sdf():
+    """Get the cylinder SDF warp function (lazy loaded)."""
+    global _cylinder_sdf
+    if _cylinder_sdf is None:
+        wp = _get_warp()
 
-    Args:
-        p: Query point
-        center: Center of cylinder base
-        outer_radius: Outer radius
-        inner_radius: Inner radius
-        height: Cylinder height
+        @wp.func
+        def cylinder_sdf(
+            p: wp.vec3,
+            center: wp.vec3,
+            radius: float,
+            height: float
+        ) -> float:
+            """
+            Signed distance function for a Y-axis aligned cylinder.
+            """
+            # Vector from base center to point
+            d = wp.vec3(p[0] - center[0], 0.0, p[2] - center[2])
 
-    Returns:
-        Signed distance (negative inside wall, positive outside)
-    """
-    # Vector from base center to point
-    d = wp.vec3(p[0] - center[0], 0.0, p[2] - center[2])
-    r = wp.length(d)
+            # Radial distance from axis
+            r_dist = wp.length(d) - radius
 
-    # Radial distance from wall
-    r_dist_outer = r - outer_radius
-    r_dist_inner = inner_radius - r
-    r_dist = wp.max(r_dist_outer, r_dist_inner)
+            # Axial distance from cylinder bounds
+            y_local = p[1] - center[1]
+            y_dist = wp.max(-y_local, y_local - height)
 
-    # Axial distance from cylinder bounds
-    y_local = p[1] - center[1]
-    y_dist = wp.max(-y_local, y_local - height)
+            # Combine radial and axial distances
+            if r_dist > 0.0 and y_dist > 0.0:
+                # Outside both radially and axially (corner case)
+                return wp.sqrt(r_dist * r_dist + y_dist * y_dist)
+            else:
+                # Inside at least one dimension
+                return wp.max(r_dist, y_dist)
 
-    return wp.max(r_dist, y_dist)
+        _cylinder_sdf = cylinder_sdf
+    return _cylinder_sdf
+
+
+def get_cylinder_sdf_hollow():
+    """Get the hollow cylinder SDF warp function (lazy loaded)."""
+    global _cylinder_sdf_hollow
+    if _cylinder_sdf_hollow is None:
+        wp = _get_warp()
+
+        @wp.func
+        def cylinder_sdf_hollow(
+            p: wp.vec3,
+            center: wp.vec3,
+            outer_radius: float,
+            inner_radius: float,
+            height: float
+        ) -> float:
+            """
+            Signed distance function for a hollow Y-axis aligned cylinder (tube).
+            """
+            # Vector from base center to point
+            d = wp.vec3(p[0] - center[0], 0.0, p[2] - center[2])
+            r = wp.length(d)
+
+            # Radial distance from wall
+            r_dist_outer = r - outer_radius
+            r_dist_inner = inner_radius - r
+            r_dist = wp.max(r_dist_outer, r_dist_inner)
+
+            # Axial distance from cylinder bounds
+            y_local = p[1] - center[1]
+            y_dist = wp.max(-y_local, y_local - height)
+
+            return wp.max(r_dist, y_dist)
+
+        _cylinder_sdf_hollow = cylinder_sdf_hollow
+    return _cylinder_sdf_hollow
+
+
+# Backward-compatible aliases (functions return lazy-loaded warp funcs)
+def cylinder_sdf(*args, **kwargs):
+    """Backward-compatible wrapper for cylinder_sdf."""
+    return get_cylinder_sdf()(*args, **kwargs)
+
+
+def cylinder_sdf_hollow(*args, **kwargs):
+    """Backward-compatible wrapper for cylinder_sdf_hollow."""
+    return get_cylinder_sdf_hollow()(*args, **kwargs)

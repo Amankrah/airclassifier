@@ -1,6 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
+import Image from 'next/image';
 import Link from 'next/link';
 import { ArrowRight, Download, BookOpen, Sparkles } from 'lucide-react';
 
@@ -162,31 +163,16 @@ export function Hero() {
                 </span>
               </div>
 
-              {/* Placeholder for actual screenshot */}
-              <div className="aspect-[16/10] bg-gradient-to-br from-bg-surface via-bg-elevated to-bg-surface flex items-center justify-center">
-                <div className="text-center">
-                  <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center">
-                    <svg
-                      className="w-10 h-10 text-white"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-                      />
-                    </svg>
-                  </div>
-                  <p className="text-text-muted text-sm">
-                    Application screenshot placeholder
-                  </p>
-                  <p className="text-text-muted text-xs mt-1">
-                    Add actual screenshot at /public/images/hero-screenshot.png
-                  </p>
-                </div>
+              {/* App screenshot */}
+              <div className="aspect-[16/10] relative bg-bg-surface">
+                <Image
+                  src="/images/hero-screenshot.png"
+                  alt="ProteinProcessIO application window showing air classification simulation"
+                  fill
+                  className="object-contain object-top"
+                  sizes="(max-width: 1024px) 100vw, 1024px"
+                  priority
+                />
               </div>
             </div>
           </div>
