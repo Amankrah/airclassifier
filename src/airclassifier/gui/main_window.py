@@ -52,6 +52,14 @@ try:
 except Exception:
     _HAS_MILLING = False
 
+# Pipeline orchestration
+from .pipeline import (
+    PipelineState,
+    PipelineStage,
+    map_pretreatment_to_milling,
+    map_milling_to_classification,
+)
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  Welcome overlay
@@ -155,7 +163,7 @@ class _WelcomeOverlay(QWidget):
             }}
             QPushButton:hover {{ background: {COLORS.SUCCESS}; color: {COLORS.BG_DARKEST}; }}
         """
-        mill_btn = QPushButton("  Pin Mill (Hammer Mill)")
+        mill_btn = QPushButton("  Hammer Mill")
         mill_btn.setStyleSheet(_milling)
         mill_btn.setToolTip("Hammer mill impact milling simulation\nSize reduction: whole seeds → milled flour")
         mill_btn.clicked.connect(self.milling_clicked.emit)
@@ -255,6 +263,7 @@ class MainWindow(QMainWindow):
         self._pretreatment_params: Dict[str, Any] = {}
         self._classification_params: Dict[str, Any] = {}
         self._milling_params: Dict[str, Any] = {}
+        self._pipeline_state: PipelineState = PipelineState()
         self._current_mode: str = self.MODE_CLASSIFICATION
 
         # Build UI
@@ -361,7 +370,7 @@ class MainWindow(QMainWindow):
             self._cls_mode_btn.setProperty("cssClass", "")
             self._pt_mode_btn.setProperty("cssClass", "")
             self._mill_mode_btn.setProperty("cssClass", "primary")
-            self.statusBar().showMessage("Mode: Pin Mill (Milling)", 3000)
+            self.statusBar().showMessage("Mode: Hammer Mill", 3000)
 
         # Force style refresh
         for btn in (self._cls_mode_btn, self._pt_mode_btn, self._mill_mode_btn):
@@ -436,8 +445,8 @@ class MainWindow(QMainWindow):
         self.action_configure_current.setStatusTip("Configure the active stage (Pretreatment, Classification, or Milling)")
         self.action_configure_current.triggered.connect(self.show_config_current_system)
 
-        self.action_configure_milling = QAction("Configure &Milling (Pin Mill)...", self)
-        self.action_configure_milling.setStatusTip("Configure Pin Mill only; then Build current system")
+        self.action_configure_milling = QAction("Configure &Hammer Mill...", self)
+        self.action_configure_milling.setStatusTip("Configure Hammer Mill; then Build current system")
         self.action_configure_milling.triggered.connect(self.show_milling_config)
 
         self.action_build_system = QAction("&Build Current System", self)
@@ -570,7 +579,7 @@ class MainWindow(QMainWindow):
         self._pt_mode_btn.clicked.connect(lambda: self.switch_mode(self.MODE_PRETREATMENT))
         mode_tb.addWidget(self._pt_mode_btn)
 
-        self._mill_mode_btn = QPushButton("  Pin Mill")
+        self._mill_mode_btn = QPushButton("  Hammer Mill")
         self._mill_mode_btn.setMinimumHeight(28)
         self._mill_mode_btn.clicked.connect(lambda: self.switch_mode(self.MODE_MILLING))
         mode_tb.addWidget(self._mill_mode_btn)
@@ -763,6 +772,16 @@ class MainWindow(QMainWindow):
                 self._on_milling_finished
             )
 
+        # Pipeline transfer signals
+        if self.pretreatment_page is not None:
+            self.pretreatment_page.transfer_to_milling_requested.connect(
+                self._on_transfer_pretreatment_to_milling
+            )
+        if self.milling_page is not None:
+            self.milling_page.transfer_to_classifier_requested.connect(
+                self._on_transfer_milling_to_classifier
+            )
+
     @Slot(str)
     def _on_cls_state_changed(self, state: str):
         """Update toolbar button states when classification sim state changes."""
@@ -795,6 +814,115 @@ class MainWindow(QMainWindow):
                 f"power={outlet.power_kw:.2f} kW",
                 10000,
             )
+
+    # ================================================================
+    #  Pipeline Transfer Handlers
+    # ================================================================
+
+    @Slot(dict)
+    def _on_transfer_pretreatment_to_milling(self, pretreatment_results: Dict[str, Any]):
+        """Handle transfer from pretreatment to milling stage.
+
+        Maps outlet conditions (moisture, temperature, throughput) to
+        configure the hammer mill feed parameters.
+        """
+        outlet = pretreatment_results.get("outlet")
+        if outlet is None:
+            QMessageBox.warning(
+                self,
+                "Transfer Error",
+                "No pretreatment results available. Run a pretreatment simulation first.",
+            )
+            return
+
+        # Map pretreatment outlet to milling parameters
+        milling_params = map_pretreatment_to_milling(outlet, self._pretreatment_params)
+
+        # Update milling params
+        self._milling_params.update(milling_params)
+
+        # Sync to milling page UI
+        if self.milling_page is not None:
+            self.milling_page.sync_settings_from_params(self._milling_params)
+
+        # Update pipeline state
+        self._pipeline_state.set_stage_result(
+            stage=PipelineStage.PRETREATMENT,
+            result=pretreatment_results,
+            outlet=outlet,
+            params_used=dict(self._pretreatment_params),
+        )
+        self._pipeline_state.mass_after_pretreatment_kg = (
+            outlet.throughput_kg_per_hr * (outlet.residence_time_s / 3600.0)
+            if outlet.residence_time_s > 0 else 0.0
+        )
+
+        # Switch to milling mode
+        self.switch_mode(self.MODE_MILLING)
+
+        # Status message
+        self.statusBar().showMessage(
+            f"Transferred: M={outlet.avg_moisture_wb:.1%}, "
+            f"T={outlet.avg_temperature_c:.1f}°C, "
+            f"{outlet.throughput_kg_per_hr:.0f} kg/h "
+            f"→ Milling configured. Click Run (F5) to start.",
+            10000,
+        )
+
+        self._set_modified(True)
+
+    @Slot(dict)
+    def _on_transfer_milling_to_classifier(self, milling_results: Dict[str, Any]):
+        """Handle transfer from milling to classification stage.
+
+        Maps PSD and material properties to configure the air classifier
+        particle feed parameters.
+        """
+        outlet = milling_results.get("outlet")
+        if outlet is None:
+            QMessageBox.warning(
+                self,
+                "Transfer Error",
+                "No milling results available. Run a milling simulation first.",
+            )
+            return
+
+        # Map milling outlet to classification parameters
+        classifier_params = map_milling_to_classification(outlet, self._milling_params)
+
+        # Update classification params
+        self._classification_params.update(classifier_params)
+
+        # Sync to classification page UI
+        self.classification_page.sync_settings_from_params(self._classification_params)
+
+        # Update pipeline state
+        self._pipeline_state.set_stage_result(
+            stage=PipelineStage.MILLING,
+            result=milling_results,
+            outlet=outlet,
+            params_used=dict(self._milling_params),
+        )
+        self._pipeline_state.mass_after_milling_kg = (
+            outlet.throughput_kg_per_hr * (outlet.mean_residence_time_s / 3600.0)
+            if outlet.mean_residence_time_s > 0 else 0.0
+        )
+
+        # Switch to classification mode
+        self.switch_mode(self.MODE_CLASSIFICATION)
+
+        # Rebuild system with new particle properties
+        self.build_full_system()
+
+        # Status message
+        self.statusBar().showMessage(
+            f"Transferred: d50={outlet.d50_um:.0f}µm, "
+            f"{outlet.throughput_kg_per_hr:.0f} kg/h "
+            f"→ Classifier configured. Click Run (F5) to start.",
+            10000,
+        )
+
+        self._set_modified(True)
 
     def _update_window_title(self):
         title = "ProteinProcessIO"
@@ -865,6 +993,7 @@ class MainWindow(QMainWindow):
         self._pretreatment_params = {}
         self._classification_params = {}
         self._milling_params = {}
+        self._pipeline_state = PipelineState()
         self._is_modified = False
         self.classification_page.viewport.clear()
         self._update_window_title()
@@ -895,6 +1024,11 @@ class MainWindow(QMainWindow):
             else:
                 self._assembly_params = data.get("assembly_params", {})
                 self._split_assembly_params(self._assembly_params)
+            # Load pipeline state
+            if "pipeline_state" in data:
+                self._pipeline_state = PipelineState.from_dict(data["pipeline_state"])
+            else:
+                self._pipeline_state = PipelineState()
             self.classification_page.viewport.load_state(data.get("viewport", {}))
             self._is_modified = False
             self._update_window_title()
@@ -930,6 +1064,7 @@ class MainWindow(QMainWindow):
                 "pretreatment_params": self._pretreatment_params,
                 "classification_params": self._classification_params,
                 "milling_params": self._milling_params,
+                "pipeline_state": self._pipeline_state.to_dict(),
                 "viewport": self.classification_page.viewport.save_state(),
             }
             with open(path, "w") as f:
@@ -1059,7 +1194,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def show_milling_config(self):
-        """Open Pin Mill-only configuration. Apply & Build builds the mill."""
+        """Open Hammer Mill configuration. Apply & Build builds the mill."""
         from .dialogs.milling_config_dialog import MillingConfigDialog
         dialog = MillingConfigDialog(self, self._milling_params)
         dialog.milling_configured.connect(self._on_milling_configured)

@@ -906,16 +906,61 @@ class MillingConfigWizard(QDialog):
         config.update(self._rotor_page.get_data())
         config.update(self._screen_page.get_data())
 
-        # Map to expected parameter names
+        # Get rotor dimensions for proportional scaling
+        rotor_diameter = config.get("rotor_diameter_m", 0.20)
+        rotor_length = config.get("rotor_length_m", 0.30)
+
+        # Scale factor based on rotor diameter (reference: 0.20m pilot scale)
+        scale_factor = rotor_diameter / 0.20
+
+        # Scale hammer dimensions proportionally to rotor
+        hammer_length = 0.08 * scale_factor
+        hammer_width = 0.05 * scale_factor
+        hammer_thickness = 0.008 * scale_factor
+        hammer_clearance = 0.008 * scale_factor
+        hammer_mass = 0.35 * (scale_factor ** 3)  # Mass scales with volume
+
+        # Scale shaft proportionally
+        shaft_diameter = 0.05 * scale_factor
+
+        # Scale screen/housing to match rotor
+        screen_inner_radius = config.get("screen_inner_radius_m", rotor_diameter / 2 + hammer_length + hammer_clearance)
+        screen_thickness = 0.003 * scale_factor
+        housing_inner_radius = config.get("housing_inner_radius_m", screen_inner_radius + 0.012 * scale_factor)
+        housing_length = rotor_length + 0.10 * scale_factor
+        housing_wall_thickness = 0.008 * scale_factor
+
+        # Scale feed/discharge chutes
+        feed_chute_width = 0.15 * scale_factor
+        feed_chute_height = 0.12 * scale_factor
+        discharge_chute_width = 0.20 * scale_factor
+        discharge_chute_height = 0.15 * scale_factor
+
+        # Map to expected parameter names with scaled dimensions
         params = {
             "enable_milling": True,
             "mill_rotor_rpm": config.get("rotor_rpm", 3000),
-            "mill_rotor_diameter_m": config.get("rotor_diameter_m", 0.20),
-            "mill_rotor_length_m": config.get("rotor_length_m", 0.30),
+            "mill_rotor_diameter_m": rotor_diameter,
+            "mill_rotor_length_m": rotor_length,
+            "mill_shaft_diameter_m": shaft_diameter,
             "mill_motor_power_kw": config.get("motor_power_kw", 22.0),
             "mill_hammer_rows": config.get("hammer_rows", 4),
             "mill_hammers_per_row": config.get("hammers_per_row", 4),
+            "mill_hammer_length_m": hammer_length,
+            "mill_hammer_width_m": hammer_width,
+            "mill_hammer_thickness_m": hammer_thickness,
+            "mill_hammer_clearance_m": hammer_clearance,
+            "mill_hammer_mass_kg": hammer_mass,
             "mill_screen_aperture_mm": config.get("screen_aperture_mm", 0.75),
+            "mill_screen_inner_radius_m": screen_inner_radius,
+            "mill_screen_thickness_m": screen_thickness,
+            "mill_housing_inner_radius_m": housing_inner_radius,
+            "mill_housing_length_m": housing_length,
+            "mill_housing_wall_thickness_m": housing_wall_thickness,
+            "mill_feed_chute_width_m": feed_chute_width,
+            "mill_feed_chute_height_m": feed_chute_height,
+            "mill_discharge_chute_width_m": discharge_chute_width,
+            "mill_discharge_chute_height_m": discharge_chute_height,
             "mill_feed_rate_kg_per_hr": config.get("feed_rate_kg_per_hr", 500),
         }
 

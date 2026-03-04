@@ -1,0 +1,248 @@
+---
+title: Interpreting Results
+description: Analyze pretreatment simulation outputs
+order: 4
+---
+
+# Interpreting Pretreatment Results
+
+Understanding simulation outputs is crucial for optimizing your pretreatment process.
+
+## Results Overview
+
+After simulation completes, you'll see the Results panel with several sections:
+
+### Summary Card
+
+```
+┌─────────────────────────────────────┐
+│ Simulation Complete                 │
+├─────────────────────────────────────┤
+│ Outlet Moisture:    10.2% wb        │
+│ Outlet Temperature: 62.3°C          │
+│ Treatment Time:     180 s           │
+│ Energy Used:        2.8 kWh/kg H₂O  │
+│ Status:             ✓ Target Met    │
+└─────────────────────────────────────┘
+```
+
+### Key Metrics
+
+| Metric | Description | Optimal Range |
+|--------|-------------|---------------|
+| Outlet Moisture | Final moisture content | ±1% of target |
+| Outlet Temperature | Final product temperature | Below max limit |
+| Moisture Uniformity | CV of moisture | < 5% |
+| Temperature Uniformity | CV of temperature | < 10% |
+| Energy Efficiency | kWh per kg water removed | < 3.5 |
+
+## Temperature Analysis
+
+### Temperature Profile Chart
+
+The T(x) profile shows temperature along the belt length:
+
+```
+80°C ┤                        ╭──────  Max Temp Line
+     │                    ╭───╯
+60°C ┤               ╭────╯
+     │          ╭────╯
+40°C ┤     ╭────╯
+     │ ╭───╯
+20°C ┼─╯
+     └──────────────────────────────────
+       0      1      2      3    meters
+              ← Belt Direction
+```
+
+### What to Look For
+
+**Healthy Profile:**
+- Smooth, gradual temperature rise
+- Final temperature below safety limit
+- No sudden spikes or drops
+
+**Warning Signs:**
+
+| Pattern | Indicates | Action |
+|---------|-----------|--------|
+| Spike at entry | Excessive power | Reduce RF power |
+| Plateau mid-belt | Power saturation | Increase electrode gap |
+| Uneven across width | Non-uniform bed | Improve spreading |
+| Temperature overshoot | Thermal runaway | Add cooling zone |
+
+## Moisture Analysis
+
+### Moisture Profile Chart
+
+The M(x) profile shows drying progress:
+
+```
+14% ┼───╮
+    │    ╲
+12% ┤     ╲
+    │      ╲
+10% ┤       ╲_______________  Target Line
+    │         ╲
+ 8% ┤          ╲─────────────
+    └──────────────────────────────
+       0      1      2      3    meters
+```
+
+### Drying Rate Analysis
+
+The simulation provides drying rate at each position:
+
+```python
+# Drying rate equation
+dM/dt = -k × (M - M_equilibrium)
+
+# Where k depends on:
+# - Temperature
+# - Air humidity
+# - Air velocity
+# - Bed depth
+```
+
+### Uniformity Assessment
+
+Moisture uniformity is reported as coefficient of variation (CV):
+
+| CV Range | Quality | Action |
+|----------|---------|--------|
+| < 3% | Excellent | No action needed |
+| 3-5% | Good | Acceptable for most uses |
+| 5-8% | Fair | Consider bed depth reduction |
+| > 8% | Poor | Investigate spreading system |
+
+<Callout type="warning">
+High moisture CV leads to inconsistent milling behavior. Aim for CV < 5% for downstream processing.
+</Callout>
+
+## Energy Analysis
+
+### Energy Distribution
+
+The energy breakdown shows where power goes:
+
+```
+Energy Distribution:
+├── Heating product:     45%  (useful)
+├── Moisture evaporation: 40%  (useful)
+├── Heating air:         10%  (loss)
+└── Radiation/conduction: 5%  (loss)
+```
+
+### Efficiency Metrics
+
+| Metric | Formula | Good Value |
+|--------|---------|------------|
+| Thermal efficiency | Q_product / Q_input | > 80% |
+| Drying efficiency | m_water × h_fg / Q_input | > 60% |
+| Specific energy | kWh / kg water removed | < 3.5 |
+
+### Optimization Suggestions
+
+Based on energy analysis, the system may suggest:
+
+- **"Reduce belt speed"** - More complete drying
+- **"Increase power"** - Faster processing
+- **"Reduce bed depth"** - Better uniformity
+- **"Adjust electrode gap"** - Optimal coupling
+
+## Outlet State
+
+### For Pipeline Transfer
+
+The outlet state contains all information needed for the next stage:
+
+```python
+outlet_state = {
+    "avg_moisture_wb": 0.102,      # 10.2%
+    "moisture_std": 0.004,         # CV = 3.9%
+    "avg_temperature_c": 62.3,
+    "temperature_std": 2.1,
+    "throughput_kg_per_hr": 98.5,
+    "treatment_time_s": 180,
+
+    # Material properties (updated)
+    "bulk_density_kg_m3": 795,     # Slightly increased
+    "hardness_index": 0.85,        # Reduced from drying
+}
+```
+
+### Quality Flags
+
+The outlet includes quality assessments:
+
+```yaml
+Quality Flags:
+  moisture_target_met: true
+  temperature_safe: true
+  uniformity_acceptable: true
+  ready_for_milling: true
+```
+
+## Exporting Results
+
+### Data Export Options
+
+| Format | Contents | Use Case |
+|--------|----------|----------|
+| CSV | Time series data | Spreadsheet analysis |
+| JSON | Full state + config | Programmatic access |
+| PDF | Report with charts | Documentation |
+| PNG | Individual charts | Presentations |
+
+### Export Procedure
+
+1. Click **Export** in Results panel
+2. Select format and data series
+3. Choose destination
+4. Click **Export**
+
+```bash
+# Exported files structure
+results/
+├── pretreatment_summary.csv
+├── temperature_profile.csv
+├── moisture_profile.csv
+├── energy_analysis.csv
+└── outlet_state.json
+```
+
+## Common Issues
+
+### Target Not Met
+
+If moisture target isn't reached:
+
+1. **Increase treatment time** (reduce belt speed)
+2. **Increase power** (if temperature allows)
+3. **Reduce bed depth** (better heat transfer)
+4. **Check initial moisture** (may be higher than expected)
+
+### Temperature Exceeded
+
+If max temperature is exceeded:
+
+1. **Reduce power** immediately
+2. **Increase belt speed** (shorter exposure)
+3. **Add cooling zone** modeling
+4. **Check material properties** (loss factor may be high)
+
+### Poor Uniformity
+
+If CV is too high:
+
+1. **Reduce bed depth** to < 6 cm
+2. **Improve spreading** system
+3. **Check for material segregation**
+4. **Consider multiple passes**
+
+## Next Steps
+
+Now that you understand pretreatment results:
+
+- [Transfer to Milling](/docs/pipeline/transfers) - Pass results to next stage
+- [Milling Overview](/docs/milling/overview) - Continue processing

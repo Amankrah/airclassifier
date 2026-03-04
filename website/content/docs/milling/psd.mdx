@@ -1,0 +1,243 @@
+---
+title: PSD Analysis
+description: Particle size distribution analysis
+order: 4
+---
+
+# Particle Size Distribution Analysis
+
+Understanding and interpreting PSD results is essential for optimizing your milling process.
+
+## PSD Fundamentals
+
+### What is PSD?
+
+Particle Size Distribution describes the range of particle sizes in your milled product. It's typically represented as:
+
+- **Cumulative curve**: % passing vs. size
+- **Frequency curve**: % in each size bin
+
+### Key Parameters
+
+| Parameter | Symbol | Description |
+|-----------|--------|-------------|
+| D10 | d₁₀ | 10% of mass is finer |
+| D50 | d₅₀ | Median size (50% finer) |
+| D90 | d₉₀ | 90% of mass is finer |
+| Span | (D90-D10)/D50 | Width of distribution |
+| Mode | dₘₒdₑ | Most common size |
+
+```
+Cumulative %
+100│               ╭──────────
+   │             ╱
+ 90│ - - - - - ╱- - - - D90
+   │         ╱
+ 50│ - - - ╱- - - - - - D50
+   │     ╱
+ 10│ - ╱- - - - - - - - D10
+   │ ╱
+  0│╱
+   └─────────────────────────
+    10   100   1000  μm
+```
+
+## Reading PSD Charts
+
+### Cumulative Curve
+
+The default view shows cumulative mass percent:
+
+- **Steep curve**: Narrow distribution (uniform)
+- **Gradual curve**: Wide distribution (varied)
+- **S-shape**: Normal distribution
+
+### Frequency Distribution
+
+Toggle to frequency view for:
+
+- Identifying peaks (modes)
+- Spotting bimodal distributions
+- Visualizing coarse/fine fractions
+
+```
+Frequency %
+  │        Bimodal PSD
+15│   ╭╮         ╭╮
+  │  ╱  ╲       ╱  ╲
+10│ ╱    ╲     ╱    ╲
+  │╱      ╲   ╱      ╲
+ 5│        ╲ ╱        ╲
+  │         ╳          ╲
+ 0│──────────────────────
+   10  50 100  200  500 μm
+      Fines   Coarse
+```
+
+## Analysis Tools
+
+### Statistical Summary
+
+The results panel shows:
+
+```
+┌──────────────────────────────────┐
+│ PSD Statistics                   │
+├──────────────────────────────────┤
+│ D10:        45 μm                │
+│ D50:       180 μm                │
+│ D90:       450 μm                │
+│ Span:       2.25                 │
+│ Mode:      165 μm                │
+│                                  │
+│ Geometric Mean: 152 μm           │
+│ Geometric Std:   2.1             │
+│                                  │
+│ Fines (<50 μm):   18%           │
+│ Coarse (>500 μm):  8%           │
+└──────────────────────────────────┘
+```
+
+### Fraction Analysis
+
+Define size ranges to quantify fractions:
+
+| Fraction | Size Range | Typical % | Characteristic |
+|----------|------------|-----------|----------------|
+| Ultra-fine | < 20 μm | 3-8% | Airborne dust |
+| Fine | 20-50 μm | 10-20% | Protein-rich |
+| Medium-fine | 50-100 μm | 15-25% | Mixed |
+| Medium | 100-200 μm | 20-30% | Bulk flour |
+| Coarse | 200-500 μm | 15-25% | Starch-rich |
+| Oversize | > 500 μm | 5-15% | Fragments |
+
+### Rosin-Rammler Fit
+
+The simulation fits data to the Rosin-Rammler equation:
+
+```
+R(d) = 100 × exp[-(d/d')ⁿ]
+
+Where:
+R(d) = cumulative % retained
+d' = characteristic size (D63.2)
+n = uniformity index (spread)
+```
+
+| n Value | Distribution |
+|---------|--------------|
+| < 1 | Very wide |
+| 1-2 | Wide |
+| 2-3 | Moderate |
+| > 3 | Narrow |
+
+## Interpreting Results
+
+### For Protein Fractionation
+
+Optimal PSD for air classification:
+
+| Metric | Target | Why |
+|--------|--------|-----|
+| D50 | 100-150 μm | Optimal separation range |
+| Fines (<50 μm) | > 20% | Protein fraction mass |
+| Span | 2-3 | Broad enough for separation |
+
+<Callout type="success">
+A bimodal PSD with peaks at ~40 μm and ~200 μm indicates good protein/starch liberation - ideal for fractionation.
+</Callout>
+
+### For Whole Flour
+
+| Metric | Target | Why |
+|--------|--------|-----|
+| D50 | 150-250 μm | Baking functionality |
+| Fines (<50 μm) | 10-15% | Avoid dustiness |
+| Oversize (>500 μm) | < 5% | Smooth texture |
+
+### Warning Signs
+
+| PSD Pattern | Indicates | Action |
+|-------------|-----------|--------|
+| Very narrow | Over-grinding | Reduce RPM or time |
+| Excessive fines | Too dry or brittle | Check moisture |
+| Bimodal with gap | Incomplete grinding | Increase RPM |
+| High oversize | Screen too large | Reduce aperture |
+
+## Optimization
+
+### Adjusting Parameters
+
+To shift D50 lower (finer):
+1. Increase rotor RPM
+2. Decrease screen aperture
+3. Reduce feed rate
+4. Reduce feed moisture
+
+To shift D50 higher (coarser):
+1. Decrease rotor RPM
+2. Increase screen aperture
+3. Increase feed rate
+4. Increase feed moisture
+
+### Narrowing Distribution
+
+To reduce span:
+- Use staged grinding (coarse then fine)
+- Pre-classify feed
+- Optimize moisture
+
+### Increasing Fines
+
+To generate more fines (<50 μm):
+- Increase tip speed
+- Use smaller screen aperture
+- Reduce feed moisture to 8-9%
+
+## Comparative Analysis
+
+### Compare Runs
+
+Open **Analysis > Compare PSD** to overlay multiple runs:
+
+- Visualize parameter effects
+- Identify optimal settings
+- Document process changes
+
+### Historical Tracking
+
+Track PSD consistency over time:
+
+```
+Date        D50    Span   Note
+2024-03-01  185μm  2.3    Baseline
+2024-03-05  178μm  2.4    New screen
+2024-03-10  182μm  2.2    Adjusted RPM
+2024-03-15  175μm  2.5    Higher moisture
+```
+
+## Export Options
+
+### Data Export
+
+| Format | Contents | Use |
+|--------|----------|-----|
+| CSV | Size bins + cumulative % | Spreadsheet analysis |
+| JSON | Full statistics | Programmatic |
+| Image | Charts as PNG/SVG | Reports |
+
+### Report Generation
+
+Generate a PSD report:
+
+1. Click **Export > PSD Report**
+2. Select statistics to include
+3. Add comparison data if desired
+4. Export as PDF
+
+## Next Steps
+
+With your PSD characterized:
+
+- [Transfer to Classification](/docs/pipeline/transfers) - Use PSD for air classification
+- [Classification Overview](/docs/classification/overview) - Understand separation physics

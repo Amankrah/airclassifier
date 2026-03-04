@@ -1,0 +1,196 @@
+---
+title: GP-15 Overview
+description: Understanding RF dielectric heating simulation
+order: 1
+---
+
+# GP-15 RF Dielectric Heating
+
+The GP-15 module simulates Radio Frequency (RF) dielectric heating for pretreatment of legume seeds before milling. This technology is used to reduce moisture content uniformly while improving the efficiency of downstream processing.
+
+## What is RF Dielectric Heating?
+
+RF dielectric heating uses high-frequency electromagnetic fields (typically 27.12 MHz) to heat materials volumetrically. Unlike conventional heating that works from the outside in, RF heating generates heat throughout the material simultaneously.
+
+### Key Advantages
+
+| Advantage | Description |
+|-----------|-------------|
+| **Uniform heating** | Heat generated throughout the volume |
+| **Selective heating** | Wetter areas heat faster (moisture leveling) |
+| **Energy efficient** | Direct energy transfer to material |
+| **Rapid processing** | Shorter treatment times than convective drying |
+| **Quality preservation** | Lower surface temperatures |
+
+### How It Works
+
+1. **Electric field application**: Material passes between electrodes
+2. **Molecular excitation**: Water molecules oscillate with the field
+3. **Friction heating**: Molecular motion generates heat
+4. **Moisture migration**: Water moves to surface and evaporates
+
+## The GP-15 Machine
+
+The GP-15 is a conveyor-based RF heating system designed for continuous processing of bulk materials.
+
+### Machine Specifications
+
+```yaml
+GP-15 Standard Configuration:
+  RF Frequency: 27.12 MHz (ISM band)
+  Power Output: 15 kW (adjustable)
+  Belt Width: 0.9 m
+  Belt Length: 3.0 m
+  Electrode Gap: 0.05 - 0.15 m (adjustable)
+  Belt Speed: 0.01 - 0.10 m/s
+  Throughput: 50 - 500 kg/hr
+```
+
+### Process Flow
+
+```
+[Feed Hopper] → [Spreading System] → [RF Zone] → [Cooling Zone] → [Outlet]
+                      ↓                  ↓              ↓
+                 Bed formed      Heat + Dry      Stabilize
+```
+
+## Simulation Capabilities
+
+The ProteinProcessIO GP-15 simulator models:
+
+### Physics Models
+
+- **Dielectric heating**: Temperature rise from RF energy absorption
+- **Heat conduction**: Thermal diffusion within and between seeds
+- **Mass transfer**: Moisture migration and surface evaporation
+- **Bed dynamics**: Non-uniform bed depth effects
+
+### Material Properties
+
+The simulation includes databases for:
+
+- Yellow peas
+- Green peas
+- Lentils
+- Chickpeas
+- Faba beans
+- Custom materials (user-defined)
+
+Each material has temperature and moisture-dependent properties:
+- Dielectric constant (ε')
+- Loss factor (ε'')
+- Thermal conductivity
+- Specific heat capacity
+- Density
+
+### Output Parameters
+
+| Output | Unit | Description |
+|--------|------|-------------|
+| Temperature profile | °C | T(x, t) along belt |
+| Moisture profile | % wb | M(x, t) along belt |
+| Outlet temperature | °C | Final average temperature |
+| Outlet moisture | % wb | Final average moisture |
+| Treatment time | s | Total residence time |
+| Energy consumption | kWh/kg water | Drying efficiency |
+
+## Typical Applications
+
+### Moisture Reduction
+
+The primary application is reducing seed moisture from storage levels (12-14%) to optimal milling moisture (8-10%).
+
+```yaml
+Example Configuration:
+  Initial Moisture: 14%
+  Target Moisture: 10%
+  Initial Temperature: 25°C
+  Max Temperature: 65°C
+  Belt Speed: 0.05 m/s
+  Result: ~180s treatment time
+```
+
+### Insect Disinfestation
+
+RF heating can also be used to eliminate insects through thermal treatment:
+
+```yaml
+Disinfestation Protocol:
+  Target Temperature: >55°C for >1 min
+  Typical Setup:
+    Belt Speed: 0.03 m/s
+    Power: Maximum
+    Result: >99% insect mortality
+```
+
+<Callout type="warning">
+Disinfestation requires careful temperature control. Exceeding 70°C can damage protein functionality.
+</Callout>
+
+### Enzyme Inactivation
+
+For reducing antinutritional factors:
+
+```yaml
+Enzyme Inactivation:
+  Target Temperature: 70-80°C
+  Hold Time: 2-5 minutes
+  Note: May affect protein solubility
+```
+
+## Simulation Workflow
+
+<Steps>
+<Step number={1} title="Configure machine parameters">
+Set belt width, speed, electrode gap, and RF power level based on your GP-15 setup.
+</Step>
+
+<Step number={2} title="Define material properties">
+Select your seed type or enter custom dielectric and thermal properties.
+</Step>
+
+<Step number={3} title="Set process targets">
+Define initial moisture, target moisture, and temperature limits.
+</Step>
+
+<Step number={4} title="Run simulation">
+Execute the simulation and monitor temperature/moisture evolution.
+</Step>
+
+<Step number={5} title="Analyze and optimize">
+Review outlet conditions and adjust parameters as needed.
+</Step>
+</Steps>
+
+## Key Considerations
+
+### Bed Depth Uniformity
+
+Non-uniform bed depth causes uneven heating. The simulation accounts for this by:
+- Modeling bed depth variations
+- Showing temperature non-uniformity
+- Suggesting optimal bed depths
+
+<Callout type="info">
+For best results, maintain bed depth below 0.08 m and ensure uniform spreading.
+</Callout>
+
+### Runaway Heating
+
+If temperature rises too quickly, thermal runaway can occur. The simulator includes:
+- Temperature alarms
+- Automatic power reduction modeling
+- Safety threshold warnings
+
+### Arc Detection
+
+At high power levels, electrical arcing can occur. The simulation models:
+- Voltage gradients
+- Arc probability estimation
+- Safe operating envelopes
+
+## Next Steps
+
+- [Configuration Guide](/docs/pretreatment/configuration) - Detailed parameter setup
+- [Running Simulations](/docs/pretreatment/simulation) - Execution and monitoring
+- [Interpreting Results](/docs/pretreatment/results) - Understanding outputs

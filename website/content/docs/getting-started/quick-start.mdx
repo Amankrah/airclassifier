@@ -1,0 +1,166 @@
+---
+title: Quick Start
+description: Get up and running with ProteinProcessIO in 5 minutes
+order: 2
+---
+
+# Quick Start
+
+This guide will help you run your first protein processing simulation in just a few minutes. By the end, you'll understand the basic workflow and be ready to explore more advanced features.
+
+## Overview
+
+ProteinProcessIO simulates three key stages of protein processing:
+
+1. **Pretreatment** - RF dielectric heating to control moisture
+2. **Milling** - Hammer mill grinding to flour
+3. **Air Classification** - Particle separation by size and density
+
+Each stage can be run independently or as a connected pipeline.
+
+## Creating Your First Project
+
+<Steps>
+<Step number={1} title="Launch the application">
+Open ProteinProcessIO from your applications. You'll see the main window with tabs for each processing stage.
+</Step>
+
+<Step number={2} title="Create a new project">
+Click **File > New Project** or press `Ctrl+N` (Windows/Linux) or `Cmd+N` (macOS). Choose a location to save your project file (`.acproj`).
+</Step>
+
+<Step number={3} title="Select a processing stage">
+Click on the **Milling** tab to start with the simplest simulation. This is a great way to understand the interface.
+</Step>
+</Steps>
+
+## Running a Milling Simulation
+
+Let's run a quick milling simulation to see ProteinProcessIO in action.
+
+### Configure Basic Parameters
+
+In the Milling tab, you'll see the configuration panel on the left. Set these parameters:
+
+```
+Feed Rate: 100 kg/hr
+Rotor RPM: 3000
+Screen Aperture: 1.5 mm
+Initial Moisture: 12%
+```
+
+<Callout type="info">
+The default parameters are already set for a typical pulse flour milling scenario. You can adjust them later as you learn more.
+</Callout>
+
+### Understanding the Interface
+
+The milling interface has three main sections:
+
+| Section | Purpose |
+|---------|---------|
+| **Control Panel** (left) | Set simulation parameters |
+| **3D Visualization** (center) | Real-time particle animation |
+| **Results Panel** (right) | Charts and metrics |
+
+### Start the Simulation
+
+1. Click the **Run Simulation** button (or press `F5`)
+2. Watch the 3D visualization show particles being processed
+3. Observe the real-time PSD (Particle Size Distribution) chart updating
+
+The simulation typically completes in 10-30 seconds depending on your hardware and settings.
+
+### Interpret the Results
+
+After the simulation completes, you'll see:
+
+- **D10, D50, D90** - Key particle size percentiles
+- **PSD Chart** - Distribution of particle sizes
+- **Mass Balance** - Input vs output mass
+- **Energy Consumption** - Estimated power usage
+
+<Callout type="success">
+Congratulations! You've run your first simulation. The results panel shows the predicted particle size distribution of your milled flour.
+</Callout>
+
+## Quick Pretreatment Simulation
+
+Now let's try a pretreatment simulation to see how RF heating affects moisture:
+
+1. Click the **Pretreatment** tab
+2. Use the default GP-15 machine parameters
+3. Set initial moisture to **14%** and target to **10%**
+4. Click **Run Simulation**
+
+You'll see temperature and moisture profiles develop over the conveyor length.
+
+## Quick Classification Simulation
+
+Finally, try the air classifier:
+
+1. Click the **Air Classification** tab
+2. Load the default configuration
+3. Click **Run Simulation**
+
+The classifier simulation shows particle trajectories through the separation system.
+
+## Pipeline Mode (Preview)
+
+For a complete processing workflow, use **Pipeline Mode**:
+
+1. Run a Pretreatment simulation
+2. Click **Transfer to Milling** to pass the treated material forward
+3. Run the Milling simulation
+4. Click **Transfer to Classifier** to send flour to separation
+5. Run Classification to see final protein/starch separation
+
+<Callout type="info">
+Pipeline mode automatically transfers material properties (moisture, temperature, particle size) between stages, creating an integrated simulation of your entire process.
+</Callout>
+
+## Saving and Exporting
+
+### Save Your Project
+
+Press `Ctrl+S` to save your project. All configurations and results are stored in the `.acproj` file.
+
+### Export Results
+
+To export simulation results:
+
+1. Click **File > Export Results**
+2. Choose your format: CSV, JSON, or PDF Report
+3. Select which data to include
+4. Click Export
+
+## Keyboard Shortcuts
+
+Here are the most useful shortcuts to speed up your workflow:
+
+| Shortcut | Action |
+|----------|--------|
+| `F5` | Run simulation |
+| `Escape` | Stop simulation |
+| `Ctrl+S` | Save project |
+| `Ctrl+Z` | Undo |
+| `Space` | Pause/Resume 3D view |
+| `R` | Reset 3D camera |
+
+## Next Steps
+
+You're now ready to explore ProteinProcessIO in more depth:
+
+- [First Simulation](/docs/getting-started/first-simulation) - Detailed walkthrough of a complete simulation
+- [Pretreatment Guide](/docs/pretreatment/overview) - Master RF dielectric heating
+- [Milling Guide](/docs/milling/overview) - Deep dive into hammer mill simulation
+- [Classification Guide](/docs/classification/overview) - Understand air classification
+- [Pipeline Mode](/docs/pipeline/overview) - Connect stages for full process simulation
+
+## Getting Help
+
+If you run into issues:
+
+- Check the [Reference](/docs/reference/shortcuts) section for detailed documentation
+- Visit our [GitHub Issues](https://github.com/mvgill/proteinprocessio/issues) for known problems
+- Contact us through the [Contact page](/contact) for direct support

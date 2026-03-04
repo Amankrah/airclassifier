@@ -108,14 +108,16 @@ class HammerParams:
     @classmethod
     def from_mill_config(cls, config: "MillConfig") -> "HammerParams":
         """Create hammer params from mill configuration."""
+        # Scale factor based on housing radius (reference: 0.20m pilot scale)
+        scale = config.housing_inner_radius_m / 0.20
         # Compute row spacing to fit within active length
         active_length = config.rotor_length_m
         num_rows = config.hammer_rows
-        margin = 0.04  # 4cm margin at each end
+        margin = 0.04 * scale  # Scaled margin at each end
         usable_length = active_length - 2 * margin
         spacing = usable_length / max(num_rows - 1, 1) if num_rows > 1 else 0.0
 
-        pivot_r = config.rotor_diameter_m / 2.0 - 0.02
+        pivot_r = config.rotor_diameter_m / 2.0 - 0.02 * scale
 
         # Pin proportional to hammer thickness
         pin_r = max(0.008, config.hammer_thickness_m * 1.2)
@@ -131,7 +133,7 @@ class HammerParams:
             hammer_rows=config.hammer_rows,
             hammers_per_row=config.hammers_per_row,
             pivot_radius_m=pivot_r,
-            row_start_x_m=margin + 0.05,
+            row_start_x_m=margin + 0.05 * scale,  # Scaled offset
             row_spacing_m=spacing,
             pin_radius_m=pin_r,
             boss_radius_m=boss_r,
@@ -143,8 +145,10 @@ class HammerParams:
     def from_rotor(cls, rotor_params: "RotorParams", config: "MillConfig") -> "HammerParams":
         """Create hammer params aligned to rotor geometry."""
         params = cls.from_mill_config(config)
+        # Scale factor for small offsets (reference: 0.20m pilot scale)
+        scale = config.housing_inner_radius_m / 0.20
         # Adjust pivot radius to be just outside rotor disc radius
-        params.pivot_radius_m = rotor_params.disc_outer_radius_m - 0.01
+        params.pivot_radius_m = rotor_params.disc_outer_radius_m - 0.01 * scale
         # Pins span from first disc to last disc
         disc_xs = rotor_params.disc_positions_x
         if disc_xs:

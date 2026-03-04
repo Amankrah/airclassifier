@@ -1,0 +1,236 @@
+---
+title: Hammer Mill Overview
+description: Understanding hammer mill simulation
+order: 1
+---
+
+# Hammer Mill Simulation
+
+The milling module simulates hammer mill grinding of legume seeds into flour. This is a critical step that determines the particle size distribution (PSD) for subsequent air classification.
+
+## Hammer Mill Basics
+
+A hammer mill uses high-speed rotating hammers to impact and break particles. Material is fed into the grinding chamber where it's repeatedly struck until small enough to pass through a screen.
+
+### Key Components
+
+```
+┌─────────────────────────────────────┐
+│           Feed Inlet                │
+│              ↓                      │
+│    ┌─────────────────────┐         │
+│    │   Grinding Chamber  │         │
+│    │   ╭───────────────╮ │         │
+│    │   │ ─── Hammers   │ │         │
+│    │   │   ───────     │ │← Rotor  │
+│    │   │     ───       │ │         │
+│    │   ╰───────────────╯ │         │
+│    │   ▓▓▓▓ Screen ▓▓▓▓  │         │
+│    └─────────────────────┘         │
+│              ↓                      │
+│         Flour Outlet               │
+└─────────────────────────────────────┘
+```
+
+### Operating Principle
+
+1. **Feed**: Seeds enter the grinding chamber
+2. **Impact**: High-speed hammers strike particles
+3. **Attrition**: Particles grind against each other and screen
+4. **Classification**: Undersize exits through screen apertures
+5. **Recirculation**: Oversize continues grinding
+
+## Simulation Physics
+
+### Breakage Model
+
+The simulation uses a population balance approach with impact breakage:
+
+```python
+# Breakage probability
+P_break = f(impact_energy, particle_size, material_strength)
+
+# Impact energy
+E_impact = 0.5 × m × v²
+
+# Where:
+# m = particle mass
+# v = relative velocity at impact
+```
+
+### Particle Interactions
+
+| Interaction | Model | Effect |
+|-------------|-------|--------|
+| Hammer-particle | Impact breakage | Primary size reduction |
+| Particle-screen | Attrition | Fine generation |
+| Particle-particle | Collision | Secondary breakage |
+| Air drag | Stokes law | Transport |
+
+### Material Properties
+
+The simulation tracks:
+- Particle size distribution
+- Particle strength (Weibull distribution)
+- Moisture content effect on grinding
+- Temperature rise from energy dissipation
+
+## Mill Specifications
+
+### Standard Configuration
+
+```yaml
+Default Hammer Mill:
+  Rotor Diameter: 0.3 m
+  Rotor Length: 0.2 m
+  Rotor RPM: 3000-5000
+  Number of Hammers: 16-24
+  Hammer Dimensions: 50 × 25 × 6 mm
+
+  Screen:
+    Aperture Size: 0.5-3.0 mm
+    Open Area: 20-40%
+    Screen Type: Round hole
+
+  Operating:
+    Feed Rate: 50-200 kg/hr
+    Power: 5-15 kW
+```
+
+### Tip Speed
+
+Hammer tip speed is a critical parameter:
+
+```python
+tip_speed = π × diameter × RPM / 60
+
+# Typical values:
+# 3000 RPM, 0.3m → 47 m/s
+# 4500 RPM, 0.3m → 71 m/s
+# 6000 RPM, 0.3m → 94 m/s
+```
+
+| Tip Speed | Application |
+|-----------|-------------|
+| 40-60 m/s | Coarse grinding, heat-sensitive |
+| 60-80 m/s | Standard flour production |
+| 80-100 m/s | Fine grinding, high throughput |
+
+<Callout type="warning">
+Higher tip speeds generate more heat and can damage temperature-sensitive proteins. For protein-rich legumes, stay below 70 m/s.
+</Callout>
+
+## Simulation Capabilities
+
+### What's Modeled
+
+- **Full PSD evolution**: Track size distribution over time
+- **Energy consumption**: Power draw prediction
+- **Temperature rise**: Heat generation from grinding
+- **Screen wear**: Predict screen replacement needs
+- **Throughput**: Mass flow through the system
+
+### 3D Visualization
+
+The real-time visualization shows:
+- Particle positions and sizes (color-coded)
+- Hammer rotation
+- Screen passage events
+- Breakage events (flashes)
+
+### Output Metrics
+
+| Output | Unit | Description |
+|--------|------|-------------|
+| D10, D50, D90 | μm | Particle size percentiles |
+| Span | - | (D90-D10)/D50 |
+| Fines fraction | % | Particles < 50 μm |
+| Throughput | kg/hr | Production rate |
+| Specific energy | kWh/t | Energy per ton |
+| Temperature rise | °C | Product heating |
+
+## Typical Results
+
+### PSD Characteristics
+
+Hammer mill output typically shows:
+
+```
+Volume %
+   │
+15%┤      ╭──╮
+   │     ╱    ╲
+10%┤    ╱      ╲
+   │   ╱        ╲
+ 5%┤  ╱          ╲───╮
+   │ ╱                ╲──
+ 0%┼───────────────────────
+   10   50  100  200  500 1000 μm
+```
+
+### Key PSD Parameters
+
+For pulse flour fractionation:
+
+| Parameter | Target | Purpose |
+|-----------|--------|---------|
+| D50 | 100-200 μm | Optimal for classification |
+| D10 | 30-50 μm | Protein-rich fines |
+| D90 | 400-600 μm | Minimize oversize |
+| Fines | 15-25% | Protein fraction potential |
+
+## Feed Considerations
+
+### Moisture Effect
+
+Moisture significantly affects grinding:
+
+| Moisture | Grinding Behavior | Result |
+|----------|------------------|--------|
+| < 8% | Very brittle | Excess fines, dust |
+| 8-10% | Optimal | Good PSD, efficient |
+| 10-12% | Slightly tough | Reduced fines |
+| > 12% | Plastically deforms | Poor grinding, clogging |
+
+### Temperature Effect
+
+Feed temperature from pretreatment:
+
+| Temperature | Effect |
+|-------------|--------|
+| 20-40°C | Normal grinding |
+| 40-60°C | Reduced strength, easier grinding |
+| 60-80°C | Risk of sticking, fat smearing |
+
+<Callout type="info">
+Pretreated seeds at 60°C and 10% moisture grind more efficiently, producing finer particles with less energy.
+</Callout>
+
+## Applications
+
+### Protein Concentration
+
+For protein flour fractionation:
+- Target D50: 100-150 μm
+- Maximize fines (< 50 μm) for high protein recovery
+- Screen aperture: 1.0-1.5 mm
+
+### Whole Flour Production
+
+For baking applications:
+- Target D50: 150-250 μm
+- Moderate fines for functionality
+- Screen aperture: 1.5-2.5 mm
+
+### Animal Feed
+
+For feed applications:
+- Target D50: 400-800 μm
+- Minimize fines (cost inefficient)
+- Screen aperture: 2.5-4.0 mm
+
+## Next Steps
+
+- [Configuration Guide](/docs/milling/configuration) - Set up your mill
+- [Running Simulations](/docs/milling/simulation) - Execute milling simulations
+- [PSD Analysis](/docs/milling/psd) - Interpret particle size results

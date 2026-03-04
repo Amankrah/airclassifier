@@ -249,6 +249,15 @@ class ClassificationPage(QWidget):
         if "zigzag_channel_depth" in params:
             s.zigzag_depth_mm = params["zigzag_channel_depth"] * 1000
 
+        # Pipeline transfer: particle properties from milling outlet
+        if "particle_diameter_um" in params:
+            s.particle_diameter_um = params["particle_diameter_um"]
+        if "particle_diameter_std_um" in params:
+            s.particle_std_um = params["particle_diameter_std_um"]
+        # When transferred from milling, use generic particle mode
+        if params.get("from_milling_pipeline"):
+            s.material_source = "none"  # Use explicit diameter, not material preset
+
         self.sim_control.set_settings(s)
 
     # ──────────────────────────────────────────────────────────────

@@ -39,8 +39,8 @@ class SeriesConfig:
 
 
 # Minimum height for each individual chart (larger for better readability)
-_CHART_CANVAS_MIN_HEIGHT = 220
-_CHART_FRAME_MIN_HEIGHT = 260
+_CHART_CANVAS_MIN_HEIGHT = 180
+_CHART_FRAME_MIN_HEIGHT = 220
 
 _SCROLLBAR_STYLE = f"""
     QScrollArea {{
@@ -176,13 +176,14 @@ class TimeSeriesChart(QWidget):
         self._chart_power = _SingleScaleChart("Power", "kW")
         self._chart_temperature = _SingleScaleChart("Temperature", "°C")
 
+        # 2-column layout for wider, more readable charts
         grid.addWidget(_wrap_scroll(self._chart_d50), 0, 0)
         grid.addWidget(_wrap_scroll(self._chart_holdup), 0, 1)
-        grid.addWidget(_wrap_scroll(self._chart_chamber), 0, 2)
-        grid.addWidget(_wrap_scroll(self._chart_per_step), 1, 0)
-        grid.addWidget(_wrap_scroll(self._chart_throughput), 1, 1)
-        grid.addWidget(_wrap_scroll(self._chart_power), 1, 2)
-        grid.addWidget(_wrap_scroll(self._chart_temperature), 2, 0)
+        grid.addWidget(_wrap_scroll(self._chart_throughput), 1, 0)
+        grid.addWidget(_wrap_scroll(self._chart_power), 1, 1)
+        grid.addWidget(_wrap_scroll(self._chart_chamber), 2, 0)
+        grid.addWidget(_wrap_scroll(self._chart_per_step), 2, 1)
+        grid.addWidget(_wrap_scroll(self._chart_temperature), 3, 0)
 
         layout.addLayout(grid)
 

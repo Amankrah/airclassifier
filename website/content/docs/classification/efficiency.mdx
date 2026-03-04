@@ -1,0 +1,297 @@
+---
+title: Separation Efficiency
+description: Analyze air classification separation results
+order: 4
+---
+
+# Separation Efficiency Analysis
+
+Evaluate and optimize your air classification performance with detailed efficiency metrics.
+
+## Key Metrics
+
+### Grade Efficiency
+
+Grade efficiency G(d) is the fraction of particles of size d reporting to the fines:
+
+```python
+G(d) = (mass to fines at size d) / (feed mass at size d)
+```
+
+The grade efficiency curve characterizes separation:
+
+```
+G(d) %
+100│                     ╭────────
+   │                   ╱
+ 75│                 ╱
+   │               ╱
+ 50│ - - - - - - ╳ - - - - d_cut
+   │           ╱
+ 25│         ╱
+   │       ╱
+  0│─────╯
+   └─────────────────────────────
+    5   10   20   50   100  200 μm
+```
+
+### Key Points on the Curve
+
+| Point | Value | Significance |
+|-------|-------|--------------|
+| d_cut (d₅₀) | 50% grade efficiency | Cut size |
+| d₂₅ | 25% grade efficiency | Coarse bypass |
+| d₇₅ | 75% grade efficiency | Fines bypass |
+| Sharpness | d₇₅/d₂₅ | Separation quality |
+
+### Sharpness Index
+
+Ideal separation: κ = 1 (step function)
+Real classifiers: κ = 0.4-0.8
+
+| Sharpness (κ) | Quality | Application |
+|---------------|---------|-------------|
+| > 0.7 | Excellent | Precision fractionation |
+| 0.5-0.7 | Good | Standard production |
+| 0.3-0.5 | Fair | Rough separation |
+| < 0.3 | Poor | Investigate issues |
+
+## Protein Analysis
+
+### Composition Tracking
+
+The simulation tracks protein distribution:
+
+```
+Feed (22% protein)
+├── Fines (52% protein)  ← Protein-enriched
+├── Medium (18% protein)
+└── Coarse (8% protein)  ← Starch-enriched
+```
+
+### Protein Recovery
+
+```python
+Recovery = (mass_fines × protein_fines) / (mass_feed × protein_feed) × 100%
+```
+
+Typical performance:
+
+| Strategy | Protein % | Yield % | Recovery % |
+|----------|-----------|---------|------------|
+| High yield | 45-50% | 35-40% | 75-85% |
+| Balanced | 50-55% | 28-33% | 65-75% |
+| High purity | 55-65% | 15-22% | 45-60% |
+
+### Purity-Recovery Trade-off
+
+```
+Protein %
+70│      High Purity
+  │          ●
+60│        ●
+  │      ●       ← Pareto front
+50│    ●
+  │  ●
+40│●
+  └────────────────────
+   20  40  60  80  100%
+        Recovery
+```
+
+<Callout type="info">
+Higher purity always reduces recovery. The Pareto front shows the best achievable combinations for a given feed and classifier.
+</Callout>
+
+## Results Analysis
+
+### Summary Table
+
+```
+┌─────────────────────────────────────────────┐
+│ Classification Results                      │
+├─────────────────────────────────────────────┤
+│              Mass    Protein  Starch  Yield │
+│ Feed         100%    22.0%    55.0%    -    │
+│ Fines         32%    52.3%    28.1%   32%   │
+│ Medium        40%    18.2%    61.4%   40%   │
+│ Coarse        28%     8.1%    72.5%   28%   │
+├─────────────────────────────────────────────┤
+│ Protein Recovery to Fines: 76.1%            │
+│ Starch Recovery to Coarse: 36.9%            │
+│ Separation Sharpness: 0.62                  │
+└─────────────────────────────────────────────┘
+```
+
+### Size Distribution by Stream
+
+Compare PSD of each outlet:
+
+```
+Volume %
+  │ Feed    Fines   Coarse
+15│  ╭╮      ╭╮
+  │ ╱ ╲    ╱  ╲        ╭──╮
+10│╱   ╲  ╱    ╲      ╱    ╲
+  │     ╲╱      ╲    ╱      ╲
+ 5│              ╲──╱        ╲
+  │                           ╲
+ 0│────────────────────────────
+   10  50  100  200  500  μm
+```
+
+## Optimization Tools
+
+### Sensitivity Analysis
+
+Identify critical parameters:
+
+| Parameter | Effect on d_cut | Effect on Sharpness |
+|-----------|-----------------|---------------------|
+| Wheel RPM | Strong (-) | Moderate |
+| Air Flow | Strong (+) | Weak |
+| Feed Rate | Moderate (+) | Moderate (-) |
+| Humidity | Weak | Moderate (-) |
+
+### Parameter Effects
+
+```yaml
+To decrease d_cut (finer separation):
+  - Increase wheel RPM
+  - Decrease air flow
+  - Decrease feed rate
+
+To increase sharpness:
+  - Optimize wheel RPM for feed PSD
+  - Reduce feed moisture
+  - Ensure uniform feed distribution
+```
+
+### Optimization Wizard
+
+Use the built-in optimizer:
+
+1. **Set target**: e.g., "Protein > 50%, Yield > 30%"
+2. **Define bounds**: RPM 3000-5000, Air flow 300-500
+3. **Run optimization**: Automated search
+4. **Review results**: Pareto front visualization
+
+## Diagnostic Charts
+
+### Bypass Analysis
+
+Identify misplaced particles:
+
+**Fines bypass** (coarse particles in fines):
+- High feed rate
+- Too much air flow
+- Turbulence carryover
+
+**Coarse bypass** (fine particles in coarse):
+- Low air velocity
+- Particle agglomeration
+- Electrostatic effects
+
+### Flow Balance
+
+Check mass and air balance:
+
+```
+          Air In (500 m³/hr)
+              ↓
+┌─────────────┴─────────────┐
+│     Classifier System     │
+└───────┬─────────┬─────────┘
+        ↓         ↓
+   Fines Air   Coarse Air
+   (320 m³/hr) (180 m³/hr)
+
+Total Out = Total In ✓
+```
+
+### Pressure Profile
+
+```
+Pressure (Pa)
+500│●
+   │ ╲
+400│  ╲
+   │   ●─── Venturi
+300│    ╲
+   │     ╲
+200│      ●── Zigzag
+   │       ╲
+100│        ●─ Wheel
+   │         ╲
+  0│          ●─ Outlet
+   └──────────────────
+    Feed  →  Outlet
+```
+
+## Export and Reporting
+
+### Data Export
+
+| Format | Contents |
+|--------|----------|
+| CSV | Grade efficiency curves, PSD data |
+| JSON | Complete results with metadata |
+| Excel | Formatted tables and charts |
+
+### Report Generation
+
+Generate comprehensive PDF report:
+
+1. **Summary**: Key metrics and targets
+2. **Grade curves**: Efficiency plots
+3. **Mass balance**: Sankey diagram
+4. **Recommendations**: Optimization suggestions
+
+### Comparison Reports
+
+Compare multiple runs:
+
+```
+┌─────────────────────────────────────────────┐
+│ Run Comparison                              │
+├────────┬───────────┬───────────┬───────────┤
+│        │ Run 1     │ Run 2     │ Run 3     │
+│ RPM    │ 3500      │ 4000      │ 4500      │
+│ d_cut  │ 28 μm     │ 21 μm     │ 16 μm     │
+│ Protein│ 48%       │ 52%       │ 57%       │
+│ Yield  │ 38%       │ 32%       │ 24%       │
+└────────┴───────────┴───────────┴───────────┘
+```
+
+## Troubleshooting Poor Efficiency
+
+### Low Protein Concentration
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| < 45% protein | Cut too coarse | Increase RPM |
+| Broad PSD in fines | Poor sharpness | Check geometry |
+| Variable results | Feed inconsistency | Stabilize feed |
+
+### Low Yield
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| < 25% yield | Cut too fine | Decrease RPM |
+| High reject | Agglomeration | Reduce humidity |
+| Losses | Cyclone inefficiency | Check cyclone |
+
+### Poor Sharpness
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| κ < 0.4 | Turbulence | Reduce air velocity |
+| Tails on curve | Bypassing | Check feed distribution |
+| Inconsistent | Feed variation | Homogenize feed |
+
+## Next Steps
+
+With classification results optimized:
+
+- [Pipeline Overview](/docs/pipeline/overview) - Understand full process
+- [Mass Balance](/docs/pipeline/mass-balance) - Track complete material flow

@@ -195,6 +195,7 @@ class PretreatmentPage(QWidget):
 
     simulation_started = Signal()
     simulation_finished = Signal(dict)
+    transfer_to_milling_requested = Signal(dict)  # Pipeline: PT -> Mill
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -309,6 +310,37 @@ class PretreatmentPage(QWidget):
         self._view_results_btn.setEnabled(False)
         self._view_results_btn.clicked.connect(self._show_results_view)
         layout.addWidget(self._view_results_btn)
+
+        # Pipeline transfer button: PT -> Milling
+        self._transfer_to_milling_btn = QPushButton("Transfer to Milling \u2192")
+        self._transfer_to_milling_btn.setMinimumHeight(32)
+        self._transfer_to_milling_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {COLORS.BG_SURFACE};
+                color: #4ade80;
+                border: 1px solid #4ade80;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-size: 10pt;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: #4ade80;
+                color: {COLORS.BG_DARKEST};
+            }}
+            QPushButton:disabled {{
+                background: {COLORS.BG_SURFACE};
+                color: {COLORS.TEXT_DISABLED};
+                border-color: {COLORS.BORDER};
+            }}
+        """)
+        self._transfer_to_milling_btn.setEnabled(False)
+        self._transfer_to_milling_btn.setToolTip(
+            "Transfer outlet conditions (moisture, temperature, throughput) "
+            "to configure the hammer mill feed"
+        )
+        self._transfer_to_milling_btn.clicked.connect(self._on_transfer_to_milling)
+        layout.addWidget(self._transfer_to_milling_btn)
 
         return bar
 
@@ -1033,6 +1065,11 @@ class PretreatmentPage(QWidget):
         """Switch back to the simulation view."""
         self._view_stack.setCurrentIndex(0)
 
+    def _on_transfer_to_milling(self):
+        """Emit signal to transfer pretreatment results to milling stage."""
+        if self._results:
+            self.transfer_to_milling_requested.emit(self._results)
+
     # ──────────────────────────────────────────────────────────────
     #  Simulation Lifecycle
     # ──────────────────────────────────────────────────────────────
@@ -1052,6 +1089,7 @@ class PretreatmentPage(QWidget):
 
         # Reset results state
         self._view_results_btn.setEnabled(False)
+        self._transfer_to_milling_btn.setEnabled(False)
         self._results_status_label.setText("Simulation running...")
         self._results_status_label.setStyleSheet(
             f"color: {COLORS.WARNING}; font-size: 9pt;"
@@ -1649,8 +1687,9 @@ class PretreatmentPage(QWidget):
                     self._draw_outfeed_section(self._results)
                 self._draw_particle_plots(self._results)
 
-            # Enable "View Full Results" and update status
+            # Enable "View Full Results" and pipeline transfer
             self._view_results_btn.setEnabled(True)
+            self._transfer_to_milling_btn.setEnabled(True)
             self._results_status_label.setText(
                 f"Complete | M={outlet.avg_moisture_wb:.1%} | "
                 f"T={outlet.sensor_temperature_c:.1f} \u00b0C | "

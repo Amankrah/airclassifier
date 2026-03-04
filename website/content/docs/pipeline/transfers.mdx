@@ -1,0 +1,299 @@
+---
+title: Stage Transfers
+description: Transfer data between processing stages
+order: 2
+---
+
+# Stage Transfers
+
+Understanding how data flows between stages is essential for effective pipeline operation.
+
+## Transfer Overview
+
+### Pretreatment → Milling
+
+The treated seed outlet becomes the milling feed:
+
+```
+Pretreatment Outlet          Milling Feed
+┌─────────────────────┐      ┌─────────────────────┐
+│ avg_moisture_wb     │ ───→ │ feed_moisture_wb    │
+│ avg_temperature_c   │ ───→ │ feed_temperature_c  │
+│ throughput_kg_hr    │ ───→ │ feed_rate_kg_hr     │
+│ bulk_density        │ ───→ │ material_density    │
+│ treatment_quality   │ ───→ │ material_hardness   │
+└─────────────────────┘      └─────────────────────┘
+```
+
+### Milling → Classification
+
+The flour PSD becomes the classifier feed:
+
+```
+Milling Outlet               Classification Feed
+┌─────────────────────┐      ┌─────────────────────┐
+│ d50_um              │ ───→ │ particle_d50_um     │
+│ psd_mass_fractions  │ ───→ │ psd_distribution    │
+│ throughput_kg_hr    │ ───→ │ feed_rate_kg_hr     │
+│ flour_moisture      │ ───→ │ particle_moisture   │
+│ protein_content     │ ───→ │ composition_profile │
+└─────────────────────┘      └─────────────────────┘
+```
+
+## Detailed Mappings
+
+### Pretreatment to Milling
+
+#### Moisture Mapping
+
+```python
+# Direct transfer of average moisture
+milling.feed_moisture_wb = pretreatment.outlet.avg_moisture_wb
+
+# Effect on milling:
+# - Lower moisture → more brittle → finer grind
+# - Higher moisture → tougher → coarser grind
+```
+
+#### Temperature Mapping
+
+```python
+# Direct transfer of average temperature
+milling.feed_temperature_c = pretreatment.outlet.avg_temperature_c
+
+# Effect on milling:
+# - Warmer seed → slightly softer → easier grinding
+# - Temperature decay during transfer can be modeled
+```
+
+#### Throughput Mapping
+
+```python
+# Transfer with loss factor
+milling.feed_rate = pretreatment.outlet.throughput * transfer_efficiency
+
+# where transfer_efficiency accounts for:
+# - Handling losses
+# - Sampling
+# - Intermediate storage
+```
+
+#### Material Hardness
+
+```python
+# Derived from treatment intensity
+milling.material_hardness = f(
+    pretreatment.inlet_moisture,
+    pretreatment.outlet_moisture,
+    pretreatment.max_temperature
+)
+
+# Heat treatment reduces hardness (easier milling)
+```
+
+### Milling to Classification
+
+#### PSD Mapping
+
+```python
+# Full distribution transfer
+classification.psd = milling.outlet.psd_mass_fractions
+
+# Key parameters extracted:
+classification.d10 = milling.outlet.d10_um
+classification.d50 = milling.outlet.d50_um
+classification.d90 = milling.outlet.d90_um
+classification.span = milling.outlet.span
+```
+
+#### Composition Profile
+
+```python
+# Protein distribution by size
+# (Smaller particles are protein-enriched)
+for size_bin in psd_bins:
+    protein_fraction[size_bin] = calculate_protein_by_size(
+        size_bin.d_mid,
+        milling.feed_protein,
+        size_enrichment_model
+    )
+```
+
+<Callout type="info">
+The protein-by-size relationship is based on the principle that protein bodies (2-8 μm) are liberated during milling and concentrate in finer fractions, while starch granules (15-30 μm) remain in coarser fractions.
+</Callout>
+
+## Transfer Controls
+
+### Transfer Button
+
+After completing a stage simulation:
+
+```
+┌─────────────────────────────────────────┐
+│ Pretreatment Complete                   │
+│                                         │
+│ Outlet: 10.2% moisture, 62°C, 98 kg/hr  │
+│                                         │
+│ [Transfer to Milling →]                 │
+└─────────────────────────────────────────┘
+```
+
+Click to:
+1. Extract outlet data
+2. Map to next stage inputs
+3. Switch to next stage tab
+4. Pre-populate parameters
+
+### Transfer Options
+
+Configure transfer behavior:
+
+| Option | Description |
+|--------|-------------|
+| Auto-populate | Fill parameters from transfer |
+| Preserve existing | Keep manually set values |
+| Show comparison | Display before/after |
+| Require confirmation | Prompt before overwrite |
+
+### Manual Override
+
+After transfer, you can still modify:
+
+```
+┌─────────────────────────────────────────┐
+│ Milling Feed Properties                 │
+│                                         │
+│ Moisture: [10.2%] ← from transfer       │
+│           ⚠️ Modified from 10.2 to 11.0 │
+│                                         │
+│ Temperature: [62°C] ← from transfer     │
+│                                         │
+│ [Reset to Transfer Values]              │
+└─────────────────────────────────────────┘
+```
+
+## Data Validation
+
+### Automatic Checks
+
+Transfers are validated for:
+
+| Check | Condition | Action if Failed |
+|-------|-----------|------------------|
+| Non-zero mass | throughput > 0 | Block transfer |
+| Valid moisture | 0 < M < 30% | Warning |
+| Valid temperature | 10 < T < 100°C | Warning |
+| PSD complete | sum(fractions) ≈ 1 | Block transfer |
+
+### Warning Examples
+
+```
+⚠️ Transfer Warning
+
+Pretreatment outlet temperature (85°C) exceeds
+recommended milling feed temperature (< 70°C).
+
+This may cause:
+- Fat smearing during milling
+- Protein denaturation
+- Equipment fouling
+
+[Transfer Anyway] [Modify Pretreatment]
+```
+
+### Blocking Conditions
+
+```
+🚫 Transfer Blocked
+
+Cannot transfer: Pretreatment outlet mass is zero.
+
+Possible causes:
+- Simulation not run
+- All material lost to waste
+- Configuration error
+
+Please check pretreatment configuration and re-run.
+```
+
+## Transfer Timing
+
+### Immediate Transfer
+
+Default: Data transferred instantly:
+
+```
+Pretreatment Complete → Click Transfer → Milling Ready
+         ↓                                   ↓
+      10.2% M                             10.2% M
+```
+
+### Modeled Transfer
+
+Optional: Account for transfer delays:
+
+```python
+# Enable transfer modeling
+pipeline.model_transfers = True
+
+# Parameters
+transfer_time_minutes = 5
+ambient_temperature_c = 25
+cooling_coefficient = 0.1
+
+# Result: Temperature decays during transfer
+milling.feed_temp = pretreatment.outlet_temp * exp(-k * t) + T_ambient * (1 - exp(-k * t))
+```
+
+### Storage Effects
+
+For longer holds:
+
+```yaml
+Storage Model:
+  duration_hours: 2
+  storage_temperature_c: 15
+  moisture_equilibration: true
+
+Effects:
+  - Temperature equilibrates to storage
+  - Moisture may shift toward equilibrium
+  - Material may temper (uniform moisture)
+```
+
+## Troubleshooting
+
+### Missing Data
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| "No outlet data" | Stage not run | Run the simulation |
+| "Incomplete PSD" | Simulation truncated | Run longer |
+| "Zero throughput" | All material lost | Check parameters |
+
+### Unexpected Values
+
+| Issue | Check |
+|-------|-------|
+| Wrong moisture | Pretreatment target vs actual |
+| Wrong temperature | Cooling during simulation |
+| Wrong throughput | Mass balance closure |
+
+### Re-Running After Transfer
+
+If you need to modify the previous stage:
+
+1. Make changes to pretreatment
+2. Re-run pretreatment simulation
+3. Transfer again (overwrites previous)
+4. Milling parameters updated
+
+<Callout type="warning">
+Re-transferring overwrites any manual modifications you made to the downstream stage. Save your custom settings first if needed.
+</Callout>
+
+## Next Steps
+
+- [Mass Balance](/docs/pipeline/mass-balance) - Track complete material flow
+- [Pipeline Overview](/docs/pipeline/overview) - Full orchestration guide

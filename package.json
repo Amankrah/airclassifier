@@ -1,0 +1,5 @@
+{
+  "devDependencies": {
+    "@types/mdast": "^4.0.4"
+  }
+}

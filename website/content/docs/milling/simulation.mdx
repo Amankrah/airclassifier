@@ -1,0 +1,270 @@
+---
+title: Running Simulations
+description: Execute milling simulations
+order: 3
+---
+
+# Running Milling Simulations
+
+Execute and monitor hammer mill simulations in ProteinProcessIO.
+
+## Starting a Simulation
+
+### Pre-run Checklist
+
+Before running, verify:
+
+- ✓ Mill parameters configured
+- ✓ Feed properties set (or transferred from pretreatment)
+- ✓ Simulation settings appropriate for your needs
+- ✓ No warnings in the status panel
+
+### Launch Controls
+
+| Method | Action |
+|--------|--------|
+| Button | Click **Run Simulation** |
+| Keyboard | Press `F5` |
+| Menu | Simulation > Run |
+
+## 3D Visualization
+
+### Particle View
+
+The real-time visualization shows:
+
+```
+┌─────────────────────────────────────┐
+│  ○ ○ ○  ← Feed particles            │
+│    ↓                                │
+│  ╭───────────╮                      │
+│  │ ● ●● ●   │  ← Grinding zone     │
+│  │ ─ ───    │     (hammers rotate) │
+│  │  ● ● ●●  │                      │
+│  ╰▓▓▓▓▓▓▓▓▓╯  ← Screen             │
+│    ↓ ↓ ↓                            │
+│  · · · · ·  ← Flour outlet         │
+└─────────────────────────────────────┘
+```
+
+### Color Coding
+
+Particles are colored by size:
+
+| Color | Size Range | Description |
+|-------|------------|-------------|
+| Red | > 1000 μm | Oversize |
+| Orange | 500-1000 μm | Coarse |
+| Yellow | 200-500 μm | Medium |
+| Green | 100-200 μm | Fine |
+| Blue | 50-100 μm | Very fine |
+| Purple | < 50 μm | Ultra-fine |
+
+### View Controls
+
+| Control | Action |
+|---------|--------|
+| Mouse drag | Rotate view |
+| Scroll | Zoom in/out |
+| `R` | Reset camera |
+| `Space` | Pause/resume |
+| `S` | Toggle slow motion |
+
+## Real-Time Charts
+
+### PSD Evolution
+
+Watch the particle size distribution develop:
+
+```
+     Initial          5s             Final
+      ▏                ╭╮             ╭──╮
+    ──▏──            ─╱  ╲─         ─╱    ╲──
+      ▏             ╱    ╲        ╱        ╲
+      ▏           ╱       ╲─    ╱           ╲─
+   ───┼───      ╱           ╲  ╱              ╲
+      10μm    1mm   10μm   1mm   10μm        1mm
+```
+
+### Mass Balance
+
+Track mass through the system:
+
+```
+┌─────────────────────────────────┐
+│ Feed In:     100 kg/hr  ████████│
+│ In Chamber:   12 kg     ██      │
+│ Through Screen: 98 kg/hr ███████│
+│ Losses:        2 kg/hr  █       │
+└─────────────────────────────────┘
+```
+
+### Energy Consumption
+
+Power draw over time:
+
+```
+Power (kW)
+   12│      ╭───────────────────
+   10│    ╱
+    8│  ╱      Steady state
+    6│╱
+    4│
+     └──────────────────────────
+      0    2    4    6    8   10s
+            Startup
+```
+
+## Monitoring Metrics
+
+### Key Indicators
+
+| Metric | Location | Update Rate |
+|--------|----------|-------------|
+| Current D50 | Results panel | 0.5 s |
+| Throughput | Results panel | 1 s |
+| Power draw | Status bar | 0.1 s |
+| Temperature | Status bar | 1 s |
+
+### Health Indicators
+
+| Status | Meaning |
+|--------|---------|
+| Green | Normal operation |
+| Yellow | Approaching limits |
+| Red | Warning condition |
+| Flashing | Critical - action needed |
+
+## Simulation Modes
+
+### Standard Mode
+
+```yaml
+Standard:
+  Particles: 5000
+  Time Step: 0.001 s
+  Duration: 10 s
+  Runtime: ~30 seconds
+```
+
+### Quick Preview
+
+For parameter exploration:
+
+```yaml
+Quick Preview:
+  Particles: 1000
+  Time Step: 0.005 s
+  Duration: 5 s
+  Runtime: ~5 seconds
+```
+
+Enable: **Simulation > Quick Preview**
+
+### Extended Run
+
+For statistical accuracy:
+
+```yaml
+Extended:
+  Particles: 20000
+  Time Step: 0.001 s
+  Duration: 30 s
+  Runtime: ~5 minutes
+```
+
+Enable: **Simulation > Extended Run**
+
+<Callout type="info">
+Extended runs produce smoother PSD curves and more accurate throughput predictions, but require more computation time.
+</Callout>
+
+## GPU Acceleration
+
+### Enabling GPU
+
+If a compatible GPU is available:
+
+1. Go to **Settings > Performance**
+2. Enable **Use GPU Acceleration**
+3. Select your GPU device
+4. Restart simulation
+
+### Performance Comparison
+
+| Mode | 5000 particles | 20000 particles |
+|------|---------------|-----------------|
+| CPU only | 30s | 8 min |
+| GPU (RTX 3060) | 5s | 45s |
+| GPU (RTX 4090) | 2s | 15s |
+
+## Batch Processing
+
+### Parameter Sweep
+
+Explore parameter space:
+
+1. Open **Simulation > Parameter Sweep**
+2. Select variable (e.g., RPM)
+3. Define range: 2500 to 4500, 5 steps
+4. Click **Run Sweep**
+
+Results are compiled into a comparison table.
+
+### Sensitivity Analysis
+
+Identify important parameters:
+
+1. Open **Analysis > Sensitivity**
+2. Select output metric (e.g., D50)
+3. Click **Run Analysis**
+
+The system varies each parameter ±10% and reports sensitivity.
+
+## Interrupting Simulations
+
+### Pause
+
+- Press `Space` to pause
+- Review current state
+- Press `Space` to resume
+
+### Stop
+
+- Press `Escape` to stop gracefully
+- Results up to that point are saved
+- Can export partial results
+
+### Emergency Stop
+
+If the simulation is unresponsive:
+
+- Press `Ctrl+Shift+Escape`
+- Force terminates
+- Recovery may be incomplete
+
+## Troubleshooting
+
+### Simulation Stalls
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| Progress stuck | Numerical instability | Reduce time step |
+| Memory full | Too many particles | Reduce particle count |
+| GPU error | Driver issue | Update drivers or use CPU |
+
+### Unrealistic Results
+
+| Issue | Possible Cause | Check |
+|-------|----------------|-------|
+| No breakage | Feed too soft | Material properties |
+| All fines | Feed too brittle | Moisture setting |
+| Low throughput | Screen clogged | Screen parameters |
+| High temperature | Excessive power | RPM setting |
+
+## Next Steps
+
+After running your simulation:
+
+- [PSD Analysis](/docs/milling/psd) - Interpret size distribution results
+- [Transfer to Classification](/docs/pipeline/transfers) - Send flour to next stage

@@ -1,0 +1,257 @@
+---
+title: Configuration Reference
+description: Complete configuration options reference
+order: 3
+---
+
+# Configuration Reference
+
+Complete reference for all configuration parameters in ProteinProcessIO.
+
+## Pretreatment Parameters
+
+### Machine Configuration
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `belt_width` | float | 0.5-1.5 | 0.9 | m | Conveyor belt width |
+| `belt_speed` | float | 0.01-0.10 | 0.05 | m/s | Belt linear velocity |
+| `belt_length` | float | 1.0-5.0 | 3.0 | m | Treatment zone length |
+| `rf_frequency` | enum | 13.56, 27.12 | 27.12 | MHz | RF operating frequency |
+| `rf_power` | float | 0-15 | 10 | kW | Applied RF power |
+| `electrode_gap` | float | 0.05-0.15 | 0.08 | m | Gap between electrodes |
+
+### Material Properties
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `dielectric_constant` | float | 2-10 | 4.5 | - | Real permittivity (ε') |
+| `loss_factor` | float | 0.1-3 | 0.8 | - | Imaginary permittivity (ε'') |
+| `specific_heat` | float | 1500-3000 | 2100 | J/kg·K | Heat capacity |
+| `thermal_conductivity` | float | 0.05-0.5 | 0.15 | W/m·K | Thermal conductivity |
+| `bulk_density` | float | 600-1000 | 780 | kg/m³ | Bulk density |
+
+### Process Parameters
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `initial_moisture` | float | 0.05-0.20 | 0.14 | wb | Initial moisture (wet basis) |
+| `target_moisture` | float | 0.05-0.15 | 0.10 | wb | Target outlet moisture |
+| `initial_temperature` | float | 10-40 | 25 | °C | Feed temperature |
+| `max_temperature` | float | 50-90 | 65 | °C | Temperature limit |
+| `feed_rate` | float | 10-500 | 100 | kg/hr | Mass flow rate |
+| `bed_depth` | float | 0.02-0.10 | 0.05 | m | Product bed thickness |
+
+### Simulation Settings
+
+| Parameter | Type | Options | Default | Description |
+|-----------|------|---------|---------|-------------|
+| `resolution` | enum | low, medium, high | medium | Spatial grid resolution |
+| `time_step` | enum/float | auto, 0.1-1.0 | auto | Integration time step (s) |
+| `include_convection` | bool | true/false | true | Model air convection |
+| `include_evaporation` | bool | true/false | true | Model moisture loss |
+| `edge_effects` | bool | true/false | true | Model edge heating |
+
+## Milling Parameters
+
+### Mill Configuration
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `rotor_diameter` | float | 0.2-0.5 | 0.30 | m | Hammer circle diameter |
+| `rotor_length` | float | 0.1-0.4 | 0.20 | m | Rotor axial length |
+| `rotor_rpm` | int | 1500-6000 | 3500 | rpm | Rotational speed |
+| `num_hammers` | int | 8-32 | 16 | - | Total hammer count |
+| `hammer_length` | float | 30-80 | 50 | mm | Radial hammer length |
+| `hammer_width` | float | 15-40 | 25 | mm | Axial hammer width |
+| `hammer_thickness` | float | 4-10 | 6 | mm | Tangential thickness |
+
+### Screen Configuration
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `screen_aperture` | float | 0.5-4.0 | 1.5 | mm | Hole diameter |
+| `screen_open_area` | float | 15-45 | 25 | % | Percentage open |
+| `screen_type` | enum | round, square, slot | round | Hole shape |
+| `screen_arc` | float | 90-270 | 180 | ° | Angular coverage |
+
+### Feed Configuration
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `feed_rate` | float | 10-300 | 100 | kg/hr | Mass flow rate |
+| `feed_moisture` | float | 0.06-0.16 | 0.10 | wb | Moisture content |
+| `feed_temperature` | float | 15-75 | 60 | °C | Feed temperature |
+| `feed_d50` | float | 2000-10000 | 5000 | μm | Initial median size |
+
+### Simulation Settings
+
+| Parameter | Type | Range | Default | Description |
+|-----------|------|-------|---------|-------------|
+| `particle_count` | int | 1000-50000 | 5000 | Simulated particles |
+| `time_step` | float | 0.0001-0.01 | 0.001 | Integration step (s) |
+| `duration` | float | 1-60 | 10 | Simulation time (s) |
+| `impact_model` | enum | simple, detailed | detailed | Breakage model |
+| `track_temperature` | bool | true/false | true | Monitor heating |
+
+## Classification Parameters
+
+### System Configuration
+
+| Parameter | Type | Options | Default | Description |
+|-----------|------|---------|---------|-------------|
+| `venturi_enabled` | bool | true/false | true | Enable venturi stage |
+| `zigzag_enabled` | bool | true/false | true | Enable zigzag stage |
+| `wheel_enabled` | bool | true/false | true | Enable wheel stage |
+| `total_air_flow` | float | 100-1000 | 500 | Total air flow (m³/hr) |
+
+### Venturi Configuration
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `channel_width` | float | 0.05-0.30 | 0.15 | m | Channel width |
+| `channel_height` | float | 0.10-0.50 | 0.30 | m | Vertical extent |
+| `air_velocity` | float | 5-20 | 12 | m/s | Throat velocity |
+| `splitter_position` | float | 0.2-0.8 | 0.6 | - | Relative split point |
+
+### Zigzag Configuration
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `num_stages` | int | 4-16 | 8 | - | Number of stages |
+| `channel_width` | float | 0.03-0.15 | 0.08 | m | Flow channel width |
+| `channel_angle` | float | 90-150 | 120 | ° | Bend angle |
+| `air_velocity` | float | 1-8 | 4 | m/s | Through velocity |
+
+### Wheel Configuration
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `diameter` | float | 0.1-0.4 | 0.20 | m | Wheel diameter |
+| `length` | float | 0.05-0.20 | 0.10 | m | Axial length |
+| `rpm` | int | 1000-8000 | 4000 | rpm | Rotational speed |
+| `blade_count` | int | 12-48 | 24 | - | Number of blades |
+| `air_flow` | float | 100-800 | 400 | m³/hr | Air through wheel |
+
+### Feed Configuration
+
+| Parameter | Type | Range | Default | Unit | Description |
+|-----------|------|-------|---------|------|-------------|
+| `feed_rate` | float | 10-200 | 100 | kg/hr | Mass flow rate |
+| `d50` | float | 50-500 | 180 | μm | Median particle size |
+| `spread` | float | 1.5-4.0 | 2.5 | - | Geometric std dev |
+| `density` | float | 1.2-1.6 | 1.35 | g/cm³ | Particle density |
+
+## Global Settings
+
+### Performance
+
+| Parameter | Type | Options | Default | Description |
+|-----------|------|---------|---------|-------------|
+| `use_gpu` | bool | true/false | true | Enable GPU acceleration |
+| `gpu_device` | int | 0-7 | 0 | GPU device index |
+| `num_threads` | int | 1-64 | auto | CPU thread count |
+| `memory_limit` | int | 1024-65536 | 8192 | Max memory (MB) |
+
+### Output
+
+| Parameter | Type | Options | Default | Description |
+|-----------|------|---------|---------|-------------|
+| `output_frequency` | float | 0.1-10 | 1.0 | Data logging interval (s) |
+| `save_visualization` | bool | true/false | false | Save 3D frames |
+| `export_format` | enum | csv, json, both | both | Default export format |
+| `decimal_places` | int | 2-8 | 4 | Numerical precision |
+
+### Pipeline
+
+| Parameter | Type | Options | Default | Description |
+|-----------|------|---------|---------|-------------|
+| `auto_transfer` | bool | true/false | false | Auto-transfer between stages |
+| `transfer_efficiency` | float | 0.9-1.0 | 0.99 | Transfer loss factor |
+| `model_storage` | bool | true/false | false | Model intermediate storage |
+| `mass_tolerance` | float | 0.01-0.10 | 0.02 | Balance closure tolerance |
+
+## Environment Variables
+
+Advanced settings via environment variables:
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PPIO_DATA_DIR` | path | ~/.proteinprocessio | Data directory |
+| `PPIO_LOG_LEVEL` | enum | INFO | Logging verbosity |
+| `PPIO_CUDA_VISIBLE` | string | all | CUDA device visibility |
+| `PPIO_MAX_MEMORY` | int | 8192 | Memory limit (MB) |
+
+## Configuration Files
+
+### User Preferences
+
+Location: `~/.proteinprocessio/preferences.json`
+
+```json
+{
+  "ui": {
+    "theme": "dark",
+    "language": "en",
+    "show_tips": true
+  },
+  "simulation": {
+    "default_resolution": "medium",
+    "auto_save_interval": 300
+  },
+  "export": {
+    "default_format": "csv",
+    "include_metadata": true
+  }
+}
+```
+
+### Default Configurations
+
+Location: `~/.proteinprocessio/defaults/`
+
+Store your preferred starting configurations here. They appear in **File > New from Template**.
+
+## Validation Rules
+
+### Automatic Validation
+
+The system validates:
+
+- Parameter ranges (min/max values)
+- Type correctness
+- Physical consistency (e.g., gap > bed depth)
+- Cross-parameter compatibility
+
+### Warning Levels
+
+| Level | Behavior |
+|-------|----------|
+| Info | Displayed, no action |
+| Warning | Displayed, requires acknowledgment |
+| Error | Blocks execution until fixed |
+
+## API Reference
+
+For programmatic configuration:
+
+```python
+from proteinprocessio import Config
+
+# Load configuration
+config = Config.load("project.acproj")
+
+# Modify parameters
+config.milling.rotor_rpm = 4000
+config.milling.screen_aperture = 1.0
+
+# Validate
+errors = config.validate()
+if not errors:
+    config.save("modified.acproj")
+```
+
+## Next Steps
+
+- [Keyboard Shortcuts](/docs/reference/shortcuts) - Speed up your workflow
+- [File Formats](/docs/reference/file-formats) - Data import/export

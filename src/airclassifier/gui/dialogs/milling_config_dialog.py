@@ -24,7 +24,7 @@ class MillingConfigDialog(QDialog):
 
     def __init__(self, parent: Optional[QWidget] = None, current_params: Optional[Dict[str, Any]] = None):
         super().__init__(parent)
-        self.setWindowTitle("Configure Pin Mill (Hammer Mill)")
+        self.setWindowTitle("Configure Hammer Mill")
         self.setMinimumSize(480, 600)
         self._params = current_params or {}
         self._setup_ui()
@@ -34,7 +34,7 @@ class MillingConfigDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
-        header = QLabel("Pin Mill — Hammer mill (impact + screen classification)")
+        header = QLabel("Hammer Mill (impact milling + screen classification)")
         header.setStyleSheet(f"font-size: 12pt; font-weight: 700; color: {COLORS.TEXT_PRIMARY};")
         layout.addWidget(header)
         sub = QLabel("Configure machine geometry and operating point. Build and run from the Milling page.")

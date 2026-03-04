@@ -94,14 +94,14 @@ if WARP_AVAILABLE:
 
         # Check X position (is particle at a hammer row?)
         x = pos[0]
-        hit_row = False
+        hit_row = int(0)  # Dynamic variable for Warp loop mutation
         for row in range(hammer_rows):
             row_x = row_start_x + float(row) * row_spacing
             if wp.abs(x - row_x) < hammer_width * 0.6:
-                hit_row = True
+                hit_row = int(1)
                 break
 
-        if not hit_row:
+        if hit_row == 0:
             impact_flags[tid] = 0
             impact_energies[tid] = 0.0
             return
@@ -109,7 +109,7 @@ if WARP_AVAILABLE:
         # Check angular position (is a hammer near the particle?)
         # Hammers are evenly spaced angularly
         angular_spacing = 2.0 * 3.14159 / float(hammers_per_row)
-        hit_hammer = False
+        hit_hammer = int(0)  # Dynamic variable for Warp loop mutation
 
         for h in range(hammers_per_row):
             hammer_angle = rotor_theta + float(h) * angular_spacing
@@ -126,10 +126,10 @@ if WARP_AVAILABLE:
             # Check if particle is within hammer angular extent
             # (derived from hammer_width / tip_radius in config)
             if angle_diff < hammer_angular_extent:
-                hit_hammer = True
+                hit_hammer = int(1)
                 break
 
-        if not hit_hammer:
+        if hit_hammer == 0:
             impact_flags[tid] = 0
             impact_energies[tid] = 0.0
             return

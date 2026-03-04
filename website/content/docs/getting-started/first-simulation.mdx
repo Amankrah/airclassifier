@@ -1,0 +1,271 @@
+---
+title: First Simulation
+description: Run your first complete protein processing simulation
+order: 3
+---
+
+# Your First Complete Simulation
+
+In this guide, we'll walk through a complete protein processing simulation from raw legume seeds to fractionated flour. This hands-on tutorial covers all three stages and demonstrates the power of integrated simulation.
+
+## Scenario: Pea Protein Fractionation
+
+We'll simulate processing **yellow field peas** through:
+1. RF pretreatment to optimize moisture
+2. Hammer milling to flour
+3. Air classification to separate protein and starch
+
+**Goal**: Achieve a protein-enriched fraction with >50% protein content.
+
+## Stage 1: Pretreatment
+
+### Setting Up the GP-15 Simulator
+
+The GP-15 is an RF dielectric heating unit that uniformly heats seeds to reduce moisture and improve millability.
+
+Navigate to the **Pretreatment** tab and configure:
+
+```yaml
+Machine Configuration:
+  Belt Width: 0.9 m
+  Belt Speed: 0.05 m/s
+  RF Frequency: 27.12 MHz
+  Electrode Gap: 0.08 m
+
+Material Properties:
+  Material: Yellow Pea
+  Initial Moisture: 14% (wet basis)
+  Initial Temperature: 25°C
+  Bulk Density: 780 kg/m³
+
+Process Target:
+  Target Moisture: 10%
+  Max Temperature: 70°C
+```
+
+<Callout type="warning">
+Exceeding 70°C can denature proteins. The simulation will warn you if temperatures approach this threshold.
+</Callout>
+
+### Understanding RF Heating
+
+RF dielectric heating works by:
+1. Oscillating electric field causes water molecules to rotate
+2. Molecular friction generates heat
+3. Higher moisture areas heat faster (selective heating)
+4. Result: Uniform moisture reduction
+
+### Run and Analyze
+
+Click **Run Simulation**. You'll see:
+
+- **Temperature Profile**: How temperature rises along the belt
+- **Moisture Profile**: Moisture reduction over time
+- **Outlet State**: Final material conditions
+
+**Expected Results:**
+| Parameter | Value |
+|-----------|-------|
+| Outlet Moisture | ~10.2% |
+| Outlet Temperature | ~62°C |
+| Treatment Time | ~180 seconds |
+
+<Callout type="success">
+If your outlet moisture is between 9-11%, you're ready to proceed to milling. This moisture level is optimal for hammer milling pulse crops.
+</Callout>
+
+## Stage 2: Milling
+
+### Transferring from Pretreatment
+
+If you ran pretreatment first, click **Transfer to Milling**. This automatically:
+- Sets the feed moisture to your pretreatment outlet
+- Sets the feed temperature
+- Calculates the feed rate based on throughput
+
+Alternatively, configure manually in the **Milling** tab:
+
+```yaml
+Mill Configuration:
+  Rotor Diameter: 0.3 m
+  Rotor RPM: 3500
+  Number of Hammers: 16
+  Screen Aperture: 1.0 mm
+  Screen Open Area: 25%
+
+Feed Properties:
+  Feed Rate: 100 kg/hr
+  Feed Moisture: 10.2%  # From pretreatment
+  Feed Temperature: 62°C
+
+Simulation Settings:
+  Particle Count: 5000
+  Time Step: 0.001 s
+```
+
+### Milling Physics
+
+The hammer mill simulation models:
+- **Impact breakage**: Particles shatter on hammer impact
+- **Attrition**: Grinding between particles and screen
+- **Classification**: Undersize particles exit through screen
+- **Recirculation**: Oversize particles continue grinding
+
+### Run and Analyze
+
+Click **Run Simulation** and observe:
+
+- **3D Visualization**: Particle flow and breakage events
+- **PSD Evolution**: How particle size changes over time
+- **Energy Input**: Power consumption during grinding
+
+**Expected Results:**
+| Metric | Value |
+|--------|-------|
+| D10 | ~45 μm |
+| D50 | ~180 μm |
+| D90 | ~450 μm |
+| Throughput | 98 kg/hr |
+
+The resulting flour should have a bimodal distribution with:
+- Fine fraction: Protein-rich cotyledon
+- Coarse fraction: Starch granules and hull fragments
+
+## Stage 3: Air Classification
+
+### Transferring from Milling
+
+Click **Transfer to Classifier** to pass your milled flour. The system automatically:
+- Sets the particle size distribution
+- Configures initial particle properties
+- Estimates protein/starch distribution based on size
+
+Or configure manually:
+
+```yaml
+Classifier Configuration:
+  Type: Multi-stage (Venturi + Zigzag + Wheel)
+
+  Venturi Aspirator:
+    Air Velocity: 12 m/s
+    Channel Width: 0.15 m
+
+  Zigzag Classifier:
+    Stages: 8
+    Air Velocity: 4 m/s
+    Channel Angle: 120°
+
+  Wheel Classifier:
+    Wheel Diameter: 0.2 m
+    Wheel RPM: 4000
+    Air Flow: 500 m³/hr
+
+Feed Properties:
+  Feed Rate: 98 kg/hr
+  D50: 180 μm
+  PSD Spread: 2.5 (geometric std dev)
+```
+
+### Classification Physics
+
+Air classification separates particles by:
+- **Drag force**: Air carries light/small particles
+- **Centrifugal force**: Wheel rejects heavy/large particles
+- **Gravity**: Settles dense particles
+
+The simulation models particle trajectories through each stage.
+
+### Run and Analyze
+
+Click **Run Simulation** to see:
+
+- **Particle Trajectories**: Color-coded by size/density
+- **Cut Point Analysis**: Where separation occurs
+- **Mass Balance**: Distribution to each outlet
+
+**Expected Results:**
+| Stream | Mass % | Protein % |
+|--------|--------|-----------|
+| Fine Fraction | 35% | 52% |
+| Medium Fraction | 40% | 38% |
+| Coarse Fraction | 25% | 22% |
+
+<Callout type="success">
+A fine fraction with >50% protein indicates successful fractionation! This protein-enriched stream is suitable for food applications.
+</Callout>
+
+## Analyzing Complete Pipeline Results
+
+### Mass Balance Check
+
+After running all three stages, check the overall mass balance:
+
+```
+Input: 100 kg/hr raw peas
+├── Pretreatment Loss: ~2% (moisture)
+├── Milling Loss: ~0.5% (dust)
+└── Classification:
+    ├── Protein Fraction: 34 kg/hr
+    ├── Starch Fraction: 39 kg/hr
+    └── Hull Fraction: 24 kg/hr
+```
+
+### Quality Metrics
+
+The simulation provides key quality indicators:
+
+| Metric | Value | Target |
+|--------|-------|--------|
+| Protein Recovery | 78% | >75% |
+| Protein Purity | 52% | >50% |
+| Energy Consumption | 45 kWh/ton | <50 kWh/ton |
+| Process Yield | 97.5% | >95% |
+
+### Optimization Opportunities
+
+Based on your results, consider:
+
+1. **Increase protein recovery**: Reduce wheel RPM to capture more fine particles
+2. **Increase purity**: Add a second classification pass
+3. **Reduce energy**: Increase screen aperture (coarser grind)
+
+## Exporting Your Results
+
+### Generate a Report
+
+1. Click **File > Export Report**
+2. Select **PDF Report** format
+3. Include all stages
+4. Add your notes and observations
+
+The report includes:
+- All configuration parameters
+- Charts and visualizations
+- Numerical results
+- Mass balance diagrams
+
+### Export for Further Analysis
+
+For spreadsheet analysis:
+1. Click **File > Export Data**
+2. Choose **CSV** format
+3. Select data series to export
+
+## Saving Your Configuration
+
+Save this as a template for future simulations:
+
+1. Click **File > Save As Template**
+2. Name it "Yellow Pea Standard Process"
+3. Add a description
+
+You can now start new projects from this template.
+
+## Next Steps
+
+Congratulations on completing your first full simulation! Continue learning:
+
+- [Pretreatment Deep Dive](/docs/pretreatment/overview) - Optimize RF heating parameters
+- [Milling Optimization](/docs/milling/psd) - Fine-tune particle size
+- [Classification Efficiency](/docs/classification/efficiency) - Maximize separation
+- [Pipeline Strategies](/docs/pipeline/overview) - Advanced process design

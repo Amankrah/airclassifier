@@ -1,0 +1,264 @@
+---
+title: Orchestration Overview
+description: Multi-stage process orchestration
+order: 1
+---
+
+# Pipeline Orchestration
+
+Pipeline mode enables seamless integration of all three processing stages: Pretreatment, Milling, and Air Classification. This creates a complete simulation of your protein fractionation process.
+
+## Pipeline Concept
+
+Instead of running each stage independently, pipeline mode:
+
+1. **Transfers data** automatically between stages
+2. **Tracks mass** through the entire process
+3. **Maintains consistency** in material properties
+4. **Enables optimization** across the full process
+
+### Process Flow
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│ Pretreatment│     │   Milling   │     │Classification│
+│             │ ──→ │             │ ──→ │             │
+│   GP-15 RF  │     │ Hammer Mill │     │ Air Classify│
+└─────────────┘     └─────────────┘     └─────────────┘
+       │                  │                    │
+       ↓                  ↓                    ↓
+   Moisture          PSD flour           Protein
+   Temperature       Throughput          Starch
+   Treated seed      Energy              Fractions
+```
+
+## Enabling Pipeline Mode
+
+### Automatic Activation
+
+Pipeline mode activates when you:
+
+1. Complete a pretreatment simulation
+2. Click **Transfer to Milling →**
+3. Complete milling simulation
+4. Click **Transfer to Classifier →**
+
+### Manual Activation
+
+Enable pipeline mode explicitly:
+
+1. Go to **Mode > Pipeline Mode**
+2. Or press `Ctrl+P`
+3. Pipeline status bar appears
+
+### Pipeline Status Bar
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 🔗 Pipeline Mode Active                            │
+│                                                    │
+│ ● Pretreatment ─○─ Milling ─○─ Classification     │
+│   ✓ Complete      In Progress    Pending          │
+│                                                    │
+│ Mass Balance: 98.2 kg/hr → 96.8 kg/hr             │
+└─────────────────────────────────────────────────────┘
+```
+
+## Transfer Mechanism
+
+### What Gets Transferred
+
+**Pretreatment → Milling:**
+
+| Property | Source | Destination |
+|----------|--------|-------------|
+| Moisture | outlet.avg_moisture_wb | feed.moisture |
+| Temperature | outlet.avg_temperature_c | feed.temperature |
+| Throughput | outlet.throughput_kg_hr | feed.rate |
+| Material | same | same |
+
+**Milling → Classification:**
+
+| Property | Source | Destination |
+|----------|--------|-------------|
+| PSD | outlet.psd_fractions | feed.psd |
+| D50 | outlet.d50_um | feed.particle_size |
+| Throughput | outlet.throughput | feed.rate |
+| Protein distribution | calculated | particle.protein |
+
+### Transfer Validation
+
+The system validates transfers:
+
+- ✓ Non-zero output from previous stage
+- ✓ Compatible material types
+- ✓ Reasonable property ranges
+- ✓ Mass balance closure
+
+<Callout type="warning">
+If a transfer fails validation, you'll see specific warnings. Common issues include zero throughput or extreme temperatures.
+</Callout>
+
+## Pipeline State
+
+### State Tracking
+
+The pipeline maintains state for:
+
+```python
+pipeline_state = {
+    "pretreatment": {
+        "status": "complete",
+        "result": {...},
+        "outlet": OutletState(...),
+        "params_used": {...}
+    },
+    "milling": {
+        "status": "in_progress",
+        "result": None,
+        "outlet": None,
+        "params_used": {...}
+    },
+    "classification": {
+        "status": "pending",
+        "result": None,
+        "outlet": None,
+        "params_used": None
+    }
+}
+```
+
+### State Persistence
+
+Pipeline state is saved with your project:
+
+- Automatic save on transfer
+- Resume interrupted pipelines
+- Compare pipeline runs
+
+## Workflow Options
+
+### Sequential Execution
+
+Run each stage manually with review:
+
+1. Run pretreatment → Review results → Transfer
+2. Run milling → Review results → Transfer
+3. Run classification → Review final results
+
+**Best for:** Learning, debugging, detailed analysis
+
+### Continuous Pipeline
+
+Run all stages automatically:
+
+1. Configure all three stages
+2. Click **Run Full Pipeline**
+3. System executes sequentially
+4. Review complete results
+
+**Best for:** Production optimization, batch processing
+
+### Selective Re-run
+
+Modify and re-run specific stages:
+
+1. Change milling parameters
+2. Click **Re-run from Milling**
+3. Classification re-runs with new input
+
+**Best for:** Iterative optimization
+
+## Pipeline Configuration
+
+### Global Settings
+
+```yaml
+Pipeline Settings:
+  auto_transfer: true       # Transfer without prompt
+  save_intermediate: true   # Save each stage result
+  stop_on_warning: false    # Continue despite warnings
+  mass_tolerance: 0.02      # 2% mass balance tolerance
+```
+
+### Stage Dependencies
+
+Configure how stages interact:
+
+```yaml
+Dependencies:
+  milling:
+    requires: pretreatment.complete
+    uses:
+      - pretreatment.outlet.moisture
+      - pretreatment.outlet.temperature
+      - pretreatment.outlet.throughput
+
+  classification:
+    requires: milling.complete
+    uses:
+      - milling.outlet.psd
+      - milling.outlet.throughput
+      - milling.outlet.composition
+```
+
+## Use Cases
+
+### Process Development
+
+Explore the full process design space:
+
+1. Set up baseline parameters for all stages
+2. Run full pipeline
+3. Identify bottlenecks
+4. Optimize critical stages
+5. Re-run to verify improvements
+
+### Scale-Up Studies
+
+Compare pilot to production scale:
+
+1. Configure pilot-scale pipeline
+2. Run and validate against data
+3. Modify for production scale
+4. Predict production performance
+
+### Sensitivity Analysis
+
+Understand parameter impacts:
+
+1. Define parameter ranges for each stage
+2. Run combinatorial pipeline sweeps
+3. Analyze cross-stage interactions
+4. Identify critical control points
+
+## Best Practices
+
+### Validation Checkpoints
+
+After each transfer:
+- ✓ Review mass balance
+- ✓ Check property ranges
+- ✓ Verify material consistency
+- ✓ Assess quality metrics
+
+### Documentation
+
+Record your pipeline runs:
+- Tag significant runs
+- Add notes to results
+- Export configurations
+- Generate comparison reports
+
+### Version Control
+
+Manage pipeline configurations:
+- Save baseline configurations
+- Track parameter changes
+- Compare run histories
+- Revert to previous setups
+
+## Next Steps
+
+- [Stage Transfers](/docs/pipeline/transfers) - Detailed transfer mechanics
+- [Mass Balance](/docs/pipeline/mass-balance) - Track mass through pipeline

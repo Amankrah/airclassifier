@@ -194,8 +194,9 @@ class CoupledMillingEngine:
     # Discharge particle visualization (particles flowing through outlet)
     _discharge_particles: List[DischargeParticle] = field(default_factory=list)
     _discharge_max_age: float = 0.5  # Remove after 0.5s (fallen through chute)
-    _discharge_chute_y: float = -0.25  # Y position of discharge outlet
-    _discharge_chute_z: float = -0.15  # Z position (below screen)
+    # Note: _discharge_chute_y/z are set dynamically in _setup_solvers based on scale
+    _discharge_chute_y: float = -0.25  # Y position of discharge outlet (scaled in _setup_solvers)
+    _discharge_chute_z: float = -0.15  # Z position (below screen) (scaled in _setup_solvers)
     _max_discharge_vis: int = 200  # Max discharge particles to visualize
 
     # History
@@ -248,6 +249,11 @@ class CoupledMillingEngine:
         # particles bounce off the screen, not the housing wall.
         self.chamber_radius = self.config.screen_inner_radius_m
         self.chamber_length = self.config.housing_length_m
+
+        # Scale discharge visualization positions (reference: 0.20m pilot scale)
+        scale = self.chamber_radius / 0.20
+        self._discharge_chute_y = -0.25 * scale
+        self._discharge_chute_z = -0.15 * scale
 
         # Reagglomeration RNG
         if self._reagglom_rng is None:
@@ -477,6 +483,7 @@ class CoupledMillingEngine:
 
         # Update convergence detector if configured
         if self.convergence_detector is not None:
+            feed_rate_kg_per_s = feed_mass / dt if dt > 0 else 0.0
             self.convergence_detector.update(
                 time_s=self.time_s,
                 d50_m=d50,
@@ -484,6 +491,7 @@ class CoupledMillingEngine:
                 power_kw=total_power,
                 dt=dt,
                 particle_count=self.particles.count,
+                feed_rate_kg_per_s=feed_rate_kg_per_s,
             )
 
         # Update discharge visualization particles
@@ -552,13 +560,22 @@ class CoupledMillingEngine:
         rng = np.random.default_rng()
 
         # Position at feed chute outlet (top of housing)
-        feed_x = 0.15  # Center of feed opening
+        # Scale factor based on housing radius (reference: 0.20m pilot scale)
+        scale = self.chamber_radius / 0.20
+        # Feed opening X offset matches housing.py: 0.10 * scale from housing start
+        # Feed center is offset + half the feed opening width
+        feed_opening_offset = 0.10 * scale
+        feed_opening_width = self.config.feed_chute_width_m
+        feed_x = feed_opening_offset + feed_opening_width / 2.0
         feed_y = self.chamber_radius * 0.9  # Near top
         feed_z = 0.0
 
-        x = rng.normal(feed_x, 0.02, num_new)
+        # Spread particles across the feed opening (scaled)
+        x_spread = feed_opening_width * 0.3  # 30% of opening width
+        z_spread = self.config.feed_chute_height_m * 0.25  # 25% of opening depth
+        x = rng.normal(feed_x, x_spread, num_new)
         y = np.full(num_new, feed_y)
-        z = rng.normal(feed_z, 0.03, num_new)
+        z = rng.normal(feed_z, z_spread, num_new)
 
         new_pos = np.column_stack([x, y, z]).astype(np.float32)
 
@@ -919,9 +936,11 @@ class CoupledMillingEngine:
 
                 # Start at actual screen position, shifted just outside the screen
                 r_yz = math.sqrt(pos[1] ** 2 + pos[2] ** 2)
+                # Scale exit offset (reference: 0.20m pilot scale)
+                exit_offset = 0.03 * (self.chamber_radius / 0.20)
                 if r_yz > 0.01:
-                    # Push 3cm past screen surface (particle exits through screen holes)
-                    exit_scale = (r_yz + 0.03) / r_yz
+                    # Push past screen surface (particle exits through screen holes)
+                    exit_scale = (r_yz + exit_offset) / r_yz
                     y = pos[1] * exit_scale
                     z = pos[2] * exit_scale
                 else:

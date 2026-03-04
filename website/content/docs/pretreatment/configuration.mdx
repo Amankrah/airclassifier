@@ -1,0 +1,210 @@
+---
+title: Configuration
+description: Configure pretreatment simulation parameters
+order: 2
+---
+
+# Pretreatment Configuration
+
+This guide covers all configuration options for the GP-15 RF heating simulation.
+
+## Machine Parameters
+
+### Belt Configuration
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Belt Width | 0.5-1.5 m | 0.9 m | Width of conveyor belt |
+| Belt Speed | 0.01-0.1 m/s | 0.05 m/s | Linear belt velocity |
+| Belt Length | 1.0-5.0 m | 3.0 m | Total treatment length |
+
+```python
+# Configuration example
+belt_config = {
+    "width_m": 0.9,
+    "speed_m_per_s": 0.05,
+    "length_m": 3.0
+}
+```
+
+### RF System
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Frequency | 13.56 or 27.12 MHz | 27.12 MHz | RF operating frequency |
+| Power | 0-15 kW | 10 kW | Applied RF power |
+| Electrode Gap | 0.05-0.15 m | 0.08 m | Distance between electrodes |
+
+<Callout type="info">
+27.12 MHz is the standard ISM band frequency for industrial RF heating. 13.56 MHz may be used for deeper penetration in thick beds.
+</Callout>
+
+## Material Properties
+
+### Predefined Materials
+
+Select from the material database:
+
+```yaml
+Available Materials:
+  - Yellow Pea (default)
+  - Green Pea
+  - Red Lentil
+  - Green Lentil
+  - Chickpea (Desi)
+  - Chickpea (Kabuli)
+  - Faba Bean
+  - Navy Bean
+  - Black Bean
+```
+
+### Custom Material Definition
+
+For custom materials, provide:
+
+```python
+custom_material = {
+    "name": "Custom Legume",
+
+    # Dielectric properties (at 27.12 MHz)
+    "dielectric_constant": 4.5,      # ε' (real part)
+    "loss_factor": 0.8,              # ε'' (imaginary part)
+    "dielectric_temp_coeff": 0.02,   # Change per °C
+    "dielectric_moisture_coeff": 0.3, # Change per % moisture
+
+    # Thermal properties
+    "specific_heat_j_per_kg_k": 2100,
+    "thermal_conductivity_w_per_m_k": 0.15,
+    "density_kg_per_m3": 780,
+
+    # Physical properties
+    "seed_diameter_mm": 7.5,
+    "bulk_porosity": 0.38
+}
+```
+
+### Moisture-Dependent Properties
+
+Dielectric properties vary significantly with moisture:
+
+| Moisture (% wb) | ε' | ε'' |
+|-----------------|-----|-----|
+| 8% | 3.2 | 0.4 |
+| 10% | 3.8 | 0.6 |
+| 12% | 4.5 | 0.8 |
+| 14% | 5.2 | 1.1 |
+| 16% | 6.0 | 1.4 |
+
+The simulation interpolates between these values.
+
+## Process Parameters
+
+### Initial Conditions
+
+| Parameter | Range | Unit | Description |
+|-----------|-------|------|-------------|
+| Initial Moisture | 5-20 | % wb | Starting moisture content |
+| Initial Temperature | 10-40 | °C | Starting temperature |
+| Feed Rate | 10-500 | kg/hr | Mass flow rate |
+| Bed Depth | 0.02-0.10 | m | Product bed thickness |
+
+### Target Conditions
+
+| Parameter | Range | Unit | Description |
+|-----------|-------|------|-------------|
+| Target Moisture | 5-15 | % wb | Desired outlet moisture |
+| Max Temperature | 50-80 | °C | Temperature limit |
+| Max Rate of Temp Rise | 1-5 | °C/s | Heating rate limit |
+
+<Callout type="warning">
+Setting Max Temperature above 70°C may cause protein denaturation. For food-grade applications, stay below 65°C.
+</Callout>
+
+## Simulation Settings
+
+### Resolution
+
+| Parameter | Options | Default | Description |
+|-----------|---------|---------|-------------|
+| Spatial Resolution | Low/Medium/High | Medium | Grid fineness |
+| Time Step | Auto/0.1s/0.5s/1s | Auto | Integration step |
+| Output Frequency | Every step/1s/5s | 1s | Data logging rate |
+
+```yaml
+Resolution Settings:
+  Low: 10 x 5 grid (fast, approximate)
+  Medium: 20 x 10 grid (balanced)
+  High: 50 x 25 grid (accurate, slow)
+```
+
+### Physics Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| Include Convection | Yes | Model air convection effects |
+| Include Evaporation | Yes | Model moisture loss |
+| Bed Uniformity | Variable | Account for uneven bed depth |
+| Edge Effects | Yes | Model edge heating variations |
+
+## Configuration Files
+
+### Saving Configuration
+
+Configurations can be saved and loaded:
+
+```json
+{
+  "name": "Pea Drying Standard",
+  "version": "1.0",
+  "machine": {
+    "belt_width_m": 0.9,
+    "belt_speed_m_per_s": 0.05,
+    "rf_power_kw": 10,
+    "electrode_gap_m": 0.08
+  },
+  "material": "Yellow Pea",
+  "process": {
+    "initial_moisture_pct": 14,
+    "initial_temp_c": 25,
+    "target_moisture_pct": 10,
+    "max_temp_c": 65
+  },
+  "simulation": {
+    "resolution": "medium",
+    "time_step": "auto"
+  }
+}
+```
+
+### Command Line Usage
+
+For batch processing:
+
+```bash
+proteinprocessio pretreatment \
+  --config pea_drying.json \
+  --output results/ \
+  --format csv
+```
+
+## Validation
+
+The simulator validates configurations before running:
+
+### Automatic Checks
+
+- Electrode gap > bed depth
+- Belt speed compatible with treatment time
+- Power level within machine capacity
+- Temperature targets achievable
+
+### Warning Conditions
+
+- Bed depth > 0.08 m (uneven heating risk)
+- Power density > 5 kW/m² (arc risk)
+- Treatment time > 300 s (productivity concern)
+
+## Next Steps
+
+- [Running Simulations](/docs/pretreatment/simulation) - Execute your configuration
+- [Interpreting Results](/docs/pretreatment/results) - Analyze outputs

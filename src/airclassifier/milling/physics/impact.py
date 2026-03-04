@@ -273,8 +273,11 @@ class ImpactSolver:
         # Geometry derived from config
         tip_radius = config.hammer_tip_radius_m
 
+        # Scale factor for clearances (reference: 0.20m pilot scale housing)
+        scale = config.housing_inner_radius_m / 0.20
+
         # Row spacing: evenly distribute hammer rows along usable rotor length
-        margin = 0.04  # End-plate clearance
+        margin = 0.04 * scale  # Scaled end-plate clearance
         usable_length = config.rotor_length_m - 2 * margin
         spacing = usable_length / max(config.hammer_rows - 1, 1)
 

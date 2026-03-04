@@ -129,6 +129,7 @@ class MillingPage(QWidget):
     """
 
     simulation_finished = Signal(dict)
+    transfer_to_classifier_requested = Signal(dict)  # Pipeline: Mill -> Classifier
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -245,6 +246,35 @@ class MillingPage(QWidget):
             self._view_results_btn.clicked.connect(self._toggle_results)
             dashboard_layout.addWidget(self._view_results_btn)
 
+            # Pipeline transfer button: Mill -> Classifier
+            self._transfer_to_classifier_btn = QPushButton("Transfer to Classifier \u2192")
+            self._transfer_to_classifier_btn.setEnabled(False)
+            self._transfer_to_classifier_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {COLORS.BG_SURFACE};
+                    color: #60a5fa;
+                    border: 1px solid #60a5fa;
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background: #60a5fa;
+                    color: {COLORS.BG_DARKEST};
+                }}
+                QPushButton:disabled {{
+                    background: {COLORS.BG_DARK};
+                    border-color: {COLORS.BORDER_SUBTLE};
+                    color: {COLORS.TEXT_DISABLED};
+                }}
+            """)
+            self._transfer_to_classifier_btn.setToolTip(
+                "Transfer PSD (particle size distribution), moisture, and temperature "
+                "to configure the air classifier feed"
+            )
+            self._transfer_to_classifier_btn.clicked.connect(self._on_transfer_to_classifier)
+            dashboard_layout.addWidget(self._transfer_to_classifier_btn)
+
             sim_layout.addWidget(dashboard_container)
 
         # Timeline widget
@@ -291,7 +321,7 @@ class MillingPage(QWidget):
             self._plotter.add_axes()
             layout.addWidget(self._plotter.interactor)
             self._plotter.add_text(
-                "Hammer Mill (Pin Mill)\nConfigure and click Run to start",
+                "Hammer Mill\nConfigure and click Run to start",
                 position="upper_left", font_size=10, color=COLORS.TEXT_MUTED,
                 name="placeholder_text",
             )
@@ -373,6 +403,7 @@ class MillingPage(QWidget):
             "Mass-processed",
             "Steady-state",
             "Target d50",
+            "Batch complete",
         ])
         self._term_mode_combo.currentIndexChanged.connect(self._on_term_mode_changed)
         f.addRow("Termination:", self._term_mode_combo)
@@ -484,11 +515,12 @@ class MillingPage(QWidget):
 
     def _on_term_mode_changed(self, index: int):
         """Handle termination mode selection change."""
-        # Mode indices: 0=Time, 1=Mass, 2=Steady-state, 3=Target d50
+        # Mode indices: 0=Time, 1=Mass, 2=Steady-state, 3=Target d50, 4=Batch complete
         is_time = (index == 0)
         is_mass = (index == 1)
         is_steady = (index == 2)
         is_target_d50 = (index == 3)
+        is_batch = (index == 4)
         is_physics = not is_time  # Any physics-based mode
 
         # Show/hide duration (only for time-based)
@@ -509,6 +541,11 @@ class MillingPage(QWidget):
         self._max_time_row[0].setVisible(is_physics)
         self._max_time_row[1].setVisible(is_physics)
 
+        # For batch mode, require input mass > 0 (show hint)
+        if is_batch and hasattr(self, '_seeds_feed_mass_spin'):
+            if self._seeds_feed_mass_spin.value() == 0:
+                self._seeds_feed_mass_spin.setValue(1.0)  # Default 1 kg batch
+
         # Force layout update to reflect visibility changes
         self.updateGeometry()
 
@@ -516,7 +553,7 @@ class MillingPage(QWidget):
         """Get current termination mode string."""
         if _HAS_NEW_WIDGETS and hasattr(self, "_control_panel"):
             return self._control_panel.get_termination_mode()
-        modes = ["time", "mass", "steady_state", "target_d50"]
+        modes = ["time", "mass", "steady_state", "target_d50", "batch_complete"]
         return modes[self._term_mode_combo.currentIndex()]
 
     def _log(self, msg: str):
@@ -539,6 +576,11 @@ class MillingPage(QWidget):
         if hasattr(self, "_main_stack"):
             self._main_stack.setCurrentIndex(0)
 
+    def _on_transfer_to_classifier(self):
+        """Emit signal to transfer milling results to air classifier stage."""
+        if self._results:
+            self.transfer_to_classifier_requested.emit(self._results)
+
     def _show_config_wizard(self):
         """Show the milling configuration wizard."""
         try:
@@ -552,6 +594,17 @@ class MillingPage(QWidget):
     def _on_wizard_complete(self, params: Dict[str, Any]):
         """Handle wizard completion."""
         self._last_params.update(params)
+
+        # Map wizard params to control panel recipe format and update UI
+        if _HAS_NEW_WIDGETS and hasattr(self, "_control_panel"):
+            recipe = {
+                "rotor_rpm": params.get("mill_rotor_rpm", 3000),
+                "screen_aperture_mm": params.get("mill_screen_aperture_mm", 0.75),
+                "feed_rate_kg_per_hr": params.get("mill_feed_rate_kg_per_hr", 500),
+            }
+            self._control_panel.set_recipe(recipe)
+            self._log(f"Applied wizard config: RPM={recipe['rotor_rpm']}, Screen={recipe['screen_aperture_mm']}mm")
+
         self.build_system(self._last_params)
 
     def _show_export_dialog(self):
@@ -659,22 +712,58 @@ class MillingPage(QWidget):
             feed_rate_kg_per_hr=config.feed_rate_kg_per_hr,
             run_duration_s=recipe_data.get("duration_s", 60),
             seeds_feed_mass_kg=recipe_data.get("seeds_feed_mass_kg", p.get("mill_seeds_feed_mass_kg", p.get("mill_yellow_peas_feed_mass_kg", 0.0))),
+            # Feed conditions from pipeline transfer (pretreatment outlet)
+            feed_moisture_wb=p.get("mill_feed_moisture_wb", 0.12),
+            feed_temperature_c=p.get("mill_feed_temperature_c", 60.0),
+            feed_d50_um=p.get("mill_feed_d50_um", 3000.0),
         )
 
-        self._sim = HammerMillSimulator(config=config)
+        # Use GPU acceleration if available - with explicit CUDA initialization
+        device = "cpu"
+        try:
+            from airclassifier.milling.kernels import (
+                WARP_AVAILABLE,
+                get_gpu_info,
+                init_cuda_device,
+            )
+            if WARP_AVAILABLE:
+                # Initialize CUDA device
+                cuda_ok = init_cuda_device()
+                if cuda_ok:
+                    device = "cuda"
+                    gpu_info = get_gpu_info()
+                    self._log(f"GPU: {gpu_info['device_name']} (CUDA enabled)")
+                    self._log(f"Warp version: {gpu_info['warp_version']}")
+                else:
+                    self._log("CUDA init failed, falling back to CPU")
+            else:
+                self._log("Warp not available, using CPU")
+        except ImportError as e:
+            self._log(f"GPU check failed: {e}, using CPU")
+
+        self._sim = HammerMillSimulator(config=config, device=device)
         self._sim.load_recipe(recipe)
         self._sim.initialize(initial_holdup_kg=0.01)
+        self._log(f"Simulation device: {device.upper()}")
 
         # Configure termination mode
         from airclassifier.milling import TerminationConfig
 
         # Get termination config from recipe_data (works for both new and fallback widgets)
         term_mode = recipe_data.get("termination_mode", "time")
+        seeds_feed_mass = recipe_data.get("seeds_feed_mass_kg", 0.0)
+
+        # Auto-switch to batch_complete when seeds_feed_mass_kg > 0
+        if seeds_feed_mass > 0 and term_mode == "time":
+            term_mode = "batch_complete"
+            self._log(f"Batch mode: {seeds_feed_mass:.2f} kg seeds → auto-switched to batch_complete")
+
         term_config = TerminationConfig(
             mode=term_mode,
             run_duration_s=recipe_data.get("duration_s", 60),
             target_mass_kg=recipe_data.get("target_mass_kg", 1.0),
             target_d50_um=recipe_data.get("target_d50_um", 25),
+            target_feed_mass_kg=seeds_feed_mass,  # For batch_complete mode
             min_run_time_s=recipe_data.get("min_run_time_s", 5.0),
             max_run_time_s=recipe_data.get("max_run_time_s", 300),
         )
@@ -684,11 +773,17 @@ class MillingPage(QWidget):
         # Calculate n_steps based on mode
         if term_mode == "time":
             duration_s = recipe_data.get("duration_s", 60)
+        elif term_mode == "batch_complete" and seeds_feed_mass > 0:
+            # Estimate: feeding time + processing time (2x safety margin)
+            feed_rate_kg_s = recipe_data.get("feed_rate_kg_per_hr", 500) / 3600.0
+            feeding_time = seeds_feed_mass / feed_rate_kg_s if feed_rate_kg_s > 0 else 60
+            estimated_duration = feeding_time * 2.5  # Allow time for discharge
+            duration_s = min(estimated_duration, recipe_data.get("max_run_time_s", 300))
         else:
             # For physics-based modes, use max_run_time as upper bound
             duration_s = recipe_data.get("max_run_time_s", 300)
 
-        dt = 0.002
+        dt = 0.005  # 5ms timestep (was 2ms) - 2.5x faster simulation
         n_steps = int(duration_s / dt)
 
         if _HAS_NEW_WIDGETS and hasattr(self, "_control_panel"):
@@ -702,10 +797,11 @@ class MillingPage(QWidget):
             "mass": "Mass-processed",
             "steady_state": "Steady-state",
             "target_d50": "Target d50",
+            "batch_complete": "Batch complete",
         }
         self._log(f"Running mill: {mode_names.get(term_mode, term_mode)} mode, max {duration_s:.0f}s, dt={dt}")
 
-        steps_per_frame = [5, 10]
+        steps_per_frame = [10, 25]  # More steps per frame for faster simulation
         transient_steps = int(0.5 / dt)
         current_step = [0]
         # Visual rotation tracking to avoid stroboscopic effect
@@ -720,13 +816,14 @@ class MillingPage(QWidget):
             ramp = min(current_step[0] / max(transient_steps, 1), 1.0)
             batch = int(steps_per_frame[0] + ramp * (steps_per_frame[1] - steps_per_frame[0]))
             # Fewer steps per frame when many particles so physics stays within frame budget (~16 ms)
+            # Relaxed thresholds with 5ms timestep (2.5x fewer steps needed)
             n_particles = self._sim.engine.particles.count if self._sim and self._sim.engine else 0
-            if n_particles > 2000:
-                batch = min(batch, 1)
-            elif n_particles > 500:
+            if n_particles > 5000:
                 batch = min(batch, 2)
-            elif n_particles > 200:
-                batch = min(batch, 4)
+            elif n_particles > 2000:
+                batch = min(batch, 5)
+            elif n_particles > 500:
+                batch = min(batch, 10)
             batch = min(batch, n_steps - current_step[0])
 
             done = 0
@@ -908,13 +1005,15 @@ class MillingPage(QWidget):
             recipe_data = {"duration_s": self._duration_spin.value()}
 
         duration_s = recipe_data.get("duration_s", 60)
-        result = self._sim.build_result_from_engine(duration_s=duration_s, dt=0.002)
+        result = self._sim.build_result_from_engine(duration_s=duration_s, dt=0.005)
         outlet = self._sim.get_outlet_conditions()
         self._results = {"result": result, "outlet": outlet}
 
-        # Enable results button
+        # Enable results and transfer buttons
         if hasattr(self, "_view_results_btn"):
             self._view_results_btn.setEnabled(True)
+        if hasattr(self, "_transfer_to_classifier_btn"):
+            self._transfer_to_classifier_btn.setEnabled(True)
 
         # Update results views
         if _HAS_NEW_WIDGETS and hasattr(self, "_results_page"):

@@ -1,0 +1,212 @@
+---
+title: Running Simulations
+description: Execute pretreatment simulations
+order: 3
+---
+
+# Running Pretreatment Simulations
+
+This guide covers how to execute GP-15 simulations and monitor their progress.
+
+## Starting a Simulation
+
+### Pre-flight Checks
+
+Before running, verify your configuration:
+
+1. **Green checkmarks** next to all parameter groups
+2. **No warnings** in the status panel
+3. **Material selected** from database or custom defined
+
+### Launch Methods
+
+**GUI Method:**
+- Click the **Run Simulation** button, or
+- Press `F5`, or
+- Use menu: **Simulation > Run**
+
+**Keyboard Shortcuts:**
+
+| Shortcut | Action |
+|----------|--------|
+| `F5` | Run simulation |
+| `Shift+F5` | Run with high resolution |
+| `Escape` | Stop simulation |
+| `Space` | Pause/Resume |
+
+## Real-Time Monitoring
+
+### Temperature Display
+
+The main visualization shows temperature evolution:
+
+```
+Color Scale:
+  Blue   → Cold (< 30°C)
+  Green  → Warm (30-50°C)
+  Yellow → Hot (50-65°C)
+  Orange → Very Hot (65-75°C)
+  Red    → Warning (> 75°C)
+```
+
+### Charts Panel
+
+Four real-time charts update during simulation:
+
+1. **Temperature vs Position**: T(x) along the belt
+2. **Moisture vs Position**: M(x) along the belt
+3. **Temperature vs Time**: T(t) at outlet
+4. **Energy Input**: Cumulative power absorption
+
+### Status Indicators
+
+| Indicator | Meaning |
+|-----------|---------|
+| Progress bar | Simulation completion % |
+| Time elapsed | Real computation time |
+| Simulated time | Process time modeled |
+| Iterations/sec | Computation speed |
+
+## Simulation Modes
+
+### Standard Mode
+
+Default mode balancing speed and accuracy:
+
+```yaml
+Standard Mode:
+  Resolution: Medium (20x10)
+  Time Step: Adaptive
+  Physics: Full
+  Typical Runtime: 10-30 seconds
+```
+
+### Quick Preview
+
+For rapid parameter exploration:
+
+```yaml
+Quick Preview:
+  Resolution: Low (10x5)
+  Time Step: Large (1s)
+  Physics: Simplified
+  Typical Runtime: 2-5 seconds
+```
+
+Enable via: **Simulation > Quick Preview Mode**
+
+### High Fidelity
+
+For publication-quality results:
+
+```yaml
+High Fidelity:
+  Resolution: High (50x25)
+  Time Step: Small (0.1s)
+  Physics: Full + Edge Effects
+  Typical Runtime: 2-5 minutes
+```
+
+Enable via: **Simulation > High Fidelity Mode**
+
+## Handling Long Simulations
+
+### Background Execution
+
+For simulations > 1 minute:
+
+1. Check **Run in Background**
+2. Continue working on other tasks
+3. Notification appears when complete
+
+### Progress Saving
+
+Simulations automatically checkpoint every 30 seconds:
+
+- Resume interrupted simulations
+- Located in `~/.proteinprocessio/checkpoints/`
+- Auto-deleted after successful completion
+
+<Callout type="info">
+If the application crashes, restart and select **Simulation > Resume Last** to continue from the checkpoint.
+</Callout>
+
+## Batch Processing
+
+### Multiple Configurations
+
+Run parameter sweeps:
+
+1. **Create variations**: File > Create Parameter Sweep
+2. **Define ranges**: e.g., Belt Speed: 0.03 to 0.07 m/s, 5 steps
+3. **Queue all**: Click "Add to Queue"
+4. **Run batch**: Simulation > Run Queue
+
+```yaml
+Parameter Sweep Example:
+  Base Config: pea_drying.json
+  Variable: belt_speed_m_per_s
+  Range: [0.03, 0.04, 0.05, 0.06, 0.07]
+  Total Runs: 5
+```
+
+### Results Organization
+
+Batch results are saved with unique identifiers:
+
+```
+results/
+├── sweep_20240315_142356/
+│   ├── run_001_speed_0.03/
+│   ├── run_002_speed_0.04/
+│   ├── run_003_speed_0.05/
+│   └── summary.csv
+```
+
+## Troubleshooting
+
+### Simulation Won't Start
+
+| Issue | Solution |
+|-------|----------|
+| "Invalid configuration" | Check parameter warnings |
+| "Insufficient memory" | Reduce resolution |
+| "License expired" | Renew license |
+
+### Simulation Crashes
+
+Common causes and fixes:
+
+1. **Out of memory**: Reduce resolution or close other apps
+2. **GPU error**: Disable GPU acceleration in Settings
+3. **Numerical instability**: Reduce time step
+
+### Slow Performance
+
+Optimization tips:
+
+- Close 3D visualization during batch runs
+- Use Quick Preview for initial exploration
+- Enable GPU acceleration if available
+- Reduce output frequency
+
+## Stopping Simulations
+
+### Graceful Stop
+
+Press `Escape` or click **Stop** to:
+- Complete current time step
+- Save partial results
+- Generate interim report
+
+### Force Stop
+
+If simulation is unresponsive:
+- Press `Ctrl+Shift+Escape`
+- Results may be incomplete
+- Check logs for errors
+
+## Next Steps
+
+- [Interpreting Results](/docs/pretreatment/results) - Analyze your simulation outputs
+- [Milling Configuration](/docs/milling/configuration) - Set up the next stage

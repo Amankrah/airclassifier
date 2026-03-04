@@ -14,6 +14,7 @@ Termination modes:
     - mass: Run until target mass has been discharged
     - steady_state: Run until KPIs stabilize (d50, throughput)
     - target_d50: Run until target median particle size achieved
+    - batch_complete: Run until all fed material is discharged (for batch processing)
 """
 
 from __future__ import annotations
@@ -69,8 +70,13 @@ class ConvergenceDetector:
 
     # Cumulative tracking
     _cumulative_discharge_kg: float = 0.0
+    _cumulative_feed_kg: float = 0.0  # Track total mass fed for batch mode
     _current_time_s: float = 0.0
     _last_dt: float = 0.002
+
+    # Batch mode tracking
+    _target_feed_mass_kg: float = 0.0  # Target batch size (0 = continuous)
+    _feeding_complete: bool = False  # True when all batch material has been fed
 
     # Particle tracking for empty mill detection
     _current_particle_count: int = 0
@@ -89,10 +95,12 @@ class ConvergenceDetector:
         self._throughput_history.clear()
         self._power_history.clear()
         self._cumulative_discharge_kg = 0.0
+        self._cumulative_feed_kg = 0.0
         self._current_time_s = 0.0
         self._current_particle_count = 0
         self._empty_mill_steps = 0
         self._had_particles = False
+        self._feeding_complete = False
 
     def update(
         self,
@@ -102,6 +110,7 @@ class ConvergenceDetector:
         power_kw: float,
         dt: float,
         particle_count: int = 0,
+        feed_rate_kg_per_s: float = 0.0,
     ) -> None:
         """Update detector with latest simulation state.
 
@@ -112,6 +121,7 @@ class ConvergenceDetector:
             power_kw: Current power draw [kW]
             dt: Timestep [s]
             particle_count: Number of particles currently in mill chamber
+            feed_rate_kg_per_s: Current feed rate [kg/s] (for batch tracking)
         """
         self._current_time_s = time_s
         self._last_dt = dt
@@ -124,6 +134,14 @@ class ConvergenceDetector:
         elif self._had_particles:
             # Mill was fed but now empty - count consecutive empty steps
             self._empty_mill_steps += 1
+
+        # Track cumulative feed for batch mode
+        self._cumulative_feed_kg += feed_rate_kg_per_s * dt
+
+        # Detect when batch feeding is complete
+        if self._target_feed_mass_kg > 0 and not self._feeding_complete:
+            if self._cumulative_feed_kg >= self._target_feed_mass_kg * 0.99:
+                self._feeding_complete = True
 
         # Convert d50 to micrometers for comparison
         d50_um = d50_m * 1e6
@@ -254,6 +272,12 @@ class ConvergenceDetector:
                 return True, f"Target d50 reached ({recent_d50:.0f} µm)"
             return False, ""
 
+        # Batch complete mode: run until all fed material is discharged
+        if self.mode == "batch_complete":
+            if self._feeding_complete and self.is_mill_empty():
+                return True, f"Batch complete ({self._cumulative_discharge_kg:.3f} kg discharged)"
+            return False, ""
+
         return False, ""
 
     @property
@@ -280,13 +304,51 @@ class ConvergenceDetector:
         return self._cumulative_discharge_kg
 
     @property
+    def cumulative_feed_kg(self) -> float:
+        """Get total fed mass."""
+        return self._cumulative_feed_kg
+
+    @property
+    def feeding_complete(self) -> bool:
+        """Check if batch feeding is complete."""
+        return self._feeding_complete
+
+    def set_target_feed_mass(self, mass_kg: float) -> None:
+        """Set target batch feed mass for batch_complete mode.
+
+        Args:
+            mass_kg: Target mass to feed [kg]. Set to 0 for continuous mode.
+        """
+        self._target_feed_mass_kg = mass_kg
+        self._feeding_complete = False
+
+    @property
     def progress_pct(self) -> float:
         """Get progress percentage based on mode.
 
         Returns:
             Progress as percentage (0-100).
+
+        For batch_complete mode:
+            - 0-50%: Feeding phase (material entering the mill)
+            - 50-100%: Discharge phase (material leaving the mill)
         """
-        if self.mode == "mass" and self.target_mass_kg > 0:
+        if self.mode == "batch_complete" and self._target_feed_mass_kg > 0:
+            # Batch mode: feeding (0-50%) + discharge (50-100%)
+            feed_progress = min(1.0, self._cumulative_feed_kg / self._target_feed_mass_kg)
+
+            if not self._feeding_complete:
+                # Still in feeding phase: 0-50%
+                return feed_progress * 50.0
+            else:
+                # In discharge phase: 50-100%
+                # Progress based on how much has been discharged vs fed
+                if self._cumulative_feed_kg > 0:
+                    discharge_progress = min(1.0, self._cumulative_discharge_kg / self._cumulative_feed_kg)
+                    return 50.0 + discharge_progress * 50.0
+                return 50.0
+
+        elif self.mode == "mass" and self.target_mass_kg > 0:
             return min(100.0, 100.0 * self._cumulative_discharge_kg / self.target_mass_kg)
         elif self.mode == "target_d50" and self.target_d50_um > 0:
             if self._d50_history:
@@ -322,10 +384,11 @@ class TerminationConfig:
     stored as part of the recipe.
     """
 
-    mode: str = "time"  # "time", "mass", "steady_state", "target_d50"
+    mode: str = "time"  # "time", "mass", "steady_state", "target_d50", "batch_complete"
     run_duration_s: float = 60.0
     target_mass_kg: float = 1.0
     target_d50_um: float = 500.0
+    target_feed_mass_kg: float = 0.0  # For batch_complete mode (0 = continuous)
     min_run_time_s: float = 5.0
     max_run_time_s: float = 300.0
     steady_state_window: int = 50
@@ -334,7 +397,7 @@ class TerminationConfig:
 
     def create_detector(self) -> ConvergenceDetector:
         """Create a ConvergenceDetector from this config."""
-        return ConvergenceDetector(
+        detector = ConvergenceDetector(
             mode=self.mode,
             window_size=self.steady_state_window,
             d50_stability_threshold=self.d50_tolerance_pct / 100.0,
@@ -345,3 +408,7 @@ class TerminationConfig:
             min_run_time_s=self.min_run_time_s,
             max_run_time_s=self.max_run_time_s,
         )
+        # Set batch target if configured
+        if self.target_feed_mass_kg > 0:
+            detector.set_target_feed_mass(self.target_feed_mass_kg)
+        return detector

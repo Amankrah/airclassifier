@@ -1,0 +1,287 @@
+---
+title: Configuration
+description: Configure air classification parameters
+order: 2
+---
+
+# Classification Configuration
+
+Set up your air classification simulation with these parameters.
+
+## System Configuration
+
+### Multi-Stage Setup
+
+Enable or disable stages:
+
+```yaml
+System Configuration:
+  venturi_enabled: true
+  zigzag_enabled: true
+  wheel_enabled: true
+  cyclones_enabled: true
+```
+
+### Flow Configuration
+
+Global air flow settings:
+
+| Parameter | Range | Default | Unit |
+|-----------|-------|---------|------|
+| Total Air Flow | 100-1000 | 500 | m³/hr |
+| Air Temperature | 15-40 | 25 | °C |
+| Air Humidity | 20-80 | 50 | % RH |
+| Ambient Pressure | 95-105 | 101 | kPa |
+
+## Venturi Aspirator
+
+### Geometry
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Channel Width | 0.05-0.3 m | 0.15 m | Aspiration channel |
+| Channel Height | 0.1-0.5 m | 0.3 m | Vertical extent |
+| Throat Width | 0.02-0.1 m | 0.05 m | Venturi throat |
+
+### Operating Parameters
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Air Velocity | 5-20 m/s | 12 m/s | At throat |
+| Feed Position | 0.1-0.9 | 0.5 | Relative height |
+| Splitter Position | 0.2-0.8 | 0.6 | Fines/coarse split |
+
+```python
+venturi_config = {
+    "channel_width_m": 0.15,
+    "channel_height_m": 0.30,
+    "throat_width_m": 0.05,
+    "air_velocity_m_s": 12.0,
+    "feed_position": 0.5,
+    "splitter_position": 0.6
+}
+```
+
+## Zigzag Classifier
+
+### Geometry
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Number of Stages | 4-16 | 8 | Zigzag segments |
+| Channel Width | 0.03-0.15 m | 0.08 m | Flow channel |
+| Channel Angle | 90-150° | 120° | Bend angle |
+| Stage Height | 0.05-0.2 m | 0.1 m | Per stage |
+
+### Operating Parameters
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Air Velocity | 1-8 m/s | 4 m/s | Through channel |
+| Feed Stage | 1-N | middle | Entry point |
+
+```yaml
+Zigzag Configuration:
+  stages: 8
+  channel_width_m: 0.08
+  channel_angle_deg: 120
+  stage_height_m: 0.10
+  air_velocity_m_s: 4.0
+  feed_stage: 4  # Middle of classifier
+```
+
+<Callout type="info">
+More stages improve separation sharpness but increase pressure drop and equipment height. 8 stages is a good balance for most applications.
+</Callout>
+
+## Wheel Classifier
+
+### Geometry
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Wheel Diameter | 0.1-0.4 m | 0.2 m | Classifier wheel |
+| Wheel Length | 0.05-0.2 m | 0.1 m | Axial length |
+| Blade Count | 12-48 | 24 | Number of blades |
+| Blade Angle | 0-45° | 15° | Radial angle |
+
+### Operating Parameters
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Wheel RPM | 1000-8000 | 4000 | Rotational speed |
+| Air Flow | 100-800 m³/hr | 400 | Through wheel |
+| Feed Position | Tangential | - | Entry location |
+
+```python
+wheel_config = {
+    "diameter_m": 0.20,
+    "length_m": 0.10,
+    "blade_count": 24,
+    "blade_angle_deg": 15,
+    "rpm": 4000,
+    "air_flow_m3_hr": 400
+}
+```
+
+### Cut Point Calculation
+
+Approximate cut point formula:
+
+```python
+# d_cut in μm
+d_cut = K × sqrt(Q / (RPM² × D³))
+
+# Where:
+# K ≈ 3000-5000 (machine constant)
+# Q = air flow (m³/hr)
+# RPM = wheel speed
+# D = wheel diameter (m)
+```
+
+| RPM | Air Flow | Approx. d_cut |
+|-----|----------|---------------|
+| 2000 | 400 m³/hr | ~40 μm |
+| 4000 | 400 m³/hr | ~20 μm |
+| 6000 | 400 m³/hr | ~13 μm |
+
+## Cyclones
+
+### Fines Cyclone
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Body Diameter | 0.2-0.6 m | 0.3 m | Cylinder diameter |
+| Inlet Velocity | 10-25 m/s | 18 m/s | Entry velocity |
+| Cone Angle | 5-15° | 8° | Taper angle |
+
+### Coarse Cyclone
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Body Diameter | 0.3-0.8 m | 0.4 m | Larger for coarse |
+| Inlet Velocity | 8-20 m/s | 15 m/s | Entry velocity |
+| Collection Efficiency | 85-99% | 95% | Target |
+
+## Feed Properties
+
+### From Pipeline
+
+When transferring from milling:
+
+```python
+# Auto-populated from milling outlet
+feed_from_milling = {
+    "psd_d10_um": 45,
+    "psd_d50_um": 180,
+    "psd_d90_um": 450,
+    "psd_mass_fractions": [...],  # Size distribution
+    "feed_rate_kg_hr": 98,
+    "moisture_wb": 0.10,
+    "protein_content": 0.22
+}
+```
+
+### Manual Configuration
+
+| Parameter | Range | Unit | Description |
+|-----------|-------|------|-------------|
+| Feed Rate | 10-200 | kg/hr | Mass flow |
+| D50 | 50-500 | μm | Median size |
+| Spread | 1.5-4.0 | - | Geometric std |
+| Density | 1.2-1.6 | g/cm³ | Particle density |
+| Protein | 0-1 | fraction | Protein content |
+
+## Simulation Settings
+
+### Particle Tracking
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Particle Count | 1000-50000 | 10000 | Tracked particles |
+| Time Step | 0.0001-0.01 s | 0.001 s | Integration step |
+| Max Track Time | 1-30 s | 10 s | Per particle |
+
+### Physics Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| Turbulence | k-ε | Turbulence model |
+| Particle-Particle | Off | Collision modeling |
+| Wall Interactions | Bounce | Elastic/inelastic |
+| Sticking | Off | Moisture-dependent |
+
+<Callout type="warning">
+Enabling particle-particle interactions significantly increases computation time. Use only when investigating agglomeration effects.
+</Callout>
+
+## Configuration Examples
+
+### Standard Protein Fractionation
+
+```json
+{
+  "name": "Pea Protein 50%",
+  "target_protein_pct": 50,
+  "target_yield_pct": 35,
+
+  "wheel": {
+    "rpm": 4000,
+    "air_flow_m3_hr": 400,
+    "d_cut_target_um": 20
+  },
+
+  "zigzag": {
+    "stages": 8,
+    "air_velocity_m_s": 4
+  },
+
+  "expected_results": {
+    "fines_protein_pct": "50-55%",
+    "fines_yield_pct": "30-35%"
+  }
+}
+```
+
+### High-Purity Configuration
+
+```json
+{
+  "name": "Pea Protein 65%",
+  "passes": 2,
+
+  "wheel": {
+    "rpm": 5500,
+    "air_flow_m3_hr": 350,
+    "d_cut_target_um": 15
+  },
+
+  "expected_results": {
+    "fines_protein_pct": "60-65%",
+    "fines_yield_pct": "18-22%"
+  }
+}
+```
+
+## Validation
+
+### Pre-run Checks
+
+The system validates:
+- Air flow continuity
+- Pressure drop feasibility
+- Cut point within particle range
+- Feed rate vs. air capacity
+
+### Warnings
+
+| Condition | Warning |
+|-----------|---------|
+| Very high RPM | "Potential particle damage" |
+| Low air flow | "Poor separation efficiency" |
+| High humidity | "Risk of particle sticking" |
+
+## Next Steps
+
+- [Running Simulations](/docs/classification/simulation) - Execute classification
+- [Efficiency Analysis](/docs/classification/efficiency) - Optimize results

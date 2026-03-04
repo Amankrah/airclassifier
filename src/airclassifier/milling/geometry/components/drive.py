@@ -136,22 +136,24 @@ class DriveParams:
         - Motor placed so its shaft extends to that pulley X with allowance.
         """
         params = cls.from_mill_config(config)
-        # Mill pulley outside housing in -X with allowance between housing and pulley
+        # Scale factor for clearances (reference: 0.20m pilot scale)
+        scale = config.housing_inner_radius_m / 0.20
+        # Mill pulley outside housing in -X with scaled allowance
         params.mill_pulley_x_m = -(
             housing_params.end_plate_thickness_m
             + params.mill_pulley_width_m / 2.0
-            + 0.04
+            + 0.04 * scale  # Scaled clearance between end plate and pulley
         )
         # Motor pulley at same X as mill pulley for coordinate alignment (same belt plane)
         params.motor_pulley_x_m = params.mill_pulley_x_m
-        # Motor position: shaft extends from motor end to pulley X; min shaft allowance
-        shaft_allowance_m = 0.05
+        # Motor position: shaft extends from motor end to pulley X; scaled shaft allowance
+        shaft_allowance_m = 0.05 * scale
         params.motor_x_offset_m = (
             params.mill_pulley_x_m - shaft_allowance_m - params.motor_length_m
         )
-        # Motor beside housing
+        # Motor beside housing with scaled gap
         params.motor_z_offset_m = (
-            housing_params.outer_radius_m + params.motor_width_m / 2.0 + 0.02
+            housing_params.outer_radius_m + params.motor_width_m / 2.0 + 0.02 * scale
         )
         # Motor below centerline by proportion of housing size (belt line)
         params.motor_y_offset_m = -housing_params.outer_radius_m * 0.65

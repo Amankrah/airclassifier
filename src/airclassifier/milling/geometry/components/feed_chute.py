@@ -181,13 +181,23 @@ class FeedChuteParams:
         """Create hopper params from mill configuration."""
         tw = config.feed_chute_width_m
         td = config.feed_chute_height_m
+        # Scale factor based on housing radius (reference: 0.20m pilot scale)
+        scale = config.housing_inner_radius_m / 0.20
         return cls(
             throat_width_m=tw,
             throat_depth_m=td,
+            throat_height_m=0.035 * scale,
             hopper_width_m=tw * 2.0,
             hopper_depth_m=td * 2.0,
+            hopper_height_m=0.20 * scale,
+            hopper_draft_m=0.005 * scale,
             transition_height_m=max(tw, td) * 1.0,
-            outlet_x_m=0.05 + tw / 2 + 0.05,
+            wall_thickness_m=0.003 * scale,
+            rim_width_m=0.012 * scale,
+            rim_height_m=0.015 * scale,
+            flange_width_m=0.020 * scale,
+            flange_thickness_m=0.006 * scale,
+            outlet_x_m=0.05 * scale + tw / 2 + 0.05 * scale,
             outlet_y_m=config.housing_inner_radius_m,
         )
 
@@ -201,12 +211,23 @@ class FeedChuteParams:
         hp = housing_params
         tw = hp.feed_opening_width_m
         td = hp.feed_opening_depth_m
+        # Scale factor based on housing radius (reference: 0.20m pilot scale)
+        scale = hp.inner_radius_m / 0.20
         return cls(
             throat_width_m=tw,
             throat_depth_m=td,
+            throat_height_m=0.035 * scale,
             hopper_width_m=tw * 2.0,
             hopper_depth_m=td * 2.0,
+            hopper_height_m=0.20 * scale,
+            hopper_draft_m=0.005 * scale,
             transition_height_m=max(tw, td) * 1.0,
+            wall_thickness_m=0.003 * scale,
+            rim_width_m=0.012 * scale,
+            rim_height_m=0.015 * scale,
+            flange_width_m=0.020 * scale,
+            flange_thickness_m=0.006 * scale,
+            # Note: hp.feed_opening_x_offset_m is already scaled in HousingParams
             outlet_x_m=(
                 hp.center_x_m
                 + hp.feed_opening_x_offset_m

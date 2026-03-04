@@ -1,0 +1,281 @@
+---
+title: Running Simulations
+description: Execute air classification simulations
+order: 3
+---
+
+# Running Classification Simulations
+
+Execute and monitor air classification simulations to optimize particle separation.
+
+## Starting a Simulation
+
+### Pre-run Verification
+
+Ensure your configuration is complete:
+
+- ✓ All enabled stages configured
+- ✓ Feed properties set (or transferred from milling)
+- ✓ Air flow settings validated
+- ✓ No configuration warnings
+
+### Launch Methods
+
+| Method | Shortcut |
+|--------|----------|
+| Run button | Click **Run Simulation** |
+| Keyboard | `F5` |
+| Menu | **Simulation > Run** |
+
+## 3D Visualization
+
+### Particle Trajectories
+
+The visualization shows particles flowing through the system:
+
+```
+     Fines ↑
+           │  ○·○··○···
+           │ ╱
+Feed → ●●● ╳───────→ Coarse
+      ●● ╱│
+       ●╱  │
+        ↓
+      Reject
+```
+
+### Color Coding
+
+Particles are colored by:
+
+**Size Mode (default)**:
+| Color | Size |
+|-------|------|
+| Blue | < 20 μm |
+| Green | 20-50 μm |
+| Yellow | 50-100 μm |
+| Orange | 100-200 μm |
+| Red | > 200 μm |
+
+**Fate Mode** (toggle with `F`):
+| Color | Destination |
+|-------|-------------|
+| Green | Fines outlet |
+| Red | Coarse outlet |
+| Yellow | In transit |
+
+### View Controls
+
+| Control | Action |
+|---------|--------|
+| Mouse drag | Rotate view |
+| Scroll wheel | Zoom |
+| `1` - `4` | View presets (front, side, top, 3D) |
+| `R` | Reset camera |
+| `F` | Toggle color mode |
+| `T` | Toggle trajectory trails |
+
+## Stage-by-Stage Monitoring
+
+### Venturi Panel
+
+```
+┌─────────────────────────────────┐
+│ Venturi Aspirator               │
+├─────────────────────────────────┤
+│ Feed Rate:     100 kg/hr        │
+│ Air Velocity:   12 m/s          │
+│                                 │
+│ To Zigzag:      72 kg/hr (72%)  │
+│ To Coarse:      28 kg/hr (28%)  │
+│                                 │
+│ Pressure Drop:  180 Pa          │
+└─────────────────────────────────┘
+```
+
+### Zigzag Panel
+
+```
+┌─────────────────────────────────┐
+│ Zigzag Classifier               │
+├─────────────────────────────────┤
+│ Feed In:        72 kg/hr        │
+│                                 │
+│ Stage Balance:                  │
+│   ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁              │
+│   1 2 3 4 5 6 7 8              │
+│                                 │
+│ To Wheel:       45 kg/hr        │
+│ To Coarse:      27 kg/hr        │
+└─────────────────────────────────┘
+```
+
+### Wheel Classifier Panel
+
+```
+┌─────────────────────────────────┐
+│ Wheel Classifier                │
+├─────────────────────────────────┤
+│ Feed In:        45 kg/hr        │
+│ Wheel RPM:      4000            │
+│ Air Flow:       400 m³/hr       │
+│                                 │
+│ Cut Point:      21 μm           │
+│                                 │
+│ To Fines:       32 kg/hr        │
+│ Rejected:       13 kg/hr        │
+│                                 │
+│ Fines Protein:  52%             │
+└─────────────────────────────────┘
+```
+
+## Real-Time Charts
+
+### Grade Efficiency Curve
+
+Watch the separation curve develop:
+
+```
+Recovery %
+100│               Ideal ──╮
+   │                     ╱  │
+ 80│            Actual─╱    │
+   │                 ╱      │
+ 60│               ╱        │
+   │             ╱          │
+ 40│           ╱            │
+   │         ╱              │
+ 20│       ╱                │
+   │─────╯                  │
+  0│                        │
+   └────────────────────────
+    5   10  20  50  100 μm
+              d_cut
+```
+
+### Mass Balance
+
+Track material through the system:
+
+```
+Feed 100%
+  ├── Venturi Coarse: 28%
+  └── To Zigzag: 72%
+        ├── Zigzag Coarse: 27%
+        └── To Wheel: 45%
+              ├── Wheel Reject: 13%
+              └── Fines Product: 32%
+```
+
+### Composition Analysis
+
+Monitor protein distribution:
+
+| Stream | Mass % | Protein % | Recovery % |
+|--------|--------|-----------|------------|
+| Feed | 100 | 22 | - |
+| Fines | 32 | 52 | 76 |
+| Medium | 40 | 18 | 33 |
+| Coarse | 28 | 8 | 10 |
+
+## Simulation Progress
+
+### Status Indicators
+
+| Indicator | Meaning |
+|-----------|---------|
+| Particles released | % of feed injected |
+| Particles settled | % reached outlets |
+| Residence time | Average particle time |
+| Convergence | Solution stability |
+
+### Performance Metrics
+
+```
+┌─────────────────────────────────┐
+│ Simulation Progress             │
+├─────────────────────────────────┤
+│ Elapsed:        45 s            │
+│ Particles:      8500/10000      │
+│ Throughput:     ~180 part/s     │
+│                                 │
+│ Est. Remaining: 15 s            │
+│ ████████████████░░░░ 75%        │
+└─────────────────────────────────┘
+```
+
+## Convergence Monitoring
+
+### Steady State Detection
+
+The simulation monitors:
+- Mass balance closure
+- PSD stability at outlets
+- Pressure drop stability
+
+Convergence is reached when:
+- Mass balance error < 1%
+- PSD change < 0.5% per second
+- Outlet flows stable
+
+### Early Termination
+
+If results converge early:
+- System notifies "Steady state reached"
+- Option to continue or stop
+- Results available immediately
+
+<Callout type="info">
+Most classification simulations reach steady state within 30 seconds of simulated time. Extended runs improve statistics but don't change average results.
+</Callout>
+
+## Batch Operations
+
+### Parameter Sweep
+
+Explore optimal operating conditions:
+
+1. **Select variable**: RPM, air flow, or cut point
+2. **Define range**: e.g., 3000-5000 RPM
+3. **Set steps**: e.g., 5 runs
+4. **Run sweep**: Automated execution
+
+### Optimization
+
+Automatic optimization for targets:
+
+```yaml
+Optimization Target:
+  maximize: protein_concentration
+  constraint: yield > 25%
+
+Variables:
+  wheel_rpm: [3000, 6000]
+  air_flow: [300, 600]
+```
+
+## Troubleshooting
+
+### Simulation Stalls
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| No progress | Particles stuck | Check wall settings |
+| Oscillating | Unstable flow | Reduce time step |
+| Memory full | Too many particles | Reduce count |
+
+### Unrealistic Results
+
+| Issue | Possible Cause | Check |
+|-------|----------------|-------|
+| No separation | Air velocity too low | Increase flow |
+| All to fines | Cut point too high | Increase RPM |
+| All to coarse | Cut point too low | Decrease RPM |
+| Poor sharpness | Turbulence issues | Check geometry |
+
+## Next Steps
+
+After classification simulation:
+
+- [Efficiency Analysis](/docs/classification/efficiency) - Analyze separation quality
+- [Pipeline Mass Balance](/docs/pipeline/mass-balance) - Complete process analysis

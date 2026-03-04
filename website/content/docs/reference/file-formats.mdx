@@ -1,0 +1,384 @@
+---
+title: File Formats
+description: Project file and export formats
+order: 2
+---
+
+# File Formats
+
+ProteinProcessIO uses several file formats for projects, configurations, and data export.
+
+## Project File (.acproj)
+
+The main project file stores all simulation settings, results, and pipeline state.
+
+### Structure
+
+```json
+{
+  "version": "1.0",
+  "name": "Pea Protein Fractionation",
+  "created": "2024-03-15T10:30:00Z",
+  "modified": "2024-03-15T14:22:00Z",
+  "author": "mvgill",
+
+  "pretreatment": {
+    "config": {...},
+    "results": {...},
+    "outlet": {...}
+  },
+
+  "milling": {
+    "config": {...},
+    "results": {...},
+    "outlet": {...}
+  },
+
+  "classification": {
+    "config": {...},
+    "results": {...},
+    "outlets": {...}
+  },
+
+  "pipeline": {
+    "state": "classification_complete",
+    "transfers": [...]
+  },
+
+  "metadata": {
+    "notes": "Optimized for 50% protein target",
+    "tags": ["pea", "protein", "optimization"]
+  }
+}
+```
+
+### Key Sections
+
+| Section | Contents |
+|---------|----------|
+| `pretreatment` | GP-15 configuration and results |
+| `milling` | Hammer mill configuration and results |
+| `classification` | Air classifier configuration and results |
+| `pipeline` | Pipeline state and transfer history |
+| `metadata` | User notes, tags, project info |
+
+### Compatibility
+
+| Version | Compatible With |
+|---------|-----------------|
+| 1.0 | ProteinProcessIO 1.x |
+| Future | Backward compatible |
+
+<Callout type="info">
+Project files are JSON-based and can be edited with any text editor. However, manual editing is not recommended as it may corrupt the file.
+</Callout>
+
+## Configuration Files
+
+### Pretreatment Config (.ptconf)
+
+```json
+{
+  "type": "pretreatment",
+  "version": "1.0",
+
+  "machine": {
+    "belt_width_m": 0.9,
+    "belt_speed_m_per_s": 0.05,
+    "belt_length_m": 3.0,
+    "rf_frequency_mhz": 27.12,
+    "rf_power_kw": 10,
+    "electrode_gap_m": 0.08
+  },
+
+  "material": {
+    "name": "Yellow Pea",
+    "database_id": "YP001",
+    "custom_properties": null
+  },
+
+  "process": {
+    "initial_moisture_wb": 0.14,
+    "initial_temperature_c": 25,
+    "target_moisture_wb": 0.10,
+    "max_temperature_c": 65,
+    "feed_rate_kg_hr": 100
+  },
+
+  "simulation": {
+    "resolution": "medium",
+    "time_step": "auto",
+    "include_evaporation": true
+  }
+}
+```
+
+### Milling Config (.mlconf)
+
+```json
+{
+  "type": "milling",
+  "version": "1.0",
+
+  "mill": {
+    "rotor_diameter_m": 0.30,
+    "rotor_length_m": 0.20,
+    "rotor_rpm": 3500,
+    "num_hammers": 16,
+    "hammer_dimensions_mm": [50, 25, 6]
+  },
+
+  "screen": {
+    "aperture_mm": 1.5,
+    "open_area_pct": 25,
+    "type": "round"
+  },
+
+  "feed": {
+    "rate_kg_hr": 100,
+    "moisture_wb": 0.10,
+    "temperature_c": 60,
+    "d50_um": 5000
+  },
+
+  "simulation": {
+    "particle_count": 5000,
+    "time_step_s": 0.001,
+    "duration_s": 10
+  }
+}
+```
+
+### Classification Config (.clconf)
+
+```json
+{
+  "type": "classification",
+  "version": "1.0",
+
+  "system": {
+    "stages": ["venturi", "zigzag", "wheel"],
+    "air_flow_m3_hr": 500
+  },
+
+  "venturi": {
+    "channel_width_m": 0.15,
+    "air_velocity_m_s": 12
+  },
+
+  "zigzag": {
+    "stages": 8,
+    "channel_width_m": 0.08,
+    "air_velocity_m_s": 4
+  },
+
+  "wheel": {
+    "diameter_m": 0.20,
+    "rpm": 4000,
+    "air_flow_m3_hr": 400
+  },
+
+  "feed": {
+    "rate_kg_hr": 100,
+    "d50_um": 180,
+    "psd_type": "rosin-rammler",
+    "spread": 2.5
+  }
+}
+```
+
+## Export Formats
+
+### CSV Export
+
+Comma-separated values for spreadsheet analysis:
+
+**PSD Data (psd_results.csv):**
+```csv
+size_um,cumulative_pct,frequency_pct,mass_fraction
+10,2.3,2.3,0.023
+20,8.5,6.2,0.062
+30,15.2,6.7,0.067
+50,28.1,12.9,0.129
+...
+```
+
+**Time Series (temperature_profile.csv):**
+```csv
+time_s,position_m,temperature_c,moisture_wb
+0,0.0,25.0,0.140
+1,0.05,32.1,0.138
+2,0.10,38.5,0.135
+...
+```
+
+**Mass Balance (mass_balance.csv):**
+```csv
+stage,stream,mass_kg_hr,protein_pct,starch_pct
+pretreatment,feed,100.0,22.0,55.0
+pretreatment,product,98.0,22.4,56.1
+pretreatment,moisture_loss,2.0,0.0,0.0
+...
+```
+
+### JSON Export
+
+Full structured data with metadata:
+
+```json
+{
+  "export_info": {
+    "software": "ProteinProcessIO",
+    "version": "1.2.0",
+    "exported": "2024-03-15T15:30:00Z"
+  },
+
+  "simulation": {
+    "type": "milling",
+    "duration_s": 10.5,
+    "converged": true
+  },
+
+  "results": {
+    "psd": {
+      "d10_um": 45.2,
+      "d50_um": 182.5,
+      "d90_um": 456.8,
+      "bins": [...],
+      "frequencies": [...]
+    },
+    "throughput_kg_hr": 97.5,
+    "energy_kwh_ton": 42.3
+  }
+}
+```
+
+### Excel Export (.xlsx)
+
+Multi-sheet workbook:
+
+| Sheet | Contents |
+|-------|----------|
+| Summary | Key metrics and parameters |
+| PSD | Particle size distribution |
+| Time Series | Evolution data |
+| Mass Balance | Material flows |
+| Charts | Embedded visualizations |
+
+### PDF Report
+
+Formatted report including:
+
+- Executive summary
+- Configuration parameters
+- Results tables
+- Charts and diagrams
+- Conclusions and recommendations
+
+## Material Database
+
+### Database Format (.matdb)
+
+```json
+{
+  "version": "1.0",
+  "materials": [
+    {
+      "id": "YP001",
+      "name": "Yellow Pea",
+      "category": "pulse",
+
+      "physical": {
+        "seed_diameter_mm": 7.5,
+        "bulk_density_kg_m3": 780,
+        "particle_density_kg_m3": 1350,
+        "porosity": 0.42
+      },
+
+      "thermal": {
+        "specific_heat_j_kg_k": 2100,
+        "thermal_conductivity_w_m_k": 0.15
+      },
+
+      "dielectric": {
+        "frequency_mhz": 27.12,
+        "permittivity": 4.5,
+        "loss_factor": 0.8,
+        "moisture_sensitivity": 0.3,
+        "temperature_sensitivity": 0.02
+      },
+
+      "mechanical": {
+        "bond_work_index": 12.5,
+        "fracture_toughness": 0.8,
+        "hardgrove_index": 55
+      },
+
+      "composition": {
+        "protein_pct": 22.0,
+        "starch_pct": 55.0,
+        "fiber_pct": 8.0,
+        "fat_pct": 1.5,
+        "ash_pct": 2.5,
+        "moisture_pct": 11.0
+      }
+    }
+  ]
+}
+```
+
+### Custom Material
+
+Add your own materials:
+
+1. Go to **Edit > Materials > Add Custom**
+2. Fill in required properties
+3. Save to database
+4. Material appears in selection list
+
+## Import Formats
+
+### PSD Import
+
+Import external PSD data:
+
+```csv
+# PSD Data Import Format
+# Size in micrometers, cumulative undersize percentage
+size_um,cumulative_pct
+10,5.2
+20,12.8
+50,28.5
+100,52.3
+200,78.6
+500,95.2
+1000,99.8
+```
+
+### Experimental Data
+
+Import for validation:
+
+```csv
+# Experimental Results
+# timestamp,measurement_type,value,unit,uncertainty
+2024-03-15T10:30:00,d50,185,um,5
+2024-03-15T10:30:00,throughput,98.5,kg/hr,2
+2024-03-15T10:30:00,protein_fines,51.2,percent,1.5
+```
+
+## File Associations
+
+ProteinProcessIO registers these file associations:
+
+| Extension | Type | Action |
+|-----------|------|--------|
+| .acproj | Project | Open in ProteinProcessIO |
+| .ptconf | Pretreatment config | Import configuration |
+| .mlconf | Milling config | Import configuration |
+| .clconf | Classification config | Import configuration |
+
+## Next Steps
+
+- [Configuration Reference](/docs/reference/config) - Complete parameter list
+- [Keyboard Shortcuts](/docs/reference/shortcuts) - Speed up your workflow

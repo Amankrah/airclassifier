@@ -156,15 +156,21 @@ class HousingParams:
     def from_mill_config(cls, config: "MillConfig") -> "HousingParams":
         """Create housing params from mill configuration."""
         ir = config.housing_inner_radius_m
+        # Scale factor based on housing radius (reference: 0.20m pilot scale)
+        scale = ir / 0.20
         return cls(
             inner_radius_m=ir,
             wall_thickness_m=config.housing_wall_thickness_m,
             length_m=config.housing_length_m,
+            end_plate_thickness_m=0.015 * scale,
+            bearing_bore_radius_m=0.04 * scale,
             feed_opening_width_m=config.feed_chute_width_m,
             feed_opening_depth_m=config.feed_chute_height_m,
+            feed_opening_x_offset_m=0.10 * scale,
             discharge_opening_width_m=config.discharge_chute_width_m,
             discharge_opening_depth_m=config.discharge_chute_height_m,
-            discharge_funnel_height_m=max(0.12, ir * 0.70),
+            discharge_opening_x_offset_m=0.08 * scale,
+            discharge_funnel_height_m=max(0.12 * scale, ir * 0.70),
             discharge_outlet_width_m=config.discharge_chute_width_m * 0.50,
             discharge_outlet_depth_m=config.discharge_chute_height_m * 0.55,
         )

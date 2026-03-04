@@ -290,7 +290,7 @@ class AssemblyConfigDialog(QDialog):
         stage_layout.addSpacing(6)
 
         self.radio_milling = QRadioButton(
-            "Pin Mill — Hammer mill (impact milling, screen classification)"
+            "Hammer Mill (impact milling, screen classification)"
         )
         self._stage_group.addButton(self.radio_milling, 1)
         stage_layout.addWidget(self.radio_milling)

@@ -1,0 +1,308 @@
+---
+title: Mass Balance
+description: Track mass through the pipeline
+order: 3
+---
+
+# Mass Balance Tracking
+
+Mass balance is fundamental to process engineering. ProteinProcessIO tracks mass flow through the entire pipeline to ensure accuracy and identify losses.
+
+## Mass Balance Principle
+
+**Conservation of Mass:**
+```
+Mass In = Mass Out + Accumulation + Losses
+```
+
+For steady-state operation (Accumulation = 0):
+```
+Mass In = Mass Out + Losses
+```
+
+## Pipeline Mass Flow
+
+### Complete Flow Diagram
+
+```
+Feed: 100 kg/hr seeds
+        │
+        ↓
+┌───────────────────┐
+│   PRETREATMENT    │
+│                   │
+│ ─2 kg/hr moisture │ → Evaporation
+│                   │
+└────────┬──────────┘
+         │
+    98 kg/hr treated seed
+         │
+         ↓
+┌───────────────────┐
+│     MILLING       │
+│                   │
+│ ─0.5 kg/hr dust   │ → Dust collection
+│                   │
+└────────┬──────────┘
+         │
+    97.5 kg/hr flour
+         │
+         ↓
+┌───────────────────┐
+│  CLASSIFICATION   │
+├───────────────────┤
+│ Fine:   32 kg/hr  │ → Protein fraction
+│ Medium: 39 kg/hr  │ → Mixed fraction
+│ Coarse: 26 kg/hr  │ → Starch fraction
+│ Loss:  0.5 kg/hr  │ → Dust/cyclone loss
+└───────────────────┘
+
+Total Out: 97.5 kg/hr
+Closure: 97.5% ✓
+```
+
+## Stage-by-Stage Tracking
+
+### Pretreatment Balance
+
+```
+┌─────────────────────────────────────────┐
+│ Pretreatment Mass Balance               │
+├─────────────────────────────────────────┤
+│ IN                                      │
+│   Feed:           100.00 kg/hr          │
+│   (Dry matter:     86.00 kg/hr)         │
+│   (Water:          14.00 kg/hr)         │
+├─────────────────────────────────────────┤
+│ OUT                                     │
+│   Treated product: 98.00 kg/hr          │
+│   (Dry matter:     86.00 kg/hr)         │
+│   (Water:          12.00 kg/hr)         │
+│                                         │
+│   Evaporation:      2.00 kg/hr water    │
+├─────────────────────────────────────────┤
+│ BALANCE                                 │
+│   In - Out:         0.00 kg/hr          │
+│   Closure:        100.00%               │
+└─────────────────────────────────────────┘
+```
+
+### Milling Balance
+
+```
+┌─────────────────────────────────────────┐
+│ Milling Mass Balance                    │
+├─────────────────────────────────────────┤
+│ IN                                      │
+│   Feed:            98.00 kg/hr          │
+├─────────────────────────────────────────┤
+│ OUT                                     │
+│   Flour product:   97.50 kg/hr          │
+│   Dust losses:      0.50 kg/hr          │
+├─────────────────────────────────────────┤
+│ BALANCE                                 │
+│   In - Out:         0.00 kg/hr          │
+│   Closure:        100.00%               │
+│   Dust loss:        0.51%               │
+└─────────────────────────────────────────┘
+```
+
+### Classification Balance
+
+```
+┌─────────────────────────────────────────┐
+│ Classification Mass Balance             │
+├─────────────────────────────────────────┤
+│ IN                                      │
+│   Feed:            97.50 kg/hr          │
+├─────────────────────────────────────────┤
+│ OUT                                     │
+│   Fine fraction:   32.00 kg/hr (32.8%)  │
+│   Medium fraction: 39.00 kg/hr (40.0%)  │
+│   Coarse fraction: 26.00 kg/hr (26.7%)  │
+│   Cyclone losses:   0.50 kg/hr ( 0.5%)  │
+├─────────────────────────────────────────┤
+│ BALANCE                                 │
+│   In - Out:         0.00 kg/hr          │
+│   Closure:        100.00%               │
+└─────────────────────────────────────────┘
+```
+
+## Component Balance
+
+### Protein Tracking
+
+Track protein through the pipeline:
+
+```
+Stage          Mass    Protein%  Protein Mass  Recovery
+─────────────────────────────────────────────────────────
+Feed           100.0   22.0%     22.0 kg/hr    100%
+
+After PT        98.0   22.4%     22.0 kg/hr    100%
+  (concentrated by water loss)
+
+After Mill      97.5   22.6%     22.0 kg/hr    100%
+
+After Class:
+  Fine          32.0   52.3%     16.7 kg/hr     76%
+  Medium        39.0   10.5%      4.1 kg/hr     19%
+  Coarse        26.0    4.6%      1.2 kg/hr      5%
+─────────────────────────────────────────────────────────
+Total Out                        22.0 kg/hr    100% ✓
+```
+
+### Starch Tracking
+
+```
+Stage          Mass    Starch%   Starch Mass   Recovery
+─────────────────────────────────────────────────────────
+Feed           100.0   55.0%     55.0 kg/hr    100%
+
+After PT        98.0   56.1%     55.0 kg/hr    100%
+
+After Mill      97.5   56.4%     55.0 kg/hr    100%
+
+After Class:
+  Fine          32.0   28.1%      9.0 kg/hr     16%
+  Medium        39.0   57.4%     22.4 kg/hr     41%
+  Coarse        26.0   90.8%     23.6 kg/hr     43%
+─────────────────────────────────────────────────────────
+Total Out                        55.0 kg/hr    100% ✓
+```
+
+## Sankey Diagram
+
+The pipeline view shows mass flow visually:
+
+```
+                100 kg/hr
+                    │
+    ╔═══════════════╧═══════════════╗
+    ║        PRETREATMENT           ║
+    ╚═══════════════╤═══════════════╝
+                    │─────→ 2 kg/hr (moisture)
+                98 kg/hr
+                    │
+    ╔═══════════════╧═══════════════╗
+    ║          MILLING              ║
+    ╚═══════════════╤═══════════════╝
+                    │─────→ 0.5 kg/hr (dust)
+              97.5 kg/hr
+                    │
+    ╔═══════════════╧═══════════════╗
+    ║       CLASSIFICATION          ║
+    ╠═══════════════════════════════╣
+    ║   ┌──────┐ ┌──────┐ ┌──────┐ ║
+    ║   │ 32kg │ │ 39kg │ │ 26kg │ ║
+    ║   │ Fine │ │Medium│ │Coarse│ ║
+    ║   └──────┘ └──────┘ └──────┘ ║
+    ╚═══════════════════════════════╝
+              │─────→ 0.5 kg/hr (loss)
+```
+
+<Callout type="info">
+The Sankey diagram is interactive. Hover over streams to see detailed composition data.
+</Callout>
+
+## Mass Balance Reports
+
+### Summary Table
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ PIPELINE MASS BALANCE SUMMARY                              │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│ Total Feed:        100.0 kg/hr                            │
+│                                                            │
+│ Products:                                                  │
+│   Protein fraction: 32.0 kg/hr   (32.0%)                  │
+│   Medium fraction:  39.0 kg/hr   (39.0%)                  │
+│   Starch fraction:  26.0 kg/hr   (26.0%)                  │
+│                                                            │
+│ Losses:                                                    │
+│   Water evaporation: 2.0 kg/hr   ( 2.0%)                  │
+│   Dust collection:   0.5 kg/hr   ( 0.5%)                  │
+│   Cyclone losses:    0.5 kg/hr   ( 0.5%)                  │
+│                                                            │
+│ Total Outputs:     100.0 kg/hr                            │
+│                                                            │
+│ Overall Closure:    100.0%  ✓                             │
+│ Product Yield:       97.0%                                 │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Export Options
+
+| Format | Contents |
+|--------|----------|
+| CSV | Numerical data for spreadsheets |
+| PDF | Formatted report with diagrams |
+| JSON | Complete data for integration |
+| Excel | Multi-sheet workbook |
+
+## Troubleshooting
+
+### Balance Doesn't Close
+
+If closure is not 100%:
+
+| Gap | Likely Cause | Check |
+|-----|--------------|-------|
+| < 1% | Rounding errors | Normal, acceptable |
+| 1-5% | Minor losses | Dust, spillage settings |
+| > 5% | Configuration issue | Stage parameters |
+| > 10% | Error | Re-run simulation |
+
+### Finding Missing Mass
+
+1. **Check each stage separately**
+   - Run pretreatment alone, verify closure
+   - Run milling with fixed input, verify closure
+   - Run classification with fixed input, verify closure
+
+2. **Look for hidden streams**
+   - Dust collection systems
+   - Sampling points
+   - Spillage/bypass
+
+3. **Verify transfer settings**
+   - Transfer efficiency factors
+   - Loss assumptions
+
+### Improving Closure
+
+```yaml
+Settings for Accurate Mass Balance:
+  simulation:
+    particle_count: 20000  # Higher for better statistics
+    track_all_losses: true
+
+  reporting:
+    decimal_places: 4      # More precision
+    include_trace_losses: true
+```
+
+## Best Practices
+
+### For Accurate Mass Balance
+
+1. **Use consistent basis**: Wet or dry, don't mix
+2. **Include all streams**: Don't ignore minor losses
+3. **Validate intermediate points**: Check between stages
+4. **Compare to reality**: Benchmark against plant data
+
+### For Reporting
+
+1. **State basis clearly**: "All flows on wet basis"
+2. **Report uncertainties**: ±2% typical
+3. **Include timestamps**: When simulation was run
+4. **Note assumptions**: Transfer efficiencies, etc.
+
+## Next Steps
+
+Complete pipeline documentation:
+
+- [Pipeline Overview](/docs/pipeline/overview) - Orchestration concepts
+- [Stage Transfers](/docs/pipeline/transfers) - Data transfer details

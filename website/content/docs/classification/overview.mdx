@@ -1,0 +1,244 @@
+---
+title: System Overview
+description: Multi-stage air classification system
+order: 1
+---
+
+# Air Classification System
+
+The air classification module simulates particle separation by size and density using aerodynamic forces. This is the final stage for producing protein-enriched and starch-enriched fractions from milled pulse flour.
+
+## Separation Principle
+
+Air classification exploits differences in particle behavior under combined drag and gravitational or centrifugal forces:
+
+- **Small/light particles**: Carried by air flow
+- **Large/heavy particles**: Settle against air flow
+
+### Key Forces
+
+```
+                    ↑ Drag (Fd)
+                    │
+              ○     │
+              │     │
+    ←────────●──────────→ Centrifugal (Fc)
+              │
+              │
+              ↓ Gravity (Fg)
+```
+
+The balance determines particle trajectory:
+- Fd > Fg → Particle rises (fines fraction)
+- Fd < Fg → Particle falls (coarse fraction)
+- Fc > Fd → Particle rejected (in wheel classifiers)
+
+## System Components
+
+The simulation models a multi-stage classification system:
+
+```
+                    ┌─────────────┐
+Feed ──────────────→│   Venturi   │
+                    │  Aspirator  │
+                    └──────┬──────┘
+                           │
+            ┌──────────────┴──────────────┐
+            ↓                             ↓
+     ┌────────────┐               ┌────────────┐
+     │   Zigzag   │               │   Coarse   │
+     │ Classifier │               │  Cyclone   │
+     └──────┬─────┘               └────────────┘
+            │                            │
+     ┌──────┴──────┐                     ↓
+     ↓             ↓               Coarse Outlet
+┌─────────┐  ┌─────────┐
+│  Wheel  │  │  Fines  │
+│Classifier│  │ Cyclone │
+└────┬────┘  └────┬────┘
+     │            │
+     ↓            ↓
+ Medium       Fine Outlet
+ Outlet      (Protein-rich)
+```
+
+### Venturi Aspirator
+
+First-stage rough separation:
+
+| Parameter | Typical Value |
+|-----------|---------------|
+| Air velocity | 10-15 m/s |
+| Channel width | 0.1-0.2 m |
+| Separation | Removes hulls, large fragments |
+
+### Zigzag Classifier
+
+Multi-stage counter-current separator:
+
+| Parameter | Typical Value |
+|-----------|---------------|
+| Number of stages | 6-12 |
+| Channel width | 0.05-0.1 m |
+| Air velocity | 2-5 m/s |
+| Channel angle | 120° |
+
+Particles bounce between stages, with fines carried up and coarse falling down.
+
+### Wheel Classifier
+
+Precision separator using centrifugal force:
+
+| Parameter | Typical Value |
+|-----------|---------------|
+| Wheel diameter | 0.15-0.3 m |
+| Wheel RPM | 2000-6000 |
+| Air flow | 200-800 m³/hr |
+| Cut point | 10-50 μm |
+
+<Callout type="info">
+The wheel classifier provides the sharpest cut, essential for high-purity protein concentration.
+</Callout>
+
+### Cyclones
+
+Particle collection and air recirculation:
+
+| Type | Purpose |
+|------|---------|
+| Fines cyclone | Collect fine product (protein) |
+| Coarse cyclone | Collect coarse reject |
+| Air return | Recirculate clean air |
+
+## Simulation Capabilities
+
+### Particle Tracking
+
+The simulation follows individual particles through:
+
+- Entry and acceleration
+- Interactions with classifier geometry
+- Force balance calculations
+- Exit determination
+
+### Flow Field
+
+CFD-based flow modeling provides:
+- Velocity fields in each component
+- Turbulence effects
+- Pressure drops
+- Particle-air coupling
+
+### Separation Efficiency
+
+Track separation quality with:
+
+| Metric | Description |
+|--------|-------------|
+| Cut size (d50) | Size at 50% separation |
+| Sharpness | Steepness of grade curve |
+| Bypass | Misplaced particles |
+| Recovery | % of target particles captured |
+
+## Typical Performance
+
+### Protein Fractionation
+
+Starting with pea flour (D50 = 150 μm, 22% protein):
+
+| Fraction | Mass % | Protein % | Size Range |
+|----------|--------|-----------|------------|
+| Fine (protein) | 30-35% | 50-55% | < 25 μm |
+| Medium | 40-45% | 20-25% | 25-100 μm |
+| Coarse (starch) | 20-30% | 10-15% | > 100 μm |
+
+### Grade Efficiency Curve
+
+```
+Recovery to Fines (%)
+100│
+   │                    ╭────
+ 90│                  ╱
+   │                ╱
+ 50│ - - - - - - -╳- - - - Cut point
+   │            ╱
+ 10│          ╱
+   │────────╯
+  0│
+   └──────────────────────────
+    1    5   10  20  50  100 μm
+```
+
+## Physical Principles
+
+### Stokes' Law
+
+For small particles (Re < 1):
+
+```python
+# Terminal settling velocity
+v_t = (ρ_p - ρ_f) × g × d² / (18 × μ)
+
+# Where:
+# ρ_p = particle density
+# ρ_f = fluid density
+# g = gravitational acceleration
+# d = particle diameter
+# μ = fluid viscosity
+```
+
+### Centrifugal Classification
+
+In the wheel classifier:
+
+```python
+# Separation criterion
+d_cut = √(18 × μ × Q) / (π × ω² × r × (ρ_p - ρ_f) × L)
+
+# Where:
+# Q = volumetric flow rate
+# ω = angular velocity
+# r = wheel radius
+# L = wheel length
+```
+
+### Particle Properties
+
+Separation depends on:
+- **Size**: Primary factor
+- **Density**: Starch (1.5) vs protein (1.3) g/cm³
+- **Shape**: Sphericity affects drag
+- **Moisture**: Affects stickiness
+
+## Applications
+
+### Standard Protein Concentration
+
+Produce 50% protein concentrate:
+- Single-pass classification
+- D50 cut around 20 μm
+- Yield: 30-35% of feed
+
+### High-Purity Protein
+
+Produce 65%+ protein isolate:
+- Multiple classification passes
+- Tighter cut points
+- Yield: 15-20% of feed
+
+### Starch Recovery
+
+Maximize starch fraction purity:
+- Focus on coarse collection
+- Minimize fine carryover
+- Yield: 50-60% of feed as >90% starch
+
+<Callout type="warning">
+Multiple passes increase purity but reduce yield. Optimize based on your product specifications and economics.
+</Callout>
+
+## Next Steps
+
+- [Configuration Guide](/docs/classification/configuration) - Set up your classifier
+- [Running Simulations](/docs/classification/simulation) - Execute classification
+- [Efficiency Analysis](/docs/classification/efficiency) - Optimize separation

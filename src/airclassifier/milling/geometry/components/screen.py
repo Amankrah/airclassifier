@@ -87,6 +87,8 @@ class ScreenParams:
     @classmethod
     def from_mill_config(cls, config: "MillConfig") -> "ScreenParams":
         """Create screen params from mill configuration."""
+        # Scale factor based on housing radius (reference: 0.20m pilot scale)
+        scale = config.housing_inner_radius_m / 0.20
         return cls(
             inner_radius_m=config.screen_inner_radius_m,
             thickness_m=config.screen_thickness_m,
@@ -94,7 +96,7 @@ class ScreenParams:
             arc_angle_deg=config.screen_arc_angle_deg,
             aperture_mm=config.screen_aperture_mm,
             open_area=config.screen_open_area,
-            center_x_m=0.05,  # Slight offset into housing
+            center_x_m=0.05 * scale,  # Scaled offset into housing
         )
 
 

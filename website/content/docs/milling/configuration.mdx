@@ -1,0 +1,267 @@
+---
+title: Configuration
+description: Configure milling simulation parameters
+order: 2
+---
+
+# Milling Configuration
+
+Configure your hammer mill simulation with these parameters.
+
+## Mill Parameters
+
+### Rotor Configuration
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Rotor Diameter | 0.2-0.5 m | 0.3 m | Diameter of hammer circle |
+| Rotor Length | 0.1-0.4 m | 0.2 m | Axial length of chamber |
+| Rotor RPM | 1500-6000 | 3500 | Rotational speed |
+| Number of Hammers | 8-32 | 16 | Total hammer count |
+
+```python
+rotor_config = {
+    "diameter_m": 0.30,
+    "length_m": 0.20,
+    "rpm": 3500,
+    "num_hammers": 16,
+    "hammer_rows": 4,
+    "hammers_per_row": 4
+}
+```
+
+### Hammer Configuration
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Hammer Length | 30-80 mm | 50 mm | Radial length |
+| Hammer Width | 15-40 mm | 25 mm | Axial width |
+| Hammer Thickness | 4-10 mm | 6 mm | Tangential thickness |
+| Hammer Mass | 50-200 g | 75 g | Per hammer |
+
+### Screen Configuration
+
+| Parameter | Options | Default | Description |
+|-----------|---------|---------|-------------|
+| Aperture Size | 0.5-4.0 mm | 1.5 mm | Hole diameter |
+| Open Area | 15-45% | 25% | Percentage open |
+| Screen Type | Round/Square/Slot | Round | Hole shape |
+| Screen Arc | 90-270° | 180° | Angular coverage |
+
+```yaml
+Screen Options:
+  Round Holes:
+    - 0.5 mm (ultra-fine)
+    - 1.0 mm (fine)
+    - 1.5 mm (standard)
+    - 2.0 mm (coarse)
+    - 3.0 mm (very coarse)
+
+  Open Area Effect:
+    15%: Slow throughput, fine product
+    25%: Balanced (recommended)
+    35%: Fast throughput, coarser product
+    45%: Maximum throughput, minimal grinding
+```
+
+## Feed Parameters
+
+### Feed Properties
+
+| Parameter | Range | Unit | Description |
+|-----------|-------|------|-------------|
+| Feed Rate | 10-300 | kg/hr | Mass flow rate |
+| Feed Moisture | 6-16 | % wb | Moisture content |
+| Feed Temperature | 15-75 | °C | Initial temperature |
+| Feed D50 | 2000-8000 | μm | Initial median size |
+
+### From Pipeline Transfer
+
+If transferring from pretreatment, these are auto-populated:
+
+```python
+# Auto-populated from pretreatment outlet
+feed_from_pipeline = {
+    "moisture_wb": outlet.avg_moisture_wb,
+    "temperature_c": outlet.avg_temperature_c,
+    "rate_kg_per_hr": outlet.throughput_kg_per_hr,
+    "d50_um": 5000  # Whole seeds
+}
+```
+
+### Material Selection
+
+Choose from the database or define custom:
+
+```yaml
+Available Materials:
+  - Yellow Pea
+  - Green Pea
+  - Red Lentil
+  - Chickpea
+  - Faba Bean
+  - Custom (user-defined)
+
+Material Properties Required:
+  - Bond work index (kWh/t)
+  - Fracture toughness (MPa·m^0.5)
+  - Hardgrove index
+  - Moisture sensitivity factor
+```
+
+## Simulation Parameters
+
+### Particle Simulation
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Particle Count | 1000-50000 | 5000 | Simulated particles |
+| Time Step | 0.0001-0.01 s | 0.001 s | Integration step |
+| Total Time | 1-60 s | 10 s | Simulation duration |
+
+<Callout type="info">
+Higher particle counts give smoother PSD curves but increase computation time. 5000 particles is usually sufficient for accurate results.
+</Callout>
+
+### Physics Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| Impact Breakage | On | Model hammer impacts |
+| Attrition | On | Model screen grinding |
+| Particle-Particle | Off | Collision breakage (slow) |
+| Air Flow | Simplified | Particle transport model |
+| Heat Generation | On | Track temperature rise |
+
+### Output Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| PSD Intervals | 50 | Number of size bins |
+| Log Scale | Yes | Logarithmic size bins |
+| Time Series | 0.5 s | Output interval |
+| 3D Recording | Off | Save visualization data |
+
+## Configuration Examples
+
+### Fine Flour (Protein Fractionation)
+
+```json
+{
+  "name": "Fine Pea Flour",
+  "rotor": {
+    "rpm": 4500,
+    "diameter_m": 0.30
+  },
+  "screen": {
+    "aperture_mm": 1.0,
+    "open_area_pct": 25
+  },
+  "feed": {
+    "rate_kg_per_hr": 80,
+    "moisture_pct": 10
+  },
+  "target": {
+    "d50_um": 120,
+    "fines_pct": 25
+  }
+}
+```
+
+### Standard Flour
+
+```json
+{
+  "name": "Standard Pea Flour",
+  "rotor": {
+    "rpm": 3500,
+    "diameter_m": 0.30
+  },
+  "screen": {
+    "aperture_mm": 1.5,
+    "open_area_pct": 30
+  },
+  "feed": {
+    "rate_kg_per_hr": 120,
+    "moisture_pct": 11
+  },
+  "target": {
+    "d50_um": 200,
+    "fines_pct": 15
+  }
+}
+```
+
+### Coarse Grind (Animal Feed)
+
+```json
+{
+  "name": "Coarse Grind",
+  "rotor": {
+    "rpm": 2500,
+    "diameter_m": 0.30
+  },
+  "screen": {
+    "aperture_mm": 3.0,
+    "open_area_pct": 35
+  },
+  "feed": {
+    "rate_kg_per_hr": 200,
+    "moisture_pct": 12
+  },
+  "target": {
+    "d50_um": 600,
+    "fines_pct": 5
+  }
+}
+```
+
+## Validation Rules
+
+The simulator validates configurations:
+
+### Automatic Checks
+
+- Feed rate vs. mill capacity
+- RPM within motor limits
+- Screen aperture vs. feed size
+- Temperature rise prediction
+
+### Warning Conditions
+
+| Condition | Warning |
+|-----------|---------|
+| Tip speed > 80 m/s | "High tip speed - heat risk" |
+| Feed rate > capacity | "Throughput may be limited" |
+| Moisture < 8% | "Risk of excess fines" |
+| Moisture > 12% | "Risk of clogging" |
+
+## Loading Configurations
+
+### From File
+
+```bash
+# Load saved configuration
+File > Open Configuration > milling_config.json
+```
+
+### From Template
+
+```bash
+# Start from template
+File > New from Template > [Select template]
+```
+
+### From Previous Run
+
+The last configuration is auto-saved:
+
+```bash
+# Restore previous
+File > Recent Configurations > [Select]
+```
+
+## Next Steps
+
+- [Running Simulations](/docs/milling/simulation) - Execute your configuration
+- [PSD Analysis](/docs/milling/psd) - Understand particle size results

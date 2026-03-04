@@ -79,13 +79,26 @@ class RotorParams:
 
         Follows the parameter chain:
             MillConfig -> RotorParams
+
+        Geometry:
+            - Main shaft spans the housing length (active_length_m)
+            - Journals extend OUTSIDE the housing on both ends
+            - Drive end journal (-X): for mill pulley attachment
+            - Free end journal (+X): for bearing support
         """
+        # Scale factor based on housing radius (reference: 0.20m pilot scale)
+        scale = config.housing_inner_radius_m / 0.20
         return cls(
             shaft_radius_m=config.shaft_diameter_m / 2.0,
-            shaft_length_m=config.rotor_length_m + 0.10,  # Add bearing journals
+            shaft_length_m=config.rotor_length_m,  # Main shaft spans housing only
             active_length_m=config.rotor_length_m,
             disc_count=config.hammer_rows + 1,  # One more disc than hammer rows
             disc_outer_radius_m=config.rotor_diameter_m / 2.0,
+            disc_thickness_m=0.010 * scale,
+            disc_start_x_m=0.05 * scale,
+            journal_length_m=0.04 * scale,
+            journal_radius_m=config.shaft_diameter_m / 2.0 * 0.85,  # Slightly smaller than shaft
+            drive_journal_extension_m=0.05 * scale,
         )
 
 

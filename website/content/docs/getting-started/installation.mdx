@@ -1,0 +1,158 @@
+---
+title: Installation
+description: Install ProteinProcessIO on your system
+order: 1
+---
+
+# Installation
+
+ProteinProcessIO is a desktop application available for Windows, macOS, and Linux. Follow the instructions below for your operating system.
+
+## System Requirements
+
+Before installing, ensure your system meets the minimum requirements:
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| OS | Windows 10, macOS 11, Ubuntu 20.04 | Windows 11, macOS 13, Ubuntu 22.04 |
+| CPU | 4 cores, 2.5 GHz | 8+ cores, 3.5 GHz |
+| RAM | 8 GB | 16 GB |
+| GPU | Any (CPU fallback) | NVIDIA with CUDA 11.8+ |
+| Storage | 500 MB | 1 GB |
+
+<Callout type="info">
+GPU acceleration is optional but highly recommended for faster simulations. The application will automatically fall back to CPU computation if no compatible GPU is detected.
+</Callout>
+
+## Windows Installation
+
+<Steps>
+<Step number={1} title="Download the installer">
+Download the latest `.exe` installer from the [Download page](/download). Choose the standard installer for most users.
+</Step>
+
+<Step number={2} title="Run the installer">
+Double-click the downloaded file and follow the installation wizard. Accept the license agreement and choose your installation directory.
+</Step>
+
+<Step number={3} title="Launch the application">
+Find ProteinProcessIO in your Start menu or desktop shortcut. The application will perform initial setup on first launch.
+</Step>
+</Steps>
+
+### Windows Defender SmartScreen
+
+If Windows SmartScreen shows a warning, click "More info" and then "Run anyway". This appears because the application is newly distributed.
+
+## macOS Installation
+
+<Steps>
+<Step number={1} title="Download the DMG">
+Download the `.dmg` file for macOS from the [Download page](/download).
+</Step>
+
+<Step number={2} title="Mount and install">
+Double-click the DMG file and drag ProteinProcessIO to your Applications folder.
+</Step>
+
+<Step number={3} title="First launch">
+Right-click the app and select "Open" the first time to bypass Gatekeeper security. After that, you can launch it normally.
+</Step>
+</Steps>
+
+<Callout type="warning">
+On Apple Silicon Macs (M1/M2/M3), GPU acceleration uses Metal. Ensure your macOS is up to date for best performance.
+</Callout>
+
+## Linux Installation
+
+### Ubuntu/Debian (APT)
+
+```bash
+# Download the .deb package
+wget https://proteinprocessio.com/releases/latest/proteinprocessio_latest_amd64.deb
+
+# Install the package
+sudo dpkg -i proteinprocessio_latest_amd64.deb
+
+# Install dependencies if needed
+sudo apt-get install -f
+```
+
+### Fedora/RHEL (RPM)
+
+```bash
+# Download the .rpm package
+wget https://proteinprocessio.com/releases/latest/proteinprocessio_latest_x86_64.rpm
+
+# Install the package
+sudo rpm -i proteinprocessio_latest_x86_64.rpm
+```
+
+### AppImage (Universal)
+
+```bash
+# Download the AppImage
+wget https://proteinprocessio.com/releases/latest/ProteinProcessIO-latest-x86_64.AppImage
+
+# Make it executable
+chmod +x ProteinProcessIO-latest-x86_64.AppImage
+
+# Run the application
+./ProteinProcessIO-latest-x86_64.AppImage
+```
+
+## GPU Driver Setup
+
+For optimal performance with GPU acceleration:
+
+### NVIDIA (Recommended)
+
+1. Install the latest NVIDIA drivers (535+ recommended)
+2. Install CUDA Toolkit 11.8 or later
+3. Verify installation: `nvidia-smi`
+
+```bash
+# Check CUDA version
+nvcc --version
+```
+
+### AMD (Linux only)
+
+ROCm support is experimental. Install ROCm 5.4+ from AMD's repository.
+
+## Verifying Installation
+
+After installation, launch ProteinProcessIO and check the status bar at the bottom. It should display:
+
+- **GPU Status**: Shows your GPU model or "CPU Mode"
+- **Version**: Current application version
+- **Memory**: Available system memory
+
+<Callout type="success">
+If you see the main application window with all three simulation tabs (Pretreatment, Milling, Classification), the installation was successful.
+</Callout>
+
+## Troubleshooting
+
+### Application won't start
+
+- Ensure all system requirements are met
+- Try running as administrator (Windows) or with sudo (Linux)
+- Check the log file at `~/.proteinprocessio/logs/`
+
+### GPU not detected
+
+- Update your GPU drivers to the latest version
+- Verify CUDA installation with `nvidia-smi`
+- Check that your GPU supports CUDA 11.8+
+
+### Performance issues
+
+- Close other GPU-intensive applications
+- Reduce simulation resolution in Settings
+- Enable "Low Memory Mode" for systems with less than 8GB RAM
+
+## Next Steps
+
+Now that ProteinProcessIO is installed, proceed to the [Quick Start](/docs/getting-started/quick-start) guide to run your first simulation.

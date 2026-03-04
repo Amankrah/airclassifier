@@ -375,6 +375,7 @@ class MillingControlPanel(QFrame):
             "Mass-processed",
             "Steady-state",
             "Target d50",
+            "Batch complete",
         ])
         self._term_mode_combo.setStyleSheet(f"""
             QComboBox {{
@@ -501,10 +502,12 @@ class MillingControlPanel(QFrame):
 
     def _on_term_mode_changed(self, index: int):
         """Handle termination mode selection change."""
+        # Mode indices: 0=Time, 1=Mass, 2=Steady-state, 3=Target d50, 4=Batch complete
         is_time = (index == 0)
         is_mass = (index == 1)
         is_steady = (index == 2)
         is_target_d50 = (index == 3)
+        is_batch = (index == 4)
         is_physics = not is_time
 
         # Show/hide duration (only for time-based)
@@ -525,12 +528,35 @@ class MillingControlPanel(QFrame):
         self._max_time_label.setVisible(is_physics)
         self._max_time_spin.setVisible(is_physics)
 
+        # For batch mode, require input mass > 0 (auto-set default batch size)
+        if is_batch and self._seeds_feed_mass_spin.value() == 0:
+            self._seeds_feed_mass_spin.setValue(1.0)  # Default 1 kg batch
+
         # Force layout update to reflect visibility changes
         self.updateGeometry()
         if self.parentWidget():
             self.parentWidget().updateGeometry()
 
         self._emit_recipe()
+
+    def _on_seeds_feed_mass_changed(self, value: float):
+        """Handle input mass change - auto-switch to batch mode when seeds > 0.
+
+        Args:
+            value: New input mass value [kg]
+        """
+        current_mode = self._term_mode_combo.currentIndex()
+
+        if value > 0 and current_mode == 0:
+            # Auto-switch from "Time-based" to "Batch complete" when input mass > 0
+            self._term_mode_combo.setCurrentIndex(4)  # Batch complete
+            # Note: setCurrentIndex triggers _on_term_mode_changed which calls _emit_recipe
+        elif value == 0 and current_mode == 4:
+            # Switch back to "Time-based" when input mass becomes 0
+            self._term_mode_combo.setCurrentIndex(0)  # Time-based
+        else:
+            # Just emit recipe for other cases
+            self._emit_recipe()
 
     def _on_rpm_changed(self, value: int):
         """Handle RPM slider change — update label and refresh D50 estimate."""
@@ -605,7 +631,7 @@ class MillingControlPanel(QFrame):
         # Recipe changes
         self._rpm_slider.valueChanged.connect(self._emit_recipe)
         # Note: _aperture_slider connected to _on_aperture_changed in _create_recipe_group
-        self._seeds_feed_mass_spin.valueChanged.connect(self._emit_recipe)
+        self._seeds_feed_mass_spin.valueChanged.connect(self._on_seeds_feed_mass_changed)
         self._feed_spin.valueChanged.connect(self._emit_recipe)
         self._duration_spin.valueChanged.connect(self._emit_recipe)
         self._target_mass_spin.valueChanged.connect(self._emit_recipe)
@@ -621,7 +647,7 @@ class MillingControlPanel(QFrame):
 
     def get_recipe(self) -> Dict[str, Any]:
         """Get current recipe parameters including termination config."""
-        modes = ["time", "mass", "steady_state", "target_d50"]
+        modes = ["time", "mass", "steady_state", "target_d50", "batch_complete"]
         term_mode = modes[self._term_mode_combo.currentIndex()]
 
         return {
@@ -639,7 +665,7 @@ class MillingControlPanel(QFrame):
 
     def get_termination_mode(self) -> str:
         """Get current termination mode string."""
-        modes = ["time", "mass", "steady_state", "target_d50"]
+        modes = ["time", "mass", "steady_state", "target_d50", "batch_complete"]
         return modes[self._term_mode_combo.currentIndex()]
 
     def set_recipe(self, recipe: Dict[str, Any]):

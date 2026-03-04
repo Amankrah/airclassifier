@@ -55,7 +55,7 @@ class _KPIRow(QFrame):
         self._d50_card = self._create_kpi("Flour d50", "\u00b5m", COLORS.KPI_SIZE)
         layout.addWidget(self._d50_card["frame"])
 
-        self._seed_d50_card = self._create_kpi("Seed d50", "\u00b5m", COLORS.WARNING)
+        self._seed_d50_card = self._create_kpi("Retained d50", "\u00b5m", COLORS.WARNING)
         layout.addWidget(self._seed_d50_card["frame"])
 
         self._power_card = self._create_kpi("Power", "kW", COLORS.KPI_POWER)
@@ -141,7 +141,7 @@ class _PSDPanel(QFrame):
         self._psd_discharge_btn = QRadioButton("Flour (discharged)")
         self._psd_discharge_btn.setChecked(True)
         self._psd_discharge_btn.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 9pt;")
-        self._psd_retained_btn = QRadioButton("Seeds (retained)")
+        self._psd_retained_btn = QRadioButton("Holdup (retained)")
         self._psd_retained_btn.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; font-size: 9pt;")
         self._psd_discharge_btn.toggled.connect(self._on_psd_mode_toggled)
         self._psd_retained_btn.toggled.connect(self._on_psd_mode_toggled)
@@ -285,7 +285,7 @@ class _TimeSeriesPanel(QFrame):
 
         # Chart in scroll area so graphs are scrollable
         self._chart = TimeSeriesChart()
-        self._chart.setMinimumHeight(560)
+        self._chart.setMinimumHeight(920)  # 4 rows × ~230px each
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -364,8 +364,8 @@ class _AnalyticsPanel(QFrame):
         columns.addWidget(flour_col["frame"])
         self._flour_stats = flour_col["stats"]
 
-        # Retained Seeds Column (still in mill chamber)
-        retained_col = self._create_analytics_column("Retained Seeds", COLORS.WARNING, [
+        # Retained Holdup Column (still in mill chamber)
+        retained_col = self._create_analytics_column("Retained Holdup", COLORS.WARNING, [
             ("d10", "seed_d10"),
             ("d50", "seed_d50"),
             ("d90", "seed_d90"),
@@ -567,10 +567,11 @@ class _ProcessSummaryPanel(QFrame):
             ("Total Mass Fed", "total_mass", 0, 1),
             ("Flour Mass (discharged)", "discharge_mass", 1, 0),
             ("Flour d50", "flour_d50", 1, 1),
-            ("Seed Mass (retained)", "holdup_kg", 2, 0),
-            ("Seed d50", "seed_d50", 2, 1),
-            ("Screen Efficiency", "efficiency", 3, 0),
+            ("Holdup Mass (retained)", "holdup_kg", 2, 0),
+            ("Retained d50", "seed_d50", 2, 1),
+            ("Yield", "yield_pct", 3, 0),
             ("Mean Residence Time", "residence", 3, 1),
+            ("Mass Loss", "mass_loss", 4, 0),
         ]
 
         for label, key, row, col in row_data:
@@ -619,30 +620,42 @@ class _ProcessSummaryPanel(QFrame):
                 history = result_obj.history
                 duration = history[-1].time_s if history else 0
                 self._stats["duration"].setText(f"{duration:.1f} s")
-                total_fed = sum(s.num_fed for s in history)
-                total_passed = sum(s.num_passed_screen for s in history)
-                if total_fed > 0:
-                    efficiency = total_passed / total_fed * 100
-                    self._stats["efficiency"].setText(f"{efficiency:.1f}%")
             else:
                 self._stats["duration"].setText("--")
-                self._stats["efficiency"].setText("--")
+
+            # Mass balance: fed = discharged + holdup + loss
+            mass_fed = getattr(result_obj, "total_mass_fed_kg", 0)
+            mass_discharged = getattr(result_obj, "psd_total_mass_kg", 0)
+            mass_holdup = getattr(result_obj, "holdup_kg_final", 0)
 
             # Total mass fed
-            if hasattr(result_obj, "total_mass_fed_kg"):
-                self._stats["total_mass"].setText(f"{result_obj.total_mass_fed_kg:.2f} kg")
+            if mass_fed > 0:
+                self._stats["total_mass"].setText(f"{mass_fed:.2f} kg")
 
             # Flour (discharged) mass and d50
-            if hasattr(result_obj, "psd_total_mass_kg"):
-                self._stats["discharge_mass"].setText(f"{result_obj.psd_total_mass_kg:.2f} kg")
+            if mass_discharged > 0:
+                self._stats["discharge_mass"].setText(f"{mass_discharged:.2f} kg")
             if hasattr(result_obj, "d50_um"):
                 self._stats["flour_d50"].setText(f"{result_obj.d50_um:.0f} \u00b5m")
 
-            # Seed (retained) mass and d50
-            if hasattr(result_obj, "holdup_kg_final"):
-                self._stats["holdup_kg"].setText(f"{result_obj.holdup_kg_final:.2f} kg")
+            # Holdup (retained) mass and d50
+            if mass_holdup > 0:
+                self._stats["holdup_kg"].setText(f"{mass_holdup:.2f} kg")
             if hasattr(result_obj, "retained_d50_um") and result_obj.retained_d50_um > 0:
                 self._stats["seed_d50"].setText(f"{result_obj.retained_d50_um:.0f} \u00b5m")
+
+            # Mass-based yield and mass loss
+            if mass_fed > 0:
+                yield_pct = (mass_discharged / mass_fed) * 100
+                self._stats["yield_pct"].setText(f"{yield_pct:.1f}%")
+
+                mass_loss = mass_fed - mass_discharged - mass_holdup
+                loss_pct = (mass_loss / mass_fed) * 100
+                # Show mass loss with percentage
+                if abs(mass_loss) < 0.001:
+                    self._stats["mass_loss"].setText("0 g (0%)")
+                else:
+                    self._stats["mass_loss"].setText(f"{mass_loss * 1000:.1f} g ({loss_pct:.1f}%)")
 
 
 class MillingResultsPage(QWidget):
