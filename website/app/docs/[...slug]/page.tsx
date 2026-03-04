@@ -90,8 +90,7 @@ export default async function DocPage({ params }: PageProps) {
   const mdxSource = await serialize(doc.content, {
     mdxOptions: {
       remarkPlugins: [remarkGfm],
-      // rehype-highlight bundles an older vfile; cast to satisfy unified plugin types on Vercel/CI
-      rehypePlugins: [rehypeSlug, rehypeHighlight as any],
+      rehypePlugins: [rehypeSlug, rehypeHighlight],
     },
   });
 
