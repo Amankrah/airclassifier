@@ -148,7 +148,7 @@ export function Footer() {
               href="https://www.eakwofie.com/"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-accent hover:text-accent-glow transition-colors"
+              className="text-accent hover:text-accent-glow underline underline-offset-2 transition-colors"
             >
               Emmanuel Amankrah Kwofie
             </a>
@@ -156,13 +156,13 @@ export function Footer() {
           <div className="flex items-center gap-6 text-sm text-text-muted">
             <Link
               href="/privacy"
-              className="hover:text-white transition-colors"
+              className="hover:text-white underline underline-offset-2 transition-colors"
             >
               Privacy Policy
             </Link>
             <Link
               href="/terms"
-              className="hover:text-white transition-colors"
+              className="hover:text-white underline underline-offset-2 transition-colors"
             >
               Terms of Service
             </Link>

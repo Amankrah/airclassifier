@@ -52,7 +52,7 @@ const config: Config = {
         text: {
           primary: '#f8fafc',
           secondary: '#94a3b8',
-          muted: '#64748b',
+          muted: '#78879d',
         },
         // Success/Warning/Error
         success: '#22c55e',
