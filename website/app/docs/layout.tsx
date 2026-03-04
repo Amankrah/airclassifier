@@ -121,17 +121,6 @@ function DocsSidebar({
         <p className="px-3 text-xs text-text-muted mb-2">Resources</p>
         <ul className="space-y-1">
           <li>
-            <a
-              href="https://github.com/mvgill/proteinprocessio"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block px-3 py-1.5 text-sm text-text-muted hover:text-white transition-colors"
-              onClick={onLinkClick}
-            >
-              GitHub Repository
-            </a>
-          </li>
-          <li>
             <Link
               href="/download"
               className="block px-3 py-1.5 text-sm text-text-muted hover:text-white transition-colors"

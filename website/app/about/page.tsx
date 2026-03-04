@@ -3,7 +3,6 @@
 import { motion } from 'framer-motion';
 import Link from 'next/link';
 import {
-  Github,
   Linkedin,
   Mail,
   ExternalLink,
@@ -215,14 +214,6 @@ export default function AboutPage() {
                       title="Personal Website"
                     >
                       <ExternalLink className="w-5 h-5" />
-                    </a>
-                    <a
-                      href="https://github.com/eakwofie"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-text-secondary hover:text-white transition-colors"
-                    >
-                      <Github className="w-5 h-5" />
                     </a>
                     <a
                       href="https://linkedin.com/in/eakwofie"

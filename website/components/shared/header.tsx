@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Menu, X, Download, Github } from 'lucide-react';
+import { Menu, X, Download } from 'lucide-react';
 import { Logo } from './logo';
 import { cn } from '@/lib/utils';
 
@@ -69,15 +69,6 @@ export function Header() {
 
           {/* Desktop CTA Buttons */}
           <div className="hidden md:flex items-center gap-3">
-            <a
-              href="https://github.com/mvgill/proteinprocessio"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-ghost p-2"
-              aria-label="GitHub"
-            >
-              <Github className="w-5 h-5" />
-            </a>
             <Link href="/download" className="btn-accent">
               <Download className="w-4 h-4" />
               Download
@@ -124,15 +115,6 @@ export function Header() {
                   </Link>
                 ))}
                 <div className="pt-4 px-4 flex gap-3">
-                  <a
-                    href="https://github.com/mvgill/proteinprocessio"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn-outline flex-1 justify-center"
-                  >
-                    <Github className="w-4 h-4" />
-                    GitHub
-                  </a>
                   <Link href="/download" className="btn-accent flex-1 justify-center">
                     <Download className="w-4 h-4" />
                     Download

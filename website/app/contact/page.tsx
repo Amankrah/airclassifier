@@ -4,7 +4,6 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Mail,
-  Github,
   MessageSquare,
   Send,
   Check,
@@ -58,7 +57,7 @@ const faqs = [
   {
     question: 'How can I contribute to the project?',
     answer:
-      'We welcome contributions! Check out our GitHub repository for contribution guidelines, or contact us to discuss research collaboration opportunities.',
+      'We welcome contributions! Contact us to discuss research collaboration opportunities.',
   },
 ];
 
@@ -300,28 +299,6 @@ export default function ContactPage() {
                       className="text-white hover:text-accent transition-colors"
                     >
                       contact@proteinprocessio.com
-                    </a>
-                  </div>
-                </div>
-              </div>
-
-              {/* GitHub Card */}
-              <div className="glass-card p-6">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center">
-                    <Github className="w-6 h-6 text-accent" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-medium text-text-muted">
-                      GitHub Issues
-                    </h3>
-                    <a
-                      href="https://github.com/mvgill/proteinprocessio/issues"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-white hover:text-accent transition-colors"
-                    >
-                      Report a Bug
                     </a>
                   </div>
                 </div>

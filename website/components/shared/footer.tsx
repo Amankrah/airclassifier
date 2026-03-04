@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Github, Linkedin, Mail } from 'lucide-react';
+import { Linkedin, Mail } from 'lucide-react';
 import { Logo } from './logo';
 
 const footerLinks = {
@@ -24,11 +24,6 @@ const footerLinks = {
 };
 
 const socialLinks = [
-  {
-    label: 'GitHub',
-    href: 'https://github.com/Amankrah',
-    icon: Github,
-  },
   {
     label: 'LinkedIn',
     href: 'https://linkedin.com/in/eakwofie',

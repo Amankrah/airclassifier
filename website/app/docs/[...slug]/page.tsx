@@ -1,6 +1,6 @@
 import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ArrowRight, Clock, Edit3 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Clock } from 'lucide-react';
 import { serialize } from 'next-mdx-remote/serialize';
 import remarkGfm from 'remark-gfm';
 import rehypeSlug from 'rehype-slug';
@@ -125,15 +125,6 @@ export default async function DocPage({ params }: PageProps) {
             <Clock className="w-4 h-4" />
             5 min read
           </span>
-          <a
-            href={`https://github.com/mvgill/proteinprocessio/edit/main/website/content/docs/${section}/${slug}.mdx`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 hover:text-accent transition-colors"
-          >
-            <Edit3 className="w-4 h-4" />
-            Edit this page
-          </a>
         </div>
       </header>
 
