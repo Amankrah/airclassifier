@@ -3,6 +3,9 @@ const nextConfig = {
   // Enable React strict mode for better development experience
   reactStrictMode: true,
 
+  // Generate source maps in production for Lighthouse and debugging
+  productionBrowserSourceMaps: true,
+
   // Image optimization
   images: {
     domains: ['localhost'],
