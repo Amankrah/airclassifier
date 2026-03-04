@@ -76,6 +76,10 @@ Thumbs.db
 !website/public/**/*.ico
 !website/public/**/*.svg
 !website/public/**/*.webp
+# Installer downloads - keep folder but ignore large exe files
+# Upload installers to GitHub Releases instead (2GB limit vs 100MB for git)
+!website/public/downloads/
+!website/public/downloads/.gitkeep
 *.vtk
 *.vtu
 vtk_output/
