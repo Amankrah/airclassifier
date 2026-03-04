@@ -25,38 +25,38 @@ const stages = [
     icon: Zap,
     color: 'from-orange-500 to-red-500',
     description:
-      'Simulate the GP-15 RF dielectric heating machine for moisture control and enzyme inactivation. The pretreatment stage conditions whole seeds before milling.',
+      'Full digital twin of the GP-15 RF dielectric heating oven with a coupled 9-step physics loop — RF field solve, volumetric heating, thermal conduction, moisture diffusion, evaporation kinetics, and material property updates every timestep. Validated against NRC Canada experimental runs with PLC data, temperature strips, and NIR moisture measurements.',
     features: [
       {
         icon: Thermometer,
-        title: 'Temperature Control',
+        title: 'Coupled RF Field Solver',
         description:
-          'RF heating at 27.12 MHz with real-time temperature field visualization. Track sensor readings and bulk averages.',
+          'Red-Black Gauss-Seidel SOR for the Laplace equation with variable permittivity per cell. Voltage-constrained iteration maintains target RF power density at 27.12 MHz.',
       },
       {
         icon: Droplets,
-        title: 'Moisture Management',
+        title: 'Moisture & Thermal Coupling',
         description:
-          'Monitor moisture content (wet basis) across the bed. Achieve target drying with configurable evaporation models.',
+          "Fick's law diffusion with Arrhenius-type effective diffusivity D_eff(T). Latent heat sink from evaporation. Moisture-dependent thermal conductivity via the Luikov model.",
       },
       {
         icon: Gauge,
-        title: 'Process Parameters',
+        title: 'Adaptive PLC Control',
         description:
-          'Configure electrode gap, belt speed, RF power, and extraction fan settings. Match your actual GP-15 configuration.',
+          'Electrode gap control with hysteresis, belt speed regulation, temperature setpoint tracking, and arc detection safety interlocks. Replicates the real GP-15 PLC logic.',
       },
       {
         icon: BarChart3,
-        title: 'Energy Analytics',
+        title: 'Desirability Scoring',
         description:
-          'Track total energy consumption (kWh), specific energy (kWh/kg water), and anode current. Optimize efficiency.',
+          'Five-dimensional Derringer-Suich functions — thermal treatment, LOX inactivation, protein preservation, moisture retention, and energy efficiency. Material-specific profiles for yellow pea, faba bean, and red lentil.',
       },
     ],
     specs: [
       { label: 'RF Frequency', value: '27.12 MHz' },
-      { label: 'Max Power', value: '15 kW' },
-      { label: 'Belt Width', value: '800 mm' },
-      { label: 'Oven Length', value: '1.5 m' },
+      { label: 'Field Solver', value: 'FDM Laplace (GPU)' },
+      { label: 'Lagrangian Tracers', value: '100+ particles' },
+      { label: 'Material Presets', value: '3 legumes' },
     ],
   },
   {
@@ -66,38 +66,38 @@ const stages = [
     icon: Cog,
     color: 'from-primary to-blue-400',
     description:
-      'High-fidelity hammer mill simulation with GPU-accelerated particle physics. Break down whole seeds into flour with realistic size reduction.',
+      'Energy-based comminution model with calibrated selection and breakage functions. Particles undergo transport, hammer impact, multi-fragment breakage, and aperture-dependent screen classification. Validated against NIH hammer mill trials — simulated D50 of 23.6 µm vs measured 23.7 µm at 6,000 RPM with 0.75 mm screen.',
     features: [
       {
         icon: Layers,
-        title: 'Particle Breakage',
+        title: 'Calibrated Breakage Model',
         description:
-          'Selection and breakage functions calibrated to legume comminution. Multi-fragment breakage with mass conservation.',
+          'Velocity-dependent selection function with Rosin-Rammler daughter distributions. Parameters (k=0.6, d_ref=300 µm) validated against NIH legume comminution data with mass conservation.',
       },
       {
         icon: Settings,
         title: 'Screen Classification',
         description:
-          'Configurable screen aperture (0.75-2.0 mm) with size-dependent passage probability. Realistic retention and recirculation.',
+          'Aperture-based cutoff with (1-t)^4 passage taper. Size-ratio threshold filtering and velocity-dependent passage probability model realistic retention and discharge dynamics.',
       },
       {
         icon: Activity,
-        title: 'Real-time PSD',
+        title: 'Live PSD Evolution',
         description:
-          'Watch the particle size distribution evolve. Track D10, D50, D90 percentiles and full mass fractions.',
+          'Interactive chart with hover tooltips, cumulative distribution toggle, and logarithmic X-axis. D10, D50, D90 percentiles update in real-time as product discharges.',
       },
       {
         icon: Gauge,
-        title: 'Thermal Modeling',
+        title: 'Housing Thermal Model',
         description:
-          'Track product temperature rise from impact energy. Temperature-dependent breakage and stickiness effects.',
+          '50 kg steel housing thermal mass prevents unrealistic temperature oscillations. Friction heating from rotor impacts balanced by ambient convective cooling.',
       },
     ],
     specs: [
       { label: 'Rotor Speed', value: '3,000-7,200 RPM' },
       { label: 'Screen Aperture', value: '0.75-2.0 mm' },
-      { label: 'Motor Power', value: '15-55 kW' },
-      { label: 'Target D50', value: '~24 µm' },
+      { label: 'Validated D50', value: '23.6 µm (NIH: 23.7)' },
+      { label: 'Breakage Model', value: 'v4 calibrated' },
     ],
   },
   {
@@ -107,38 +107,38 @@ const stages = [
     icon: Wind,
     color: 'from-accent to-cyan-300',
     description:
-      'Complete air classification system with venturi eductor, zigzag channel, wheel classifier, and 3-stage cyclone. Separate flour into protein and starch fractions.',
+      'Lagrangian particle tracking through a complete separation train — venturi eductor, zigzag preclassifier, high-speed wheel classifier, and 3-stage cyclone system. Two operating modes (full system or wheel-only) with configurable bypass ratio and multi-pass recirculation with attrition modeling.',
     features: [
       {
         icon: Wind,
-        title: 'Venturi Eductor',
+        title: 'Lagrangian Particle Tracking',
         description:
-          'Optional preclassification stage. Air entrainment of flour with configurable throat ratio and bypass.',
+          'Schiller-Naumann drag for spherical particles, Haider-Levenspiel for non-spherical. Gravity, buoyancy, and inelastic wall collisions with configurable restitution and friction coefficients.',
       },
       {
         icon: Layers,
-        title: 'Zigzag Classifier',
+        title: 'Multi-Path Configuration',
         description:
-          'Multi-stage zigzag channel for preliminary separation. Configure channel dimensions and number of stages.',
+          'Full system (venturi → zigzag → dropout → wheel → cyclones → bag filter) or wheel-only mode. Adjustable bypass ratio (0-100%) for fine-tuning the separation cut point.',
       },
       {
         icon: Target,
-        title: 'Wheel Classifier',
+        title: 'Wheel Classifier Physics',
         description:
-          'High-speed rotating wheel (up to 3,000 RPM) for fine classification. Cut size determined by wheel speed and air flow.',
+          'Centrifugal force up to 5,000g at blade tips. Cut size emerges from the balance of centrifugal and aerodynamic drag forces acting on each individual particle.',
       },
       {
         icon: Activity,
-        title: 'Cyclone System',
+        title: 'Multi-Stage Cyclone',
         description:
-          '3-stage cyclone for fines collection. Primary, secondary, and tertiary cyclones with configurable diameters.',
+          'Primary, secondary, and tertiary cyclones with grade efficiency curves. Fines collection with bag filter exhaust cleaning. Configurable cyclone diameters and inlet velocities.',
       },
     ],
     specs: [
       { label: 'Wheel Speed', value: 'Up to 3,000 RPM' },
-      { label: 'Air Flow', value: '1,000-5,000 m³/h' },
-      { label: 'Throughput', value: '100-1,000 kg/h' },
-      { label: 'Protein Yield', value: '>55%' },
+      { label: 'Drag Model', value: 'Schiller-Naumann' },
+      { label: 'Cyclone Stages', value: '3 + bag filter' },
+      { label: 'Recirculation', value: 'Multi-pass' },
     ],
   },
 ];
@@ -159,8 +159,9 @@ export default function FeaturesPage() {
               <span className="gradient-text">Capabilities</span>
             </h1>
             <p className="text-xl text-text-secondary">
-              Three integrated processing stages with physics-based models
-              validated against real equipment and experimental data.
+              Three integrated processing stages with coupled multi-physics
+              models, GPU-accelerated solvers, and parameters validated against
+              NRC Canada and NIH experimental data.
             </p>
           </motion.div>
         </div>
@@ -286,8 +287,10 @@ export default function FeaturesPage() {
               Pipeline Orchestration
             </h2>
             <p className="text-lg text-text-secondary mb-8">
-              Transfer data seamlessly between stages. Outlet conditions from one
-              stage automatically configure the next.
+              Outlet temperature and moisture from pretreatment automatically map
+              to milling feed conditions. Milling PSD flows into the classifier
+              inlet. Multi-pass recirculation with attrition modeling and full
+              mass balance tracking across all three stages.
             </p>
 
             {/* Pipeline Visualization */}

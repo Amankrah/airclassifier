@@ -2,56 +2,56 @@
 
 import { motion } from 'framer-motion';
 import {
+  Zap,
   Cpu,
   Box,
-  LineChart,
+  BarChart3,
   Workflow,
-  Gauge,
-  FileJson,
+  Target,
 } from 'lucide-react';
 
 const features = [
   {
-    icon: Cpu,
-    title: 'GPU-Accelerated Physics',
+    icon: Zap,
+    title: 'Coupled Multi-Physics Engine',
     description:
-      'CUDA-powered simulations using NVIDIA Warp for real-time particle dynamics. Thousands of particles simulated simultaneously.',
+      'Nine-step simulation loop coupling RF electromagnetic fields, heat conduction, moisture diffusion, and dielectric property updates. FDM Laplace solver with 100+ Lagrangian tracers for seed-level temperature and moisture tracking.',
+    highlight: '9-Step Loop',
+  },
+  {
+    icon: Cpu,
+    title: 'GPU-Accelerated Computation',
+    description:
+      'Eight NVIDIA Warp GPU kernels with persistent memory allocation and batched launches — zero per-step allocations. Automatic CUDA/CPU device detection with adaptive CFL-based timestep control.',
     highlight: 'CUDA/Warp',
   },
   {
     icon: Box,
-    title: 'Real-time 3D Visualization',
+    title: 'Interactive 3D Digital Twin',
     description:
-      'Interactive PyVista-based viewport with animated components. Watch particles flow through the system in real-time.',
-    highlight: 'PyVista',
-  },
-  {
-    icon: LineChart,
-    title: 'Comprehensive Analytics',
-    description:
-      'Time-series plots, PSD analysis, separation efficiency metrics. Export results to CSV, JSON, or PDF reports.',
-    highlight: 'Export Ready',
+      'Over 40 parametric components with three cinematic camera modes — orbit, guided showcase tours, and spiral flythrough. Live particle rendering, mechanical animations, and per-component opacity controls.',
+    highlight: '40+ Parts',
   },
   {
     icon: Workflow,
-    title: 'Pipeline Orchestration',
+    title: 'Three-Stage Pipeline',
     description:
-      'Transfer outlet conditions between stages automatically. Mass balance tracking ensures process consistency.',
-    highlight: 'New!',
+      'RF pretreatment, hammer milling, and air classification linked with automatic outlet-to-inlet state mapping. Multi-pass recirculation with attrition modeling and full mass balance tracking across stages.',
+    highlight: 'End-to-End',
   },
   {
-    icon: Gauge,
-    title: 'Process Optimization',
+    icon: Target,
+    title: 'Multi-Objective Optimization',
     description:
-      'Calibrated physics models based on real machine data. Validated against NRC Canada experimental results.',
-    highlight: 'Validated',
+      'Derringer-Suich desirability scoring across five dimensions — thermal treatment, LOX inactivation, protein preservation, moisture retention, and energy efficiency. Grid search and gradient-based optimization via Warp Tape.',
+    highlight: '5D Scoring',
   },
   {
-    icon: FileJson,
-    title: 'Project Files',
+    icon: BarChart3,
+    title: 'Advanced Analytics & Export',
     description:
-      'Save and load complete simulation configurations. Share projects with colleagues or resume work later.',
-    highlight: '.acproj',
+      'Interactive PSD charts with hover tooltips and log-scale toggle, real-time KPI dashboards with radial gauges, and dual-scale time-series plots. Export to VTK for 3D field post-processing, plus CSV, JSON, and NumPy formats.',
+    highlight: 'VTK/CSV',
   },
 ];
 
@@ -89,8 +89,9 @@ export function FeaturesGrid() {
             Powerful Features
           </h2>
           <p className="text-lg text-text-secondary">
-            Everything you need to simulate, analyze, and optimize protein
-            processing operations.
+            Coupled multi-physics solvers, GPU-accelerated kernels, and
+            experimentally validated models — from whole seed conditioning to
+            micron-scale flour separation.
           </p>
         </motion.div>
 
