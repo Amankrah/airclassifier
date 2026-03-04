@@ -150,6 +150,33 @@
     @apply border border-white/10;
   }
 
+  /* Syntax highlighting (highlight.js dark theme — minimal) */
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-built_in { color: #c792ea; }
+  .hljs-string,
+  .hljs-attr { color: #c3e88d; }
+  .hljs-number,
+  .hljs-literal { color: #f78c6c; }
+  .hljs-comment,
+  .hljs-quote { color: #546e7a; font-style: italic; }
+  .hljs-function .hljs-title,
+  .hljs-title.function_ { color: #82aaff; }
+  .hljs-type,
+  .hljs-class .hljs-title { color: #ffcb6b; }
+  .hljs-variable,
+  .hljs-template-variable { color: #eeffff; }
+  .hljs-meta { color: #89ddff; }
+  .hljs-punctuation { color: #89ddff; }
+  .hljs-tag { color: #f07178; }
+  .hljs-name { color: #f07178; }
+  .hljs-attribute { color: #c792ea; }
+  .hljs-symbol,
+  .hljs-bullet { color: #ffcb6b; }
+  .hljs-section { color: #82aaff; font-weight: 700; }
+  .hljs-addition { color: #c3e88d; }
+  .hljs-deletion { color: #f07178; }
+
   /* Feature card hover effect */
   .feature-card {
     @apply glass-card p-6 transition-all duration-300;

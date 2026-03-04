@@ -1,11 +1,7 @@
 'use client';
 
 import { MDXRemote, MDXRemoteSerializeResult } from 'next-mdx-remote';
-import { serialize } from 'next-mdx-remote/serialize';
-import { useEffect, useState } from 'react';
-import remarkGfm from 'remark-gfm';
-import rehypeSlug from 'rehype-slug';
-import rehypeHighlight from 'rehype-highlight';
+import { useState } from 'react';
 import { AlertCircle, Info, AlertTriangle, CheckCircle, Copy, Check } from 'lucide-react';
 
 // Default HTML elements so MDX has a component for every tag (next-mdx-remote doesn't merge with defaults)
@@ -198,68 +194,14 @@ const components = {
   ),
 };
 
-type MDXContentProps =
-  | { source: MDXRemoteSerializeResult }
-  | { content: string };
+interface MDXContentProps {
+  source: MDXRemoteSerializeResult;
+}
 
-export function MDXContent(props: MDXContentProps) {
-  const [mdxSource, setMdxSource] = useState<MDXRemoteSerializeResult | null>(
-    'source' in props ? props.source : null
-  );
-  const [error, setError] = useState<string | null>(null);
-  const content = 'content' in props ? props.content : null;
-
-  useEffect(() => {
-    if (content === null) return;
-    const contentToSerialize = content;
-
-    let cancelled = false;
-    async function processMDX() {
-      try {
-        const serialized = await serialize(contentToSerialize, {
-          mdxOptions: {
-            remarkPlugins: [remarkGfm],
-            rehypePlugins: [rehypeSlug, rehypeHighlight],
-          },
-        });
-        if (!cancelled) setMdxSource(serialized);
-      } catch (err) {
-        if (!cancelled) {
-          setError('Failed to process documentation content');
-          console.error(err);
-        }
-      }
-    }
-
-    processMDX();
-    return () => {
-      cancelled = true;
-    };
-  }, [content]);
-
-  if (error) {
-    return (
-      <div className="p-4 rounded-lg bg-error/10 border border-error/30 text-error">
-        {error}
-      </div>
-    );
-  }
-
-  const sourceToRender = 'source' in props ? props.source : mdxSource;
-
-  if (!sourceToRender) {
-    return (
-      <div className="animate-pulse space-y-4">
-        <div className="h-4 bg-white/10 rounded w-3/4" />
-        <div className="h-4 bg-white/10 rounded w-1/2" />
-        <div className="h-4 bg-white/10 rounded w-5/6" />
-      </div>
-    );
-  }
-
+export function MDXContent({ source }: MDXContentProps) {
   return (
     <MDXRemote
-      {...sourceToRender}
+      {...source}
       components={components as React.ComponentProps<typeof MDXRemote>['components']}
     />
   );
