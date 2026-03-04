@@ -67,6 +67,15 @@ Thumbs.db
 # Project specific
 *.png
 *.jpg
+# Website public assets must be tracked (hero image, etc.)
+!website/public/
+!website/public/**/*.png
+!website/public/**/*.jpg
+!website/public/**/*.jpeg
+!website/public/**/*.gif
+!website/public/**/*.ico
+!website/public/**/*.svg
+!website/public/**/*.webp
 *.vtk
 *.vtu
 vtk_output/
