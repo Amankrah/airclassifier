@@ -8,8 +8,17 @@ import rehypeSlug from 'rehype-slug';
 import rehypeHighlight from 'rehype-highlight';
 import { AlertCircle, Info, AlertTriangle, CheckCircle, Copy, Check } from 'lucide-react';
 
-// Custom components for MDX
+// Default HTML elements so MDX has a component for every tag (next-mdx-remote doesn't merge with defaults)
+const htmlTags = [
+  'p', 'div', 'span', 'em', 'strong', 'code', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'blockquote', 'pre', 'hr', 'br', 'ul', 'ol', 'li', 'img', 'table', 'thead', 'tbody', 'tr', 'td', 'th',
+  'section', 'article', 'nav', 'header', 'footer', 'main', 'aside', 'del',
+];
+const defaultComponents = Object.fromEntries(htmlTags.map((tag) => [tag, tag])) as Record<string, string>;
+
+// Custom components for MDX (spread after defaults so our overrides take precedence)
 const components = {
+  ...defaultComponents,
   // Callout component
   Callout: ({
     type = 'info',
@@ -130,33 +139,39 @@ const components = {
     </a>
   ),
 
-  // Headings with anchor links
-  h2: ({ children, id }: { children: React.ReactNode; id?: string }) => (
-    <h2 id={id} className="group flex items-center gap-2 scroll-mt-24">
-      {children}
-      {id && (
-        <a
-          href={`#${id}`}
-          className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-accent transition-all"
-        >
-          #
-        </a>
-      )}
-    </h2>
-  ),
-  h3: ({ children, id }: { children: React.ReactNode; id?: string }) => (
-    <h3 id={id} className="group flex items-center gap-2 scroll-mt-24">
-      {children}
-      {id && (
-        <a
-          href={`#${id}`}
-          className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-accent transition-all"
-        >
-          #
-        </a>
-      )}
-    </h3>
-  ),
+  // Headings with anchor links (use full HTML props for MDXComponents compatibility)
+  h2: (props: React.HTMLAttributes<HTMLHeadingElement>) => {
+    const { children, id, ...rest } = props;
+    return (
+      <h2 id={id} className="group flex items-center gap-2 scroll-mt-24" {...rest}>
+        {children}
+        {id && (
+          <a
+            href={`#${id}`}
+            className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-accent transition-all"
+          >
+            #
+          </a>
+        )}
+      </h2>
+    );
+  },
+  h3: (props: React.HTMLAttributes<HTMLHeadingElement>) => {
+    const { children, id, ...rest } = props;
+    return (
+      <h3 id={id} className="group flex items-center gap-2 scroll-mt-24" {...rest}>
+        {children}
+        {id && (
+          <a
+            href={`#${id}`}
+            className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-accent transition-all"
+          >
+            #
+          </a>
+        )}
+      </h3>
+    );
+  },
 
   // Steps component
   Steps: ({ children }: { children: React.ReactNode }) => (
@@ -196,14 +211,15 @@ export function MDXContent(props: MDXContentProps) {
 
   useEffect(() => {
     if (content === null) return;
+    const contentToSerialize = content;
 
     let cancelled = false;
     async function processMDX() {
       try {
-        const serialized = await serialize(content, {
+        const serialized = await serialize(contentToSerialize, {
           mdxOptions: {
             remarkPlugins: [remarkGfm],
-            rehypePlugins: [rehypeSlug, rehypeHighlight],
+            rehypePlugins: [rehypeSlug, rehypeHighlight as unknown as (typeof rehypeSlug)],
           },
         });
         if (!cancelled) setMdxSource(serialized);
@@ -241,5 +257,10 @@ export function MDXContent(props: MDXContentProps) {
     );
   }
 
-  return <MDXRemote {...sourceToRender} components={components} />;
+  return (
+    <MDXRemote
+      {...sourceToRender}
+      components={components as React.ComponentProps<typeof MDXRemote>['components']}
+    />
+  );
 }

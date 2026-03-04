@@ -8,6 +8,9 @@ import rehypeHighlight from 'rehype-highlight';
 import { getDocBySlug, getAllDocSlugs, getDocNavigation, docsStructure } from '@/lib/docs';
 import { MDXContent } from '@/components/docs/mdx-content';
 
+// Avoid prerender errors (undefined component / MDX) until resolved; docs render on first request
+export const dynamic = 'force-dynamic';
+
 interface PageProps {
   params: Promise<{
     slug: string[];
@@ -87,7 +90,8 @@ export default async function DocPage({ params }: PageProps) {
   const mdxSource = await serialize(doc.content, {
     mdxOptions: {
       remarkPlugins: [remarkGfm],
-      rehypePlugins: [rehypeSlug, rehypeHighlight],
+      // rehype-highlight bundles an older vfile; cast to satisfy unified plugin types
+      rehypePlugins: [rehypeSlug, rehypeHighlight as unknown as (typeof rehypeSlug)],
     },
   });
 
