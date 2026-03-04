@@ -219,7 +219,7 @@ export function MDXContent(props: MDXContentProps) {
         const serialized = await serialize(contentToSerialize, {
           mdxOptions: {
             remarkPlugins: [remarkGfm],
-            rehypePlugins: [rehypeSlug, rehypeHighlight as unknown as (typeof rehypeSlug)],
+            rehypePlugins: [rehypeSlug, rehypeHighlight as any],
           },
         });
         if (!cancelled) setMdxSource(serialized);
