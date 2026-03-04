@@ -10,33 +10,33 @@ const stages = [
     title: 'Pretreatment',
     subtitle: 'GP-15 RF Heating',
     description:
-      'Dielectric heating for moisture control and enzyme inactivation. Simulates RF frequency, electrode gap, and belt conveyor dynamics.',
+      'Coupled RF electromagnetic field solver with a 9-step physics loop — volumetric heating, moisture diffusion, and Arrhenius evaporation kinetics on a moving conveyor bed. Validated against NRC Canada experimental runs.',
     icon: Zap,
     color: 'from-orange-500 to-red-500',
     href: '/features#pretreatment',
-    metrics: ['Temperature profiles', 'Moisture control', 'Energy consumption'],
+    metrics: ['100+ Lagrangian seed tracers', '5D desirability scoring', 'Adaptive PLC control logic'],
   },
   {
     id: 'milling',
     title: 'Milling',
     subtitle: 'Hammer Mill',
     description:
-      'Impact grinding simulation with real-time particle size distribution. Configure rotor speed, screen aperture, and breakage parameters.',
+      'Energy-based comminution with calibrated Rosin-Rammler breakage functions and aperture-dependent screen classification. Validated to within 0.1 µm of NIH experimental D50 at 6,000 RPM.',
     icon: Cog,
     color: 'from-primary to-blue-400',
     href: '/features#milling',
-    metrics: ['PSD analysis', 'Power consumption', 'Throughput rates'],
+    metrics: ['Live PSD with D10/D50/D90', 'Housing thermal mass model', 'Screen passage taper (1-t)^4'],
   },
   {
     id: 'classification',
     title: 'Classification',
     subtitle: 'Air Classifier',
     description:
-      'Particle separation by size and density. Includes venturi eductor, zigzag channel, wheel classifier, and cyclone stages.',
+      'Lagrangian particle tracking with Schiller-Naumann drag through a complete separation train — venturi eductor, zigzag preclassifier, wheel classifier up to 5,000g, and 3-stage cyclone system.',
     icon: Wind,
     color: 'from-accent to-cyan-300',
     href: '/features#classification',
-    metrics: ['Separation efficiency', 'Protein yield', 'Particle trajectories'],
+    metrics: ['Grade efficiency curves', 'Multi-pass recirculation', 'Configurable bypass ratio'],
   },
 ];
 

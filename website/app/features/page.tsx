@@ -15,6 +15,12 @@ import {
   Settings,
   Activity,
   Target,
+  Monitor,
+  Palette,
+  Keyboard,
+  Camera,
+  TrendingUp,
+  FileOutput,
 } from 'lucide-react';
 
 const stages = [
@@ -140,6 +146,45 @@ const stages = [
       { label: 'Cyclone Stages', value: '3 + bag filter' },
       { label: 'Recirculation', value: 'Multi-pass' },
     ],
+  },
+];
+
+const guiFeatures = [
+  {
+    icon: Monitor,
+    title: 'Glassmorphic Dark Theme',
+    description:
+      'Semi-transparent cards with backdrop blur, semantic color coding for every KPI, and smooth 400ms eased transitions throughout the interface.',
+  },
+  {
+    icon: TrendingUp,
+    title: 'Animated KPI Dashboards',
+    description:
+      'Radial gauges with threshold coloring, sparkline trend lines with Bezier interpolation, and delta badges showing real-time percentage changes.',
+  },
+  {
+    icon: Camera,
+    title: 'Cinematic 3D Camera',
+    description:
+      'Three camera modes — smooth orbit, guided 5-keyframe showcase tour, and spiral flythrough. Mouse interaction pauses the camera for manual inspection.',
+  },
+  {
+    icon: Palette,
+    title: '40+ Parametric Components',
+    description:
+      'Cyclones, blowers, wheel classifiers, ductwork, dampers, explosion vents, and instrumentation ports — all rendered with per-component color mapping and opacity controls.',
+  },
+  {
+    icon: Keyboard,
+    title: '20+ Keyboard Shortcuts',
+    description:
+      'F5 to run, F6 to pause, Ctrl+B to build, Ctrl+R for results. Waveform timeline with drag-to-scrub playback and speed control (0.5x to 4x).',
+  },
+  {
+    icon: FileOutput,
+    title: 'Multi-Format Export',
+    description:
+      'VTK structured grids for 3D field post-processing, CSV time-series, JSON for automation, and NumPy snapshots. One-click export from the results view.',
   },
 ];
 
@@ -273,6 +318,52 @@ export default function FeaturesPage() {
           </div>
         </section>
       ))}
+
+      {/* Professional GUI Section */}
+      <section className="section bg-bg-surface/50">
+        <div className="container-custom">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            className="max-w-3xl mx-auto text-center mb-12"
+          >
+            <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">
+              Professional Desktop Experience
+            </h2>
+            <p className="text-lg text-text-secondary">
+              A polished PySide6 application with glassmorphic design, animated
+              dashboards, and a cinematic 3D viewport — built for engineers who
+              care about their tools.
+            </p>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true }}
+            className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6"
+          >
+            {guiFeatures.map((feature) => (
+              <motion.div
+                key={feature.title}
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                className="p-6 rounded-xl bg-white/5 border border-white/10 hover:border-accent/30 transition-colors"
+              >
+                <feature.icon className="w-6 h-6 text-accent mb-3" />
+                <h3 className="text-sm font-semibold text-white mb-1">
+                  {feature.title}
+                </h3>
+                <p className="text-xs text-text-muted">
+                  {feature.description}
+                </p>
+              </motion.div>
+            ))}
+          </motion.div>
+        </div>
+      </section>
 
       {/* Pipeline Mode Section */}
       <section className="section bg-gradient-to-b from-transparent to-bg-surface/50">
