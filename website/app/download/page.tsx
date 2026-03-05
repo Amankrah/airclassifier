@@ -19,21 +19,28 @@ import { detectOS } from '@/lib/utils';
 
 type Platform = 'windows' | 'macos' | 'linux';
 
+// GitHub releases base URL
+const GITHUB_RELEASES_URL = 'https://github.com/Amankrah/airclassifier/releases/download/v1.0.0';
+
 const platforms: Record<Platform, {
   name: string;
   icon: typeof Monitor;
   version: string;
   size: string;
   filename: string;
+  downloadUrl: string;
   requirements: string;
+  available: boolean;
 }> = {
   windows: {
     name: 'Windows',
     icon: Monitor,
     version: 'Windows 10/11 (64-bit)',
-    size: '~150 MB',
+    size: '~274 MB',
     filename: 'ProteinProcessIO-1.0.0-Setup.exe',
+    downloadUrl: `${GITHUB_RELEASES_URL}/ProteinProcessIO-1.0.0-Setup.exe`,
     requirements: 'Windows 10 or later',
+    available: true,
   },
   macos: {
     name: 'macOS',
@@ -41,7 +48,9 @@ const platforms: Record<Platform, {
     version: 'macOS 11+ (Intel & Apple Silicon)',
     size: '~160 MB',
     filename: 'ProteinProcessIO-1.0.0-macos.dmg',
+    downloadUrl: `${GITHUB_RELEASES_URL}/ProteinProcessIO-1.0.0-macos.dmg`,
     requirements: 'macOS 11 Big Sur or later',
+    available: false, // Coming soon
   },
   linux: {
     name: 'Linux',
@@ -49,7 +58,9 @@ const platforms: Record<Platform, {
     version: 'Ubuntu 20.04+, Fedora 34+',
     size: '~145 MB',
     filename: 'ProteinProcessIO-1.0.0-linux.AppImage',
+    downloadUrl: `${GITHUB_RELEASES_URL}/ProteinProcessIO-1.0.0-linux.AppImage`,
     requirements: 'glibc 2.31 or later',
+    available: false, // Coming soon
   },
 };
 
@@ -187,13 +198,22 @@ export default function DownloadPage() {
                 {currentPlatform.version}
               </p>
 
-              <a
-                href={`/downloads/${currentPlatform.filename}`}
-                className="btn-accent text-lg px-10 py-4 mb-6 inline-flex"
-              >
-                <Download className="w-5 h-5" />
-                Download ({currentPlatform.size})
-              </a>
+              {currentPlatform.available ? (
+                <a
+                  href={currentPlatform.downloadUrl}
+                  className="btn-accent text-lg px-10 py-4 mb-6 inline-flex"
+                >
+                  <Download className="w-5 h-5" />
+                  Download ({currentPlatform.size})
+                </a>
+              ) : (
+                <div className="mb-6">
+                  <span className="inline-flex items-center gap-2 px-10 py-4 text-lg rounded-lg bg-white/10 text-text-muted cursor-not-allowed">
+                    <AlertCircle className="w-5 h-5" />
+                    Coming Soon
+                  </span>
+                </div>
+              )}
 
               <p className="text-sm text-text-muted">
                 {currentPlatform.filename}
