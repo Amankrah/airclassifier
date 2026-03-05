@@ -3,16 +3,24 @@
 Bundles:
 - warp/bin/*.so (or .dll on Windows) — native runtime libraries loaded via ctypes
 - warp/native/**  — C/CUDA headers required for JIT kernel compilation
-- All warp submodules (many are imported dynamically)
+- All warp submodules that can be imported (optional ones like warp.sim may not exist)
 """
 
 import os
 from PyInstaller.utils.hooks import collect_submodules
 
 # ---------------------------------------------------------------------------
-# Hidden imports — Warp has many internal submodules loaded at runtime
+# Hidden imports — only include warp submodules that actually import.
+# collect_submodules('warp') can list optional modules (e.g. warp.sim, warp.render)
+# that are not present in all warp installs; requesting them causes ERROR at build.
 # ---------------------------------------------------------------------------
-hiddenimports = collect_submodules('warp')
+hiddenimports = []
+for mod in collect_submodules('warp'):
+    try:
+        __import__(mod)
+        hiddenimports.append(mod)
+    except (ImportError, ModuleNotFoundError):
+        pass
 
 # ---------------------------------------------------------------------------
 # Locate the installed warp package

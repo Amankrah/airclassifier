@@ -482,5 +482,7 @@ try:
 
     _HAS_WARP_FIELD = True
 
-except ImportError:
+except Exception:
+    # ImportError: warp not installed
+    # RuntimeError: warp JIT compilation failed (e.g., PyInstaller bundle)
     _HAS_WARP_FIELD = False

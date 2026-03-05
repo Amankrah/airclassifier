@@ -70,5 +70,7 @@ try:
 
     _HAS_WARP = True
 
-except ImportError:
+except Exception:
+    # ImportError: warp not installed
+    # RuntimeError: warp JIT compilation failed (e.g., PyInstaller bundle)
     _HAS_WARP = False

@@ -25,15 +25,17 @@ from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QFont
 
 from ..theme import COLORS
+from ..runtime import pyvista_unavailable_message
 
 # Try to import PyVista for 3D visualization
 try:
     import pyvista as pv
     from pyvistaqt import QtInteractor
     HAS_PYVISTA = True
-except ImportError:
+except Exception as e:
     HAS_PYVISTA = False
-    print("Warning: PyVista not available. 3D viewport will be limited.")
+    _PYVISTA_ERROR = str(e)
+    print(f"Warning: PyVista not available ({e}). 3D viewport will be limited.")
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +223,7 @@ class Viewport3D(QWidget):
             )
             p_layout.addWidget(icon_lbl)
 
-            hint = QLabel("PyVista is not installed.\nInstall with: pip install pyvistaqt")
+            hint = QLabel(pyvista_unavailable_message())
             hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
             hint.setWordWrap(True)
             hint.setStyleSheet(

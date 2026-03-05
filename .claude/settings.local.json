@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c:*)",
+      "Bash(pip show:*)",
+      "Bash(.venvScriptspip.exe show mypy_extensions)"
+    ]
+  }
+}

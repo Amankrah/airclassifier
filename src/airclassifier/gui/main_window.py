@@ -684,8 +684,14 @@ class MainWindow(QMainWindow):
             self.gpu_status_label.setText("GPU: Warp Not Installed")
             self.gpu_status_label.setStyleSheet(f"color: {COLORS.DANGER};")
         except Exception as e:
-            self.gpu_status_label.setText(f"GPU: Error - {str(e)[:30]}")
-            self.gpu_status_label.setStyleSheet(f"color: {COLORS.DANGER};")
+            err = str(e).strip()
+            # Warp can raise "Directly evaluating Warp code" when JIT isn't available (e.g. packaged app)
+            if "directly evaluating" in err.lower() or "warp code" in err.lower():
+                self.gpu_status_label.setText("GPU: CPU Mode (Warp JIT unavailable)")
+                self.gpu_status_label.setStyleSheet(f"color: {COLORS.WARNING};")
+            else:
+                self.gpu_status_label.setText(f"GPU: Error - {err[:30]}")
+                self.gpu_status_label.setStyleSheet(f"color: {COLORS.DANGER};")
 
     def _update_component_count(self):
         p = self._assembly_params or self._classification_params

@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..theme import COLORS
+from ..runtime import pyvista_unavailable_message
 
 # Import new modular widgets
 try:
@@ -88,8 +89,8 @@ def _ensure_pyvista() -> bool:
         pv = _pv
         QtInteractor = _QI
         _HAS_PYVISTA = True
-    except ImportError:
-        pass
+    except Exception as e:
+        print(f"Warning: PyVista not available in milling_page: {e}")
     return _HAS_PYVISTA
 
 
@@ -326,7 +327,7 @@ class MillingPage(QWidget):
                 name="placeholder_text",
             )
         else:
-            lbl = QLabel("PyVista not available. Install: pip install pyvista pyvistaqt")
+            lbl = QLabel(pyvista_unavailable_message())
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(f"color: {COLORS.TEXT_MUTED}; padding: 40px;")
             layout.addWidget(lbl)

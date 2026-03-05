@@ -31,8 +31,11 @@ from .screen import (
 from .reagglomeration import reagglomeration_step_np
 
 # Warp imports (optional)
+# Catch all exceptions because Warp JIT can fail with RuntimeError in PyInstaller bundles
 try:
     import warp as wp
+    # Try to initialize warp - this triggers JIT compilation
+    wp.init()
     WARP_AVAILABLE = True
 
     from .transport import transport_step_warp
@@ -40,13 +43,17 @@ try:
     from .breakage import breakage_step_warp
     from .screen import screen_passage_warp
 
-except ImportError:
+except Exception as e:
+    # ImportError: warp not installed
+    # RuntimeError: warp JIT compilation failed (e.g., in PyInstaller bundle)
     WARP_AVAILABLE = False
     wp = None
     transport_step_warp = None
     impact_detection_warp = None
     breakage_step_warp = None
     screen_passage_warp = None
+    # Store error for debugging
+    _WARP_INIT_ERROR = str(e)
 
 
 # GPU device info cache

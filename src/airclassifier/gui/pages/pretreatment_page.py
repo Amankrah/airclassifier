@@ -72,6 +72,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..theme import COLORS
+from ..runtime import pyvista_unavailable_message
 from ...pretreatment.desirability import (
     DesirabilityProfile,
     DesirabilityResult,
@@ -90,8 +91,9 @@ try:
     import pyvista as pv
     from pyvistaqt import QtInteractor
     _HAS_PYVISTA = True
-except ImportError:
+except Exception as e:
     _HAS_PYVISTA = False
+    print(f"Warning: PyVista not available in pretreatment_page: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -371,11 +373,7 @@ class PretreatmentPage(QWidget):
             )
         else:
             self._plotter = None
-            lbl = QLabel(
-                "PyVista not available.\n"
-                "Install with: pip install pyvista pyvistaqt\n\n"
-                "Simulation will run without 3D visualization."
-            )
+            lbl = QLabel(pyvista_unavailable_message())
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(
                 f"color: {COLORS.TEXT_MUTED}; font-size: 11pt; padding: 40px;"

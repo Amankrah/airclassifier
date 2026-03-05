@@ -32,7 +32,9 @@ import numpy as np
 try:
     import warp as wp
     WARP_AVAILABLE = True
-except ImportError:
+except Exception:
+    # ImportError: warp not installed
+    # RuntimeError: warp JIT compilation failed (e.g., PyInstaller bundle)
     WARP_AVAILABLE = False
     wp = None
 
