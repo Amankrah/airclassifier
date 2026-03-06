@@ -173,7 +173,7 @@ export default function AboutPage() {
       </section>
 
       {/* Team Section */}
-      <section className="section">
+      <section id="team" className="section">
         <div className="container-custom">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -182,53 +182,136 @@ export default function AboutPage() {
             className="max-w-4xl mx-auto"
           >
             <h2 className="text-3xl md:text-4xl font-bold text-white text-center mb-12">
-              Meet the Developer
+              Meet the Team
             </h2>
 
-            <div className="glass-card p-8 md:p-12">
-              <div className="flex flex-col md:flex-row items-center gap-8">
-                {/* Avatar */}
-                <div className="w-32 h-32 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center flex-shrink-0">
-                  <span className="text-4xl font-bold text-white">EK</span>
+            <div className="grid gap-6 sm:grid-cols-2">
+              {/* Ebenezer Miezah Kwofie - PI */}
+              <div className="glass-card p-6">
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                  <div className="w-20 h-20 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center flex-shrink-0">
+                    <span className="text-2xl font-bold text-white">EMK</span>
+                  </div>
+                  <div className="text-center sm:text-left flex-1">
+                    <h3 className="text-lg font-bold text-white mb-1">
+                      <a
+                        href="https://www.mcgill.ca/bioeng/kwofie-ebenezer-miezah"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:text-accent transition-colors"
+                      >
+                        Ebenezer Miezah Kwofie
+                      </a>
+                    </h3>
+                    <p className="text-accent text-sm mb-2">Principal Investigator</p>
+                    <p className="text-text-secondary text-sm mb-3">
+                      Assistant Professor, Sustainable Food Systems Engineering at
+                      McGill University. Co-director, Integrated Food and Bioprocess
+                      Engineering Program.
+                    </p>
+                    <a
+                      href="https://www.mcgill.ca/bioeng/kwofie-ebenezer-miezah"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-accent hover:text-accent-glow text-sm"
+                    >
+                      McGill profile <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
                 </div>
+              </div>
 
-                {/* Info */}
-                <div className="text-center md:text-left">
-                  <h3 className="text-2xl font-bold text-white mb-1">Emmanuel Amankrah Kwofie</h3>
-                  <p className="text-accent mb-4">Lead Developer &amp; Engineer</p>
-                  <p className="text-text-secondary mb-6">
-                    Process engineer and software developer at McGill University,
-                    passionate about bringing advanced simulation tools to the food
-                    processing industry. Specializing in computational fluid dynamics,
-                    particle physics, GPU-accelerated computing, and multiphysics
-                    simulation.
-                  </p>
+              {/* Emmanuel Amankrah Kwofie */}
+              <div className="glass-card p-6">
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                  <div className="w-20 h-20 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center flex-shrink-0">
+                    <span className="text-2xl font-bold text-white">EAK</span>
+                  </div>
+                  <div className="text-center sm:text-left flex-1">
+                    <h3 className="text-lg font-bold text-white mb-1">
+                      Emmanuel Amankrah Kwofie
+                    </h3>
+                    <p className="text-accent text-sm mb-2">Lead Developer &amp; Engineer</p>
+                    <p className="text-text-secondary text-sm mb-3">
+                      Process engineer and software developer at McGill University.
+                      Specializing in CFD, particle physics, GPU computing, and
+                      multiphysics simulation.
+                    </p>
+                    <div className="flex items-center justify-center sm:justify-start gap-2">
+                      <a
+                        href="https://www.eakwofie.com/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-text-secondary hover:text-white transition-colors"
+                        title="Personal Website"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </a>
+                      <a
+                        href="https://linkedin.com/in/eakwofie"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-text-secondary hover:text-white transition-colors"
+                        aria-label="LinkedIn"
+                      >
+                        <Linkedin className="w-4 h-4" />
+                      </a>
+                      <a
+                        href="mailto:emmanuel.kwofie@mail.mcgill.ca"
+                        className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-text-secondary hover:text-white transition-colors"
+                        aria-label="Email"
+                      >
+                        <Mail className="w-4 h-4" />
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-                  {/* Social Links */}
-                  <div className="flex items-center justify-center md:justify-start gap-4">
-                    <a
-                      href="https://www.eakwofie.com/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-text-secondary hover:text-white transition-colors"
-                      title="Personal Website"
-                    >
-                      <ExternalLink className="w-5 h-5" />
-                    </a>
-                    <a
-                      href="https://linkedin.com/in/eakwofie"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-text-secondary hover:text-white transition-colors"
-                    >
-                      <Linkedin className="w-5 h-5" />
-                    </a>
-                    <a
-                      href="mailto:emmanuel.kwofie@mail.mcgill.ca"
-                      className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-text-secondary hover:text-white transition-colors"
-                    >
-                      <Mail className="w-5 h-5" />
-                    </a>
+              {/* Derrick Allotey */}
+              <div className="glass-card p-6">
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                  <div className="w-20 h-20 rounded-xl bg-gradient-to-br from-primary/80 to-accent/80 flex items-center justify-center flex-shrink-0">
+                    <span className="text-2xl font-bold text-white">DA</span>
+                  </div>
+                  <div className="text-center sm:text-left flex-1">
+                    <h3 className="text-lg font-bold text-white mb-1">Derrick Allotey</h3>
+                    <p className="text-accent text-sm mb-2">PhD Student</p>
+                    <p className="text-text-secondary text-sm">
+                      SASEL Lab, McGill University. Worked on this project.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Anthony Iheonye */}
+              <div className="glass-card p-6">
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                  <div className="w-20 h-20 rounded-xl bg-gradient-to-br from-primary/80 to-accent/80 flex items-center justify-center flex-shrink-0">
+                    <span className="text-2xl font-bold text-white">AI</span>
+                  </div>
+                  <div className="text-center sm:text-left flex-1">
+                    <h3 className="text-lg font-bold text-white mb-1">Anthony Iheonye</h3>
+                    <p className="text-accent text-sm mb-2">Postdoctoral Researcher</p>
+                    <p className="text-text-secondary text-sm">
+                      SASEL Lab, McGill University. Worked on this project.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Abrahim Sabiku */}
+              <div className="glass-card p-6">
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                  <div className="w-20 h-20 rounded-xl bg-gradient-to-br from-primary/80 to-accent/80 flex items-center justify-center flex-shrink-0">
+                    <span className="text-2xl font-bold text-white">AS</span>
+                  </div>
+                  <div className="text-center sm:text-left flex-1">
+                    <h3 className="text-lg font-bold text-white mb-1">Abrahim Sabiku</h3>
+                    <p className="text-accent text-sm mb-2">Masters Student</p>
+                    <p className="text-text-secondary text-sm">
+                      SASEL Lab, McGill University. Worked on this project.
+                    </p>
                   </div>
                 </div>
               </div>

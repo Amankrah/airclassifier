@@ -17,6 +17,7 @@ const footerLinks = {
   ],
   company: [
     { label: 'About', href: '/about' },
+    { label: 'Team', href: '/about#team' },
     { label: 'Contact', href: '/contact' },
     { label: 'McGill University', href: '/about#mcgill' },
     { label: 'NRC Canada', href: '/about#nrc' },
@@ -143,15 +144,9 @@ export function Footer() {
         {/* Bottom Bar */}
         <div className="py-6 border-t border-white/10 flex flex-col md:flex-row items-center justify-between gap-4">
           <p className="text-sm text-text-muted">
-            &copy; {currentYear} ProteinProcessIO. Developed at McGill University by{' '}
-            <a
-              href="https://www.eakwofie.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent hover:text-accent-glow underline underline-offset-2 transition-colors"
-            >
-              Emmanuel Amankrah Kwofie
-            </a>
+            &copy; {currentYear} ProteinProcessIO. Developed at McGill University by
+            the SASEL Lab team — Ebenezer Miezah Kwofie, Emmanuel Amankrah Kwofie,
+            Anthony Iheonye, Derrick Allotey, and Abrahim Sabiku.
           </p>
           <div className="flex items-center gap-6 text-sm text-text-muted">
             <Link

@@ -41,7 +41,6 @@ PrivilegesRequiredOverridesAllowed=dialog
 
 ; UI options
 WizardStyle=modern
-WizardResizable=no
 
 ; License and info (optional - uncomment if you have these files)
 ; LicenseFile=LICENSE.txt
@@ -52,7 +51,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
 
 [Files]
 ; Copy all files from the PyInstaller dist folder
@@ -63,8 +61,6 @@ Source: "dist\ProteinProcessIO\*"; DestDir: "{app}"; Flags: ignoreversion recurs
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 ; Desktop shortcut (optional)
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-; Quick Launch shortcut (optional, for older Windows)
-Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: quicklaunchicon
 
 [Run]
 ; Option to run after installation

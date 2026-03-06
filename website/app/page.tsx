@@ -1,4 +1,4 @@
-import { Hero, ProcessFlow, FeaturesGrid, CTASection } from '@/components/landing';
+import { Hero, ProcessFlow, FeaturesGrid, PartnersSection, CTASection } from '@/components/landing';
 
 export default function HomePage() {
   return (
@@ -6,6 +6,7 @@ export default function HomePage() {
       <Hero />
       <ProcessFlow />
       <FeaturesGrid />
+      <PartnersSection />
       <CTASection />
     </>
   );
